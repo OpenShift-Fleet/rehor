@@ -2,7 +2,7 @@ module rh_identity_transform
 
 go 1.25.0
 
-toolchain go1.26.2
+toolchain go1.26.3
 
 require (
 	github.com/caddyserver/caddy/v2 v2.11.2
