@@ -53,6 +53,9 @@ services:
       - GCP_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-}
       - GCP_REGION=${VERTEX_LOCATION:-us-east5}
       - VERTEX_ALLOWED_MODELS=${VERTEX_ALLOWED_MODELS:-}
+      - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
+      - JIRA_USERNAME
+      - JIRA_API_TOKEN
     volumes:
       - executor-sock:/var/run/devbot
     healthcheck:
@@ -96,6 +99,10 @@ services:
       - ANTHROPIC_VERTEX_BASE_URL=http://proxy:8443
       - ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-dummy-project}
       - CLOUD_ML_REGION=global
+      # Jira — proxied through proxy container
+      - JIRA_MCP_URL=http://proxy:8444/mcp
+      - JIRA_PROXY_URL=http://proxy:8445
+      - JIRA_PROXY_HEALTH_TIMEOUT=60
       # Route all HTTP/HTTPS through the Squid proxy
       - HTTP_PROXY=http://proxy:3128
       - HTTPS_PROXY=http://proxy:3128

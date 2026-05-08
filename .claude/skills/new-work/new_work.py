@@ -6,7 +6,6 @@ matching BOT_LABEL, ordered by priority. Checks repo: labels against
 project-repos.json. Outputs full context for each candidate.
 """
 
-import base64
 import json
 import os
 import sys
@@ -15,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_CREDS = Path.home() / ".jira-credentials"
+JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
 BOT_BOARD_ID = os.environ.get("BOT_BOARD_ID", "")
 BOT_BOARD_NAME = os.environ.get("BOT_BOARD_NAME", "")
@@ -47,21 +46,10 @@ def http_post(url, body, headers=None, timeout=10):
 
 
 def jira_auth():
-    if not JIRA_CREDS.exists():
-        print(f"WARN: {JIRA_CREDS} not found", file=sys.stderr)
+    if not JIRA_PROXY_URL:
+        print("WARN: JIRA_PROXY_URL not set", file=sys.stderr)
         return None, None
-    try:
-        creds = json.loads(JIRA_CREDS.read_text())
-    except Exception as e:
-        print(f"ERR reading {JIRA_CREDS}: {e}", file=sys.stderr)
-        return None, None
-    url = creds.get("url", "").rstrip("/")
-    user, token = creds.get("username", ""), creds.get("token", "")
-    if not all([url, user, token]):
-        print("ERR: incomplete Jira credentials", file=sys.stderr)
-        return None, None
-    auth = base64.b64encode(f"{user}:{token}".encode()).decode()
-    return url, {"Authorization": f"Basic {auth}", "Accept": "application/json"}
+    return JIRA_PROXY_URL, {"Accept": "application/json"}
 
 
 def jira_search(jql, limit=10):

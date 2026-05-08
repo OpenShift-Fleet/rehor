@@ -127,8 +127,8 @@ RUN npm install -g chrome-devtools-mcp@latest @redhat-cloud-services/hcc-pf-mcp
 # uv
 RUN pip3.12 install uv
 
-# Pre-install mcp-atlassian so uvx doesn't need network at runtime
-RUN pip3.12 install mcp-atlassian
+# mcp-atlassian runs in the proxy container (streamable-http transport).
+# Bot connects via HTTP — no local install needed.
 
 # Non-root user (Claude Code rejects root)
 RUN useradd -m -s /bin/bash botuser

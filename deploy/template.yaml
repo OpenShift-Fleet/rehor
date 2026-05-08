@@ -199,6 +199,12 @@ objects:
           - containerPort: 8443
             name: vertex-auth
             protocol: TCP
+          - containerPort: 8444
+            name: jira-mcp
+            protocol: TCP
+          - containerPort: 8445
+            name: jira-auth
+            protocol: TCP
           env:
           - name: EXECUTOR_LISTEN
             value: ":9090"
@@ -238,6 +244,18 @@ objects:
             value: ${GCP_REGION}
           - name: VERTEX_ALLOWED_MODELS
             value: ${VERTEX_ALLOWED_MODELS}
+          - name: JIRA_URL
+            value: https://redhat.atlassian.net
+          - name: JIRA_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: jira-email
+          - name: JIRA_API_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: jira-token
           livenessProbe:
             tcpSocket:
               port: 3128
@@ -281,6 +299,14 @@ objects:
       targetPort: vertex-auth
       protocol: TCP
       name: vertex-auth
+    - port: 8444
+      targetPort: jira-mcp
+      protocol: TCP
+      name: jira-mcp
+    - port: 8445
+      targetPort: jira-auth
+      protocol: TCP
+      name: jira-auth
 
 # --- Bot Deployment ---
 - apiVersion: apps/v1
@@ -379,19 +405,12 @@ objects:
             value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
           - name: no_proxy
             value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
-          # Secrets that stay in bot container (Jira for MCP, SSO for E2E)
-          - name: JIRA_URL
-            value: https://redhat.atlassian.net
-          - name: JIRA_USERNAME
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: jira-email
-          - name: JIRA_API_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: jira-token
+          # Jira — proxied through proxy container (mcp-atlassian + auth proxy)
+          - name: JIRA_MCP_URL
+            value: http://devbot-proxy:8444/mcp
+          - name: JIRA_PROXY_URL
+            value: http://devbot-proxy:8445
+          # Secrets that stay in bot container (SSO for E2E)
           - name: SSO_USERNAME
             valueFrom:
               secretKeyRef:
@@ -436,6 +455,10 @@ objects:
       - port: 9090
         protocol: TCP
       - port: 8443
+        protocol: TCP
+      - port: 8444
+        protocol: TCP
+      - port: 8445
         protocol: TCP
     - to:
       - podSelector:

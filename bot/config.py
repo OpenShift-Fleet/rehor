@@ -79,7 +79,6 @@ def _resolve_env_vars(obj):
 # Env vars that contain secrets and must be removed before starting
 # the agent. MCP servers get resolved values; gh/glab use config files.
 SECRET_ENV_VARS = [
-    "JIRA_API_TOKEN",
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",

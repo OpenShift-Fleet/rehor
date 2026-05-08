@@ -4,7 +4,6 @@
 Usage: python3 .claude/skills/wrap-up/wrap_up.py <JIRA_KEY> [--dry-run]
 """
 
-import base64
 import json
 import os
 import subprocess
@@ -15,7 +14,7 @@ from pathlib import Path
 
 MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_CREDS = Path.home() / ".jira-credentials"
+JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
 
@@ -40,18 +39,9 @@ def http_request(url, method="GET", body=None, headers=None, timeout=15):
 
 
 def jira_auth():
-    if not JIRA_CREDS.exists():
+    if not JIRA_PROXY_URL:
         return None, None
-    try:
-        creds = json.loads(JIRA_CREDS.read_text())
-    except Exception:
-        return None, None
-    url = creds.get("url", "").rstrip("/")
-    user, token = creds.get("username", ""), creds.get("token", "")
-    if not all([url, user, token]):
-        return None, None
-    auth = base64.b64encode(f"{user}:{token}".encode()).decode()
-    return url, {"Authorization": f"Basic {auth}", "Accept": "application/json"}
+    return JIRA_PROXY_URL, {"Accept": "application/json"}
 
 
 def get_task(jira_key):

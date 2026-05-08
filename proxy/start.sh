@@ -55,6 +55,19 @@ fi
 squid -N -f /etc/squid/squid.conf &
 SQUID_PID=$!
 
+# Start mcp-atlassian MCP server (streamable HTTP transport)
+# Jira creds stay in proxy — bot connects via HTTP transport
+MCP_PID=""
+if [ -n "${JIRA_URL:-}" ] && [ -n "${JIRA_USERNAME:-}" ] && [ -n "${JIRA_API_TOKEN:-}" ]; then
+    MCP_PORT="${MCP_ATLASSIAN_PORT:-8444}"
+    JIRA_URL="${JIRA_URL}" \
+    JIRA_USERNAME="${JIRA_USERNAME}" \
+    JIRA_API_TOKEN="${JIRA_API_TOKEN}" \
+    mcp-atlassian --transport streamable-http --port "$MCP_PORT" &
+    MCP_PID=$!
+    echo "mcp-atlassian listening on port $MCP_PORT (PID=$MCP_PID)"
+fi
+
 # Start executor server in background
 # EXECUTOR_LISTEN controls transport: unix:///path (local dev) or :9090 (k8s)
 /usr/local/bin/executor-server \
@@ -64,8 +77,8 @@ SQUID_PID=$!
     --gpg-path /usr/bin/gpg &
 EXECUTOR_PID=$!
 
-cleanup() { kill $SQUID_PID $EXECUTOR_PID 2>/dev/null; }
+cleanup() { kill $SQUID_PID $EXECUTOR_PID ${MCP_PID:-} 2>/dev/null; }
 trap cleanup EXIT TERM INT
 
-wait -n $SQUID_PID $EXECUTOR_PID
+wait -n $SQUID_PID $EXECUTOR_PID ${MCP_PID:+"$MCP_PID"}
 exit $?

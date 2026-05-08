@@ -8,9 +8,10 @@ RUN go mod download \
 
 FROM registry.access.redhat.com/ubi9/ubi:latest
 
-# Squid + GPG (gnupg2 for commit signing via executor)
+# Squid + GPG + Python 3.11 (gnupg2 for commit signing, python3.11 for mcp-atlassian which requires >=3.10)
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
-    && dnf install -y --nodocs squid gnupg2 \
+    && dnf install -y --nodocs squid gnupg2 python3.11 python3.11-pip \
+    && pip3.11 install --no-cache-dir mcp-atlassian \
     && dnf clean all
 
 COPY squid.conf /etc/squid/squid.conf
@@ -39,8 +40,12 @@ RUN mkdir -p /var/log/squid /var/spool/squid /var/run/squid /var/run/devbot \
     && chown -R squid:0 /var/log/squid /var/spool/squid /var/run/squid /var/run/devbot \
     && chmod -R g+rwX /var/log/squid /var/spool/squid /var/run/squid /var/run/devbot
 
+ENV HOME=/tmp
+
 EXPOSE 3128
 EXPOSE 8443
+EXPOSE 8444
+EXPOSE 8445
 USER squid
 
 CMD ["/usr/local/bin/start.sh"]

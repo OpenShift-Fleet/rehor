@@ -1,14 +1,8 @@
 {
   "mcpServers": {
     "mcp-atlassian": {
-      "command": "mcp-atlassian",
-      "args": [],
-      "env": {
-        "JIRA_URL": "${JIRA_URL}",
-        "JIRA_USERNAME": "${JIRA_USERNAME}",
-        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}"
-      },
-      "type": "stdio"
+      "type": "http",
+      "url": "${JIRA_MCP_URL}"
     }
   }
 }

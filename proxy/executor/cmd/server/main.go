@@ -30,6 +30,11 @@ var (
 	vertexListen  = flag.String("vertex-listen", ":8443", "vertex auth proxy listen address")
 	vertexProject = flag.String("vertex-project", "", "real GCP project ID")
 	vertexRegion  = flag.String("vertex-region", "", "real GCP region")
+
+	jiraListen   = flag.String("jira-listen", ":8445", "jira auth proxy listen address")
+	jiraURL      = flag.String("jira-url", "", "upstream Jira URL")
+	jiraUsername  = flag.String("jira-username", "", "Jira username")
+	jiraToken    = flag.String("jira-token", "", "Jira API token")
 )
 
 type server struct {
@@ -198,6 +203,18 @@ func main() {
 	if v := os.Getenv("GCP_REGION"); v != "" {
 		*vertexRegion = v
 	}
+	if v := os.Getenv("JIRA_AUTH_LISTEN"); v != "" {
+		*jiraListen = v
+	}
+	if v := os.Getenv("JIRA_URL"); v != "" {
+		*jiraURL = v
+	}
+	if v := os.Getenv("JIRA_USERNAME"); v != "" {
+		*jiraUsername = v
+	}
+	if v := os.Getenv("JIRA_API_TOKEN"); v != "" {
+		*jiraToken = v
+	}
 
 	lis, err := openListener(*listen)
 	if err != nil {
@@ -215,7 +232,7 @@ func main() {
 		timeout:  *timeout,
 	})
 
-	var httpSrv *http.Server
+	var vertexSrv *http.Server
 	if *vertexProject != "" {
 		ts, err := executor.NewTokenSource(context.Background())
 		if err != nil {
@@ -226,11 +243,26 @@ func main() {
 			log.Fatal("vertex: VERTEX_ALLOWED_MODELS must be set when vertex-project is configured")
 		}
 		handler := executor.NewVertexProxy(*vertexProject, *vertexRegion, ts, vp)
-		httpSrv = &http.Server{Addr: *vertexListen, Handler: handler}
+		vertexSrv = &http.Server{Addr: *vertexListen, Handler: handler}
 		go func() {
 			log.Printf("vertex-auth-proxy listening on %s (project=%s region=%s)", *vertexListen, *vertexProject, *vertexRegion)
-			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := vertexSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("vertex proxy: %v", err)
+			}
+		}()
+	}
+
+	var jiraSrv *http.Server
+	if *jiraURL != "" {
+		if err := executor.ValidateJiraConfig(*jiraURL, *jiraUsername, *jiraToken); err != nil {
+			log.Fatalf("jira config: %v", err)
+		}
+		handler := executor.NewJiraProxy(*jiraURL, *jiraUsername, *jiraToken)
+		jiraSrv = &http.Server{Addr: *jiraListen, Handler: handler}
+		go func() {
+			log.Printf("jira-auth-proxy listening on %s (upstream=%s)", *jiraListen, *jiraURL)
+			if err := jiraSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("jira proxy: %v", err)
 			}
 		}()
 	}
@@ -241,10 +273,13 @@ func main() {
 		<-sigCh
 		log.Println("shutting down...")
 		grpcSrv.GracefulStop()
-		if httpSrv != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			httpSrv.Shutdown(ctx)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if vertexSrv != nil {
+			vertexSrv.Shutdown(ctx)
+		}
+		if jiraSrv != nil {
+			jiraSrv.Shutdown(ctx)
 		}
 	}()
 
