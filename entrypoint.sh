@@ -122,13 +122,8 @@ verify_platform_signing() {
 verify_platform_signing "GitHub" "https://github.com/test/repo.git" "${GH_USER_EMAIL}"
 verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "${GL_USER_EMAIL}"
 
-# Write Jira credentials file for triage skill (same pattern as gh/glab config files)
-if [ -n "${JIRA_URL:-}" ] && [ -n "${JIRA_USERNAME:-}" ] && [ -n "${JIRA_API_TOKEN:-}" ]; then
-    cat > ~/.jira-credentials <<EOF
-{"url": "${JIRA_URL}", "username": "${JIRA_USERNAME}", "token": "${JIRA_API_TOKEN}"}
-EOF
-    chmod 600 ~/.jira-credentials
-fi
+# Jira credentials are now in the proxy container (mcp-atlassian + auth proxy).
+# Python skills use JIRA_PROXY_URL env var instead of ~/.jira-credentials.
 
 # Point MCP config to the memory server
 sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
@@ -180,6 +175,11 @@ fi
 # Memory server must be up before the bot connects via MCP
 if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
     wait_for_http "memory-server" "$BOT_MEMORY_HEALTH_URL" "${BOT_MEMORY_HEALTH_TIMEOUT:-120}"
+fi
+
+# Jira auth proxy must be up before skills make REST calls
+if [ -n "${JIRA_PROXY_URL:-}" ]; then
+    wait_for_http "jira-proxy" "${JIRA_PROXY_URL}/healthz" "${JIRA_PROXY_HEALTH_TIMEOUT:-60}"
 fi
 
 # Start headless Chromium in background (Playwright-installed binary)

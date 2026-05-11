@@ -5,7 +5,6 @@ Runs as !`command` in SKILL.md. Gathers tasks, PR statuses, Jira comments,
 PR comments, capacity. Groups by action bucket.
 """
 
-import base64
 import json
 import os
 import subprocess
@@ -16,7 +15,7 @@ from pathlib import Path
 
 MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_CREDS = Path.home() / ".jira-credentials"
+JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 
 
 def http_get(url, headers=None, timeout=10):
@@ -103,19 +102,11 @@ def gl_mr_notes(project_path, num):
 
 
 def jira_issue(key):
-    if not JIRA_CREDS.exists():
+    if not JIRA_PROXY_URL:
         return None
-    try:
-        creds = json.loads(JIRA_CREDS.read_text())
-    except Exception:
-        return None
-    url, user, token = creds.get("url", "").rstrip("/"), creds.get("username", ""), creds.get("token", "")
-    if not all([url, user, token]):
-        return None
-    auth = base64.b64encode(f"{user}:{token}".encode()).decode()
     return http_get(
-        f"{url}/rest/api/2/issue/{key}?fields=summary,status,comment,assignee,labels,issuelinks",
-        headers={"Authorization": f"Basic {auth}", "Accept": "application/json"}, timeout=15)
+        f"{JIRA_PROXY_URL}/rest/api/2/issue/{key}?fields=summary,status,comment,assignee,labels,issuelinks",
+        headers={"Accept": "application/json"}, timeout=15)
 
 
 def _parse_repo_path(url):
