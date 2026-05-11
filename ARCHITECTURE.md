@@ -262,13 +262,19 @@ graph TB
 - Destructive ops: `sudo`, `rm -rf /`, disk manipulation
 - Git safety: force push to main/master, direct push to main/master
 
-### Layer 3: Environment Sanitization
+### Layer 3: Credential Isolation
 
-MCP server configs use `${VAR}` references which are resolved to literal values at startup by `_resolve_env_vars()` in `bot/config.py`. After resolution, `sanitize_env()` removes all secret env vars (`JIRA_API_TOKEN`, `GH_TOKEN`, `SSH_PRIVATE_KEY_B64`, etc.) from `os.environ`. This means:
-- MCP servers have the credentials they need (resolved at init)
-- `gh`/`glab` CLIs use config files (`~/.config/gh/hosts.yml`), not env vars
-- Bash subprocesses spawned by the agent inherit a clean environment with no secrets
-- Even if malicious code (e.g. injected JS/Python) reads `process.env` or `os.environ`, secrets are not there
+Most secrets never enter the bot container at all — they live exclusively in the proxy container:
+
+| Secret | Where it lives | How the bot accesses the capability |
+|--------|---------------|-------------------------------------|
+| `GH_TOKEN` / `GITLAB_TOKEN` | Proxy | Thin client shims forward CLI commands over gRPC |
+| `GPG_PRIVATE_KEY_B64` | Proxy | Git invokes gpg shim → proxy signs the commit |
+| `GOOGLE_SA_KEY_B64` | Proxy | Vertex auth proxy injects OAuth2 tokens transparently |
+| `SSH_PRIVATE_KEY_B64` | Bot | Decoded at entrypoint for git clone/push over SSH |
+| `JIRA_API_TOKEN` | Bot | Resolved into MCP server config at startup, then stripped from env |
+
+For the secrets that do enter the bot (SSH key, Jira token), `sanitize_env()` in `bot/config.py` removes them from `os.environ` after MCP server configs are resolved. Bash subprocesses spawned by the agent inherit a clean environment.
 
 ### Layer 4: Network Firewall (Squid Proxy)
 
