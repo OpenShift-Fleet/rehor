@@ -54,13 +54,16 @@ For org repos, an org admin must invite the bot account to the appropriate team.
 
 ### 2.1 Secrets
 
-Three secrets are needed for deployment:
+These secrets are needed for deployment:
 
-| Secret | How to generate | Used by |
-|--------|----------------|---------|
-| `SSH_PRIVATE_KEY_B64` | `base64 -i .ssh/id_ed25519` | git push/pull over SSH |
-| `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | commit signing |
-| `GH_TOKEN` | PAT from step 1.4 | `gh` CLI (GitHub API) |
+| Secret | How to generate | Lives in | Used for |
+|--------|----------------|----------|----------|
+| `SSH_PRIVATE_KEY_B64` | `base64 -i .ssh/id_ed25519` | Bot | git push/pull over SSH |
+| `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | **Proxy** | commit signing |
+| `GH_TOKEN` | PAT from step 1.4 | **Proxy** | `gh` CLI (GitHub API) |
+| `GITLAB_TOKEN` | GitLab PAT (api + write_repository) | **Proxy** | `glab` CLI (GitLab API) |
+| `GOOGLE_SA_KEY_B64` | `base64 < sa-key.json` | **Proxy** | Vertex AI auth (Claude API) |
+| `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Proxy** | Model allowlist for Vertex AI |
 
 ### 2.2 Set environment variables
 
@@ -70,6 +73,9 @@ The container expects secrets as env vars. Set them before running:
 export SSH_PRIVATE_KEY_B64=$(base64 -i .ssh/id_ed25519)
 export GPG_PRIVATE_KEY_B64=$(base64 -i .ssh/gpg-private.asc)
 export GH_TOKEN=<pat-token>
+export GITLAB_TOKEN=<gitlab-pat>
+export GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
+export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 ```
 
 For persistent use, add these to a `.env` file (already gitignored):
@@ -78,6 +84,9 @@ For persistent use, add these to a `.env` file (already gitignored):
 SSH_PRIVATE_KEY_B64=<base64-encoded-ssh-key>
 GPG_PRIVATE_KEY_B64=<base64-encoded-gpg-key>
 GH_TOKEN=<pat-token>
+GITLAB_TOKEN=<gitlab-pat>
+GOOGLE_SA_KEY_B64=<base64-encoded-sa-key>
+VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 ```
 
 Docker Compose automatically reads `.env` from the project root.

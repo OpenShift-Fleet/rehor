@@ -35,19 +35,16 @@ docker compose logs -f memory-server  # Memory server logs
 
 A ticket goes through these stages as the bot processes it:
 
-```
- Backlog                    In Progress              Code Review                Done
- ┌──────────┐              ┌──────────────┐          ┌─────────────┐          ┌──────┐
- │ Groomed  │  bot claims  │ Bot working  │  PR open │ Waiting for │  merged  │ Done │
- │ + labeled│ ───────────> │ on branch    │ ───────> │ human review│ ───────> │      │
- │          │              │ bot/<KEY>    │          │             │          │      │
- └──────────┘              └──────────────┘          └─────────────┘          └──────┘
-      │                          │                         │                      │
-      │                          │                         │                      │
-   Human grooms              Bot updates               Bot responds           Bot closes
-   and labels                task metadata             to review              Jira ticket
-   the ticket                in memory server          feedback               + stores
-                                                                              learnings
+```mermaid
+graph LR
+    Backlog["Backlog<br/><br/>Groomed + labeled<br/><i>Human grooms and<br/>labels the ticket</i>"]
+    InProgress["In Progress<br/><br/>Bot working on<br/>branch bot/KEY<br/><i>Bot updates task<br/>metadata in memory</i>"]
+    CodeReview["Code Review<br/><br/>Waiting for<br/>human review<br/><i>Bot responds to<br/>review feedback</i>"]
+    Done["Done<br/><br/><i>Bot closes Jira<br/>ticket + stores<br/>learnings</i>"]
+
+    Backlog -- "bot claims" --> InProgress
+    InProgress -- "PR open" --> CodeReview
+    CodeReview -- "merged" --> Done
 ```
 
 ### Example: RHCLOUD-37254

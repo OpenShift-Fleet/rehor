@@ -33,6 +33,8 @@ JIRA_API_TOKEN=your-jira-api-token
 # Claude — GCP Vertex AI (service account)
 # Follow the RH internal guide to set up Vertex AI access
 # and generate a service account key file (sa-key.json).
+GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
+VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 
 # GitHub — bot PAT for gh CLI
 GH_TOKEN=ghp_...
@@ -183,7 +185,7 @@ gh auth login                                       # GitHub
 glab auth login --hostname gitlab.cee.redhat.com    # GitLab
 ```
 
-> **Note**: In Docker, CLI credentials (`GH_TOKEN`, `GITLAB_TOKEN`, `GPG_PRIVATE_KEY_B64`) are injected into the **proxy container**, not the bot. The bot uses thin client shims that forward CLI commands to the proxy over gRPC. See [Architecture](#architecture-credential-isolation).
+> **Note**: In Docker, all secrets (`GH_TOKEN`, `GITLAB_TOKEN`, `GPG_PRIVATE_KEY_B64`, `GOOGLE_SA_KEY_B64`) are injected into the **proxy container**, not the bot. The bot uses thin client shims that forward CLI commands to the proxy over gRPC, and the Vertex AI auth proxy (port 8443) injects OAuth2 tokens transparently. See [Architecture](#architecture-credential-isolation).
 
 #### 2. Start the services
 
@@ -201,13 +203,12 @@ For production-like deployments or CI — everything runs in containers with cre
 
 ```bash
 # Set secrets (or add to .env — see SOP.md for details)
-# CLI tokens + GPG key → proxy container (credential isolation)
+# CLI tokens + GPG key + SA key → proxy container (credential isolation)
 export GH_TOKEN=<your-pat>
 export GITLAB_TOKEN=<your-gitlab-pat>
 export GPG_PRIVATE_KEY_B64=$(base64 -i .ssh/gpg-private.asc)
-
-# SA key + Jira token → bot container (not yet isolated)
-export GOOGLE_SA_KEY_B64=$(base64 -i sa-key.json)
+export GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
+export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 
 # Start everything
 make docker-up
@@ -315,19 +316,34 @@ The dashboard at http://localhost:8080 also shows cost charts with per-cycle bre
 
 The bot uses a **defense-in-depth** model to prevent credential leakage. Secrets never enter the bot container — all credential-bearing operations are proxied through a separate **proxy container**.
 
-```
-Bot Container                          Proxy Container
-+----------------------------+         +----------------------------+
-| Claude Agent SDK           |         | Squid (port 3128)          |
-|                            |         |   domain allowlist         |
-| thin client (Go binary)   |         | executor-server (gRPC 9090)|
-|   /usr/local/bin/gh  ------+--TCP--->|   policy allowlist check   |
-|   /usr/local/bin/glab -----+--TCP--->|   exec gh-real / glab-real |
-|   /usr/local/bin/gpg ------+--TCP--->|   exec gpg (signing)       |
-|                            |         |   tokens in config files   |
-| git push                   |         |                            |
-|   credential helper -------+--TCP--->|   gh auth git-credential   |
-+----------------------------+         +----------------------------+
+```mermaid
+graph LR
+    subgraph Bot["Bot Container"]
+        SDK["Claude Agent SDK"]
+        ThinGH["thin client: gh"]
+        ThinGLAB["thin client: glab"]
+        ThinGPG["thin client: gpg"]
+        GitPush["git push<br/>(credential helper)"]
+        VertexReq["Vertex AI requests"]
+    end
+
+    subgraph Proxy["Proxy Container"]
+        Squid["Squid<br/>(port 3128)<br/>domain allowlist"]
+        Exec["executor-server<br/>(gRPC)<br/>policy allowlist"]
+        VertexAuth["Vertex Auth Proxy<br/>(port 8443)<br/>OAuth2 token injection"]
+        Bins["gh-real / glab-real<br/>gpg (with keys)"]
+    end
+
+    ThinGH -- "gRPC" --> Exec
+    ThinGLAB -- "gRPC" --> Exec
+    ThinGPG -- "gRPC" --> Exec
+    GitPush -- "gRPC" --> Exec
+    Exec --> Bins
+    VertexReq -- "HTTP :8443" --> VertexAuth
+    SDK -- "HTTP_PROXY :3128" --> Squid
+
+    VertexAuth -- "HTTPS + Bearer" --> VertexAPI["Vertex AI"]
+    Squid --> Internet["GitHub / GitLab<br/>Jira / npm / etc."]
 ```
 
 ### How it works
@@ -336,6 +352,7 @@ Bot Container                          Proxy Container
 - The **executor server** validates commands against a built-in **policy allowlist** (e.g. `gh pr create` is allowed, `gh auth token` is blocked), then executes the real CLI binary with full credentials.
 - **Git credential helpers** are configured globally so `git push` transparently authenticates via the thin client → proxy path.
 - **GPG commit signing** works the same way — git invokes `gpg --sign` which routes through the thin client to the proxy's GPG keyring.
+- **Vertex AI auth proxy** (port 8443) — the bot sends unauthenticated requests to the proxy's embedded HTTP server. The proxy injects OAuth2 Bearer tokens from the GCP service account, rewrites dummy project/region values to real ones, enforces a model allowlist, and forwards to the Vertex AI API. The bot never sees the SA key or tokens.
 - **HTTP/HTTPS traffic** is routed through Squid with a domain allowlist — the bot container has no direct internet access.
 - **Bash hooks** (`.claude/hooks/validate-bash.sh`) block dangerous commands (curl, eval, credential reads) as an additional defense layer.
 
@@ -345,14 +362,15 @@ Bot Container                          Proxy Container
 |-----------|:---:|:---:|
 | GH_TOKEN / GITLAB_TOKEN | - | yes |
 | GPG private key | - | yes |
+| GCP service account key | - | yes |
 | gh / glab CLIs (real) | - | yes |
 | gh / glab / gpg (thin client) | yes | - |
 | Squid proxy | - | yes |
+| Vertex AI auth proxy | - | yes |
 | Agent SDK + bot code | yes | - |
-| Google SA key | yes* | - |
 | Jira API token | yes* | - |
 
-\* SA key and Jira token still reside in the bot container today. Planned isolation: [RHCLOUD-47293](https://redhat.atlassian.net/browse/RHCLOUD-47293) (Vertex AI proxy) and [RHCLOUD-47287](https://redhat.atlassian.net/browse/RHCLOUD-47287) (MCP air-lock for Jira).
+\* Jira token still resides in the bot container. Planned isolation: [RHCLOUD-47287](https://redhat.atlassian.net/browse/RHCLOUD-47287) (MCP air-lock for Jira).
 
 ### Deployment
 
@@ -378,17 +396,18 @@ dev-bot/
   init.sh                # Installs LSP, downloads BrowserMCP, starts memory server
   costs.sh               # Cost report CLI
   start-chromium.sh      # Launch Chrome with remote debugging
-  proxy/                 # Credential-bearing proxy (Squid + executor)
+  proxy/                 # Credential-bearing proxy (Squid + executor + Vertex auth)
     Dockerfile           # Squid + gh-real/glab-real + executor binaries
     squid.conf           # Domain allowlist
     start.sh             # Process manager (Squid + executor-server)
-    executor/            # gRPC executor module (Go)
+    executor/            # gRPC executor + Vertex auth proxy (Go)
       proto/             # Protobuf service definition
       gen/               # Generated gRPC code
-      cmd/server/        # Executor server binary
+      cmd/server/        # Executor server binary (gRPC + HTTP)
       cmd/client/        # Thin client binary (hardlinked as gh/glab/gpg)
-      policy.go          # Command allowlist engine
-      policy_test.go     # Allowlist tests
+      policy.go          # CLI command allowlist engine
+      vertex.go          # Vertex AI reverse proxy (URL rewrite + token injection)
+      vertex_policy.go   # Vertex AI model allowlist engine
   memory-server/         # Persistent memory + task tracking
     src/
       server.py          # FastMCP + Starlette + WebSocket
