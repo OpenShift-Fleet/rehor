@@ -29,7 +29,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/buger/jsonparser v1.1.2 // indirect
+	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/caddyserver/certmagic v0.25.3 // indirect
 	github.com/caddyserver/zerossl v0.1.5 // indirect
 	github.com/ccoveille/go-safecast/v2 v2.0.0 // indirect
