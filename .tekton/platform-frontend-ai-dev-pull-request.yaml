@@ -166,7 +166,7 @@ spec:
         steps:
         - name: run-tests
           image: python:3.12-slim
-          workingDir: $(workspaces.source.path)
+          workingDir: /workspace
           env:
           - name: HOME
             value: /tmp/test-home
@@ -179,31 +179,27 @@ spec:
             echo "Setting up test environment..."
             mkdir -p $HOME $UV_CACHE_DIR
 
-            echo "Current directory: $(pwd)"
-            echo "Listing workspace contents:"
-            ls -la
+            echo "Running post-pr skill tests (62 tests)..."
 
+            # Copy skill to writable workspace (following hcc-ai-assistant pattern)
+            cp -r $(workspaces.source.path)/.claude/skills/post-pr /workspace/post-pr-test
+            cd /workspace/post-pr-test
+
+            # Install dependencies with uv (including dev extras for pytest)
             echo "Installing uv..."
-            pip install --no-cache-dir uv
-
-            # Check if skill directory exists
-            if [ ! -d ".claude/skills/post-pr" ]; then
-              echo "ERROR: .claude/skills/post-pr not found!"
-              echo "Searching for post-pr skill..."
-              find . -name "post-pr" -type d
-              exit 1
-            fi
-
-            echo "Running post-pr skill tests..."
-            cd .claude/skills/post-pr
+            pip install --no-cache-dir --quiet uv
 
             echo "Installing dependencies..."
-            uv sync --extra dev
+            uv sync --frozen --all-extras
 
+            # Run tests
             echo "Running pytest..."
-            uv run pytest -v --tb=short
+            uv run pytest -v --tb=short || {
+              echo "Post-PR skill tests failed!"
+              exit 1
+            }
 
-            echo "Tests completed successfully"
+            echo "Post-PR skill tests passed!"
       workspaces:
       - name: source
         workspace: workspace
