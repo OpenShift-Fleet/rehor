@@ -13,9 +13,8 @@ Before setting up the bot, make sure you have the following installed:
 | [Docker](https://docs.docker.com/get-docker/) + Docker Compose | Memory server, target repo dev environments | Install Docker Desktop |
 | [Node.js](https://nodejs.org/) + npm | TypeScript LSP server | `brew install node` or via nvm |
 | [jq](https://jqlang.github.io/jq/) | JSON processing | `brew install jq` |
-| [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` (use SSH protocol) |
-| [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login` (use SSH protocol) |
-| SSH keys | Git access to target repos | Must be configured for GitHub and/or GitLab |
+| [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` |
+| [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login --hostname gitlab.cee.redhat.com` |
 
 The bot also uses the [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) MCP server for Jira integration (configured in `.mcp.json`).
 
@@ -152,8 +151,8 @@ All repos use forks by default. The bot pushes to the fork and opens PRs/MRs tar
 2. Add to `project-repos.json`:
    ```json
    "my-repo": {
-     "url": "git@github.com:platex-rehor-bot/my-repo.git",
-     "upstream": "git@github.com:RedHatInsights/my-repo.git"
+     "url": "https://github.com/platex-rehor-bot/my-repo.git",
+     "upstream": "https://github.com/RedHatInsights/my-repo.git"
    }
    ```
    For GitLab repos, add `"host": "gitlab"`.
@@ -173,7 +172,7 @@ The recommended setup for development. The bot runs directly on your machine whi
 
 #### 1. Configure `.env`
 
-Copy `.env.example` to `.env` and fill in your credentials. All identity and auth settings are driven by `.env` — at startup, `run.py` reads these and auto-configures git and SSH.
+Copy `.env.example` to `.env` and fill in your credentials. All identity and auth settings are driven by `.env` — at startup, `run.py` reads these and auto-configures git identity and credential helpers.
 
 **Git identity** — set `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` to commit as the bot account. If unset, your local git config is used.
 

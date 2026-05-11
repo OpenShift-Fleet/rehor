@@ -19,7 +19,7 @@ graph TB
 
         subgraph MCP["MCP Servers"]
             JiraMCP["Jira MCP<br/>(stdio)"]
-            MemMCP["Memory Server<br/>(SSE)"]
+            MemMCP["Memory Server<br/>(streamable HTTP)"]
             Chrome["Chrome DevTools<br/>(stdio)"]
         end
 
@@ -92,13 +92,23 @@ The agent communicates with external systems through [Model Context Protocol](ht
 | Server | Transport | Purpose |
 |--------|-----------|---------|
 | **mcp-atlassian** | stdio | Jira CRUD: search tickets, read/update issues, transitions, comments, sprints |
-| **bot-memory** | SSE (HTTP) | Task tracking (10 concurrent max) + RAG memory (vector search over past learnings) |
+| **bot-memory** | streamable HTTP | Task tracking (10 concurrent max) + RAG memory (vector search over past learnings) |
 | **chrome-devtools** | stdio | Browser automation for visual verification — navigate pages, take screenshots |
 | **hcc-patternfly-data-view** | stdio | PatternFly component docs (only loaded for frontend persona repos) |
 
 MCP servers are configured in two places:
 - `.mcp.json` — project-level servers (Jira, memory, browser) loaded every cycle
 - `personas/*/mcp.json` — per-persona servers loaded only when that persona is active
+
+### Skills (`.claude/skills/`)
+
+Skills are shell scripts that pre-gather data and inject it into the agent's context, reducing token usage by avoiding redundant MCP/API calls. The agent invokes them via `/skill-name` slash commands.
+
+| Skill | Purpose |
+|-------|---------|
+| `/triage` | Pre-fetches all active tasks, PR/MR statuses (CI, reviews, conflicts), and Jira comments. Groups by action bucket (MERGED, CI_FAIL, CONFLICTS, FEEDBACK, INTERRUPTED, CLEAN). Agent uses this instead of calling `task_list` + `gh pr view` + `jira_get_issue` individually. |
+| `/new-work` | Pre-fetches unassigned Jira candidates from current sprint (+ backlog), ordered by priority, with full context and `repo:` label matching against `project-repos.json`. |
+| `/wrap-up` | Handles post-merge cleanup: task archival, Jira transition to "Release Pending", Jira comment, Slack notification, branch deletion. |
 
 ### Memory Server (`memory-server/`)
 
@@ -143,11 +153,11 @@ Cloned on demand when the bot picks up a ticket. Repo metadata is in `project-re
 ```json
 {
   "notifications-frontend": {
-    "url": "git@github.com:RedHatInsights/notifications-frontend.git"
+    "url": "https://github.com/RedHatInsights/notifications-frontend.git"
   },
   "app-interface": {
-    "url": "git@gitlab.cee.redhat.com:yourfork/app-interface.git",
-    "upstream": "git@gitlab.cee.redhat.com:service/app-interface.git",
+    "url": "https://gitlab.cee.redhat.com/yourfork/app-interface.git",
+    "upstream": "https://gitlab.cee.redhat.com/service/app-interface.git",
     "host": "gitlab"
   }
 }
@@ -268,13 +278,13 @@ Most secrets never enter the bot container at all — they live exclusively in t
 
 | Secret | Where it lives | How the bot accesses the capability |
 |--------|---------------|-------------------------------------|
-| `GH_TOKEN` / `GITLAB_TOKEN` | Proxy | Thin client shims forward CLI commands over gRPC |
+| `GH_TOKEN` | Proxy | Thin client shims forward gh CLI commands over gRPC; git credential helper for HTTPS push/pull to GitHub |
+| `GITLAB_TOKEN` | Proxy | Thin client shims forward glab CLI commands over gRPC; git credential helper for HTTPS push/pull to GitLab |
 | `GPG_PRIVATE_KEY_B64` | Proxy | Git invokes gpg shim → proxy signs the commit |
 | `GOOGLE_SA_KEY_B64` | Proxy | Vertex auth proxy injects OAuth2 tokens transparently |
-| `SSH_PRIVATE_KEY_B64` | Bot | Decoded at entrypoint for git clone/push over SSH |
 | `JIRA_API_TOKEN` | Bot | Resolved into MCP server config at startup, then stripped from env |
 
-For the secrets that do enter the bot (SSH key, Jira token), `sanitize_env()` in `bot/config.py` removes them from `os.environ` after MCP server configs are resolved. Bash subprocesses spawned by the agent inherit a clean environment.
+The only secret that enters the bot container is the Jira API token (needed by the mcp-atlassian MCP server). `sanitize_env()` in `bot/config.py` removes it from `os.environ` after MCP config resolution. All git operations use HTTPS with credential helpers that route through the proxy — no SSH keys are used.
 
 ### Layer 4: Network Firewall (Squid Proxy)
 
@@ -303,8 +313,6 @@ graph LR
 ```
 
 Allowed domains: `*.github.com`, `*.githubusercontent.com`, `*.redhat.com` (covers GitLab), `*.atlassian.net`, `*.googleapis.com`, `*.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `*.fedoraproject.org`.
-
-SSH connections (git push/pull) are tunneled through the proxy via `ProxyCommand socat - PROXY:proxy:%h:%p,proxyport=3128` in the SSH config.
 
 Even if an attacker bypasses all other layers, there is no network route to exfiltrate data to unauthorized hosts.
 
@@ -377,7 +385,7 @@ This keeps the deployment simple — one memory server serves all bot instances,
 
 Both images use Red Hat UBI9 base images:
 
-- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 22 (NodeSource), Chromium headless (EPEL), gh/glab/gpg thin client shims, uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint decodes the SSH key from env vars, starts Chromium in background, then launches the bot runner. CLI credentials (GH_TOKEN, GITLAB_TOKEN, GPG key) and the GCP service account key live in the proxy container — the bot never sees them.
+- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 22 (NodeSource), Chromium headless (EPEL), gh/glab/gpg thin client shims, uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint configures git credential helpers (routing through thin client shims to the proxy), starts Chromium in background, then launches the bot runner. All secrets (GH_TOKEN, GITLAB_TOKEN, GPG key, SA key) live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH.
 
 - **Memory server** (`memory-server/Dockerfile`) — multi-stage build. Stage 1: `ubi9/nodejs-22` builds the React dashboard. Stage 2: `ubi9/python-312-minimal` runs the FastMCP app with dashboard assets baked in.
 
@@ -414,8 +422,8 @@ graph TB
     GHGL["GitHub / GitLab"]
     VertexAI["Vertex AI"]
 
-    BotA -- "MCP (SSE)" --> MemApp
-    BotB -- "MCP (SSE)" --> MemApp
+    BotA -- "MCP (streamable HTTP)" --> MemApp
+    BotB -- "MCP (streamable HTTP)" --> MemApp
     BotA -- "gRPC + HTTP" --> ProxyPod
     BotB -- "gRPC + HTTP" --> ProxyPod
     MemApp --> RDS
@@ -430,10 +438,9 @@ Chromium headless runs inside each bot pod on port 9222.
 
 | Secret | Env var | Used by |
 |--------|---------|---------|
-| SSH private key (base64) | `SSH_PRIVATE_KEY_B64` | Bot — git clone/push over SSH |
+| GitHub PAT | `GH_TOKEN` | **Proxy** — gh CLI + git credential helper (HTTPS) |
+| GitLab PAT | `GITLAB_TOKEN` | **Proxy** — glab CLI + git credential helper (HTTPS) |
 | GPG private key (base64) | `GPG_PRIVATE_KEY_B64` | **Proxy** — commit signing via executor |
-| GitHub PAT | `GH_TOKEN` | **Proxy** — gh CLI via executor |
-| GitLab PAT | `GITLAB_TOKEN` | **Proxy** — glab CLI via executor |
 | GCP service account key (base64) | `GOOGLE_SA_KEY_B64` | **Proxy** — Vertex AI auth proxy |
 | Jira credentials | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` | Bot — mcp-atlassian MCP server |
 | RDS PostgreSQL credentials | `DATABASE_URL` | Memory server |
