@@ -13,8 +13,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from jira_mcp import jira_call
+
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
 BOT_BOARD_ID = os.environ.get("BOT_BOARD_ID", "")
 BOT_BOARD_NAME = os.environ.get("BOT_BOARD_NAME", "")
@@ -22,51 +24,17 @@ BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in ("1",
 NOT_STARTED_STATUSES = ("New", "Backlog", "Refinement", "To Do")
 
 
-def http_get(url, headers=None, timeout=10):
-    req = urllib.request.Request(url, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        print(f"ERR GET {url}: {e}", file=sys.stderr)
-        return None
-
-
-def http_post(url, body, headers=None, timeout=10):
-    data = json.dumps(body).encode()
-    hdrs = dict(headers or {})
-    hdrs["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except Exception as e:
-        print(f"ERR POST {url}: {e}", file=sys.stderr)
-        return None
-
-
-def jira_auth():
-    if not JIRA_PROXY_URL:
-        print("WARN: JIRA_PROXY_URL not set", file=sys.stderr)
-        return None, None
-    return JIRA_PROXY_URL, {"Accept": "application/json"}
-
-
 def jira_search(jql, limit=10):
-    url, headers = jira_auth()
-    if not url:
-        return []
-    fields = ["summary", "status", "labels", "assignee", "priority",
-              "description", "comment", "issuelinks", "issuetype"]
-    data = http_post(f"{url}/rest/api/2/search/jql", {
+    data = jira_call("jira_search", {
         "jql": jql,
-        "maxResults": limit,
-        "fields": fields,
-    }, headers=headers, timeout=20)
+        "limit": limit,
+        "fields": "summary,status,labels,assignee,priority,description,comment,issuelinks,issuetype",
+    })
     if not data:
         print("ERR: Jira search returned no data", file=sys.stderr)
         return []
-    return data.get("issues", [])
+    issues = data if isinstance(data, list) else data.get("issues", [])
+    return issues
 
 
 def resolve_board_id():
@@ -75,12 +43,14 @@ def resolve_board_id():
     if not BOT_BOARD_NAME:
         print("WARN: neither BOT_BOARD_ID nor BOT_BOARD_NAME set, skipping sprint query", file=sys.stderr)
         return None
-    url, headers = jira_auth()
-    if not url:
+    data = jira_call("jira_get_agile_boards", {
+        "board_name": BOT_BOARD_NAME,
+        "limit": 1,
+    })
+    if not data:
+        print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
         return None
-    encoded = urllib.parse.urlencode({"name": BOT_BOARD_NAME})
-    data = http_get(f"{url}/rest/agile/1.0/board?{encoded}", headers=headers, timeout=15)
-    boards = data.get("values", []) if data else []
+    boards = data if isinstance(data, list) else data.get("values", [])
     if not boards:
         print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
         return None
@@ -93,13 +63,14 @@ def get_active_sprint():
     board_id = resolve_board_id()
     if not board_id:
         return None
-    url, headers = jira_auth()
-    if not url:
+    data = jira_call("jira_get_sprints_from_board", {
+        "board_id": board_id,
+        "state": "active",
+        "limit": 1,
+    })
+    if not data:
         return None
-    data = http_get(
-        f"{url}/rest/agile/1.0/board/{board_id}/sprint?state=active",
-        headers=headers, timeout=15)
-    sprints = data.get("values", []) if data else []
+    sprints = data if isinstance(data, list) else data.get("values", [])
     if sprints:
         print(f"Active sprint: {sprints[0].get('name', '?')} (id={sprints[0]['id']})", file=sys.stderr)
     return sprints[0] if sprints else None

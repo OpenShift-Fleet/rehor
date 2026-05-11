@@ -13,9 +13,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from jira_mcp import jira_call
+
 MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 
 
 def http_get(url, headers=None, timeout=10):
@@ -102,11 +104,11 @@ def gl_mr_notes(project_path, num):
 
 
 def jira_issue(key):
-    if not JIRA_PROXY_URL:
-        return None
-    return http_get(
-        f"{JIRA_PROXY_URL}/rest/api/2/issue/{key}?fields=summary,status,comment,assignee,labels,issuelinks",
-        headers={"Accept": "application/json"}, timeout=15)
+    return jira_call("jira_get_issue", {
+        "issue_key": key,
+        "fields": "summary,status,assignee,labels,issuelinks",
+        "comment_limit": 10,
+    })
 
 
 def _parse_repo_path(url):

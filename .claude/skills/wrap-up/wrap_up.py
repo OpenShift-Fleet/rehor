@@ -12,9 +12,11 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from jira_mcp import jira_call
+
 MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-JIRA_PROXY_URL = os.environ.get("JIRA_PROXY_URL", "").rstrip("/")
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
 
@@ -37,11 +39,6 @@ def http_request(url, method="GET", body=None, headers=None, timeout=15):
         print(f"  ERR {method} {url}: {e}", file=sys.stderr)
         return None
 
-
-def jira_auth():
-    if not JIRA_PROXY_URL:
-        return None, None
-    return JIRA_PROXY_URL, {"Accept": "application/json"}
 
 
 def get_task(jira_key):
@@ -78,36 +75,29 @@ def get_upstream_info(repo_name):
 
 
 def jira_transition_release_pending(jira_key):
-    url, headers = jira_auth()
-    if not url:
-        return False, "no Jira credentials"
-    transitions = http_request(f"{url}/rest/api/2/issue/{jira_key}/transitions", headers=headers)
-    if not transitions:
+    data = jira_call("jira_get_transitions", {"issue_key": jira_key})
+    if not data:
         return False, "failed to get transitions"
+    transitions = data if isinstance(data, list) else data.get("transitions", [])
     target = None
-    for t in transitions.get("transitions", []):
+    for t in transitions:
         name = t.get("name", "").lower()
         if "release pending" in name:
             target = t
             break
     if not target:
-        avail = [t.get("name") for t in transitions.get("transitions", [])]
+        avail = [t.get("name") for t in transitions]
         return False, f"'Release Pending' not available. Available: {avail}"
-    result = http_request(
-        f"{url}/rest/api/2/issue/{jira_key}/transitions",
-        method="POST",
-        body={"transition": {"id": target["id"]}},
-        headers=headers,
-    )
+    result = jira_call("jira_transition_issue", {
+        "issue_key": jira_key,
+        "transition_id": str(target["id"]),
+    })
     if result is None:
-        return False, "transition POST failed"
+        return False, "transition failed"
     return True, target["name"]
 
 
 def jira_comment(jira_key, pr_info):
-    url, headers = jira_auth()
-    if not url:
-        return False
     pr_lines = []
     for p in pr_info:
         repo = p.get("repo", "?")
@@ -124,12 +114,10 @@ def jira_comment(jira_key, pr_info):
         f"{''.join(pr_lines) if pr_lines else '(no PR info)'}\n\n"
         f"Changes will be deployed to stage with the next release."
     )
-    result = http_request(
-        f"{url}/rest/api/2/issue/{jira_key}/comment",
-        method="POST",
-        body={"body": body},
-        headers=headers,
-    )
+    result = jira_call("jira_add_comment", {
+        "issue_key": jira_key,
+        "body": body,
+    })
     return result is not None
 
 
