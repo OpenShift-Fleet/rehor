@@ -10,7 +10,7 @@ All bot-eligible tickets across teams are tracked via a shared Jira filter:
 
 **Filter ID**: [107017](https://redhat.atlassian.net/issues/?filter=107017)
 
-**JQL**: `project = RHCLOUD AND labels in (hcc-ai-framework, hcc-ai-platform-accessmanagement)`
+**JQL**: `project = RHCLOUD AND labels in (hcc-ai-framework, hcc-ai-platform-accessmanagement, hcc-ai-ui, hcc-ai-integrations)`
 
 This shows all tickets tagged for the bot, regardless of status. Use it to see what the bot is working on, what's queued, and what's done.
 
