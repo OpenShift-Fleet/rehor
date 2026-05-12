@@ -18,24 +18,17 @@ class TestWorkflow:
     def test_successful_workflow(self, mock_jira_call, mock_client_class):
         """Test successful end-to-end workflow."""
         # Mock MCP calls
-        def jira_call_side_effect(tool_name, args):
-            if tool_name == "jira_get_user_profile":
-                return {"account_id": "bot-123"}
-            elif tool_name == "jira_get_transitions":
-                return {"transitions": [{"id": "21", "name": "In Progress"}]}
-            elif tool_name == "jira_update_issue":
-                return {}
-            elif tool_name == "jira_transition_issue":
-                return {}
-            elif tool_name == "jira_get_issue":
-                return {"fields": {"labels": ["platform-experience-ui"]}}
-            elif tool_name == "jira_get_sprints_from_board":
-                return {"sprints": [{"id": 12345, "name": "Sprint 42"}]}
-            elif tool_name == "jira_add_issues_to_sprint":
-                return {}
-            return None
+        jira_responses = {
+            "jira_get_user_profile": {"account_id": "bot-123"},
+            "jira_get_transitions": {"transitions": [{"id": "21", "name": "In Progress"}]},
+            "jira_update_issue": {},
+            "jira_transition_issue": {},
+            "jira_get_issue": {"fields": {"labels": ["platform-experience-ui"]}},
+            "jira_get_sprints_from_board": {"sprints": [{"id": 12345, "name": "Sprint 42"}]},
+            "jira_add_issues_to_sprint": {},
+        }
 
-        mock_jira_call.side_effect = jira_call_side_effect
+        mock_jira_call.side_effect = lambda tool_name, args: jira_responses.get(tool_name)
 
         # Mock memory server HTTP call
         mock_client = Mock()
@@ -86,17 +79,13 @@ class TestWorkflow:
     @patch("scripts.claim_ticket_operations.jira_call")
     def test_workflow_with_skip_operations(self, mock_jira_call, mock_client_class):
         """Test workflow with skipped operations."""
+        jira_responses = {
+            "jira_get_user_profile": {"account_id": "bot-123"},
+            "jira_get_issue": {"fields": {"labels": []}},
+            "jira_get_sprints_from_board": {"sprints": [{"id": 12345}]},
+        }
 
-        def jira_call_side_effect(tool_name, args):
-            if tool_name == "jira_get_user_profile":
-                return {"account_id": "bot-123"}
-            elif tool_name == "jira_get_issue":
-                return {"fields": {"labels": []}}
-            elif tool_name == "jira_get_sprints_from_board":
-                return {"sprints": [{"id": 12345}]}
-            return {}
-
-        mock_jira_call.side_effect = jira_call_side_effect
+        mock_jira_call.side_effect = lambda tool_name, args: jira_responses.get(tool_name, {})
 
         # Mock memory server HTTP call
         mock_client = Mock()
