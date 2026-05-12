@@ -93,6 +93,8 @@ services:
       - SSO_PASSWORD
       - BOT_LABEL=${BOT_LABEL:-hcc-ai-framework}
       - BOT_INSTANCE_ID=${BOT_INSTANCE_ID:-}
+      - BOT_CONFIG_REPO=${BOT_CONFIG_REPO:-}
+      - BOT_CONFIG_PATH=${BOT_CONFIG_PATH:-rehor-config}
       - BOT_MEMORY_URL=http://memory-server:8080/mcp
       - COSTS_API_URL=http://memory-server:8080/api/costs
       - BOT_DASHBOARD_URL=http://memory-server:8080/api/bot-status

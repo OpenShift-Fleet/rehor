@@ -27,6 +27,10 @@ parameters:
   value: "false"
 - name: BOT_INSTANCE_ID
   value: ""
+- name: BOT_CONFIG_REPO
+  value: ""
+- name: BOT_CONFIG_PATH
+  value: "rehor-config"
 - name: GCP_PROJECT_ID
   required: true
 - name: GCP_REGION
@@ -404,6 +408,10 @@ objects:
             value: ${BOT_INCLUDE_BACKLOG}
           - name: BOT_INSTANCE_ID
             value: ${BOT_INSTANCE_ID}
+          - name: BOT_CONFIG_REPO
+            value: ${BOT_CONFIG_REPO}
+          - name: BOT_CONFIG_PATH
+            value: ${BOT_CONFIG_PATH}
           - name: BOT_DASHBOARD_URL
             value: http://devbot-memory-server:8080/api/bot-status
           - name: COSTS_API_URL

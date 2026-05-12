@@ -27,3 +27,5 @@ sa-key.json
 .gitconfig
 .DS_STORE
 .tmp-*
+# Remote config repo clone (synced at runtime)
+data/remote-config/

@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -102,6 +103,99 @@ def setup_logging() -> None:
         datefmt=datefmt,
         handlers=handlers,
     )
+
+
+REMOTE_CONFIG_DIR = DATA_DIR / "remote-config"
+
+
+def sync_config_repo() -> Path | None:
+    """Clone or pull BOT_CONFIG_REPO. Returns agent config dir or None."""
+    logger = logging.getLogger(__name__)
+    repo_url = os.environ.get("BOT_CONFIG_REPO")
+    if not repo_url:
+        return None
+
+    config_dir = REMOTE_CONFIG_DIR
+    try:
+        if (config_dir / ".git").exists():
+            r = subprocess.run(
+                ["git", "-C", str(config_dir), "pull", "--ff-only"],
+                capture_output=True, timeout=30, check=False,
+            )
+            if r.returncode != 0:
+                logger.warning(
+                    "git pull failed (rc=%d): %s",
+                    r.returncode, r.stderr.decode().strip(),
+                )
+        else:
+            config_dir.parent.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, str(config_dir)],
+                capture_output=True, timeout=60, check=False,
+            )
+            if r.returncode != 0:
+                logger.warning(
+                    "git clone failed (rc=%d): %s",
+                    r.returncode, r.stderr.decode().strip(),
+                )
+                return None
+    except subprocess.TimeoutExpired:
+        logger.warning("Config repo sync timed out — using built-in config")
+        return None
+    except Exception as exc:
+        logger.warning("Config repo sync failed: %s — using built-in config", exc)
+        return None
+
+    sub = os.environ.get("BOT_CONFIG_PATH", "rehor-config")
+    agent_dir = config_dir / sub / "agent"
+    if not agent_dir.is_dir():
+        logger.warning("Config repo has no %s/agent/ dir — using built-in config", sub)
+        return None
+
+    return agent_dir
+
+
+def apply_remote_config(script_dir: Path, agent_dir: Path) -> None:
+    """Overlay remote agent config onto working directory."""
+    logger = logging.getLogger(__name__)
+
+    remote_personas = agent_dir / "personas"
+    if remote_personas.is_dir():
+        shutil.copytree(remote_personas, script_dir / "personas", dirs_exist_ok=True)
+        logger.info("Applied remote personas")
+
+    remote_repos = agent_dir / "project-repos.json"
+    if remote_repos.is_file():
+        shutil.copy2(remote_repos, script_dir / "project-repos.json")
+        logger.info("Applied remote project-repos.json")
+
+    remote_skills = agent_dir / "skills"
+    if remote_skills.is_dir():
+        shutil.copytree(
+            remote_skills, script_dir / ".claude" / "skills",
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(".gitkeep"),
+        )
+        logger.info("Applied remote custom skills")
+
+    remote_mcp = agent_dir / "mcp.json"
+    if remote_mcp.is_file():
+        merged_path = DATA_DIR / "merged-mcp.json"
+        try:
+            with open(script_dir / "bot" / "mcp.json") as f:
+                built_in = json.load(f)
+            with open(remote_mcp) as f:
+                custom = json.load(f)
+            for name, cfg in custom.get("mcpServers", {}).items():
+                if name not in built_in.get("mcpServers", {}):
+                    built_in.setdefault("mcpServers", {})[name] = cfg
+            new_content = json.dumps(built_in, indent=2) + "\n"
+            existing = merged_path.read_text() if merged_path.exists() else ""
+            if new_content != existing:
+                merged_path.write_text(new_content)
+                logger.info("Merged remote MCP servers → %s", merged_path)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to merge remote MCP config: %s", exc)
 
 
 LOW_DISK_THRESHOLD_MB = 512
@@ -212,6 +306,10 @@ def main() -> None:
 
     try:
         while True:
+            remote_agent_dir = sync_config_repo()
+            if remote_agent_dir:
+                apply_remote_config(SCRIPT_DIR, remote_agent_dir)
+
             logger.info("Running agent cycle...")
 
             try:

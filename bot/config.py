@@ -49,6 +49,14 @@ def load_mcp_servers(script_dir: Path) -> dict:
         for name, cfg in data.get("mcpServers", {}).items():
             servers[name] = _resolve_env_vars(cfg)
 
+    merged_mcp = script_dir / "data" / "merged-mcp.json"
+    if merged_mcp.exists():
+        with open(merged_mcp) as f:
+            data = json.load(f)
+        for name, cfg in data.get("mcpServers", {}).items():
+            if name not in servers:
+                servers[name] = _resolve_env_vars(cfg)
+
     for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
         with open(mcp_file) as f:
             data = json.load(f)
