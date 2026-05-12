@@ -158,6 +158,7 @@ RUN cd .claude/skills/post-pr \
 # Run claim-ticket skill tests during build
 RUN cd .claude/skills/claim-ticket \
     && uv sync --frozen --all-extras \
+    && uv run ruff check scripts/ tests/ \
     && uv run pytest -v --tb=short \
     && echo "Claim-ticket skill tests passed!"
 
