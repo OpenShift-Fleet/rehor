@@ -26,6 +26,7 @@ sa-key.json
 .ssh/
 .gitconfig
 .DS_STORE
+docker-compose.override.yml
 .tmp-*
 # Remote config repo clone (synced at runtime)
 data/remote-config/

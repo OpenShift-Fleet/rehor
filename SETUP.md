@@ -45,7 +45,7 @@ For org repos, an org admin must invite the bot account to the appropriate team.
 
 ### 2.1 Secrets
 
-These secrets are needed for deployment. All live in the **proxy container** except Jira credentials (bot container).
+These secrets are needed for deployment. All live in the **proxy container** (including Jira credentials — mcp-atlassian runs in the proxy on port 8444).
 
 | Secret | How to generate | Lives in | Used for |
 |--------|----------------|----------|----------|
@@ -85,7 +85,7 @@ For OpenShift, store these as secrets and inject them as env vars into the pod.
 
 When running the bot locally alongside your personal GitHub account, use separate `gh` auth contexts or set `GH_TOKEN` in `.env` to the bot's PAT. The bot uses HTTPS with credential helpers for all git operations — no SSH configuration needed.
 
-Fork URLs in `project-repos.json` use HTTPS:
+Fork URLs in the remote config's `project-repos.json` use HTTPS:
 
 ```json
 "pdf-generator": {

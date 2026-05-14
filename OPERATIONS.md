@@ -233,7 +233,7 @@ Or manually ensure the ticket has:
 
 Required labels:
 - **Primary label** — matches the bot instance: `hcc-ai-framework` or `hcc-ai-platform-accessmanagement`
-- **`repo:<name>`** — must match a key in `project-repos.json` (e.g. `repo:insights-rbac`, `repo:notifications-frontend`)
+- **`repo:<name>`** — must match a key in the remote config's `project-repos.json` (e.g. `repo:insights-rbac`, `repo:notifications-frontend`)
 
 Optional:
 - `needs-investigation` — bot investigates and reports findings instead of implementing
