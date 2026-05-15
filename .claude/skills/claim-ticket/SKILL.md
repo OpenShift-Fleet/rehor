@@ -46,6 +46,9 @@ Set these environment variables:
 # JIRA MCP Server (required)
 export JIRA_MCP_URL=http://proxy:8090
 
+# Bot JIRA identity (required) — email of the bot's Jira service account (from Vault)
+export BOT_JIRA_EMAIL=<your-bot-jira-email>
+
 # Memory Server (required)
 export BOT_MEMORY_URL=https://memory-server.example.com
 
@@ -56,7 +59,7 @@ export BOT_BOARD_NAME="Platform Experience UI"    # Lookup board by name via Jir
 
 ## Authentication
 
-JIRA operations use MCP via jira_call(). No API tokens needed - the mcp-atlassian server handles authentication.
+JIRA operations use MCP via jira_call(). No API tokens needed - the mcp-atlassian server handles authentication. Bot identity for ticket assignment comes from `BOT_JIRA_EMAIL`.
 
 Memory server operations use direct HTTP (POST /tasks).
 

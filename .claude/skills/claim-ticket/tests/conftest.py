@@ -7,11 +7,18 @@ import pytest
 # Test constants
 TEST_JIRA_KEY = "RHCLOUD-12345"
 TEST_BOT_ACCOUNT_ID = "bot-123"
+TEST_BOT_EMAIL = "bot@example.com"
 TEST_MEMORY_URL = "https://test-memory.example.com"
 TEST_SPRINT_ID = 12345
 TEST_SPRINT_NAME = "Sprint 42"
 TEST_TRANSITION_ID = "21"
 TEST_BOARD_ID = "9297"
+
+
+@pytest.fixture(autouse=True)
+def set_bot_jira_email(monkeypatch):
+    """Set BOT_JIRA_EMAIL for all tests."""
+    monkeypatch.setenv("BOT_JIRA_EMAIL", TEST_BOT_EMAIL)
 
 
 @pytest.fixture

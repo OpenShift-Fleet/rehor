@@ -43,7 +43,7 @@ class TestGetBotAccountId:
         assert result.details["account_id"] == "bot-account-123"
         assert operations.bot_account_id == "bot-account-123"
 
-        mock_jira_call.assert_called_once_with("jira_get_user_profile", {})
+        mock_jira_call.assert_called_once_with("jira_get_user_profile", {"user_identifier": "bot@example.com"})
 
     @patch("scripts.claim_ticket_operations.jira_call")
     def test_get_bot_account_id_caching(self, mock_jira_call, operations):
@@ -69,7 +69,7 @@ class TestGetBotAccountId:
         result = operations.get_bot_account_id()
 
         assert result.status == OperationStatus.FAILED
-        assert "returned None" in result.message
+        assert "returned None for bot@example.com" in result.message
 
     @patch("scripts.claim_ticket_operations.jira_call")
     def test_get_bot_account_id_dry_run(self, mock_jira_call):
@@ -80,6 +80,15 @@ class TestGetBotAccountId:
         assert result.status == OperationStatus.SUCCESS
         assert "dry run" in result.message.lower()
         mock_jira_call.assert_not_called()
+
+    def test_get_bot_account_id_missing_env_var(self, monkeypatch):
+        """Test failure when BOT_JIRA_EMAIL is not set."""
+        monkeypatch.delenv("BOT_JIRA_EMAIL", raising=False)
+        ops = ClaimTicketOperations(memory_url="https://test.example.com")
+        result = ops.get_bot_account_id()
+
+        assert result.status == OperationStatus.FAILED
+        assert "BOT_JIRA_EMAIL" in result.message
 
 
 class TestGetTransitions:

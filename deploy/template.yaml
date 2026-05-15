@@ -412,6 +412,11 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: bot-gl-email
+          - name: BOT_JIRA_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: jira-email
           # Bot config
           - name: BOT_BOARD_NAME
             value: ${BOT_BOARD_NAME}

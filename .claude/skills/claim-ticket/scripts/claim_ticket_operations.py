@@ -92,12 +92,11 @@ class ClaimTicketOperations:
 
     def get_bot_account_id(self) -> OperationResult:
         """
-        Get bot's JIRA account ID using jira_get_user_profile. Result is cached.
+        Get bot's JIRA identity from BOT_JIRA_EMAIL env var, then resolve account ID via MCP.
 
         Returns:
             OperationResult with account ID
         """
-        # Check class-level cache first
         if ClaimTicketOperations._bot_account_id_cache:
             self.bot_account_id = ClaimTicketOperations._bot_account_id_cache
             logger.info(f"Using cached bot account ID: {self.bot_account_id}")
@@ -108,11 +107,21 @@ class ClaimTicketOperations:
                 details={"account_id": self.bot_account_id},
             )
 
-        logger.info("Getting bot account ID via jira_get_user_profile...")
+        bot_email = os.environ.get("BOT_JIRA_EMAIL")
+        if not bot_email:
+            error_msg = "BOT_JIRA_EMAIL env var not set"
+            logger.error(error_msg)
+            return OperationResult(
+                operation="get_bot_account_id",
+                status=OperationStatus.FAILED,
+                message=error_msg,
+            )
+
+        logger.info(f"Resolving JIRA account for {bot_email}...")
 
         if self.dry_run:
             self.bot_account_id = "dry-run-account-id"
-            logger.info("[DRY RUN] Would call jira_get_user_profile")
+            logger.info(f"[DRY RUN] Would resolve account for {bot_email}")
             return OperationResult(
                 operation="get_bot_account_id",
                 status=OperationStatus.SUCCESS,
@@ -121,9 +130,9 @@ class ClaimTicketOperations:
             )
 
         try:
-            data = jira_call("jira_get_user_profile", {})
+            data = jira_call("jira_get_user_profile", {"user_identifier": bot_email})
             if not data:
-                error_msg = "jira_get_user_profile returned None"
+                error_msg = f"jira_get_user_profile returned None for {bot_email}"
                 logger.error(error_msg)
                 return OperationResult(
                     operation="get_bot_account_id",
@@ -141,7 +150,6 @@ class ClaimTicketOperations:
                     message=error_msg,
                 )
 
-            # Cache the account ID
             ClaimTicketOperations._bot_account_id_cache = self.bot_account_id
 
             logger.info(f"Retrieved bot account ID: {self.bot_account_id}")
