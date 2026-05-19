@@ -115,7 +115,7 @@ Tickets must be explicitly groomed. The bot never picks random backlog items.
 ### Required labels
 
 - **Primary label** (e.g. `hcc-ai-framework`, `hcc-ai-platform-accessmanagement`) — marks the ticket as bot-eligible for a specific team. The bot only picks up tickets with its configured label.
-- **`repo:<name>`** — identifies the target repo (must match a key in the remote config's `project-repos.json`). A ticket can have multiple `repo:` labels for cross-repo work.
+- **`repo:<name>`** or **`repo:<org>/<name>`** — identifies the target repo. Bare names (e.g. `repo:insights-chrome`) match keys in `project-repos.json` directly. Org-prefixed names (e.g. `repo:RedHatInsights/insights-chrome`) are resolved via the upstream URL. A ticket can have multiple `repo:` labels for cross-repo work.
 
 ### Optional labels
 
@@ -158,7 +158,7 @@ All repos use forks by default. The bot pushes to the fork and opens PRs/MRs tar
    }
    ```
    For GitLab repos, add `"host": "gitlab"`.
-3. Add a `repo:my-repo` label to the Jira ticket.
+3. Add a `repo:my-repo` label to the Jira ticket. You can also use the full `repo:OrgName/my-repo` format.
 
 The bot clones repos automatically when it picks up a ticket. It fetches from `upstream`, creates branches based on the latest upstream code, pushes to `origin` (the fork), and opens PRs/MRs targeting the upstream repo.
 

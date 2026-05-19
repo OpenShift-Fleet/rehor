@@ -77,19 +77,31 @@ def get_active_sprint():
     return sprints[0] if sprints else None
 
 
-def get_known_repos():
+def load_project_repos():
     try:
-        return set(json.loads(PROJECT_REPOS.read_text()).keys())
+        return json.loads(PROJECT_REPOS.read_text())
     except Exception as e:
         print(f"ERR reading {PROJECT_REPOS}: {e}", file=sys.stderr)
-        return set()
+        return {}
 
 
-def match_repo_labels(labels, known_repos):
+def build_repo_lookup(repos_dict):
+    lookup = {}
+    for key, cfg in repos_dict.items():
+        lookup[key] = key
+        upstream = cfg.get("upstream", "")
+        parts = upstream.rstrip("/").removesuffix(".git").split("/")
+        if len(parts) >= 2:
+            org_repo = f"{parts[-2]}/{parts[-1]}"
+            lookup[org_repo] = key
+    return lookup
+
+
+def match_repo_labels(labels, repo_lookup):
     repo_labels = [l.replace("repo:", "") for l in labels if l.startswith("repo:")]
     if not repo_labels:
         return []
-    matched = [r for r in repo_labels if r in known_repos]
+    matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
     return matched if len(matched) == len(repo_labels) else []
 
 
@@ -97,7 +109,8 @@ def get_candidates():
     if not BOT_LABEL:
         print("ERR: BOT_LABEL not set", file=sys.stderr)
         return []
-    known = get_known_repos()
+    repos_dict = load_project_repos()
+    repo_lookup = build_repo_lookup(repos_dict)
     status_list = ", ".join(f'"{s}"' for s in NOT_STARTED_STATUSES)
     candidates = []
 
@@ -129,7 +142,7 @@ def get_candidates():
     for issue in candidates:
         fields = issue.get("fields", {})
         labels = fields.get("labels", [])
-        repos = match_repo_labels(labels, known)
+        repos = match_repo_labels(labels, repo_lookup)
         comments = (fields.get("comment", {}).get("comments") or [])[-5:]
 
         results.append({

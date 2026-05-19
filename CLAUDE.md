@@ -301,7 +301,7 @@ Before starting work, `jira_get_issue` → check issue links:
    - By tags: `css`, `testing`, `patternfly`, `ci`, `dependency-upgrade`
    - Apply ALL insights. Avoid past reviewer corrections. Follow learned conventions.
 
-5. **Prepare repos**: `repo:` labels → match `project-repos.json`. Fork workflow default:
+5. **Prepare repos**: `repo:` labels → match `project-repos.json`. Bare (`repo:insights-chrome`) or org-prefixed (`repo:RedHatInsights/insights-chrome`) — org/repo resolved via upstream URLs. Fork workflow default:
    - `url` = bot's fork, `upstream` = original repo (PR target), `host` = "gitlab" if GL, `readonly` = read only
 
    Dir = `./repos/<repo-name>/` (from upstream URL basename, no `.git`).
