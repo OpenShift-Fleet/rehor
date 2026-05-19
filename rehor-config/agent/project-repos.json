@@ -24,7 +24,7 @@
     "upstream": "https://github.com/RedHatInsights/frontend-operator.git"
   },
   "app-interface": {
-    "url": "https://gitlab.cee.redhat.com/mmarosi/app-interface.git",
+    "url": "https://gitlab.cee.redhat.com/platform-experience-services-bot/app-interface.git",
     "upstream": "https://gitlab.cee.redhat.com/service/app-interface.git",
     "host": "gitlab"
   },
@@ -109,7 +109,7 @@
     "upstream": "https://github.com/RedHatInsights/user-preferences-frontend.git"
   },
   "caddy-ubi": {
-    "url": "https://gitlab.cee.redhat.com/mmarosi/caddy-ubi.git",
+    "url": "https://gitlab.cee.redhat.com/platform-experience-services-bot/caddy-ubi.git",
     "upstream": "https://gitlab.cee.redhat.com/insights-platform/caddy-ubi.git",
     "host": "gitlab"
   },
