@@ -160,32 +160,38 @@ spec:
       - name: basic-auth
         workspace: git-auth
     - name: ruff-format-check
+      params:
+      - name: SCRIPT
+        value: |
+          #!/bin/bash
+          set -e
+
+          echo "Installing ruff..."
+          microdnf install -y python3-pip
+          pip3 install ruff
+
+          echo "Checking Python code formatting with ruff..."
+          ruff format --check .
+
+          if [ $? -eq 0 ]; then
+            echo "All Python files are properly formatted"
+          else
+            echo "Formatting errors found. Run 'ruff format .' locally to fix."
+            exit 1
+          fi
+      - name: IMAGE
+        value: registry.access.redhat.com/ubi9/ubi-minimal:latest
       runAfter:
       - clone-repository
-      taskSpec:
-        workspaces:
-        - name: source
-        steps:
-        - name: check-formatting
-          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-          workingDir: $(workspaces.source.path)
-          script: |
-            #!/bin/bash
-            set -e
-
-            echo "Installing ruff..."
-            microdnf install -y python3-pip
-            pip3 install ruff
-
-            echo "Checking Python code formatting with ruff..."
-            ruff format --check .
-
-            if [ $? -eq 0 ]; then
-              echo "All Python files are properly formatted"
-            else
-              echo "Formatting errors found. Run 'ruff format .' locally to fix."
-              exit 1
-            fi
+      taskRef:
+        params:
+        - name: name
+          value: script
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-script:0.1@sha256:9b6d3fc6f3dd1e54be6a4e871bde7f555c0c2b224c5c6c8f733e4e5c0c8e1f3e
+        - name: kind
+          value: task
+        resolver: bundles
       workspaces:
       - name: source
         workspace: workspace
