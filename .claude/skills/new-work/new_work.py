@@ -24,6 +24,7 @@ PROJECT_REPOS = (
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
 BOT_BOARD_ID = os.environ.get("BOT_BOARD_ID", "")
 BOT_BOARD_NAME = os.environ.get("BOT_BOARD_NAME", "")
+BOT_SPRINT_PREFIX = os.environ.get("BOT_SPRINT_PREFIX", "")
 BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in (
     "1",
     "true",
@@ -49,8 +50,6 @@ def jira_search(jql, limit=10):
     return issues
 
 
-<<<<<<< HEAD
-=======
 def resolve_board_id():
     if BOT_BOARD_ID:
         return BOT_BOARD_ID
@@ -122,7 +121,6 @@ def get_active_sprint():
     return sprint
 
 
->>>>>>> b6fd6ab (fix: formatting)
 def load_project_repos():
     try:
         return json.loads(PROJECT_REPOS.read_text())
