@@ -162,21 +162,6 @@ spec:
         workspace: workspace
       - name: basic-auth
         workspace: git-auth
-    - name: ruff-format-check
-      runAfter:
-      - clone-repository
-      taskRef:
-        resolver: git
-        params:
-        - name: url
-          value: https://github.com/RedHatInsights/platform-frontend-ai-dev.git
-        - name: revision
-          value: $(params.revision)
-        - name: pathInRepo
-          value: .tekton/ruff-format-check-task.yaml
-      workspaces:
-      - name: source
-        workspace: workspace
     - name: prefetch-dependencies
       params:
       - name: input

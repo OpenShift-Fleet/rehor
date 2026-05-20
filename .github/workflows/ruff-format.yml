@@ -1,0 +1,37 @@
+name: Ruff Format Check
+
+on:
+  pull_request:
+    paths:
+      - '**.py'
+      - '.github/workflows/ruff-format.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - '**.py'
+      - '.github/workflows/ruff-format.yml'
+
+jobs:
+  ruff-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Check Python formatting
+        run: |
+          ruff format --check .
+          if [ $? -eq 0 ]; then
+            echo "✓ All Python files are properly formatted"
+          else
+            echo "✗ Formatting errors found. Run 'ruff format .' locally to fix."
+            exit 1
+          fi
