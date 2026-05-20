@@ -82,3 +82,4 @@ trap cleanup EXIT TERM INT
 
 wait -n $SQUID_PID $EXECUTOR_PID ${MCP_PID:+"$MCP_PID"}
 exit $?
+
