@@ -1,6 +1,5 @@
 import os
 from datetime import datetime, timezone, timedelta
-from typing import Optional
 
 from fastmcp import FastMCP
 

@@ -3,10 +3,8 @@
 import json
 import stat
 
-import pytest
 
 from bot.merge import (
-    PROTECTED,
     PROTECTED_HOOKS,
     MergeReport,
     apply_merged_config,

@@ -1,6 +1,5 @@
 """Tests for the post_pr.py wrapper script."""
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch

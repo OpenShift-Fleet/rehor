@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from scripts.post_pr_operations import execute_post_pr_workflow
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from jira_mcp import jira_call
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="[post-pr] %(levelname)s: %(message)s", stream=sys.stdout)
@@ -159,7 +158,7 @@ def main():
     pr_number = task["pr_number"]
     summary = task.get("summary", "")
 
-    logger.info(f"Task validated successfully")
+    logger.info("Task validated successfully")
     logger.info(f"  JIRA: {jira_key}")
     logger.info(f"  PR: {pr_url} (#{pr_number})")
     logger.info(f"  Summary: {summary or '(none)'}")

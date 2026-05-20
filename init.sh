@@ -30,6 +30,13 @@ fi
 
 log "LSP servers ready."
 
+# Install pre-commit hooks
+log "Installing pre-commit hooks..."
+if ! uv run pre-commit install; then
+  log "WARNING: Failed to install pre-commit hooks. You may need to run 'uv run pre-commit install' manually."
+fi
+log "Pre-commit hooks installed."
+
 mkdir -p "$REPOS_DIR"
 log "Repos directory ready (repos cloned on demand by the bot)."
 

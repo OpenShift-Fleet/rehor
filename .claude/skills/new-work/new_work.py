@@ -144,7 +144,9 @@ def build_repo_lookup(repos_dict):
 
 
 def match_repo_labels(labels, repo_lookup):
-    repo_labels = [l.replace("repo:", "") for l in labels if l.startswith("repo:")]
+    repo_labels = [
+        label.replace("repo:", "") for label in labels if label.startswith("repo:")
+    ]
     if not repo_labels:
         return []
     matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
@@ -234,7 +236,7 @@ def fmt_candidate(c):
     if c["repos"]:
         lines.append(f"  repos: {','.join(c['repos'])}")
     else:
-        repo_labels = [l for l in c["labels"] if l.startswith("repo:")]
+        repo_labels = [label for label in c["labels"] if label.startswith("repo:")]
         if repo_labels:
             lines.append(
                 f"  repo_labels: {','.join(repo_labels)} (NO MATCH in project-repos.json)"
@@ -242,7 +244,9 @@ def fmt_candidate(c):
         else:
             lines.append("  repos: (no repo: label)")
     other_labels = [
-        l for l in c["labels"] if not l.startswith("repo:") and l != BOT_LABEL
+        label
+        for label in c["labels"]
+        if not label.startswith("repo:") and label != BOT_LABEL
     ]
     if other_labels:
         lines.append(f"  labels: {','.join(other_labels)}")

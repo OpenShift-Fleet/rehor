@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse
-from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.routing import Mount, WebSocketRoute
 from starlette.websockets import WebSocket
 
 from .db import close_pool, init_pool
@@ -36,10 +36,10 @@ mcp = FastMCP(
 )
 
 # Register MCP tools
-from .tools.tasks import register_task_tools
-from .tools.rag import register_rag_tools
-from .tools.slack import register_slack_tools
-from .tools.org_members import register_org_member_tools
+from .tools.tasks import register_task_tools  # noqa: E402
+from .tools.rag import register_rag_tools  # noqa: E402
+from .tools.slack import register_slack_tools  # noqa: E402
+from .tools.org_members import register_org_member_tools  # noqa: E402
 
 register_task_tools(mcp)
 register_rag_tools(mcp)
@@ -75,7 +75,7 @@ async def asset_files(request: Request) -> FileResponse:
 
 
 # REST API for the dashboard
-from .api import (
+from .api import (  # noqa: E402
     api_tasks,
     api_task_delete,
     api_task_unarchive,

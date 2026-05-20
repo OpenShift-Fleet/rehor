@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "pre-commit"]
 
 [build-system]
 requires = ["hatchling"]

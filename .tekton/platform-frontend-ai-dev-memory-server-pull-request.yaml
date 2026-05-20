@@ -161,6 +161,36 @@ spec:
         workspace: workspace
       - name: basic-auth
         workspace: git-auth
+    - name: ruff-format-check
+      runAfter:
+      - clone-repository
+      taskSpec:
+        workspaces:
+        - name: source
+        steps:
+        - name: check-formatting
+          image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+          workingDir: $(workspaces.source.path)
+          script: |
+            #!/bin/bash
+            set -e
+
+            echo "Installing ruff..."
+            microdnf install -y python3-pip
+            pip3 install ruff
+
+            echo "Checking Python code formatting with ruff..."
+            ruff format --check .
+
+            if [ $? -eq 0 ]; then
+              echo "All Python files are properly formatted"
+            else
+              echo "Formatting errors found. Run 'ruff format .' locally to fix."
+              exit 1
+            fi
+      workspaces:
+      - name: source
+        workspace: workspace
     - name: prefetch-dependencies
       params:
       - name: input
