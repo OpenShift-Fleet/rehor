@@ -29,7 +29,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jira_mcp import jira_call
 
-from .constants import TRANSITION_IN_PROGRESS
+TRANSITION_IN_PROGRESS = "In Progress"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
