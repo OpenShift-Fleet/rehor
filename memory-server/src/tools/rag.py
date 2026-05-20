@@ -19,7 +19,9 @@ def _row_to_memory(row) -> dict:
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
         created_at=row["created_at"],
-        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"])
+        if isinstance(row["metadata"], str)
+        else (row["metadata"] or {}),
     )
     return memory.model_dump(mode="json")
 
@@ -34,14 +36,15 @@ def _row_to_search_result(row) -> dict:
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
         created_at=row["created_at"],
-        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"])
+        if isinstance(row["metadata"], str)
+        else (row["metadata"] or {}),
         similarity=1 - row["distance"],  # cosine distance → similarity
     )
     return result.model_dump(mode="json")
 
 
 def register_rag_tools(mcp: FastMCP):
-
     @mcp.tool()
     async def memory_store(
         category: str,
@@ -63,13 +66,22 @@ def register_rag_tools(mcp: FastMCP):
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             """,
-            category, repo, jira_key, title, content,
+            category,
+            repo,
+            jira_key,
+            title,
+            content,
             tags or [],
             vector,
             json.dumps(metadata or {}),
         )
         result = _row_to_memory(row)
-        await bus.publish(Event("memory_stored", {"id": result["id"], "title": title, "category": category}))
+        await bus.publish(
+            Event(
+                "memory_stored",
+                {"id": result["id"], "title": title, "category": category},
+            )
+        )
         return result
 
     @mcp.tool()
@@ -147,9 +159,11 @@ def register_rag_tools(mcp: FastMCP):
 
         total = await pool.fetchval(f"SELECT COUNT(*) FROM memories {where}", *params)
 
-        idx += 1; params.append(limit)
+        idx += 1
+        params.append(limit)
         limit_idx = idx
-        idx += 1; params.append(offset)
+        idx += 1
+        params.append(offset)
         offset_idx = idx
 
         rows = await pool.fetch(

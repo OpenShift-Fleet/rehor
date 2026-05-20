@@ -13,7 +13,9 @@ class Event:
     timestamp: float = field(default_factory=time.time)
 
     def to_json(self) -> str:
-        return json.dumps({"type": self.type, "data": self.data, "timestamp": self.timestamp})
+        return json.dumps(
+            {"type": self.type, "data": self.data, "timestamp": self.timestamp}
+        )
 
     def to_sse_json(self) -> str:
         return self.to_json()

@@ -36,6 +36,7 @@ def env_vars(temp_dir):
 
 def _make_gh_side_effect():
     """Create a subprocess.run side_effect for gh CLI calls."""
+
     def side_effect(args, **kwargs):
         result = Mock(spec=subprocess.CompletedProcess)
         result.returncode = 0
@@ -53,15 +54,18 @@ def _make_gh_side_effect():
         else:
             result.stdout = "{}"
         return result
+
     return side_effect
 
 
 @pytest.fixture
 def mock_apis():
     """Mock gh CLI (subprocess) and Jira MCP calls."""
-    with patch("scripts.post_pr_operations.subprocess.run") as mock_run, \
-         patch("scripts.post_pr_operations.jira_call") as mock_jira_call, \
-         patch("scripts.post_pr_operations.httpx.Client") as mock_client_class:
+    with (
+        patch("scripts.post_pr_operations.subprocess.run") as mock_run,
+        patch("scripts.post_pr_operations.jira_call") as mock_jira_call,
+        patch("scripts.post_pr_operations.httpx.Client") as mock_client_class,
+    ):
         mock_run.side_effect = _make_gh_side_effect()
 
         mock_jira_call.side_effect = [
@@ -168,9 +172,7 @@ class TestFullWorkflow:
         monkeypatch.setenv("POST_PR_MEMORY_STORE", str(temp_dir / "memory.json"))
 
         with patch("scripts.post_pr_operations.subprocess.run") as mock_run:
-            mock_run.side_effect = lambda args, **kwargs: Mock(
-                returncode=1, stdout="", stderr="gh: command not found"
-            )
+            mock_run.side_effect = lambda args, **kwargs: Mock(returncode=1, stdout="", stderr="gh: command not found")
 
             result = execute_post_pr_workflow(
                 pr_url="https://github.com/RedHatInsights/hcc-ai-assistant/pull/126",

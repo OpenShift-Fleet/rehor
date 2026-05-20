@@ -75,11 +75,29 @@ async def asset_files(request: Request) -> FileResponse:
 
 
 # REST API for the dashboard
-from .api import api_tasks, api_task_delete, api_task_unarchive, api_memories, api_memory_get, api_memory_search, api_memory_embeddings, api_memory_delete, api_memory_upload, api_tags, api_stats, api_bot_status, api_instances, api_costs, api_analytics
+from .api import (
+    api_tasks,
+    api_task_delete,
+    api_task_unarchive,
+    api_memories,
+    api_memory_get,
+    api_memory_search,
+    api_memory_embeddings,
+    api_memory_delete,
+    api_memory_upload,
+    api_tags,
+    api_stats,
+    api_bot_status,
+    api_instances,
+    api_costs,
+    api_analytics,
+)
 
 mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
 mcp.custom_route("/api/tasks/{jira_key:path}", methods=["DELETE"])(api_task_delete)
-mcp.custom_route("/api/tasks/{jira_key:path}/unarchive", methods=["POST"])(api_task_unarchive)
+mcp.custom_route("/api/tasks/{jira_key:path}/unarchive", methods=["POST"])(
+    api_task_unarchive
+)
 mcp.custom_route("/api/memories", methods=["GET"])(api_memories)
 mcp.custom_route("/api/memories/search", methods=["GET"])(api_memory_search)
 mcp.custom_route("/api/memories/upload", methods=["POST"])(api_memory_upload)

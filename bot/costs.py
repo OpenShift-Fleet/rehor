@@ -72,7 +72,9 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
     return entry
 
 
-def record_cost(costs_file: Path, label: str, result, ctx: CycleContext | None = None) -> bool:
+def record_cost(
+    costs_file: Path, label: str, result, ctx: CycleContext | None = None
+) -> bool:
     """Record cost data from a ResultMessage.
 
     Writes to costs.jsonl (local) and pushes to the dashboard API.

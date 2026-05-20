@@ -220,9 +220,13 @@ class PostPROperations:
             else:
                 ok, out = self._run_cli(
                     [
-                        "gh", "api",
+                        "gh",
+                        "api",
                         f"repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers",
-                        "-X", "POST", "--input", "-",
+                        "-X",
+                        "POST",
+                        "--input",
+                        "-",
                     ],
                     input_data=json.dumps({"reviewers": reviewers}),
                 )
@@ -262,11 +266,19 @@ class PostPROperations:
         if self.dry_run:
             logger.info(f"[DRY RUN] Would update GitLab MR !{pr_number} on {project_path}")
         else:
-            ok, out = self._run_cli([
-                "glab", "api", f"projects/{encoded_project}/merge_requests/{pr_number}",
-                "-X", "PUT", "-f", f"add_labels={','.join(labels_to_add)}",
-                "--hostname", hostname,
-            ])
+            ok, out = self._run_cli(
+                [
+                    "glab",
+                    "api",
+                    f"projects/{encoded_project}/merge_requests/{pr_number}",
+                    "-X",
+                    "PUT",
+                    "-f",
+                    f"add_labels={','.join(labels_to_add)}",
+                    "--hostname",
+                    hostname,
+                ]
+            )
             if not ok:
                 raise ValueError(f"Failed to add labels: {out}")
             logger.info(f"Added labels to MR !{pr_number}: {labels_to_add}")
@@ -278,10 +290,15 @@ class PostPROperations:
         if self.dry_run:
             logger.info(f"[DRY RUN] Would update MR description with JIRA link: {jira_link}")
         else:
-            ok, out = self._run_cli([
-                "glab", "api", f"projects/{encoded_project}/merge_requests/{pr_number}",
-                "--hostname", hostname,
-            ])
+            ok, out = self._run_cli(
+                [
+                    "glab",
+                    "api",
+                    f"projects/{encoded_project}/merge_requests/{pr_number}",
+                    "--hostname",
+                    hostname,
+                ]
+            )
             if not ok:
                 raise ValueError(f"Failed to get MR: {out}")
             mr_data = json.loads(out)
@@ -291,9 +308,15 @@ class PostPROperations:
                 updated_body = current_body + jira_section
                 ok, out = self._run_cli(
                     [
-                        "glab", "api", f"projects/{encoded_project}/merge_requests/{pr_number}",
-                        "-X", "PUT", "--input", "-",
-                        "--hostname", hostname,
+                        "glab",
+                        "api",
+                        f"projects/{encoded_project}/merge_requests/{pr_number}",
+                        "-X",
+                        "PUT",
+                        "--input",
+                        "-",
+                        "--hostname",
+                        hostname,
                     ],
                     input_data=json.dumps({"description": updated_body}),
                 )
@@ -310,10 +333,15 @@ class PostPROperations:
             else:
                 reviewer_ids = []
                 for reviewer in reviewers:
-                    ok, out = self._run_cli([
-                        "glab", "api", f"users?username={reviewer}",
-                        "--hostname", hostname,
-                    ])
+                    ok, out = self._run_cli(
+                        [
+                            "glab",
+                            "api",
+                            f"users?username={reviewer}",
+                            "--hostname",
+                            hostname,
+                        ]
+                    )
                     if ok:
                         users = json.loads(out)
                         if users:
@@ -322,9 +350,15 @@ class PostPROperations:
                 if reviewer_ids:
                     ok, out = self._run_cli(
                         [
-                            "glab", "api", f"projects/{encoded_project}/merge_requests/{pr_number}",
-                            "-X", "PUT", "--input", "-",
-                            "--hostname", hostname,
+                            "glab",
+                            "api",
+                            f"projects/{encoded_project}/merge_requests/{pr_number}",
+                            "-X",
+                            "PUT",
+                            "--input",
+                            "-",
+                            "--hostname",
+                            hostname,
                         ],
                         input_data=json.dumps({"reviewer_ids": reviewer_ids}),
                     )
@@ -389,10 +423,13 @@ class PostPROperations:
                         f"Cannot transition to '{target_status}'. Available transitions: {', '.join(available)}"
                     )
 
-                result = jira_call("jira_transition_issue", {
-                    "issue_key": ticket_id,
-                    "transition_id": str(transition_id),
-                })
+                result = jira_call(
+                    "jira_transition_issue",
+                    {
+                        "issue_key": ticket_id,
+                        "transition_id": str(transition_id),
+                    },
+                )
                 if result is None:
                     raise ValueError("Transition call returned None")
                 logger.info(f"Transitioned {ticket_id} to {target_status}")
@@ -431,10 +468,13 @@ class PostPROperations:
             if self.dry_run:
                 logger.info(f"[DRY RUN] Would add comment to {ticket_id}: {comment_text}")
             else:
-                result = jira_call("jira_add_comment", {
-                    "issue_key": ticket_id,
-                    "body": comment_text,
-                })
+                result = jira_call(
+                    "jira_add_comment",
+                    {
+                        "issue_key": ticket_id,
+                        "body": comment_text,
+                    },
+                )
                 if result is None:
                     raise ValueError("Failed to add comment via Jira MCP")
                 logger.info(f"Added comment to {ticket_id}")

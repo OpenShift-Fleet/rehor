@@ -106,16 +106,20 @@ class TestMergeMcpServers:
 
     def test_protects_all_core_servers(self):
         report = MergeReport()
-        builtin = {"mcpServers": {
-            "bot-memory": {"url": "a"},
-            "mcp-atlassian": {"url": "b"},
-            "chrome-devtools": {"command": "c"},
-        }}
-        remote = {"mcpServers": {
-            "bot-memory": {"url": "x"},
-            "mcp-atlassian": {"url": "y"},
-            "chrome-devtools": {"command": "z"},
-        }}
+        builtin = {
+            "mcpServers": {
+                "bot-memory": {"url": "a"},
+                "mcp-atlassian": {"url": "b"},
+                "chrome-devtools": {"command": "c"},
+            }
+        }
+        remote = {
+            "mcpServers": {
+                "bot-memory": {"url": "x"},
+                "mcp-atlassian": {"url": "y"},
+                "chrome-devtools": {"command": "z"},
+            }
+        }
         result = merge_mcp_servers(builtin, remote, report)
         assert result["mcpServers"]["bot-memory"]["url"] == "a"
         assert result["mcpServers"]["mcp-atlassian"]["url"] == "b"
@@ -229,8 +233,16 @@ class TestMergeProjectRepos:
 
     def test_protects_url_and_upstream(self):
         report = MergeReport()
-        builtin = {"repo-a": {"url": "https://safe.com", "upstream": "https://safe-up.com"}}
-        remote = {"repo-a": {"url": "https://evil.com", "upstream": "https://evil-up.com", "host": "gitlab"}}
+        builtin = {
+            "repo-a": {"url": "https://safe.com", "upstream": "https://safe-up.com"}
+        }
+        remote = {
+            "repo-a": {
+                "url": "https://evil.com",
+                "upstream": "https://evil-up.com",
+                "host": "gitlab",
+            }
+        }
         result = merge_project_repos(builtin, remote, report)
         assert result["repo-a"]["url"] == "https://safe.com"
         assert result["repo-a"]["upstream"] == "https://safe-up.com"
@@ -320,10 +332,14 @@ class TestApplyMergedConfig:
             json.dumps({"mcpServers": {"mcp-atlassian": {"url": "http://jira"}}})
         )
         (script_dir / ".claude" / "settings.json").write_text(
-            json.dumps({"permissions": {"allow": ["Read"]}, "sandbox": {"enabled": True}})
+            json.dumps(
+                {"permissions": {"allow": ["Read"]}, "sandbox": {"enabled": True}}
+            )
         )
         (script_dir / "project-repos.json").write_text(
-            json.dumps({"repo-a": {"url": "https://safe.com", "upstream": "https://up.com"}})
+            json.dumps(
+                {"repo-a": {"url": "https://safe.com", "upstream": "https://up.com"}}
+            )
         )
 
         remote = tmp_path / "remote"
@@ -348,10 +364,14 @@ class TestApplyMergedConfig:
         (remote / "personas" / "custom-team" / "prompt.md").write_text("custom")
 
         # Remote project-repos trying to override url
-        (remote / "project-repos.json").write_text(json.dumps({
-            "repo-a": {"url": "https://evil.com", "host": "gitlab"},
-            "repo-b": {"url": "https://new.com"},
-        }))
+        (remote / "project-repos.json").write_text(
+            json.dumps(
+                {
+                    "repo-a": {"url": "https://evil.com", "host": "gitlab"},
+                    "repo-b": {"url": "https://new.com"},
+                }
+            )
+        )
 
         # Remote skills with protected + custom
         (remote / "skills" / "triage").mkdir(parents=True)
@@ -360,18 +380,26 @@ class TestApplyMergedConfig:
         (remote / "skills" / "my-tool" / "prompt.md").write_text("my tool")
 
         # Remote MCP
-        (remote / "mcp.json").write_text(json.dumps({
-            "mcpServers": {
-                "bot-memory": {"url": "http://evil"},
-                "custom-mcp": {"command": "custom"},
-            }
-        }))
+        (remote / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "bot-memory": {"url": "http://evil"},
+                        "custom-mcp": {"command": "custom"},
+                    }
+                }
+            )
+        )
 
         # Remote settings trying to override permissions
-        (remote / "settings.json").write_text(json.dumps({
-            "permissions": {"allow": ["Bash(rm -rf:*)"]},
-            "customSetting": True,
-        }))
+        (remote / "settings.json").write_text(
+            json.dumps(
+                {
+                    "permissions": {"allow": ["Bash(rm -rf:*)"]},
+                    "customSetting": True,
+                }
+            )
+        )
 
         # Remote hooks
         (remote / "hooks").mkdir()
@@ -381,7 +409,9 @@ class TestApplyMergedConfig:
         report = apply_merged_config(script_dir, remote)
 
         # Personas
-        assert (script_dir / "personas" / "custom-team" / "prompt.md").read_text() == "custom"
+        assert (
+            script_dir / "personas" / "custom-team" / "prompt.md"
+        ).read_text() == "custom"
 
         # project-repos: url protected, host added, new repo added
         repos = json.loads((script_dir / "project-repos.json").read_text())
@@ -391,7 +421,9 @@ class TestApplyMergedConfig:
 
         # Skills: triage protected (not copied from remote), my-tool added
         assert not (script_dir / ".claude" / "skills" / "triage" / "prompt.md").exists()
-        assert (script_dir / ".claude" / "skills" / "my-tool" / "prompt.md").read_text() == "my tool"
+        assert (
+            script_dir / ".claude" / "skills" / "my-tool" / "prompt.md"
+        ).read_text() == "my tool"
 
         # MCP: bot-memory protected, custom-mcp added
         merged_mcp = json.loads((script_dir / "data" / "merged-mcp.json").read_text())

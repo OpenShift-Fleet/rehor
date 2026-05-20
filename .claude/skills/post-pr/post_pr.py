@@ -20,11 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="[post-pr] %(levelname)s: %(message)s",
-    stream=sys.stdout
-)
+logging.basicConfig(level=logging.INFO, format="[post-pr] %(levelname)s: %(message)s", stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 
@@ -193,12 +189,14 @@ def main():
     print("=" * 80)
 
     for op in result.operations:
-        status_icon = (
-            "[OK]" if op.status.value == "success"
-            else "[FAIL]" if op.status.value == "failed"
-            else "[SKIP]"
+        status_icon = "[OK]" if op.status.value == "success" else "[FAIL]" if op.status.value == "failed" else "[SKIP]"
+        level = (
+            logging.INFO
+            if op.status.value == "success"
+            else logging.WARNING
+            if op.status.value == "skipped"
+            else logging.ERROR
         )
-        level = logging.INFO if op.status.value == "success" else logging.WARNING if op.status.value == "skipped" else logging.ERROR
         logger.log(level, f"{status_icon} {op.operation}: {op.message}")
 
     print("=" * 80)

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Upload a file to GitHub Releases via the proxy upload endpoint."""
+
 import json
 import mimetypes
 import os

@@ -22,12 +22,15 @@ logger = logging.getLogger(__name__)
 TURN_WARNING_THRESHOLD = 0.75  # warn at 75% of max_turns
 TURN_CRITICAL_THRESHOLD = 0.90  # urgent at 90%
 
-DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status")
+DASHBOARD_URL = os.environ.get(
+    "BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status"
+)
 
 
 @dataclass
 class CycleContext:
     """Tracks what work was done during a cycle."""
+
     jira_key: str | None = None
     repo: str | None = None
     work_type: str | None = None
@@ -45,7 +48,12 @@ async def _push_status(
     try:
         await client.post(
             DASHBOARD_URL,
-            json={"state": state, "message": message, "jira_key": jira_key, "repo": repo},
+            json={
+                "state": state,
+                "message": message,
+                "jira_key": jira_key,
+                "repo": repo,
+            },
             timeout=2.0,
         )
     except Exception:
@@ -154,7 +162,11 @@ async def run_cycle(
         },
     )
 
-    instance_line = f" Your instance ID is: {instance_id}. Pass instance_id=\"{instance_id}\" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update)." if instance_id else ""
+    instance_line = (
+        f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update).'
+        if instance_id
+        else ""
+    )
     prompt = (
         f"Your primary label is: {label}.{instance_line} "
         "Follow the instructions in CLAUDE.md. "
@@ -195,9 +207,7 @@ async def run_cycle(
                                 # Log full text (truncated)
                                 logger.info("[agent] %s", text[:300])
                                 # Push to dashboard
-                                await _push_status(
-                                    http, "working", text[:500]
-                                )
+                                await _push_status(http, "working", text[:500])
                         elif hasattr(block, "name"):
                             desc = _describe_tool_use(block)
                             logger.info("[tool] %s", desc)

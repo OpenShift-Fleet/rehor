@@ -17,9 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from paths import SLEEP_FILE
 
-MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+MEMORY_URL = (
+    os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+)
 INSTANCE_ID = os.environ.get("BOT_INSTANCE_ID", "")
-PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+PROJECT_REPOS = (
+    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+)
 
 
 def http_get(url, headers=None, timeout=10):
@@ -39,14 +43,24 @@ def _instance_param():
 
 
 def get_tasks():
-    data = http_get(f"{MEMORY_URL}/api/tasks?exclude_status=archived&limit=50{_instance_param()}")
+    data = http_get(
+        f"{MEMORY_URL}/api/tasks?exclude_status=archived&limit=50{_instance_param()}"
+    )
     return data.get("items", []) if data else []
 
 
 def get_capacity():
-    data = http_get(f"{MEMORY_URL}/api/tasks?exclude_status=archived&exclude_status=done&exclude_status=paused&limit=50{_instance_param()}")
+    data = http_get(
+        f"{MEMORY_URL}/api/tasks?exclude_status=archived&exclude_status=done&exclude_status=paused&limit=50{_instance_param()}"
+    )
     if data and "items" in data:
-        n = len([t for t in data["items"] if t.get("status") in ("in_progress", "pr_open", "pr_changes")])
+        n = len(
+            [
+                t
+                for t in data["items"]
+                if t.get("status") in ("in_progress", "pr_open", "pr_changes")
+            ]
+        )
         return n, 10
     return 0, 10
 
@@ -54,9 +68,20 @@ def get_capacity():
 def gh_pr(owner_repo, num):
     try:
         r = subprocess.run(
-            ["gh", "pr", "view", str(num), "--repo", owner_repo,
-             "--json", "state,mergeable,statusCheckRollup,reviewDecision,reviews,url,title,isDraft"],
-            capture_output=True, text=True, timeout=15)
+            [
+                "gh",
+                "pr",
+                "view",
+                str(num),
+                "--repo",
+                owner_repo,
+                "--json",
+                "state,mergeable,statusCheckRollup,reviewDecision,reviews,url,title,isDraft",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         return json.loads(r.stdout) if r.returncode == 0 else None
     except Exception:
         return None
@@ -66,9 +91,17 @@ def gl_mr(project_path, num):
     encoded = project_path.replace("/", "%2F")
     try:
         r = subprocess.run(
-            ["glab", "api", f"projects/{encoded}/merge_requests/{num}",
-             "--hostname", "gitlab.cee.redhat.com"],
-            capture_output=True, text=True, timeout=15)
+            [
+                "glab",
+                "api",
+                f"projects/{encoded}/merge_requests/{num}",
+                "--hostname",
+                "gitlab.cee.redhat.com",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         return json.loads(r.stdout) if r.returncode == 0 else None
     except Exception:
         return None
@@ -76,13 +109,23 @@ def gl_mr(project_path, num):
 
 def gh_pr_comments(owner_repo, num):
     comments = []
-    for ep in [f"repos/{owner_repo}/pulls/{num}/comments",
-               f"repos/{owner_repo}/issues/{num}/comments"]:
+    for ep in [
+        f"repos/{owner_repo}/pulls/{num}/comments",
+        f"repos/{owner_repo}/issues/{num}/comments",
+    ]:
         try:
             r = subprocess.run(
-                ["gh", "api", ep, "--jq",
-                 '.[] | {a: .user.login, t: .created_at, b: .body}'],
-                capture_output=True, text=True, timeout=15)
+                [
+                    "gh",
+                    "api",
+                    ep,
+                    "--jq",
+                    ".[] | {a: .user.login, t: .created_at, b: .body}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
             if r.returncode == 0 and r.stdout.strip():
                 for line in r.stdout.strip().split("\n"):
                     try:
@@ -98,25 +141,41 @@ def gl_mr_notes(project_path, num):
     encoded = project_path.replace("/", "%2F")
     try:
         r = subprocess.run(
-            ["glab", "api", f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
-             "--hostname", "gitlab.cee.redhat.com"],
-            capture_output=True, text=True, timeout=15)
+            [
+                "glab",
+                "api",
+                f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
+                "--hostname",
+                "gitlab.cee.redhat.com",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
         if r.returncode == 0:
-            return [{"a": n.get("author", {}).get("username", "?"),
-                      "t": n.get("created_at", "")[:16],
-                      "b": n.get("body", "")}
-                     for n in json.loads(r.stdout) if not n.get("system")]
+            return [
+                {
+                    "a": n.get("author", {}).get("username", "?"),
+                    "t": n.get("created_at", "")[:16],
+                    "b": n.get("body", ""),
+                }
+                for n in json.loads(r.stdout)
+                if not n.get("system")
+            ]
     except Exception:
         pass
     return []
 
 
 def jira_issue(key):
-    return jira_call("jira_get_issue", {
-        "issue_key": key,
-        "fields": "summary,status,assignee,labels,issuelinks",
-        "comment_limit": 10,
-    })
+    return jira_call(
+        "jira_get_issue",
+        {
+            "issue_key": key,
+            "fields": "summary,status,assignee,labels,issuelinks",
+            "comment_limit": 10,
+        },
+    )
 
 
 def _parse_repo_path(url):
@@ -138,7 +197,7 @@ def upstream_repo(repo_name):
             return _parse_repo_path(up), "gitlab"
     except Exception:
         pass
-    return "", entry.get("host", "github") if 'entry' in dir() else "github"
+    return "", entry.get("host", "github") if "entry" in dir() else "github"
 
 
 def fmt_comments(comments, label, since=None):
@@ -146,14 +205,22 @@ def fmt_comments(comments, label, since=None):
         return f"  {label}: (none)"
     if since:
         since_prefix = since[:16]
-        comments = [c for c in comments
-                    if (c.get("t", c.get("created", ""))[:16]) > since_prefix]
+        comments = [
+            c
+            for c in comments
+            if (c.get("t", c.get("created", ""))[:16]) > since_prefix
+        ]
     if not comments:
         return f"  {label}: (none since last_addressed)"
     comments = list(reversed(comments))
     lines = [f"  {label} ({len(comments)}, newest first):"]
     for c in comments:
-        author = c.get("a", c.get("author", {}).get("displayName", "?") if isinstance(c.get("author"), dict) else c.get("author", "?"))
+        author = c.get(
+            "a",
+            c.get("author", {}).get("displayName", "?")
+            if isinstance(c.get("author"), dict)
+            else c.get("author", "?"),
+        )
         t = c.get("t", c.get("created", ""))[:16]
         body = c.get("b", c.get("body", ""))
         lines.append(f"    [{t}] {author}:")
@@ -177,7 +244,7 @@ def classify_gh(pr):
         issues.append(f"ci_fail:{','.join(failed)}")
     if pr.get("reviewDecision") == "CHANGES_REQUESTED":
         issues.append("changes_requested")
-    for r in (pr.get("reviews") or []):
+    for r in pr.get("reviews") or []:
         rstate = r.get("state", "")
         author = r.get("author", {}).get("login", "?")
         if rstate == "CHANGES_REQUESTED":
@@ -217,7 +284,11 @@ def enrich(task):
     all_issues = []
 
     for p in prs_info:
-        pr_repo, pr_num, pr_host = p.get("repo", repo), p.get("number"), p.get("host", "github")
+        pr_repo, pr_num, pr_host = (
+            p.get("repo", repo),
+            p.get("number"),
+            p.get("host", "github"),
+        )
         if not pr_num:
             continue
         up, dh = upstream_repo(pr_repo)
@@ -227,32 +298,60 @@ def enrich(task):
             data = gh_pr(up, pr_num)
             if data:
                 state, issues = classify_gh(data)
-                pr_results.append({"repo": pr_repo, "num": pr_num, "host": host, "state": state, "issues": issues, "data": data})
+                pr_results.append(
+                    {
+                        "repo": pr_repo,
+                        "num": pr_num,
+                        "host": host,
+                        "state": state,
+                        "issues": issues,
+                        "data": data,
+                    }
+                )
                 all_issues.extend(issues)
                 pr_comments.extend(gh_pr_comments(up, pr_num))
-                for rv in (data.get("reviews") or []):
+                for rv in data.get("reviews") or []:
                     body = (rv.get("body") or "").strip()
                     if body:
-                        pr_comments.append({
-                            "a": rv.get("author", {}).get("login", "?"),
-                            "t": rv.get("submittedAt", "")[:16],
-                            "b": f"[REVIEW {rv.get('state', '?')}] {body}",
-                        })
+                        pr_comments.append(
+                            {
+                                "a": rv.get("author", {}).get("login", "?"),
+                                "t": rv.get("submittedAt", "")[:16],
+                                "b": f"[REVIEW {rv.get('state', '?')}] {body}",
+                            }
+                        )
         elif host == "gitlab" and up:
             data = gl_mr(up, pr_num)
             if data:
                 state, issues = classify_gl(data)
-                pr_results.append({"repo": pr_repo, "num": pr_num, "host": host, "state": state, "issues": issues, "data": data})
+                pr_results.append(
+                    {
+                        "repo": pr_repo,
+                        "num": pr_num,
+                        "host": host,
+                        "state": state,
+                        "issues": issues,
+                        "data": data,
+                    }
+                )
                 all_issues.extend(issues)
                 pr_comments.extend(gl_mr_notes(up, pr_num))
 
     jira = jira_issue(task.get("jira_key", ""))
     jira_comments = []
     if jira:
-        jira_comments = (jira.get("fields", {}).get("comment", {}).get("comments") or [])[-10:]
+        jira_comments = (
+            jira.get("fields", {}).get("comment", {}).get("comments") or []
+        )[-10:]
 
-    return {"task": task, "prs": pr_results, "pr_comments": pr_comments,
-            "jira": jira, "jira_comments": jira_comments, "issues": all_issues}
+    return {
+        "task": task,
+        "prs": pr_results,
+        "pr_comments": pr_comments,
+        "jira": jira,
+        "jira_comments": jira_comments,
+        "issues": all_issues,
+    }
 
 
 def fmt_task(e):
@@ -271,7 +370,9 @@ def fmt_task(e):
 
     for p in e["prs"]:
         issue_str = ",".join(p["issues"]) if p["issues"] else "clean"
-        lines.append(f"  PR {p['repo']}#{p['num']} ({p['host']}) state={p['state']} [{issue_str}]")
+        lines.append(
+            f"  PR {p['repo']}#{p['num']} ({p['host']}) state={p['state']} [{issue_str}]"
+        )
 
     last_addr = t.get("last_addressed")
     if e["pr_comments"]:
@@ -287,10 +388,17 @@ def fmt_task(e):
             lt = lk.get("type", {}).get("name", "?")
             linked = lk.get("inwardIssue") or lk.get("outwardIssue", {})
             if linked:
-                lines.append(f"  link: {lt} {linked.get('key','?')} [{linked.get('fields',{}).get('status',{}).get('name','?')}]")
-        jc = [{"author": c.get("author", {}).get("displayName", "?"),
-               "t": c.get("created", "")[:16],
-               "b": c.get("body", "")} for c in e["jira_comments"]]
+                lines.append(
+                    f"  link: {lt} {linked.get('key', '?')} [{linked.get('fields', {}).get('status', {}).get('name', '?')}]"
+                )
+        jc = [
+            {
+                "author": c.get("author", {}).get("displayName", "?"),
+                "t": c.get("created", "")[:16],
+                "b": c.get("body", ""),
+            }
+            for c in e["jira_comments"]
+        ]
         lines.append(fmt_comments(jc, "jira_comments", since=last_addr))
     else:
         lines.append("  [jira unavailable — use jira_get_issue]")
@@ -302,8 +410,15 @@ def _is_bot_author(author):
     if not author or author == "?":
         return False
     a = author.lower()
-    return "[bot]" in a or a.endswith("-bot") or a in (
-        "github-actions", "dependabot", "renovate",
+    return (
+        "[bot]" in a
+        or a.endswith("-bot")
+        or a
+        in (
+            "github-actions",
+            "dependabot",
+            "renovate",
+        )
     )
 
 
@@ -332,30 +447,47 @@ def has_new_jira_feedback(e):
 
 def main():
     if not INSTANCE_ID:
-        print("FATAL: BOT_INSTANCE_ID env var not set. Multi-instance isolation requires it.", file=sys.stderr)
+        print(
+            "FATAL: BOT_INSTANCE_ID env var not set. Multi-instance isolation requires it.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     tasks = get_tasks()
     active_n, max_n = get_capacity()
 
-    active = [t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")]
+    active = [
+        t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")
+    ]
     paused = [t for t in tasks if t.get("status") == "paused"]
     done = [t for t in tasks if t.get("status") == "done"]
 
-    print(f"TRIAGE | capacity: {active_n}/{max_n} | active: {len(active)} | paused: {len(paused)} | done: {len(done)}")
+    print(
+        f"TRIAGE | capacity: {active_n}/{max_n} | active: {len(active)} | paused: {len(paused)} | done: {len(done)}"
+    )
     print()
 
     if not active:
         print("NO ACTIVE TASKS -> Priority 2 (new Jira work)")
         if done:
-            print(f"done pending archival: {','.join(t.get('jira_key','?') for t in done)}")
+            print(
+                f"done pending archival: {','.join(t.get('jira_key', '?') for t in done)}"
+            )
         if paused:
-            print(f"paused: {','.join(t.get('jira_key','?') for t in paused)}")
+            print(f"paused: {','.join(t.get('jira_key', '?') for t in paused)}")
         return
 
     enriched = [enrich(t) for t in active]
 
-    merged, closed, ci_fail, conflict, feedback, interrupted, clean = [], [], [], [], [], [], []
+    merged, closed, ci_fail, conflict, feedback, interrupted, clean = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
 
     for e in enriched:
         issues = e["issues"]
@@ -370,9 +502,18 @@ def main():
             ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif any(i in ("changes_requested", "unresolved_threads") or i.startswith("review:") or i.startswith("review_comment:") for i in issues):
+        elif any(
+            i in ("changes_requested", "unresolved_threads")
+            or i.startswith("review:")
+            or i.startswith("review_comment:")
+            for i in issues
+        ):
             feedback.append(e)
-        elif t.get("status") == "in_progress" and not t.get("pr_number") and not meta.get("prs"):
+        elif (
+            t.get("status") == "in_progress"
+            and not t.get("pr_number")
+            and not meta.get("prs")
+        ):
             interrupted.append(e)
         elif has_new_pr_feedback(e):
             feedback.append(e)
@@ -388,7 +529,9 @@ def main():
             print()
 
     if closed:
-        print(f"== CLOSED ({len(closed)}) — PR closed without merge, investigate + archive or reopen ==")
+        print(
+            f"== CLOSED ({len(closed)}) — PR closed without merge, investigate + archive or reopen =="
+        )
         for e in closed:
             print(fmt_task(e))
             print()
@@ -421,20 +564,35 @@ def main():
         print(f"== CLEAN ({len(clean)}) — no action ==")
         for e in clean:
             t = e["task"]
-            print(f"  {t.get('jira_key','?')} [{t.get('status','?')}] {t.get('repo','?')}")
+            print(
+                f"  {t.get('jira_key', '?')} [{t.get('status', '?')}] {t.get('repo', '?')}"
+            )
         print()
 
     if paused:
-        print(f"PAUSED: {' | '.join(t.get('jira_key','?')+':'+str(t.get('paused_reason','')) for t in paused)}")
+        print(
+            f"PAUSED: {' | '.join(t.get('jira_key', '?') + ':' + str(t.get('paused_reason', '')) for t in paused)}"
+        )
     if done:
-        print(f"DONE (archive?): {','.join(t.get('jira_key','?') for t in done)}")
+        print(f"DONE (archive?): {','.join(t.get('jira_key', '?') for t in done)}")
 
-    total = len(merged) + len(closed) + len(ci_fail) + len(conflict) + len(feedback) + len(interrupted)
+    total = (
+        len(merged)
+        + len(closed)
+        + len(ci_fail)
+        + len(conflict)
+        + len(feedback)
+        + len(interrupted)
+    )
     if total == 0:
         print("-> all clean -> Priority 2")
         if active_n >= max_n:
             SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "at_capacity_all_clean"}))
+            SLEEP_FILE.write_text(
+                json.dumps(
+                    {"recommended_sleep": 3600, "reason": "at_capacity_all_clean"}
+                )
+            )
     else:
         print(f"-> {total} task(s) need work. Top bucket first. ONE/cycle.")
 

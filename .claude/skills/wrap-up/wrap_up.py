@@ -15,8 +15,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 
-MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
-PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+MEMORY_URL = (
+    os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+)
+PROJECT_REPOS = (
+    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+)
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
 
@@ -38,7 +42,6 @@ def http_request(url, method="GET", body=None, headers=None, timeout=15):
     except Exception as e:
         print(f"  ERR {method} {url}: {e}", file=sys.stderr)
         return None
-
 
 
 def get_task(jira_key):
@@ -65,7 +68,9 @@ def get_upstream_info(repo_name):
         entry = repos.get(repo_name, {})
         upstream = entry.get("upstream", "")
         host = entry.get("host", "github")
-        parsed = urllib.parse.urlparse(upstream if "://" in upstream else f"https://{upstream}")
+        parsed = urllib.parse.urlparse(
+            upstream if "://" in upstream else f"https://{upstream}"
+        )
         hostname = parsed.hostname or ""
         if "gitlab" in hostname:
             host = "gitlab"
@@ -88,10 +93,13 @@ def jira_transition_release_pending(jira_key):
     if not target:
         avail = [t.get("name") for t in transitions]
         return False, f"'Release Pending' not available. Available: {avail}"
-    result = jira_call("jira_transition_issue", {
-        "issue_key": jira_key,
-        "transition_id": str(target["id"]),
-    })
+    result = jira_call(
+        "jira_transition_issue",
+        {
+            "issue_key": jira_key,
+            "transition_id": str(target["id"]),
+        },
+    )
     if result is None:
         return False, "transition failed"
     return True, target["name"]
@@ -114,10 +122,13 @@ def jira_comment(jira_key, pr_info):
         f"{''.join(pr_lines) if pr_lines else '(no PR info)'}\n\n"
         f"Changes will be deployed to stage with the next release."
     )
-    result = jira_call("jira_add_comment", {
-        "issue_key": jira_key,
-        "body": body,
-    })
+    result = jira_call(
+        "jira_add_comment",
+        {
+            "issue_key": jira_key,
+            "body": body,
+        },
+    )
     return result is not None
 
 
@@ -170,9 +181,18 @@ def delete_remote_branch(repo_name, branch, host, upstream_path):
         encoded_project = urllib.parse.quote(upstream_path, safe="")
         try:
             r = subprocess.run(
-                ["glab", "api", f"projects/{encoded_project}/repository/branches/{encoded_branch}",
-                 "-X", "DELETE", "--hostname", "gitlab.cee.redhat.com"],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "glab",
+                    "api",
+                    f"projects/{encoded_project}/repository/branches/{encoded_branch}",
+                    "-X",
+                    "DELETE",
+                    "--hostname",
+                    "gitlab.cee.redhat.com",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             out = r.stderr.strip() or r.stdout.strip()
             if r.returncode == 0:
@@ -195,7 +215,9 @@ def delete_remote_branch(repo_name, branch, host, upstream_path):
             try:
                 r = subprocess.run(
                     ["gh", "api", target, "-X", "DELETE"],
-                    capture_output=True, text=True, timeout=15,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
                 )
                 out = r.stderr.strip() or r.stdout.strip()
                 if r.returncode == 0:
@@ -216,7 +238,9 @@ def delete_local_branch(repo_name, branch):
     try:
         r = subprocess.run(
             ["git", "branch", "-D", branch],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
             cwd=str(repo_dir),
         )
         out = r.stderr.strip() or r.stdout.strip()
@@ -252,7 +276,14 @@ def main():
 
     if not pr_info and task.get("pr_number"):
         _, host = get_upstream_info(repo)
-        pr_info = [{"repo": repo, "number": task["pr_number"], "url": task.get("pr_url", ""), "host": host}]
+        pr_info = [
+            {
+                "repo": repo,
+                "number": task["pr_number"],
+                "url": task.get("pr_url", ""),
+                "host": host,
+            }
+        ]
 
     print(f"WRAP-UP {jira_key}")
     print(f"  repo: {repo}")

@@ -16,7 +16,6 @@ COOLDOWN_HOURS = 48  # Don't re-notify same task within this window
 
 
 def register_slack_tools(mcp: FastMCP):
-
     @mcp.tool()
     async def slack_notify(
         jira_key: str,
@@ -45,7 +44,8 @@ def register_slack_tools(mcp: FastMCP):
             WHERE jira_key = $1 AND sent_at > $2
             ORDER BY sent_at DESC LIMIT 1
             """,
-            jira_key, cutoff,
+            jira_key,
+            cutoff,
         )
 
         if recent:
@@ -69,13 +69,20 @@ def register_slack_tools(mcp: FastMCP):
             INSERT INTO slack_notifications (jira_key, event_type, message)
             VALUES ($1, $2, $3)
             """,
-            jira_key, event_type, message,
+            jira_key,
+            event_type,
+            message,
         )
 
-        await bus.publish(Event("slack_notification", {
-            "jira_key": jira_key,
-            "event_type": event_type,
-            "message": message,
-        }))
+        await bus.publish(
+            Event(
+                "slack_notification",
+                {
+                    "jira_key": jira_key,
+                    "event_type": event_type,
+                    "message": message,
+                },
+            )
+        )
 
         return {"sent": True, "reason": "ok"}

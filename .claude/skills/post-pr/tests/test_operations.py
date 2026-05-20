@@ -63,12 +63,14 @@ class TestTaskUpdate:
     @patch("scripts.post_pr_operations.subprocess.run")
     def test_task_update_github_success(self, mock_run, operations):
         """Test successful GitHub PR update via gh CLI."""
-        mock_run.side_effect = _mock_subprocess_run([
-            {"stdout": json.dumps([{"name": "code-review"}, {"name": "awaiting-review"}])},
-            {"stdout": json.dumps({"body": "Existing PR description"})},
-            {"stdout": json.dumps({"body": "Updated description"})},
-            {"stdout": json.dumps({"requested_reviewers": [{"login": "user1"}, {"login": "user2"}]})},
-        ])
+        mock_run.side_effect = _mock_subprocess_run(
+            [
+                {"stdout": json.dumps([{"name": "code-review"}, {"name": "awaiting-review"}])},
+                {"stdout": json.dumps({"body": "Existing PR description"})},
+                {"stdout": json.dumps({"body": "Updated description"})},
+                {"stdout": json.dumps({"requested_reviewers": [{"login": "user1"}, {"login": "user2"}]})},
+            ]
+        )
 
         result = operations.task_update(
             pr_url="https://github.com/RedHatInsights/hcc-ai-assistant/pull/123",
@@ -126,11 +128,13 @@ class TestTaskUpdate:
     @patch("scripts.post_pr_operations.subprocess.run")
     def test_task_update_no_reviewers(self, mock_run, operations):
         """Test GitHub PR update without reviewers."""
-        mock_run.side_effect = _mock_subprocess_run([
-            {"stdout": json.dumps([{"name": "code-review"}])},
-            {"stdout": json.dumps({"body": "Existing PR description"})},
-            {"stdout": json.dumps({"body": "Updated"})},
-        ])
+        mock_run.side_effect = _mock_subprocess_run(
+            [
+                {"stdout": json.dumps([{"name": "code-review"}])},
+                {"stdout": json.dumps({"body": "Existing PR description"})},
+                {"stdout": json.dumps({"body": "Updated"})},
+            ]
+        )
 
         result = operations.task_update(
             pr_url="https://github.com/test/repo/pull/3", pr_number=3, ticket_id="TICKET-111", reviewers=None
@@ -152,9 +156,11 @@ class TestTaskUpdate:
     @patch("scripts.post_pr_operations.subprocess.run")
     def test_task_update_gh_cli_failure(self, mock_run, operations):
         """Test GitHub PR update when gh CLI fails."""
-        mock_run.side_effect = _mock_subprocess_run([
-            {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)"},
-        ])
+        mock_run.side_effect = _mock_subprocess_run(
+            [
+                {"returncode": 1, "stderr": "gh: Not Found (HTTP 404)"},
+            ]
+        )
 
         result = operations.task_update(
             pr_url="https://github.com/test/repo/pull/99", pr_number=99, ticket_id="TICKET-999", reviewers=None
@@ -166,13 +172,15 @@ class TestTaskUpdate:
     @patch("scripts.post_pr_operations.subprocess.run")
     def test_task_update_gitlab_success(self, mock_run, operations):
         """Test successful GitLab MR update via glab CLI."""
-        mock_run.side_effect = _mock_subprocess_run([
-            {"stdout": json.dumps({"labels": ["code-review", "awaiting-review"]})},
-            {"stdout": json.dumps({"description": "Existing MR description"})},
-            {"stdout": json.dumps({"description": "Updated"})},
-            {"stdout": json.dumps([{"id": 42, "username": "reviewer1"}])},
-            {"stdout": json.dumps({"reviewers": [{"id": 42}]})},
-        ])
+        mock_run.side_effect = _mock_subprocess_run(
+            [
+                {"stdout": json.dumps({"labels": ["code-review", "awaiting-review"]})},
+                {"stdout": json.dumps({"description": "Existing MR description"})},
+                {"stdout": json.dumps({"description": "Updated"})},
+                {"stdout": json.dumps([{"id": 42, "username": "reviewer1"}])},
+                {"stdout": json.dumps({"reviewers": [{"id": 42}]})},
+            ]
+        )
 
         result = operations.task_update(
             pr_url="https://gitlab.cee.redhat.com/insights-qe/test-repo/-/merge_requests/5",
@@ -293,10 +301,13 @@ class TestJiraAddComment:
         assert "Test PR summary" in result.details["comment"]
         assert "https://github.com/test/repo/pull/1" in result.details["comment"]
 
-        mock_jira_call.assert_called_once_with("jira_add_comment", {
-            "issue_key": "TICKET-123",
-            "body": "Pull Request created: https://github.com/test/repo/pull/1\n\nSummary: Test PR summary",
-        })
+        mock_jira_call.assert_called_once_with(
+            "jira_add_comment",
+            {
+                "issue_key": "TICKET-123",
+                "body": "Pull Request created: https://github.com/test/repo/pull/1\n\nSummary: Test PR summary",
+            },
+        )
 
     @patch("scripts.post_pr_operations.jira_call")
     def test_jira_add_comment_mcp_fails(self, mock_jira_call, operations):
@@ -568,9 +579,7 @@ class TestParseURL:
 
     def test_parse_gitlab_url(self, operations):
         """Test parsing GitLab MR URL."""
-        info = operations._parse_pr_url(
-            "https://gitlab.cee.redhat.com/insights-qe/test-repo/-/merge_requests/5"
-        )
+        info = operations._parse_pr_url("https://gitlab.cee.redhat.com/insights-qe/test-repo/-/merge_requests/5")
         assert info["host"] == "gitlab"
         assert info["hostname"] == "gitlab.cee.redhat.com"
         assert info["owner"] == "insights-qe"
@@ -579,9 +588,7 @@ class TestParseURL:
 
     def test_parse_gitlab_nested_url(self, operations):
         """Test parsing GitLab MR URL with nested groups."""
-        info = operations._parse_pr_url(
-            "https://gitlab.cee.redhat.com/service/platform/backend/-/merge_requests/42"
-        )
+        info = operations._parse_pr_url("https://gitlab.cee.redhat.com/service/platform/backend/-/merge_requests/42")
         assert info["host"] == "gitlab"
         assert info["owner"] == "service/platform"
         assert info["repo"] == "backend"
@@ -594,9 +601,7 @@ class TestParseURL:
 
     def test_parse_selfhosted_gitlab_url(self, operations):
         """Test parsing self-hosted GitLab MR URL (detected by path pattern)."""
-        info = operations._parse_pr_url(
-            "https://gitlab.internal.example.com/team/project/-/merge_requests/10"
-        )
+        info = operations._parse_pr_url("https://gitlab.internal.example.com/team/project/-/merge_requests/10")
         assert info["host"] == "gitlab"
         assert info["hostname"] == "gitlab.internal.example.com"
         assert info["owner"] == "team"

@@ -18,7 +18,6 @@ BOT_ACCOUNTS = frozenset(
 
 
 def register_org_member_tools(mcp: FastMCP):
-
     @mcp.tool()
     async def check_org_member(username: str, org: str) -> dict:
         """Check if a GitHub user is a member of an org. Returns cached result if fresh (24h TTL).
@@ -39,7 +38,8 @@ def register_org_member_tools(mcp: FastMCP):
         pool = get_pool()
         row = await pool.fetchrow(
             "SELECT is_member, checked_at FROM org_members WHERE username = $1 AND org = $2",
-            username.lower(), org.lower(),
+            username.lower(),
+            org.lower(),
         )
         if row:
             age = datetime.now(timezone.utc) - row["checked_at"]
@@ -66,7 +66,9 @@ def register_org_member_tools(mcp: FastMCP):
             DO UPDATE SET is_member = $3, checked_at = NOW()
             RETURNING *
             """,
-            username.lower(), org.lower(), is_member,
+            username.lower(),
+            org.lower(),
+            is_member,
         )
         return {
             "username": row["username"],

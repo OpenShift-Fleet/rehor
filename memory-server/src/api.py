@@ -1,4 +1,5 @@
 """REST API endpoints for the web dashboard."""
+
 import json
 import logging
 import os
@@ -37,9 +38,7 @@ async def api_tasks(request: Request) -> JSONResponse:
             where += f" AND instance_id = ${idx}"
             base_params.append(instance_id)
 
-        total = await pool.fetchval(
-            f"SELECT COUNT(*) FROM tasks {where}", *base_params
-        )
+        total = await pool.fetchval(f"SELECT COUNT(*) FROM tasks {where}", *base_params)
         order_col = "last_addressed" if status == "archived" else "created_at"
         base_params.extend([limit, offset])
         rows = await pool.fetch(
@@ -54,9 +53,7 @@ async def api_tasks(request: Request) -> JSONResponse:
             where += f" AND instance_id = ${idx}"
             base_params.append(instance_id)
 
-        total = await pool.fetchval(
-            f"SELECT COUNT(*) FROM tasks {where}", *base_params
-        )
+        total = await pool.fetchval(f"SELECT COUNT(*) FROM tasks {where}", *base_params)
         base_params.extend([limit, offset])
         rows = await pool.fetch(
             f"SELECT * FROM tasks {where} ORDER BY created_at DESC LIMIT ${len(base_params) - 1} OFFSET ${len(base_params)}",
@@ -69,13 +66,16 @@ async def api_tasks(request: Request) -> JSONResponse:
             )
             rows = await pool.fetch(
                 "SELECT * FROM tasks WHERE instance_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-                instance_id, limit, offset,
+                instance_id,
+                limit,
+                offset,
             )
         else:
             total = await pool.fetchval("SELECT COUNT(*) FROM tasks")
             rows = await pool.fetch(
                 "SELECT * FROM tasks ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-                limit, offset,
+                limit,
+                offset,
             )
 
     # Fetch latest Slack notification per task
@@ -98,12 +98,14 @@ async def api_tasks(request: Request) -> JSONResponse:
                 "sent_at": nr["sent_at"].isoformat(),
             }
 
-    return JSONResponse({
-        "items": [_task(r, notifications.get(r["jira_key"])) for r in rows],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    })
+    return JSONResponse(
+        {
+            "items": [_task(r, notifications.get(r["jira_key"])) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
 
 
 async def api_task_delete(request: Request) -> JSONResponse:
@@ -133,8 +135,12 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
         jira_key,
     )
     if not row:
-        return JSONResponse({"error": f"Task {jira_key} not found or not archived"}, status_code=404)
-    await bus.publish(Event("task_updated", {"jira_key": jira_key, "status": "in_progress"}))
+        return JSONResponse(
+            {"error": f"Task {jira_key} not found or not archived"}, status_code=404
+        )
+    await bus.publish(
+        Event("task_updated", {"jira_key": jira_key, "status": "in_progress"})
+    )
     return JSONResponse({"unarchived": True, "jira_key": jira_key, "task": _task(row)})
 
 
@@ -148,33 +154,41 @@ async def api_memories(request: Request) -> JSONResponse:
 
     conditions, params, idx = [], [], 0
     if category:
-        idx += 1; conditions.append(f"category = ${idx}"); params.append(category)
+        idx += 1
+        conditions.append(f"category = ${idx}")
+        params.append(category)
     if repo:
-        idx += 1; conditions.append(f"repo = ${idx}"); params.append(repo)
+        idx += 1
+        conditions.append(f"repo = ${idx}")
+        params.append(repo)
     if tag:
-        idx += 1; conditions.append(f"${idx} = ANY(tags)"); params.append(tag)
+        idx += 1
+        conditions.append(f"${idx} = ANY(tags)")
+        params.append(tag)
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    total = await pool.fetchval(
-        f"SELECT COUNT(*) FROM memories {where}", *params
-    )
+    total = await pool.fetchval(f"SELECT COUNT(*) FROM memories {where}", *params)
 
-    idx += 1; params.append(limit)
+    idx += 1
+    params.append(limit)
     limit_idx = idx
-    idx += 1; params.append(offset)
+    idx += 1
+    params.append(offset)
     offset_idx = idx
 
     rows = await pool.fetch(
         f"SELECT id, category, repo, jira_key, title, content, tags, created_at, metadata FROM memories {where} ORDER BY created_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}",
         *params,
     )
-    return JSONResponse({
-        "items": [_memory(r) for r in rows],
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-    })
+    return JSONResponse(
+        {
+            "items": [_memory(r) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
 
 
 async def api_memory_search(request: Request) -> JSONResponse:
@@ -191,11 +205,17 @@ async def api_memory_search(request: Request) -> JSONResponse:
     vector = embed(query)
     conditions, params, idx = [], [vector, limit], 2
     if category:
-        idx += 1; conditions.append(f"category = ${idx}"); params.append(category)
+        idx += 1
+        conditions.append(f"category = ${idx}")
+        params.append(category)
     if repo:
-        idx += 1; conditions.append(f"repo = ${idx}"); params.append(repo)
+        idx += 1
+        conditions.append(f"repo = ${idx}")
+        params.append(repo)
     if tag:
-        idx += 1; conditions.append(f"${idx} = ANY(tags)"); params.append(tag)
+        idx += 1
+        conditions.append(f"${idx} = ANY(tags)")
+        params.append(tag)
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = await pool.fetch(
@@ -207,7 +227,9 @@ async def api_memory_search(request: Request) -> JSONResponse:
         """,
         *params,
     )
-    return JSONResponse([{**_memory(r), "similarity": round(1 - r["distance"], 4)} for r in rows])
+    return JSONResponse(
+        [{**_memory(r), "similarity": round(1 - r["distance"], 4)} for r in rows]
+    )
 
 
 async def api_memory_embeddings(request: Request) -> JSONResponse:
@@ -220,6 +242,7 @@ async def api_memory_embeddings(request: Request) -> JSONResponse:
         return JSONResponse([])
 
     import numpy as np
+
     embeddings = np.array([list(r["embedding"]) for r in rows])
 
     # Center and PCA → 3 components
@@ -243,17 +266,19 @@ async def api_memory_embeddings(request: Request) -> JSONResponse:
 
     result = []
     for i, r in enumerate(rows):
-        result.append({
-            "id": r["id"],
-            "title": r["title"],
-            "content": r["content"][:200],
-            "category": r["category"],
-            "repo": r["repo"],
-            "tags": list(r["tags"]) if r["tags"] else [],
-            "x": float(proj[i, 0]),
-            "y": float(proj[i, 1]),
-            "z": float(proj[i, 2]),
-        })
+        result.append(
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "content": r["content"][:200],
+                "category": r["category"],
+                "repo": r["repo"],
+                "tags": list(r["tags"]) if r["tags"] else [],
+                "x": float(proj[i, 0]),
+                "y": float(proj[i, 1]),
+                "z": float(proj[i, 2]),
+            }
+        )
     return JSONResponse(result)
 
 
@@ -316,7 +341,9 @@ async def api_memory_upload(request: Request) -> JSONResponse:
 
             existing = await pool.fetchval(
                 "SELECT id FROM memories WHERE title = $1 AND category = $2 AND repo IS NOT DISTINCT FROM $3",
-                title, category, repo,
+                title,
+                category,
+                repo,
             )
             if existing:
                 errors.append({"index": i, "title": title, "reason": "duplicate"})
@@ -329,12 +356,21 @@ async def api_memory_upload(request: Request) -> JSONResponse:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING *
                 """,
-                category, repo, jira_key, title, content,
+                category,
+                repo,
+                jira_key,
+                title,
+                content,
                 tags or [],
                 vector,
                 json.dumps(metadata or {}),
             )
-            await bus.publish(Event("memory_stored", {"id": row["id"], "title": title, "category": category}))
+            await bus.publish(
+                Event(
+                    "memory_stored",
+                    {"id": row["id"], "title": title, "category": category},
+                )
+            )
             uploaded += 1
         except KeyError as e:
             errors.append({"index": i, "reason": f"missing field: {e}"})
@@ -352,15 +388,19 @@ async def api_bot_status(request: Request) -> JSONResponse:
     row = await pool.fetchrow("SELECT * FROM bot_status WHERE id = 1")
     if not row:
         return JSONResponse({"state": "unknown", "message": ""})
-    return JSONResponse({
-        "state": row["state"],
-        "message": row["message"],
-        "jira_key": row["jira_key"],
-        "repo": row["repo"],
-        "instance_id": row.get("instance_id"),
-        "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
-        "updated_at": row["updated_at"].isoformat(),
-    })
+    return JSONResponse(
+        {
+            "state": row["state"],
+            "message": row["message"],
+            "jira_key": row["jira_key"],
+            "repo": row["repo"],
+            "instance_id": row.get("instance_id"),
+            "cycle_start": row["cycle_start"].isoformat()
+            if row["cycle_start"]
+            else None,
+            "updated_at": row["updated_at"].isoformat(),
+        }
+    )
 
 
 async def api_bot_status_update(request: Request) -> JSONResponse:
@@ -373,7 +413,9 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
     repo = body.get("repo")
 
     if state not in ("working", "idle", "error"):
-        return JSONResponse({"error": "state must be working, idle, or error"}, status_code=400)
+        return JSONResponse(
+            {"error": "state must be working, idle, or error"}, status_code=400
+        )
 
     row = await pool.fetchrow(
         """
@@ -382,7 +424,10 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             updated_at = NOW()
         WHERE id = 1 RETURNING *
         """,
-        state, message, jira_key, repo,
+        state,
+        message,
+        jira_key,
+        repo,
     )
     result = {
         "state": row["state"],
@@ -416,17 +461,21 @@ async def api_instances(request: Request) -> JSONResponse:
 
     result = []
     for r in instance_rows:
-        result.append({
-            "instance_id": r["instance_id"],
-            "state": r["state"],
-            "message": r["message"],
-            "jira_key": r["jira_key"],
-            "repo": r["repo"],
-            "cycle_start": r["cycle_start"].isoformat() if r["cycle_start"] else None,
-            "updated_at": r["updated_at"].isoformat(),
-            "active_tasks": counts_map.get(r["instance_id"], 0),
-            "max_tasks": 10,
-        })
+        result.append(
+            {
+                "instance_id": r["instance_id"],
+                "state": r["state"],
+                "message": r["message"],
+                "jira_key": r["jira_key"],
+                "repo": r["repo"],
+                "cycle_start": r["cycle_start"].isoformat()
+                if r["cycle_start"]
+                else None,
+                "updated_at": r["updated_at"].isoformat(),
+                "active_tasks": counts_map.get(r["instance_id"], 0),
+                "max_tasks": 10,
+            }
+        )
     return JSONResponse(result)
 
 
@@ -441,7 +490,8 @@ async def api_costs(request: Request) -> JSONResponse:
     pidx = len(date_params) + 1
     rows = await pool.fetch(
         f"SELECT * FROM cycles WHERE {date_filter} ORDER BY timestamp DESC LIMIT ${pidx}",
-        *date_params, limit,
+        *date_params,
+        limit,
     )
     items = [_cycle(r) for r in rows]
 
@@ -466,19 +516,22 @@ async def api_costs(request: Request) -> JSONResponse:
         """,
         *date_params,
     )
-    daily = [{
-        "day": str(r["day"]),
-        "cycles": r["cycles"],
-        "total_cost": float(r["total_cost"] or 0),
-        "input_tokens": r["input_tokens"],
-        "output_tokens": r["output_tokens"],
-        "cache_read": r["cache_read"],
-        "cache_write": r["cache_write"],
-        "total_duration": r["total_duration"],
-        "total_turns": r["total_turns"],
-        "idle_cycles": r["idle_cycles"],
-        "error_cycles": r["error_cycles"],
-    } for r in daily_rows]
+    daily = [
+        {
+            "day": str(r["day"]),
+            "cycles": r["cycles"],
+            "total_cost": float(r["total_cost"] or 0),
+            "input_tokens": r["input_tokens"],
+            "output_tokens": r["output_tokens"],
+            "cache_read": r["cache_read"],
+            "cache_write": r["cache_write"],
+            "total_duration": r["total_duration"],
+            "total_turns": r["total_turns"],
+            "idle_cycles": r["idle_cycles"],
+            "error_cycles": r["error_cycles"],
+        }
+        for r in daily_rows
+    ]
 
     return JSONResponse({"items": items, "daily": daily})
 
@@ -658,53 +711,66 @@ async def api_analytics(request: Request) -> JSONResponse:
         *date_params,
     )
 
-    return JSONResponse({
-        "summary": {
-            "total_cycles": summary["total_cycles"],
-            "work_cycles": summary["work_cycles"],
-            "idle_cycles": summary["idle_cycles"],
-            "error_cycles": summary["error_cycles"],
-            "unique_tickets": summary["unique_tickets"],
-            "total_cost": float(summary["total_cost"] or 0),
-            "avg_cost_per_work_cycle": float(summary["avg_cost_per_work_cycle"] or 0),
-            "avg_turns": float(summary["avg_turns"] or 0),
-            "avg_duration_ms": float(summary["avg_duration_ms"] or 0),
-            "repos_touched": summary["repos_touched"],
-            "tickets_resolved": resolved,
-        },
-        "work_types": [{
-            "category": r["category"],
-            "cycles": r["cycles"],
-            "total_cost": float(r["total_cost"]),
-            "avg_cost": float(r["avg_cost"]),
-            "avg_turns": float(r["avg_turns"]),
-            "avg_duration_ms": float(r["avg_duration_ms"]),
-        } for r in work_type_rows],
-        "repos": [{
-            "repo": r["repo"],
-            "tickets": r["tickets"],
-            "cycles": r["cycles"],
-            "total_cost": float(r["total_cost"]),
-            "avg_turns": float(r["avg_turns"]),
-        } for r in repo_rows],
-        "tickets": [{
-            "jira_key": r["jira_key"],
-            "title": r["title"],
-            "status": r["task_status"],
-            "repo": r["repo"],
-            "total_cycles": r["total_cycles"],
-            "impl_cycles": r["impl_cycles"],
-            "review_cycles": r["review_cycles"],
-            "total_cost": float(r["total_cost"]),
-            "hours_span": float(r["hours_span"] or 0),
-        } for r in ticket_rows],
-        "feedback": {
-            "avg_review_rounds": float(avg_reviews["avg_review_rounds"] or 0),
-            "zero_review": avg_reviews["zero_review"],
-            "one_review": avg_reviews["one_review"],
-            "multi_review": avg_reviews["multi_review"],
-        },
-    })
+    return JSONResponse(
+        {
+            "summary": {
+                "total_cycles": summary["total_cycles"],
+                "work_cycles": summary["work_cycles"],
+                "idle_cycles": summary["idle_cycles"],
+                "error_cycles": summary["error_cycles"],
+                "unique_tickets": summary["unique_tickets"],
+                "total_cost": float(summary["total_cost"] or 0),
+                "avg_cost_per_work_cycle": float(
+                    summary["avg_cost_per_work_cycle"] or 0
+                ),
+                "avg_turns": float(summary["avg_turns"] or 0),
+                "avg_duration_ms": float(summary["avg_duration_ms"] or 0),
+                "repos_touched": summary["repos_touched"],
+                "tickets_resolved": resolved,
+            },
+            "work_types": [
+                {
+                    "category": r["category"],
+                    "cycles": r["cycles"],
+                    "total_cost": float(r["total_cost"]),
+                    "avg_cost": float(r["avg_cost"]),
+                    "avg_turns": float(r["avg_turns"]),
+                    "avg_duration_ms": float(r["avg_duration_ms"]),
+                }
+                for r in work_type_rows
+            ],
+            "repos": [
+                {
+                    "repo": r["repo"],
+                    "tickets": r["tickets"],
+                    "cycles": r["cycles"],
+                    "total_cost": float(r["total_cost"]),
+                    "avg_turns": float(r["avg_turns"]),
+                }
+                for r in repo_rows
+            ],
+            "tickets": [
+                {
+                    "jira_key": r["jira_key"],
+                    "title": r["title"],
+                    "status": r["task_status"],
+                    "repo": r["repo"],
+                    "total_cycles": r["total_cycles"],
+                    "impl_cycles": r["impl_cycles"],
+                    "review_cycles": r["review_cycles"],
+                    "total_cost": float(r["total_cost"]),
+                    "hours_span": float(r["hours_span"] or 0),
+                }
+                for r in ticket_rows
+            ],
+            "feedback": {
+                "avg_review_rounds": float(avg_reviews["avg_review_rounds"] or 0),
+                "zero_review": avg_reviews["zero_review"],
+                "one_review": avg_reviews["one_review"],
+                "multi_review": avg_reviews["multi_review"],
+            },
+        }
+    )
 
 
 async def api_tags(request: Request) -> JSONResponse:
@@ -727,14 +793,16 @@ async def api_stats(request: Request) -> JSONResponse:
     memories_by_repo = await pool.fetch(
         "SELECT COALESCE(repo, 'unset') as repo, COUNT(*) as count FROM memories GROUP BY repo ORDER BY count DESC"
     )
-    return JSONResponse({
-        "tasks": {r["status"]: r["count"] for r in tasks_by_status},
-        "memories": {
-            "total": memory_count,
-            "by_category": {r["category"]: r["count"] for r in memories_by_cat},
-            "by_repo": {r["repo"]: r["count"] for r in memories_by_repo},
-        },
-    })
+    return JSONResponse(
+        {
+            "tasks": {r["status"]: r["count"] for r in tasks_by_status},
+            "memories": {
+                "total": memory_count,
+                "by_category": {r["category"]: r["count"] for r in memories_by_cat},
+                "by_repo": {r["repo"]: r["count"] for r in memories_by_repo},
+            },
+        }
+    )
 
 
 def _task(row, slack_notif=None) -> dict:
@@ -752,7 +820,9 @@ def _task(row, slack_notif=None) -> dict:
         "last_addressed": row["last_addressed"].isoformat(),
         "paused_reason": row["paused_reason"],
         "instance_id": row.get("instance_id"),
-        "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+        "metadata": json.loads(row["metadata"])
+        if isinstance(row["metadata"], str)
+        else (row["metadata"] or {}),
     }
     if slack_notif:
         result["slack_notification"] = slack_notif
@@ -792,5 +862,7 @@ def _memory(row) -> dict:
         "content": row["content"],
         "tags": list(row["tags"]) if row["tags"] else [],
         "created_at": row["created_at"].isoformat(),
-        "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+        "metadata": json.loads(row["metadata"])
+        if isinstance(row["metadata"], str)
+        else (row["metadata"] or {}),
     }

@@ -3,7 +3,9 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".claude" / "skills" / "new-work"))
+sys.path.insert(
+    0, str(Path(__file__).resolve().parent.parent / ".claude" / "skills" / "new-work")
+)
 
 from new_work import build_repo_lookup, match_repo_labels
 
@@ -39,7 +41,9 @@ class TestBuildRepoLookup:
     def test_github_org_repo(self):
         lookup = build_repo_lookup(SAMPLE_REPOS)
         assert lookup["RedHatInsights/insights-chrome"] == "insights-chrome"
-        assert lookup["RedHatInsights/notifications-frontend"] == "notifications-frontend"
+        assert (
+            lookup["RedHatInsights/notifications-frontend"] == "notifications-frontend"
+        )
 
     def test_gitlab_org_repo(self):
         lookup = build_repo_lookup(SAMPLE_REPOS)

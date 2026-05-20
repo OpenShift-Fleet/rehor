@@ -27,13 +27,14 @@ def _row_to_task(row) -> dict:
         last_addressed=row["last_addressed"],
         paused_reason=row["paused_reason"],
         instance_id=row.get("instance_id"),
-        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"])
+        if isinstance(row["metadata"], str)
+        else (row["metadata"] or {}),
     )
     return task.model_dump(mode="json")
 
 
 def register_task_tools(mcp: FastMCP):
-
     @mcp.tool()
     async def task_list(
         status: Optional[str] = None,
@@ -101,7 +102,8 @@ def register_task_tools(mcp: FastMCP):
         if instance_id:
             count = await pool.fetchval(
                 "SELECT COUNT(*) FROM tasks WHERE status = ANY($1) AND (instance_id = $2 OR instance_id IS NULL)",
-                list(ACTIVE_STATUSES), instance_id,
+                list(ACTIVE_STATUSES),
+                instance_id,
             )
         else:
             count = await pool.fetchval(
@@ -122,11 +124,29 @@ def register_task_tools(mcp: FastMCP):
             VALUES ($1, $2::task_status, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
             """,
-            jira_key, status, repo, branch, pr_number, pr_url, title, summary,
-            instance_id, json.dumps(metadata or {}),
+            jira_key,
+            status,
+            repo,
+            branch,
+            pr_number,
+            pr_url,
+            title,
+            summary,
+            instance_id,
+            json.dumps(metadata or {}),
         )
         result = _row_to_task(row)
-        await bus.publish(Event("task_added", {"jira_key": jira_key, "title": title, "status": status, "instance_id": instance_id}))
+        await bus.publish(
+            Event(
+                "task_added",
+                {
+                    "jira_key": jira_key,
+                    "title": title,
+                    "status": status,
+                    "instance_id": instance_id,
+                },
+            )
+        )
         return result
 
     @mcp.tool()
@@ -196,7 +216,16 @@ def register_task_tools(mcp: FastMCP):
         if not row:
             raise ValueError(f"Task {jira_key} not found")
         result = _row_to_task(row)
-        await bus.publish(Event("task_updated", {"jira_key": jira_key, "status": result["status"], "summary": result.get("summary")}))
+        await bus.publish(
+            Event(
+                "task_updated",
+                {
+                    "jira_key": jira_key,
+                    "status": result["status"],
+                    "summary": result.get("summary"),
+                },
+            )
+        )
         return result
 
     @mcp.tool()
@@ -221,7 +250,8 @@ def register_task_tools(mcp: FastMCP):
         if instance_id:
             count = await pool.fetchval(
                 "SELECT COUNT(*) FROM tasks WHERE status = ANY($1) AND (instance_id = $2 OR instance_id IS NULL)",
-                list(ACTIVE_STATUSES), instance_id,
+                list(ACTIVE_STATUSES),
+                instance_id,
             )
         else:
             count = await pool.fetchval(
@@ -259,7 +289,11 @@ def register_task_tools(mcp: FastMCP):
                 updated_at = NOW()
             WHERE id = 1 RETURNING *
             """,
-            state, message, jira_key, repo, instance_id,
+            state,
+            message,
+            jira_key,
+            repo,
+            instance_id,
         )
         # Multi-instance upsert
         if instance_id:
@@ -277,7 +311,11 @@ def register_task_tools(mcp: FastMCP):
                     END,
                     updated_at = NOW()
                 """,
-                instance_id, state, message, jira_key, repo,
+                instance_id,
+                state,
+                message,
+                jira_key,
+                repo,
             )
         result = {
             "state": row["state"],
@@ -285,7 +323,9 @@ def register_task_tools(mcp: FastMCP):
             "jira_key": row["jira_key"],
             "repo": row["repo"],
             "instance_id": row.get("instance_id") or instance_id,
-            "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
+            "cycle_start": row["cycle_start"].isoformat()
+            if row["cycle_start"]
+            else None,
             "updated_at": row["updated_at"].isoformat(),
         }
         await bus.publish(Event("bot_status", result))

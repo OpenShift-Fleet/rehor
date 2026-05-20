@@ -33,7 +33,6 @@ def _resolve_path(p: str) -> str:
     return str(path.resolve())
 
 
-
 def setup_git(script_dir: Path) -> None:
     """Generate per-platform .gitconfig files with includeIf.
 
@@ -121,23 +120,29 @@ def sync_config_repo() -> Path | None:
         if (config_dir / ".git").exists():
             r = subprocess.run(
                 ["git", "-C", str(config_dir), "pull", "--ff-only"],
-                capture_output=True, timeout=30, check=False,
+                capture_output=True,
+                timeout=30,
+                check=False,
             )
             if r.returncode != 0:
                 logger.warning(
                     "git pull failed (rc=%d): %s",
-                    r.returncode, r.stderr.decode().strip(),
+                    r.returncode,
+                    r.stderr.decode().strip(),
                 )
         else:
             config_dir.parent.mkdir(parents=True, exist_ok=True)
             r = subprocess.run(
                 ["git", "clone", "--depth", "1", repo_url, str(config_dir)],
-                capture_output=True, timeout=60, check=False,
+                capture_output=True,
+                timeout=60,
+                check=False,
             )
             if r.returncode != 0:
                 logger.warning(
                     "git clone failed (rc=%d): %s",
-                    r.returncode, r.stderr.decode().strip(),
+                    r.returncode,
+                    r.stderr.decode().strip(),
                 )
                 return None
     except subprocess.TimeoutExpired:
@@ -154,7 +159,6 @@ def sync_config_repo() -> Path | None:
         return None
 
     return agent_dir
-
 
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
@@ -204,7 +208,11 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         logger.info("Disk OK: %dM free (threshold %dM)", free_mb, LOW_DISK_THRESHOLD_MB)
         return
 
-    logger.warning("Low disk: %dM free (threshold %dM) — cleaning up", free_mb, LOW_DISK_THRESHOLD_MB)
+    logger.warning(
+        "Low disk: %dM free (threshold %dM) — cleaning up",
+        free_mb,
+        LOW_DISK_THRESHOLD_MB,
+    )
 
     for name, cmd in [
         ("Go build cache", ["go", "clean", "-cache"]),
@@ -224,7 +232,9 @@ def cleanup_between_cycles(script_dir: Path) -> None:
                 try:
                     subprocess.run(
                         ["git", "gc", "--auto", "--quiet"],
-                        cwd=str(repo), capture_output=True, timeout=60,
+                        cwd=str(repo),
+                        capture_output=True,
+                        timeout=60,
                     )
                 except (subprocess.TimeoutExpired, FileNotFoundError):
                     pass

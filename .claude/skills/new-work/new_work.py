@@ -18,19 +18,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from paths import SLEEP_FILE
 
-PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+PROJECT_REPOS = (
+    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
+)
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
-BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in ("1", "true", "yes")
+BOT_BOARD_ID = os.environ.get("BOT_BOARD_ID", "")
+BOT_BOARD_NAME = os.environ.get("BOT_BOARD_NAME", "")
+BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 BOT_JIRA_EMAIL = os.environ.get("BOT_JIRA_EMAIL", "")
 NOT_STARTED_STATUSES = ("New", "Backlog", "Refinement", "To Do")
 
 
 def jira_search(jql, limit=10):
-    data = jira_call("jira_search", {
-        "jql": jql,
-        "limit": limit,
-        "fields": "summary,status,labels,assignee,priority,description,comment,issuelinks,issuetype",
-    })
+    data = jira_call(
+        "jira_search",
+        {
+            "jql": jql,
+            "limit": limit,
+            "fields": "summary,status,labels,assignee,priority,description,comment,issuelinks,issuetype",
+        },
+    )
     if not data:
         print("ERR: Jira search returned no data", file=sys.stderr)
         return []
@@ -38,6 +49,80 @@ def jira_search(jql, limit=10):
     return issues
 
 
+<<<<<<< HEAD
+=======
+def resolve_board_id():
+    if BOT_BOARD_ID:
+        return BOT_BOARD_ID
+    if not BOT_BOARD_NAME:
+        print(
+            "WARN: neither BOT_BOARD_ID nor BOT_BOARD_NAME set, skipping sprint query",
+            file=sys.stderr,
+        )
+        return None
+    data = jira_call(
+        "jira_get_agile_boards",
+        {
+            "board_name": BOT_BOARD_NAME,
+            "limit": 1,
+        },
+    )
+    if not data:
+        print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
+        return None
+    boards = data if isinstance(data, list) else data.get("values", [])
+    if not boards:
+        print(f"ERR: no board found matching name '{BOT_BOARD_NAME}'", file=sys.stderr)
+        return None
+    board = boards[0]
+    print(
+        f"Resolved board: {board.get('name', '?')} (id={board['id']})", file=sys.stderr
+    )
+    return str(board["id"])
+
+
+def get_active_sprint():
+    board_id = resolve_board_id()
+    if not board_id:
+        return None
+    data = jira_call(
+        "jira_get_sprints_from_board",
+        {
+            "board_id": board_id,
+            "state": "active",
+            "limit": 10,
+        },
+    )
+    if not data:
+        return None
+    sprints = data if isinstance(data, list) else data.get("values", [])
+    if not sprints:
+        return None
+    if BOT_SPRINT_PREFIX:
+        matched = [
+            s for s in sprints if s.get("name", "").startswith(BOT_SPRINT_PREFIX)
+        ]
+        if matched:
+            sprint = matched[0]
+            print(
+                f"Active sprint (prefix={BOT_SPRINT_PREFIX}): {sprint.get('name', '?')} (id={sprint['id']})",
+                file=sys.stderr,
+            )
+            return sprint
+        names = [s.get("name", "?") for s in sprints]
+        print(
+            f"WARN: no sprint matching prefix '{BOT_SPRINT_PREFIX}', available: {names}",
+            file=sys.stderr,
+        )
+        return None
+    sprint = sprints[0]
+    print(
+        f"Active sprint: {sprint.get('name', '?')} (id={sprint['id']})", file=sys.stderr
+    )
+    return sprint
+
+
+>>>>>>> b6fd6ab (fix: formatting)
 def load_project_repos():
     try:
         return json.loads(PROJECT_REPOS.read_text())
@@ -107,7 +192,9 @@ def get_candidates():
     # Tier 3: backlog (no sprint)
     if len(candidates) < 10 and BOT_INCLUDE_BACKLOG:
         if BOT_JIRA_EMAIL:
-            assignee_filter = f'AND (assignee is EMPTY OR assignee = "{BOT_JIRA_EMAIL}") '
+            assignee_filter = (
+                f'AND (assignee is EMPTY OR assignee = "{BOT_JIRA_EMAIL}") '
+            )
         else:
             assignee_filter = "AND assignee is EMPTY "
         collect(
@@ -124,18 +211,20 @@ def get_candidates():
         repos = match_repo_labels(labels, repo_lookup)
         comments = (fields.get("comment", {}).get("comments") or [])[-5:]
 
-        results.append({
-            "key": issue["key"],
-            "summary": fields.get("summary", ""),
-            "status": fields.get("status", {}).get("name", "?"),
-            "priority": fields.get("priority", {}).get("name", "?"),
-            "type": fields.get("issuetype", {}).get("name", "?"),
-            "labels": labels,
-            "repos": repos,
-            "description": fields.get("description") or "",
-            "comments": comments,
-            "links": fields.get("issuelinks", []),
-        })
+        results.append(
+            {
+                "key": issue["key"],
+                "summary": fields.get("summary", ""),
+                "status": fields.get("status", {}).get("name", "?"),
+                "priority": fields.get("priority", {}).get("name", "?"),
+                "type": fields.get("issuetype", {}).get("name", "?"),
+                "labels": labels,
+                "repos": repos,
+                "description": fields.get("description") or "",
+                "comments": comments,
+                "links": fields.get("issuelinks", []),
+            }
+        )
     return results
 
 
@@ -147,10 +236,14 @@ def fmt_candidate(c):
     else:
         repo_labels = [l for l in c["labels"] if l.startswith("repo:")]
         if repo_labels:
-            lines.append(f"  repo_labels: {','.join(repo_labels)} (NO MATCH in project-repos.json)")
+            lines.append(
+                f"  repo_labels: {','.join(repo_labels)} (NO MATCH in project-repos.json)"
+            )
         else:
             lines.append("  repos: (no repo: label)")
-    other_labels = [l for l in c["labels"] if not l.startswith("repo:") and l != BOT_LABEL]
+    other_labels = [
+        l for l in c["labels"] if not l.startswith("repo:") and l != BOT_LABEL
+    ]
     if other_labels:
         lines.append(f"  labels: {','.join(other_labels)}")
     for lk in c["links"][:5]:
@@ -158,7 +251,7 @@ def fmt_candidate(c):
         linked = lk.get("inwardIssue") or lk.get("outwardIssue", {})
         if linked:
             lk_status = linked.get("fields", {}).get("status", {}).get("name", "?")
-            lines.append(f"  link: {lt} {linked.get('key','?')} [{lk_status}]")
+            lines.append(f"  link: {lt} {linked.get('key', '?')} [{lk_status}]")
     if c["description"]:
         lines.append("  description:")
         for dl in c["description"].strip().split("\n"):
@@ -180,7 +273,9 @@ def main():
     if not candidates:
         print("NO CANDIDATES FOUND")
         SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "no_eligible_work"}))
+        SLEEP_FILE.write_text(
+            json.dumps({"recommended_sleep": 3600, "reason": "no_eligible_work"})
+        )
         return
 
     print(f"NEW WORK CANDIDATES ({len(candidates)})")
@@ -193,7 +288,9 @@ def main():
     without_repos = [c for c in candidates if not c["repos"]]
     print(f"-> {len(with_repos)} with matching repos, {len(without_repos)} without")
     if with_repos:
-        print(f"-> Top pick: {with_repos[0]['key']} repos={','.join(with_repos[0]['repos'])}")
+        print(
+            f"-> Top pick: {with_repos[0]['key']} repos={','.join(with_repos[0]['repos'])}"
+        )
 
 
 if __name__ == "__main__":

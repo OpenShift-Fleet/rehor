@@ -16,7 +16,9 @@ def main():
         print(f"File not found: {path}")
         sys.exit(1)
 
-    entries = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    entries = [
+        json.loads(line) for line in path.read_text().splitlines() if line.strip()
+    ]
     print(f"Found {len(entries)} entries in {path}")
 
     ok = 0
