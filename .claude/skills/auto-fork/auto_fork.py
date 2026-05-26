@@ -229,6 +229,18 @@ class AutoForkOperations:
             details={"repos": [r.name for r in repos_to_fork]},
         )
 
+    def _get_fork_url(self, repo_name: str) -> str:
+        """
+        Generate fork URL for a repository.
+
+        Args:
+            repo_name: Name of the repository
+
+        Returns:
+            Fork URL in format: https://github.com/{bot_username}/{repo_name}.git
+        """
+        return f"https://github.com/{self.bot_username}/{repo_name}.git"
+
     def fork_repos(self) -> OperationResult:
         """
         Create forks for detected repos using gh repo fork.
@@ -254,7 +266,7 @@ class AutoForkOperations:
             logger.info(f"Forking {path}...")
 
             if self.dry_run:
-                fork_url = f"https://github.com/{self.bot_username}/{repo.name}.git"
+                fork_url = self._get_fork_url(repo.name)
                 self.forked_repos[repo.name] = fork_url
                 logger.info(f"[DRY RUN] Would fork {path} to {fork_url}")
                 continue
@@ -273,7 +285,7 @@ class AutoForkOperations:
                     # Check if already forked (not an error)
                     if "already exists" in result.stderr.lower() or "already forked" in result.stderr.lower():
                         logger.info(f"{path} already forked")
-                        fork_url = f"https://github.com/{self.bot_username}/{repo.name}.git"
+                        fork_url = self._get_fork_url(repo.name)
                         self.forked_repos[repo.name] = fork_url
                     else:
                         error_msg = f"Failed to fork {path}: {result.stderr}"
@@ -281,7 +293,7 @@ class AutoForkOperations:
                         failed.append(repo.name)
                         continue
                 else:
-                    fork_url = f"https://github.com/{self.bot_username}/{repo.name}.git"
+                    fork_url = self._get_fork_url(repo.name)
                     self.forked_repos[repo.name] = fork_url
                     logger.info(f"Forked {path} to {fork_url}")
 

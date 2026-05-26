@@ -83,7 +83,7 @@ class TestForkRepos:
     """Test fork_repos operation."""
 
     @patch("auto_fork.subprocess.run")
-    def test_fork_success(self, mock_run, operations):
+    def test_fork_success(self, mock_run, operations, mock_subprocess_result):
         """Test successful repo forking."""
         operations.repos_to_fork = [
             RepoInfo(
@@ -94,10 +94,7 @@ class TestForkRepos:
             )
         ]
 
-        mock_result = Mock()
-        mock_result.returncode = 0
-        mock_result.stderr = ""
-        mock_run.return_value = mock_result
+        mock_run.return_value = mock_subprocess_result()
 
         result = operations.fork_repos()
 
@@ -107,7 +104,7 @@ class TestForkRepos:
         mock_run.assert_called_once()
 
     @patch("auto_fork.subprocess.run")
-    def test_fork_already_exists(self, mock_run, operations):
+    def test_fork_already_exists(self, mock_run, operations, mock_subprocess_result):
         """Test forking when fork already exists."""
         operations.repos_to_fork = [
             RepoInfo(
@@ -118,10 +115,7 @@ class TestForkRepos:
             )
         ]
 
-        mock_result = Mock()
-        mock_result.returncode = 1
-        mock_result.stderr = "repository already exists"
-        mock_run.return_value = mock_result
+        mock_run.return_value = mock_subprocess_result(returncode=1, stderr="repository already exists")
 
         result = operations.fork_repos()
 
@@ -129,7 +123,7 @@ class TestForkRepos:
         assert "existing-repo" in operations.forked_repos
 
     @patch("auto_fork.subprocess.run")
-    def test_fork_failure(self, mock_run, operations):
+    def test_fork_failure(self, mock_run, operations, mock_subprocess_result):
         """Test fork failure."""
         operations.repos_to_fork = [
             RepoInfo(
@@ -140,10 +134,7 @@ class TestForkRepos:
             )
         ]
 
-        mock_result = Mock()
-        mock_result.returncode = 1
-        mock_result.stderr = "permission denied"
-        mock_run.return_value = mock_result
+        mock_run.return_value = mock_subprocess_result(returncode=1, stderr="permission denied")
 
         result = operations.fork_repos()
 

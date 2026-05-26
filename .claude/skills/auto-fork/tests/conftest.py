@@ -66,3 +66,33 @@ def temp_config_dir(tmp_path):
     )
 
     return config_dir
+
+
+@pytest.fixture
+def mock_subprocess_result():
+    """
+    Factory fixture for creating mock subprocess results.
+
+    Returns a function that creates Mock objects with subprocess.CompletedProcess attributes.
+    """
+    from unittest.mock import Mock
+
+    def _make_result(returncode: int = 0, stdout: str = "", stderr: str = ""):
+        """
+        Create a mock subprocess result.
+
+        Args:
+            returncode: Process return code (0 = success)
+            stdout: Standard output
+            stderr: Standard error
+
+        Returns:
+            Mock object with subprocess.CompletedProcess attributes
+        """
+        result = Mock()
+        result.returncode = returncode
+        result.stdout = stdout
+        result.stderr = stderr
+        return result
+
+    return _make_result
