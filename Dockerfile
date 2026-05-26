@@ -168,6 +168,12 @@ RUN cd .claude/skills/push-and-pr \
     && uv run pytest -v --tb=short \
     && echo "Push-and-PR skill tests passed!"
 
+# Run auto-fork skill tests during build
+RUN cd .claude/skills/auto-fork \
+    && uv sync --frozen --all-extras \
+    && uv run pytest -v --tb=short \
+    && echo "Auto-fork skill tests passed!"
+
 ENV HOME=/home/botuser
 USER botuser
 

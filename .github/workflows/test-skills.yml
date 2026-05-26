@@ -1,0 +1,86 @@
+name: Test Skills
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - '.claude/skills/**'
+      - '.github/workflows/test-skills.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - '.claude/skills/**'
+      - '.github/workflows/test-skills.yml'
+
+jobs:
+  test-skills:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        skill:
+          - auto-fork
+          - claim-ticket
+          - push-and-pr
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        working-directory: .claude/skills/${{ matrix.skill }}
+        run: |
+          if [ -f pyproject.toml ]; then
+            uv sync
+          fi
+
+      - name: Lint with ruff
+        working-directory: .claude/skills/${{ matrix.skill }}
+        run: |
+          if [ -f pyproject.toml ]; then
+            uv run ruff check . || true
+          fi
+
+      - name: Run tests
+        working-directory: .claude/skills/${{ matrix.skill }}
+        env:
+          # Set required env vars for tests
+          BOT_JIRA_EMAIL: test@example.com
+          BOT_GITHUB_USERNAME: test-bot
+          BOT_CONFIG_REPO: https://github.com/test/config.git
+        run: |
+          if [ -d tests ]; then
+            uv run pytest -v --tb=short --cov=. --cov-report=term-missing --cov-report=xml
+          else
+            echo "No tests directory found, skipping tests"
+          fi
+
+      - name: Upload coverage
+        if: always()
+        uses: codecov/codecov-action@v4
+        with:
+          files: .claude/skills/${{ matrix.skill }}/coverage.xml
+          flags: ${{ matrix.skill }}
+          fail_ci_if_error: false
+
+  test-all-skills:
+    runs-on: ubuntu-latest
+    needs: test-skills
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test-skills.result }}" == "failure" ]; then
+            echo "Some skill tests failed"
+            exit 1
+          fi
+          echo "All skill tests passed"
