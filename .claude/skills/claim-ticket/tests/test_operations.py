@@ -266,11 +266,7 @@ class TestAddToSprint:
         """Test sprint addition is skipped when ticket already has an active sprint."""
         operations.sprint_id = 12345
         mock_jira_call.return_value = {
-            "fields": {
-                "customfield_10020": [
-                    {"id": 99999, "name": "CCXDEV Sprint 169", "state": "active"}
-                ]
-            }
+            "fields": {"customfield_10020": [{"id": 99999, "name": "CCXDEV Sprint 169", "state": "active"}]}
         }
 
         result = operations.add_to_sprint("CCXDEV-16393")
