@@ -43,6 +43,10 @@ parameters:
   required: true
 - name: SLACK_WEBHOOK_URL
   value: ""
+- name: PROXY_NAME
+  value: devbot-proxy
+- name: JIRA_SECRET_NAME
+  value: devbot-secrets
 objects:
 
 # ============================================================================
@@ -58,11 +62,14 @@ objects:
 #      gh-bot-cli-token      — GitHub personal access token
 #      gl-bot-cli-token      — GitLab personal access token
 #      gcp-vertex-claude-sa  — Google service account key (base64)
-#      jira-email            — Jira username/email
-#      jira-token            — Jira API token
+#      jira-email            — Jira username/email (unless JIRA_SECRET_NAME overrides)
+#      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
 #      e2e-username          — SSO username for UI verification
 #      e2e-password          — SSO password for UI verification
 #      upload-memory-password — (temporary) shared secret for bulk memory upload
+# 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
+#      jira-email            — Jira username/email for this instance
+#      jira-token            — Jira API token for this instance
 #
 # Networking (Routes, NetworkPolicies) is managed via app-interface.
 #
@@ -199,19 +206,19 @@ objects:
 - apiVersion: apps/v1
   kind: Deployment
   metadata:
-    name: devbot-proxy
+    name: ${PROXY_NAME}
     labels:
-      app.kubernetes.io/name: proxy
+      app.kubernetes.io/name: ${PROXY_NAME}
       app.kubernetes.io/part-of: devbot
   spec:
     replicas: 1
     selector:
       matchLabels:
-        app.kubernetes.io/name: proxy
+        app.kubernetes.io/name: ${PROXY_NAME}
     template:
       metadata:
         labels:
-          app.kubernetes.io/name: proxy
+          app.kubernetes.io/name: ${PROXY_NAME}
           app.kubernetes.io/part-of: devbot
       spec:
         containers:
@@ -284,12 +291,12 @@ objects:
           - name: JIRA_USERNAME
             valueFrom:
               secretKeyRef:
-                name: devbot-secrets
+                name: ${JIRA_SECRET_NAME}
                 key: jira-email
           - name: JIRA_API_TOKEN
             valueFrom:
               secretKeyRef:
-                name: devbot-secrets
+                name: ${JIRA_SECRET_NAME}
                 key: jira-token
           livenessProbe:
             tcpSocket:
@@ -313,14 +320,14 @@ objects:
 - apiVersion: v1
   kind: Service
   metadata:
-    name: devbot-proxy
+    name: ${PROXY_NAME}
     labels:
-      app.kubernetes.io/name: proxy
+      app.kubernetes.io/name: ${PROXY_NAME}
       app.kubernetes.io/part-of: devbot
   spec:
     type: ClusterIP
     selector:
-      app.kubernetes.io/name: proxy
+      app.kubernetes.io/name: ${PROXY_NAME}
     ports:
     - port: 3128
       targetPort: squid
@@ -387,14 +394,14 @@ objects:
           - name: CLAUDE_CODE_SKIP_VERTEX_AUTH
             value: "true"
           - name: ANTHROPIC_VERTEX_BASE_URL
-            value: http://devbot-proxy:8443
+            value: http://${PROXY_NAME}:8443
           - name: ANTHROPIC_VERTEX_PROJECT_ID
             value: dummy-project
           - name: CLOUD_ML_REGION
             value: global
           # Executor — thin client connects to proxy over TCP
           - name: EXECUTOR_ADDR
-            value: devbot-proxy:9090
+            value: ${PROXY_NAME}:9090
           # Git identity — per-platform (from Vault)
           - name: GH_USER_NAME
             valueFrom:
@@ -419,7 +426,7 @@ objects:
           - name: BOT_JIRA_EMAIL
             valueFrom:
               secretKeyRef:
-                name: devbot-secrets
+                name: ${JIRA_SECRET_NAME}
                 key: jira-email
           # Bot config
           - name: BOT_BOARD_NAME
@@ -443,25 +450,25 @@ objects:
             value: ${SLACK_WEBHOOK_URL}
           # Proxy — separate pod
           - name: PROXY_HOST
-            value: devbot-proxy
+            value: ${PROXY_NAME}
           - name: HTTP_PROXY
-            value: http://devbot-proxy:3128
+            value: http://${PROXY_NAME}:3128
           - name: HTTPS_PROXY
-            value: http://devbot-proxy:3128
+            value: http://${PROXY_NAME}:3128
           - name: http_proxy
-            value: http://devbot-proxy:3128
+            value: http://${PROXY_NAME}:3128
           - name: https_proxy
-            value: http://devbot-proxy:3128
+            value: http://${PROXY_NAME}:3128
           - name: NO_PROXY
-            value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
+            value: devbot-memory-server,${PROXY_NAME},localhost,127.0.0.1
           - name: no_proxy
-            value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
+            value: devbot-memory-server,${PROXY_NAME},localhost,127.0.0.1
           # Jira — proxied through proxy container (mcp-atlassian on port 8444)
           - name: JIRA_MCP_URL
-            value: http://devbot-proxy:8444/mcp
+            value: http://${PROXY_NAME}:8444/mcp
           # GH release upload — proxied through proxy container (port 8446)
           - name: GH_RELEASE_UPLOAD_URL
-            value: http://devbot-proxy:8446/upload
+            value: http://${PROXY_NAME}:8446/upload
           # Secrets that stay in bot container (SSO for E2E)
           - name: SSO_USERNAME
             valueFrom:
@@ -500,7 +507,7 @@ objects:
     - to:
       - podSelector:
           matchLabels:
-            app.kubernetes.io/name: proxy
+            app.kubernetes.io/name: ${PROXY_NAME}
       ports:
       - port: 3128
         protocol: TCP
