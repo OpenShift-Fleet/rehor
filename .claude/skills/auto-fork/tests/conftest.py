@@ -7,6 +7,7 @@ import pytest
 
 # Test constants
 TEST_BOT_USERNAME = "test-bot"
+TEST_INSTANCE_ID = "test-instance"
 GITLAB_HOST = "gitlab.cee.redhat.com"  # Match constant from auto_fork.py
 
 # Test data - repos configuration for fixtures
@@ -32,22 +33,20 @@ def set_env_vars(monkeypatch):
     """Set required env vars for all tests."""
     monkeypatch.setenv("GH_USER_NAME", TEST_BOT_USERNAME)
     monkeypatch.setenv("GL_USER_NAME", TEST_BOT_USERNAME)
+    monkeypatch.setenv("BOT_INSTANCE_ID", TEST_INSTANCE_ID)
+    monkeypatch.setenv("BOT_CONFIG_PATH", "test-config")
 
 
 @pytest.fixture
-def temp_config_dir(tmp_path, monkeypatch):
+def temp_config_dir(tmp_path):
     """
     Create temporary config directory structure with git repo.
 
     Creates:
-    - data/remote-config/test-config/agent/project-repos.json
+    - test-config/agent/project-repos.json with TEST_REPOS_CONFIG
     - Initialized git repo with origin remote
-    - Monkeypatches REMOTE_CONFIG_DIR to point to temp location
     """
-    # Create data/remote-config structure (matches bot runtime)
-    data_dir = tmp_path / "data"
-    remote_config_dir = data_dir / "remote-config"
-    config_dir = remote_config_dir / "test-config"
+    config_dir = tmp_path / "test-config"
     agent_dir = config_dir / "agent"
     agent_dir.mkdir(parents=True)
 
@@ -67,11 +66,6 @@ def temp_config_dir(tmp_path, monkeypatch):
         capture_output=True,
         check=True,
     )
-
-    # Monkeypatch REMOTE_CONFIG_DIR to point to temp location
-    import auto_fork
-
-    monkeypatch.setattr(auto_fork, "REMOTE_CONFIG_DIR", remote_config_dir)
 
     return config_dir
 

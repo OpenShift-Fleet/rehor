@@ -84,15 +84,23 @@ class AutoForkOperations:
         self.dry_run = dry_run
         self.bot_username = os.environ.get("GH_USER_NAME", "")
         self.gl_username = os.environ.get("GL_USER_NAME", "")
-
-        # Auto-discover config directory and instance ID
-        self.config_dir, self.config_name, self.instance_id = self._discover_config()
+        self.instance_id = os.environ.get("BOT_INSTANCE_ID", "")
+        self.config_path = os.environ.get("BOT_CONFIG_PATH", "rehor-config")
 
         # Validate inputs
         self._validate_inputs()
 
+        # Determine config directory
+        # Use remote-config if it exists (bot runtime), else fall back to local config
+        if REMOTE_CONFIG_DIR.exists() and (REMOTE_CONFIG_DIR / self.config_path).exists():
+            self.config_dir = REMOTE_CONFIG_DIR
+            logger.info(f"Using remote config at {self.config_dir}")
+        else:
+            self.config_dir = SCRIPT_DIR / self.config_path
+            logger.info(f"Using local config at {self.config_dir}")
+
         self.agent_dir = (
-            self.config_dir / self.config_name / "agent"
+            self.config_dir / self.config_path / "agent"
             if self.config_dir == REMOTE_CONFIG_DIR
             else self.config_dir / "agent"
         )
@@ -101,53 +109,6 @@ class AutoForkOperations:
         # State
         self.repos_to_fork: List[RepoInfo] = []
         self.forked_repos: Dict[str, str] = {}  # name -> fork_url
-
-    def _discover_config(self) -> Tuple[Path, str, str]:
-        """
-        Auto-discover config directory and instance ID.
-
-        Searches for project-repos.json in:
-        1. data/remote-config/*/agent/project-repos.json (bot runtime)
-        2. <config-name>/agent/project-repos.json (local dev)
-
-        Returns:
-            Tuple of (config_dir, config_name, instance_id)
-
-        Raises:
-            ValueError: If no valid config directory found
-        """
-        # Try remote-config first (bot runtime)
-        if REMOTE_CONFIG_DIR.exists():
-            for subdir in REMOTE_CONFIG_DIR.iterdir():
-                if not subdir.is_dir():
-                    continue
-                candidate = subdir / "agent" / "project-repos.json"
-                if candidate.exists():
-                    config_name = subdir.name
-                    # Extract instance_id from config name if present
-                    # Pattern: rehor-config-instance1 -> instance1
-                    instance_id = ""
-                    if "-" in config_name:
-                        parts = config_name.split("-")
-                        if len(parts) > 2:  # e.g. rehor-config-instance1
-                            instance_id = "-".join(parts[2:])
-                    logger.info(f"Using remote config at {REMOTE_CONFIG_DIR / config_name}")
-                    return REMOTE_CONFIG_DIR, config_name, instance_id
-
-        # Fall back to local config (dev environment)
-        # Try common config directory names
-        for config_name in ["rehor-config", "config"]:
-            local_config = SCRIPT_DIR / config_name
-            candidate = local_config / "agent" / "project-repos.json"
-            if candidate.exists():
-                logger.info(f"Using local config at {local_config}")
-                return local_config, config_name, ""
-
-        raise ValueError(
-            "No config directory found. Expected project-repos.json in:\n"
-            f"  - {REMOTE_CONFIG_DIR}/*/agent/project-repos.json\n"
-            f"  - {SCRIPT_DIR}/<config-name>/agent/project-repos.json"
-        )
 
     def _validate_inputs(self) -> None:
         """
@@ -162,6 +123,9 @@ class AutoForkOperations:
         # Validate GitHub username format (alphanumeric, hyphens, max 39 chars)
         if not re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$", self.bot_username):
             raise ValueError(f"Invalid GitHub username: {self.bot_username}")
+
+        if not self.config_path:
+            raise ValueError("BOT_CONFIG_PATH cannot be empty")
 
     def detect_unforkable_repos(self) -> OperationResult:
         """

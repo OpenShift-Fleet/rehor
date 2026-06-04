@@ -29,20 +29,14 @@ python3 auto_fork.py --dry-run
 
 ## Configuration
 
-### Required Environment Variables
+Environment variables (auto-provided by bot runtime):
 
-- `GH_USER_NAME` — bot GitHub username (validated against GitHub username rules)
+- `GH_USER_NAME` — bot GitHub username
 - `GL_USER_NAME` — bot GitLab username
+- `BOT_CONFIG_PATH` — config directory (default `rehor-config`)
+- `BOT_INSTANCE_ID` — optional instance ID (affects branch name)
 
-### Auto-Discovered Values
-
-The skill automatically discovers the following without requiring environment variables:
-
-- **Config directory**: Scans `data/remote-config/*/agent/project-repos.json` (bot runtime) or `<config-name>/agent/project-repos.json` (local dev)
-- **Instance ID**: Extracted from config directory name
-  - Pattern: `rehor-config-instance1` → instance ID = `instance1`
-  - Used for branch naming: `bot/auto-fork-{instance_id}`
-  - Empty if no instance suffix in config name
+The script validates that `GH_USER_NAME` follows GitHub username rules and will raise a `ValueError` early if validation fails.
 
 ## Development
 

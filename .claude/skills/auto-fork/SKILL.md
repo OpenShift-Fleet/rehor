@@ -28,15 +28,12 @@ After this completes successfully, use the **push-and-pr** skill to push and cre
 
 ## Configuration
 
-Required env vars:
+Env vars (auto-provided by runtime):
 
 - `GH_USER_NAME` — bot GH username
 - `GL_USER_NAME` — bot GL username
-
-Auto-discovered:
-
-- Config directory — scans `data/remote-config/*/agent/project-repos.json`
-- Instance ID — extracted from config directory name (e.g., `rehor-config-instance1` → `instance1`)
+- `BOT_CONFIG_PATH` — config dir (default `rehor-config`)
+- `BOT_INSTANCE_ID` — instance ID (optional, for branch naming)
 
 ## Repo Detection
 
