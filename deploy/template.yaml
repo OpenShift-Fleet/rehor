@@ -5,44 +5,20 @@ metadata:
 parameters:
 - name: NAMESPACE
   value: ${NAMESPACE}
-- name: BOT_IMAGE
-  value: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev
 - name: MEMORY_SERVER_IMAGE
   value: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-memory-server
 - name: PROXY_IMAGE
   value: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
-- name: BOT_IMAGE_TAG
-  required: true
 - name: MEMORY_SERVER_IMAGE_TAG
   required: true
 - name: PROXY_IMAGE_TAG
   required: true
-- name: BOT_LABEL
-  value: hcc-ai-bot
-- name: BOT_REPLICAS
-  value: "1"
-- name: BOT_BOARD_NAME
-  value: ""
-- name: BOT_SPRINT_PREFIX
-  value: ""
-- name: BOT_INCLUDE_BACKLOG
-  value: "false"
-- name: BOT_INSTANCE_ID
-  value: ""
-- name: BOT_CONFIG_REPO
-  value: ""
-- name: BOT_NAME
-  value: devbot-bot
-- name: BOT_CONFIG_PATH
-  value: "rehor-config"
 - name: GCP_PROJECT_ID
   required: true
 - name: GCP_REGION
   required: true
 - name: VERTEX_ALLOWED_MODELS
   required: true
-- name: SLACK_WEBHOOK_URL
-  value: ""
 - name: PROXY_NAME
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
@@ -50,7 +26,10 @@ parameters:
 objects:
 
 # ============================================================================
-# Prerequisites
+# Shared infrastructure for dev-bot instances (memory-server + proxy).
+# Bot pods are deployed by instance-specific repos/templates.
+#
+# Prerequisites:
 #
 # 1. RDS instance with the pgvector extension enabled
 # 2. Secret "devbot-secrets" (Vault) with the following keys:
@@ -64,14 +43,10 @@ objects:
 #      gcp-vertex-claude-sa  — Google service account key (base64)
 #      jira-email            — Jira username/email (unless JIRA_SECRET_NAME overrides)
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
-#      e2e-username          — SSO username for UI verification
-#      e2e-password          — SSO password for UI verification
 #      upload-memory-password — (temporary) shared secret for bulk memory upload
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
-#
-# Networking (Routes, NetworkPolicies) is managed via app-interface.
 #
 # ============================================================================
 
@@ -349,192 +324,6 @@ objects:
       targetPort: screenshot
       protocol: TCP
       name: screenshot
-
-# --- Bot Deployment ---
-- apiVersion: apps/v1
-  kind: Deployment
-  metadata:
-    name: ${BOT_NAME}
-    labels:
-      app.kubernetes.io/name: ${BOT_NAME}
-      app.kubernetes.io/component: bot
-      app.kubernetes.io/part-of: devbot
-  spec:
-    replicas: ${{BOT_REPLICAS}}
-    selector:
-      matchLabels:
-        app.kubernetes.io/name: ${BOT_NAME}
-    template:
-      metadata:
-        labels:
-          app.kubernetes.io/name: ${BOT_NAME}
-          app.kubernetes.io/component: bot
-          app.kubernetes.io/part-of: devbot
-      spec:
-        containers:
-        - name: bot
-          image: ${BOT_IMAGE}:${BOT_IMAGE_TAG}
-          securityContext:
-            runAsNonRoot: true
-            allowPrivilegeEscalation: false
-            seccompProfile:
-              type: RuntimeDefault
-            capabilities:
-              drop: ["ALL"]
-          env:
-          - name: BOT_LABEL
-            value: ${BOT_LABEL}
-          - name: BOT_MEMORY_URL
-            value: http://devbot-memory-server:8080/mcp
-          - name: BOT_MEMORY_HEALTH_URL
-            value: http://devbot-memory-server:8080/health
-          - name: BOT_MEMORY_HEALTH_TIMEOUT
-            value: "120"
-          # Vertex AI — auth proxied through proxy container
-          - name: CLAUDE_CODE_SKIP_VERTEX_AUTH
-            value: "true"
-          - name: ANTHROPIC_VERTEX_BASE_URL
-            value: http://${PROXY_NAME}:8443
-          - name: ANTHROPIC_VERTEX_PROJECT_ID
-            value: dummy-project
-          - name: CLOUD_ML_REGION
-            value: global
-          # Executor — thin client connects to proxy over TCP
-          - name: EXECUTOR_ADDR
-            value: ${PROXY_NAME}:9090
-          # Git identity — per-platform (from Vault)
-          - name: GH_USER_NAME
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: bot-gh-username
-          - name: GH_USER_EMAIL
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: bot-email
-          - name: GL_USER_NAME
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: bot-gl-name
-          - name: GL_USER_EMAIL
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: bot-gl-email
-          - name: BOT_JIRA_EMAIL
-            valueFrom:
-              secretKeyRef:
-                name: ${JIRA_SECRET_NAME}
-                key: jira-email
-          # Bot config
-          - name: BOT_BOARD_NAME
-            value: ${BOT_BOARD_NAME}
-          - name: BOT_SPRINT_PREFIX
-            value: ${BOT_SPRINT_PREFIX}
-          - name: BOT_INCLUDE_BACKLOG
-            value: ${BOT_INCLUDE_BACKLOG}
-          - name: BOT_INSTANCE_ID
-            value: ${BOT_INSTANCE_ID}
-          - name: BOT_CONFIG_REPO
-            value: ${BOT_CONFIG_REPO}
-          - name: BOT_CONFIG_PATH
-            value: ${BOT_CONFIG_PATH}
-          - name: BOT_DASHBOARD_URL
-            value: http://devbot-memory-server:8080/api/bot-status
-          - name: COSTS_API_URL
-            value: http://devbot-memory-server:8080/api/costs
-          # Slack notifications
-          - name: SLACK_WEBHOOK_URL
-            value: ${SLACK_WEBHOOK_URL}
-          # Proxy — separate pod
-          - name: PROXY_HOST
-            value: ${PROXY_NAME}
-          - name: HTTP_PROXY
-            value: http://${PROXY_NAME}:3128
-          - name: HTTPS_PROXY
-            value: http://${PROXY_NAME}:3128
-          - name: http_proxy
-            value: http://${PROXY_NAME}:3128
-          - name: https_proxy
-            value: http://${PROXY_NAME}:3128
-          - name: NO_PROXY
-            value: devbot-memory-server,${PROXY_NAME},localhost,127.0.0.1
-          - name: no_proxy
-            value: devbot-memory-server,${PROXY_NAME},localhost,127.0.0.1
-          # Jira — proxied through proxy container (mcp-atlassian on port 8444)
-          - name: JIRA_MCP_URL
-            value: http://${PROXY_NAME}:8444/mcp
-          # GH release upload — proxied through proxy container (port 8446)
-          - name: GH_RELEASE_UPLOAD_URL
-            value: http://${PROXY_NAME}:8446/upload
-          # Secrets that stay in bot container (SSO for E2E)
-          - name: SSO_USERNAME
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: e2e-username
-          - name: SSO_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: e2e-password
-          resources:
-            requests:
-              cpu: "1"
-              memory: 2Gi
-              ephemeral-storage: 4Gi
-            limits:
-              cpu: "4"
-              memory: 4Gi
-              ephemeral-storage: 8Gi
-
-# --- NetworkPolicy: Bot can only reach proxy + memory-server ---
-- apiVersion: networking.k8s.io/v1
-  kind: NetworkPolicy
-  metadata:
-    name: ${BOT_NAME}-egress
-    labels:
-      app.kubernetes.io/part-of: devbot
-  spec:
-    podSelector:
-      matchLabels:
-        app.kubernetes.io/name: ${BOT_NAME}
-    policyTypes:
-    - Egress
-    egress:
-    - to:
-      - podSelector:
-          matchLabels:
-            app.kubernetes.io/name: ${PROXY_NAME}
-      ports:
-      - port: 3128
-        protocol: TCP
-      - port: 9090
-        protocol: TCP
-      - port: 8443
-        protocol: TCP
-      - port: 8444
-        protocol: TCP
-      - port: 8446
-        protocol: TCP
-    - to:
-      - podSelector:
-          matchLabels:
-            app.kubernetes.io/name: memory-server
-      ports:
-      - port: 8080
-        protocol: TCP
-    - to:
-      - namespaceSelector:
-          matchLabels:
-            kubernetes.io/metadata.name: openshift-dns
-      ports:
-      - port: 5353
-        protocol: UDP
-      - port: 5353
-        protocol: TCP
 
 # --- NetworkPolicy: Proxy accepts ingress from bot pods ---
 - apiVersion: networking.k8s.io/v1
