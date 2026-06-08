@@ -132,9 +132,13 @@ Tags: `bug-fix`, `cve`, `css`, `patternfly`, `dependency-upgrade`, `ci`, `ui-cha
 
 ### Slack Notifications
 
-| Tool | Purpose |
-|------|---------|
-| `slack_notify` | Post to team Slack. Params: `jira_key, event_type, message, webhook_url`. **Always pass `webhook_url` from `$SLACK_WEBHOOK_URL` env var.** 48h cooldown per jira_key (any event type). |
+Use `/slack-notify` skill (NOT direct `slack_notify` MCP tool):
+
+```bash
+python3 .claude/skills/slack-notify/slack_notify.py <JIRA_KEY> <EVENT_TYPE> "<MESSAGE>" 2>&1
+```
+
+Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h cooldown per jira_key (automatic).
 
 **Event types**: `pr_created`, `release_pending`, `needs_help`, `infra_error`, `review_reminder`.
 
@@ -145,7 +149,7 @@ Tags: `bug-fix`, `cve`, `css`, `patternfly`, `dependency-upgrade`, `ci`, `ui-cha
 - `infra_error` — infrastructure issue preventing work (sandbox broken, auth failed, etc.).
 - `review_reminder` — PR awaiting human review. Send on first PR triage if no notification sent yet. Bot reviews don't count. Include ticket key, PR link, repo.
 
-**Rules**: Cooldown is automatic (48h per jira_key, any event type — one notification per ticket per 48h). Don't check manually. Message = normal human language (NOT caveman). Keep concise: 1-2 sentences + links. Don't notify for routine operations (task updates, memory stores, etc.).
+**Rules**: Cooldown automatic. Msg = normal human language (NOT caveman). Concise: 1-2 sentences + links. Don't notify for routine ops.
 
 ## Workflow Loop
 
@@ -194,7 +198,7 @@ PR statuses are in the triage output. For each `pr_open`/`pr_changes` task:
 0. **Reload persona**: Read `personas/<name>/prompt.md` for repo tech stack (same logic as step 6). Has CI fix patterns + sequencing rules.
 1. `cd` repo dir. `git fetch origin`. Fork? Also `git fetch upstream`.
 2. Check `host` in `project-repos.json` → `gh` (GitHub) or `glab` (GitLab). **ALL `glab` commands MUST include `--hostname gitlab.cee.redhat.com`** — without it, glab defaults to `gitlab.com` which is blocked. Fork repos: `glab mr` needs `--repo <upstream-project-path>`.
-3. **Review reminder**: If no Slack notification sent yet for this task → ALWAYS send `slack_notify` `review_reminder` (first notification, regardless of PR age). After first notification, cooldown handles repeat reminders automatically every 48h. **Bot reviews don't count for reminders** — only human reviews satisfy the "reviewed" condition. PR with only bot reviews = still needs human review → send reminder. **However, bot review feedback IS actionable** — address suggestions from coderabbitai, sourcery-ai, etc. as real code review feedback. Fix valid issues, dismiss false positives with a reply.
+3. **Review reminder**: No Slack notification sent yet → ALWAYS invoke `/slack-notify` w/ `review_reminder` (first notification, regardless of PR age). After first, cooldown handles repeats every 48h. **Bot reviews don't count** — only human reviews satisfy "reviewed". PR w/ only bot reviews = still needs human review → send reminder. **However, bot review feedback IS actionable** — address coderabbitai/sourcery-ai suggestions as real feedback. Fix valid issues, dismiss false positives w/ reply.
 
 4. Handle in order:
 
@@ -225,7 +229,7 @@ PR statuses are in the triage output. For each `pr_open`/`pr_changes` task:
 - **Update linked issues**: duplicates → comment fix merged. Related → link PR. Blocked → blocker resolved.
 - **Store learnings**: `memory_store` as `learning` + `codebase_pattern`. Set `repo` + `tags`.
 
-**Unresolvable**: Jira comment explaining blocker. `task_update` `paused_reason`. `slack_notify` `needs_help`: "{KEY} blocked — {reason}". Task stays tracked.
+**Unresolvable**: Jira comment explaining blocker. `task_update` `paused_reason`. Invoke `/slack-notify` w/ `needs_help`: "{KEY} blocked — {reason}". Task stays tracked.
 
 Handle one PR issue → stop. Next cycle picks up next.
 
@@ -382,7 +386,7 @@ Before starting work, `jira_get_issue` → check issue links:
 
 12. **Report on Jira**: `jira_transition_issue` → "Code Review". `jira_add_comment`: what done, PR links, concerns. Update linked issues w/ PR links (one comment per, only on PR open or completion).
 
-13. **Notify Slack**: `slack_notify` `pr_created`: "{KEY}: {title} — PR: {url}". Also notify `needs_help` if investigation or blocked.
+13. **Notify Slack**: Invoke `/slack-notify` w/ `pr_created`: "{KEY}: {title} — PR: {url}". Also `needs_help` if investigation or blocked.
 
 ## Progress Tracking
 

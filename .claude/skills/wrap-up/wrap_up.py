@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
+from memory_mcp import memory_call
 
 MEMORY_URL = (
     os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
@@ -154,26 +155,17 @@ def slack_notify(jira_key, pr_info):
         else:
             pr_links.append(f"{repo}#{num}")
     msg = f"{jira_key} merged → Release Pending. PR: {', '.join(pr_links) if pr_links else '(unknown)'}"
-    result = http_request(
-        f"{MEMORY_URL}/mcp",
-        method="POST",
-        body={
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "slack_notify",
-                "arguments": {
-                    "jira_key": jira_key,
-                    "event_type": "release_pending",
-                    "message": msg,
-                    "webhook_url": webhook_url,
-                },
-            },
+    result = memory_call(
+        "slack_notify",
+        {
+            "jira_key": jira_key,
+            "event_type": "release_pending",
+            "message": msg,
+            "webhook_url": webhook_url,
         },
     )
-    if result and "result" in result:
-        return True, result["result"]
+    if result and result.get("sent"):
+        return True, result
     return False, str(result)
 
 
