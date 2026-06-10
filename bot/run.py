@@ -162,7 +162,61 @@ def sync_config_repo() -> Path | None:
 
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
+SCHEDULE_STATE_FILE = DATA_DIR / "schedule-state.json"
 LOW_DISK_THRESHOLD_MB = 512
+
+
+def check_scheduled_skills(script_dir: Path) -> str:
+    """Check instance schedules.json, return prompt for due skills.
+
+    Instances can provide an agent/schedules.json with periodic skills.
+    No file = no scheduled tasks. State is tracked in data/schedule-state.json.
+    """
+    logger = logging.getLogger(__name__)
+
+    schedule_file = None
+    for candidate in [
+        script_dir / "instance" / "my-config" / "agent" / "schedules.json",
+        DATA_DIR / "remote-config" / os.environ.get("BOT_CONFIG_PATH", "rehor-config") / "agent" / "schedules.json",
+    ]:
+        if candidate.exists():
+            schedule_file = candidate
+            break
+
+    if not schedule_file:
+        return ""
+
+    try:
+        schedules = json.loads(schedule_file.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Bad schedules.json: %s", exc)
+        return ""
+
+    state = {}
+    if SCHEDULE_STATE_FILE.exists():
+        try:
+            state = json.loads(SCHEDULE_STATE_FILE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    now = time.time()
+    due = []
+
+    for entry in schedules:
+        skill = entry.get("skill", "")
+        interval = entry.get("interval_hours", 24) * 3600
+        last_run = state.get(skill, 0)
+        if now - last_run >= interval:
+            due.append(skill)
+            state[skill] = now
+
+    if not due:
+        return ""
+
+    SCHEDULE_STATE_FILE.write_text(json.dumps(state))
+    skills_list = ", ".join(f"/{s}" for s in due)
+    logger.info("Scheduled skills due: %s", skills_list)
+    return skills_list
 
 
 def _read_sleep_signal(config: Config) -> int:
@@ -312,6 +366,8 @@ def main() -> None:
             if remote_agent_dir:
                 apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
+            scheduled_skills = check_scheduled_skills(SCRIPT_DIR)
+
             logger.info("Running agent cycle...")
 
             try:
@@ -324,6 +380,7 @@ def main() -> None:
                             allowed_tools=ALLOWED_TOOLS,
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
+                            scheduled_skills=scheduled_skills,
                         ),
                         timeout=config.cycle_timeout,
                     )

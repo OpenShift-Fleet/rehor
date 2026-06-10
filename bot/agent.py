@@ -146,6 +146,7 @@ async def run_cycle(
     allowed_tools: list[str],
     cwd: str,
     instance_id: str | None = None,
+    scheduled_skills: str = "",
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     turn_hook = _make_turn_budget_hook(config.max_turns)
@@ -167,8 +168,13 @@ async def run_cycle(
         if instance_id
         else ""
     )
+    scheduled_line = (
+        f" SCHEDULED TASKS: Before triage, invoke these skills first: {scheduled_skills}."
+        if scheduled_skills
+        else ""
+    )
     prompt = (
-        f"Your primary label is: {label}.{instance_line} "
+        f"Your primary label is: {label}.{instance_line}{scheduled_line} "
         "Follow the instructions in CLAUDE.md. "
         "Start by invoking the /triage skill to pre-gather task and PR data. "
         "IMPORTANT: Use ULTRA caveman output for all internal text — "
