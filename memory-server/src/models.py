@@ -35,3 +35,16 @@ class Memory(BaseModel):
 
 class MemorySearchResult(Memory):
     similarity: float
+
+
+class CycleRun(BaseModel):
+    id: int
+    task_id: int | None = None
+    cycle_type: str
+    instance_id: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    tool_calls: int | None = None
+    tokens_used: int | None = None
+    progress: dict[str, Any] | None = None
+    created_at: datetime

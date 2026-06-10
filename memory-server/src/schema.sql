@@ -151,6 +151,21 @@ EXCEPTION
     WHEN undefined_table THEN NULL;
 END $$;
 
+-- Cycle runs — progress history + compressed transcripts per bot cycle
+CREATE TABLE IF NOT EXISTS cycle_runs (
+    id              SERIAL PRIMARY KEY,
+    task_id         INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    cycle_type      TEXT NOT NULL DEFAULT 'task_work',
+    instance_id     TEXT,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at     TIMESTAMPTZ,
+    tool_calls      INTEGER,
+    tokens_used     INTEGER,
+    progress        JSONB,
+    transcript      BYTEA,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
 -- Re-run this after seeding data:

@@ -40,11 +40,13 @@ from .tools.tasks import register_task_tools  # noqa: E402
 from .tools.rag import register_rag_tools  # noqa: E402
 from .tools.slack import register_slack_tools  # noqa: E402
 from .tools.org_members import register_org_member_tools  # noqa: E402
+from .tools.cycles import register_cycle_tools  # noqa: E402
 
 register_task_tools(mcp)
 register_rag_tools(mcp)
 register_slack_tools(mcp)
 register_org_member_tools(mcp)
+register_cycle_tools(mcp)
 
 
 # Health check
@@ -91,6 +93,8 @@ from .api import (  # noqa: E402
     api_instances,
     api_costs,
     api_analytics,
+    api_cycle_runs,
+    api_cycle_run_transcript,
 )
 
 mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
@@ -110,6 +114,10 @@ mcp.custom_route("/api/costs", methods=["GET", "POST"])(api_costs)
 mcp.custom_route("/api/tags", methods=["GET"])(api_tags)
 mcp.custom_route("/api/stats", methods=["GET"])(api_stats)
 mcp.custom_route("/api/analytics", methods=["GET"])(api_analytics)
+mcp.custom_route("/api/cycle-runs", methods=["GET", "POST"])(api_cycle_runs)
+mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(
+    api_cycle_run_transcript
+)
 
 
 # WebSocket for live updates
