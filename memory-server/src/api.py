@@ -1,12 +1,14 @@
 """REST API endpoints for the web dashboard."""
 
+import base64
 import json
 import logging
 import os
 from datetime import date as date_type
+from datetime import datetime
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from .db import get_pool
 from .embeddings import embed
@@ -805,6 +807,172 @@ async def api_stats(request: Request) -> JSONResponse:
     )
 
 
+_CYCLE_RUN_LIST_COLUMNS = (
+    "id, task_id, cycle_type, instance_id, started_at, finished_at, "
+    "tool_calls, tokens_used, progress, created_at"
+)
+
+
+async def api_cycle_runs(request: Request) -> JSONResponse:
+    """GET /api/cycle-runs — list cycle runs, filterable.
+    POST /api/cycle-runs — store a new cycle run (with optional transcript)."""
+    if request.method == "POST":
+        return await api_cycle_runs_add(request)
+
+    pool = get_pool()
+    task_id = request.query_params.get("task_id")
+    instance_id = request.query_params.get("instance_id")
+    cycle_type = request.query_params.get("cycle_type")
+    limit = int(request.query_params.get("limit", "50"))
+    offset = int(request.query_params.get("offset", "0"))
+
+    conditions, params, idx = [], [], 0
+    if task_id:
+        idx += 1
+        conditions.append(f"task_id = ${idx}")
+        params.append(int(task_id))
+    if instance_id:
+        idx += 1
+        conditions.append(f"instance_id = ${idx}")
+        params.append(instance_id)
+    if cycle_type:
+        idx += 1
+        conditions.append(f"cycle_type = ${idx}")
+        params.append(cycle_type)
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    total = await pool.fetchval(f"SELECT COUNT(*) FROM cycle_runs {where}", *params)
+
+    idx += 1
+    params.append(limit)
+    limit_idx = idx
+    idx += 1
+    params.append(offset)
+    offset_idx = idx
+
+    rows = await pool.fetch(
+        f"""
+        SELECT {_CYCLE_RUN_LIST_COLUMNS}
+        FROM cycle_runs {where}
+        ORDER BY created_at DESC
+        LIMIT ${limit_idx} OFFSET ${offset_idx}
+        """,
+        *params,
+    )
+
+    return JSONResponse(
+        {
+            "items": [_cycle_run(r) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+async def api_cycle_runs_add(request: Request) -> JSONResponse:
+    """POST /api/cycle-runs — store a cycle run with optional base64 transcript."""
+    pool = get_pool()
+    body = await request.json()
+
+    task_id = body.get("task_id")
+    if task_id is not None:
+        task_id = int(task_id) if task_id else None
+
+    transcript_bytes = None
+    transcript_b64 = body.get("transcript_b64")
+    if transcript_b64:
+        transcript_bytes = base64.b64decode(transcript_b64)
+
+    started_at = body.get("started_at")
+    finished_at = body.get("finished_at")
+    parsed_started = datetime.fromisoformat(started_at) if started_at else None
+    parsed_finished = datetime.fromisoformat(finished_at) if finished_at else None
+
+    progress = body.get("progress")
+    if isinstance(progress, str):
+        progress = json.loads(progress)
+
+    row = await pool.fetchrow(
+        f"""
+        INSERT INTO cycle_runs (task_id, cycle_type, instance_id, started_at, finished_at,
+                                tool_calls, tokens_used, progress, transcript)
+        VALUES ($1, $2, $3, COALESCE($4, NOW()), $5, $6, $7, $8, $9)
+        RETURNING {_CYCLE_RUN_LIST_COLUMNS}
+        """,
+        task_id,
+        body.get("cycle_type", "task_work"),
+        body.get("instance_id"),
+        parsed_started,
+        parsed_finished,
+        body.get("tool_calls"),
+        body.get("tokens_used"),
+        json.dumps(progress or {}),
+        transcript_bytes,
+    )
+    result = _cycle_run(row)
+    result["has_transcript"] = transcript_bytes is not None
+    await bus.publish(
+        Event(
+            "cycle_run_added",
+            {
+                "id": result["id"],
+                "task_id": result["task_id"],
+                "cycle_type": result["cycle_type"],
+                "instance_id": result["instance_id"],
+            },
+        )
+    )
+    return JSONResponse(result, status_code=201)
+
+
+async def api_cycle_run_transcript(request: Request) -> Response:
+    """GET /api/cycle-runs/{id}/transcript — return transcript, optionally decompressed."""
+    pool = get_pool()
+    run_id = request.path_params.get("id")
+    if not run_id:
+        return JSONResponse({"error": "missing cycle run id"}, status_code=400)
+
+    row = await pool.fetchrow(
+        "SELECT transcript FROM cycle_runs WHERE id = $1", int(run_id)
+    )
+    if not row:
+        return JSONResponse({"error": f"Cycle run {run_id} not found"}, status_code=404)
+
+    transcript = row["transcript"]
+    if transcript is None:
+        return JSONResponse(
+            {"error": f"Cycle run {run_id} has no transcript"}, status_code=404
+        )
+
+    decompress = request.query_params.get("decompress", "").lower() in (
+        "true",
+        "1",
+        "yes",
+    )
+
+    if decompress:
+        try:
+            import zstandard as zstd
+
+            decompressor = zstd.ZstdDecompressor()
+            decompressed = decompressor.decompress(transcript)
+            return Response(
+                content=decompressed,
+                media_type="application/x-ndjson",
+            )
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Decompression failed: {e}"}, status_code=500
+            )
+
+    return Response(
+        content=bytes(transcript),
+        media_type="application/zstd",
+    )
+
+
 def _task(row, slack_notif=None) -> dict:
     result = {
         "id": row["id"],
@@ -865,4 +1033,21 @@ def _memory(row) -> dict:
         "metadata": json.loads(row["metadata"])
         if isinstance(row["metadata"], str)
         else (row["metadata"] or {}),
+    }
+
+
+def _cycle_run(row) -> dict:
+    return {
+        "id": row["id"],
+        "task_id": row["task_id"],
+        "cycle_type": row["cycle_type"],
+        "instance_id": row["instance_id"],
+        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+        "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+        "tool_calls": row["tool_calls"],
+        "tokens_used": row["tokens_used"],
+        "progress": json.loads(row["progress"])
+        if isinstance(row["progress"], str)
+        else (row["progress"] or {}),
+        "created_at": row["created_at"].isoformat(),
     }
