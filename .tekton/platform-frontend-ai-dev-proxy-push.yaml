@@ -8,8 +8,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
-      == "master" && ( "./proxy/***".pathChanged() || ".tekton/platform-frontend-ai-dev-proxy-push.yaml".pathChanged()
-      || "proxy/Dockerfile".pathChanged() )
+      == "master" && ( "proxy/**".pathChanged() || ".tekton/platform-frontend-ai-dev-proxy-push.yaml".pathChanged() )
   creationTimestamp: null
   labels:
     appstudio.openshift.io/application: platform-frontend-ai-dev
