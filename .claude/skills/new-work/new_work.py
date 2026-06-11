@@ -125,7 +125,7 @@ def get_candidates():
             assignee_filter = "AND assignee is EMPTY "
         collect(
             f"labels = {BOT_LABEL} {assignee_filter}"
-            f"AND status IN ({status_list}) AND sprint is EMPTY "
+            f"AND status IN ({status_list}) AND (sprint is EMPTY OR sprint not in openSprints()) "
             f"ORDER BY priority DESC, created ASC",
             "backlog",
         )
