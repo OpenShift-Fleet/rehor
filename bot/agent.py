@@ -1,5 +1,6 @@
 """Core agent cycle — invokes Claude Agent SDK."""
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from claude_agent_sdk import (
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolResultBlock,
     query,
 )
 
@@ -35,6 +37,7 @@ class CycleContext:
     repo: str | None = None
     work_type: str | None = None
     summary: str | None = None
+    task_id: int | None = None
 
 
 async def _push_status(
@@ -208,10 +211,11 @@ async def run_cycle(
                                 logger.info("[agent] %s", text[:300])
                                 # Push to dashboard
                                 await _push_status(http, "working", text[:500])
+                        elif isinstance(block, ToolResultBlock):
+                            _extract_task_id_from_result(block, ctx)
                         elif hasattr(block, "name"):
                             desc = _describe_tool_use(block)
                             logger.info("[tool] %s", desc)
-                            # Extract work context from MCP tool calls
                             _extract_context(block, ctx)
 
                 elif isinstance(message, ResultMessage):
@@ -304,3 +308,29 @@ def _extract_context(block, ctx: CycleContext) -> None:
     # Memory housekeeping
     elif name == "mcp__bot-memory__memory_delete":
         ctx.work_type = ctx.work_type or "memory_housekeeping"
+
+
+def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> None:
+    """Extract task_id from MCP tool result content (task_add/task_get/task_update return task objects)."""
+    content = block.content
+    if not content:
+        return
+    try:
+        text = (
+            content
+            if isinstance(content, str)
+            else content[0].get("text", "")
+            if isinstance(content, list)
+            else ""
+        )
+        if not text:
+            return
+        data = json.loads(text)
+        if (
+            isinstance(data, dict)
+            and isinstance(data.get("id"), int)
+            and "jira_key" in data
+        ):
+            ctx.task_id = data["id"]
+    except (json.JSONDecodeError, TypeError, IndexError, AttributeError):
+        pass

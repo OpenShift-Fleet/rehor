@@ -111,6 +111,13 @@ Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `p
 
 **Multi-repo**: One task per Jira ticket. Primary repo in `repo`, all in `metadata.repos`. PRs in `metadata.prs` as `[{"repo", "number", "url", "host"}]`.
 
+### Cycle Progress Tools
+
+| Tool | Purpose |
+|------|---------|
+| `progress_store` | Store structured cycle progress. Params: `task_id, instance_id, cycle_type, progress?, started_at?, finished_at?, tool_calls?, tokens_used?` |
+| `progress_load` | Load last N progress entries for a task. Params: `task_id, instance_id?, limit?` (default 5) |
+
 ### Memory Tools
 
 | Tool | Purpose |
@@ -395,7 +402,23 @@ Keep task record updated throughout (not just end). `task_update` w/ `summary` +
 - `last_step`: `branch_created`/`implemented`/`tests_passing`/`push_failed`/`pr_opened`/`review_addressed`/`investigation_posted`/`archived`
 - `files_changed`, `commits`, `next_step`, `notes`, `repos`, `prs`
 
-**On startup — interrupted work**: Triage output shows all `in_progress` tasks w/ `last_step`. Any w/ `last_step` set? → `memory_search` repo + problem → resume from `next_step`. Task metadata = specific work state. RAG memory = cross-ticket learnings.
+### Cycle Progress (progress_load / progress_store)
+
+Persists structured progress across cycles. Separate from `task_update` — creates **history**, not just current state.
+
+**On resume** (existing task, not new):
+1. `task_get(jira_key)` → note `id` field = `task_id`
+2. `progress_load(task_id=<id>)` → last 5 cycle summaries
+3. Use returned progress → understand prior decisions, files, blockers, where left off
+
+**Before cycle ends** (after work on task):
+1. `progress_store(task_id=<id>, instance_id=<instance>, cycle_type="task_work", progress={...})`
+2. Progress keys: `last_step`, `next_step`, `files_changed`, `commits`, `key_decisions`, `blockers`, `notes`
+3. In addition to `task_update` — call both
+
+Idle/error cycles: `run.py` handles automatically. No agent action.
+
+**On startup — interrupted work**: `in_progress` w/ `last_step` set? → `progress_load(task_id)` for cycle history + `memory_search` repo + problem → resume from `next_step`. Cycle progress = per-cycle history. Task metadata = current state. RAG memory = cross-ticket learnings.
 
 ## Rules
 

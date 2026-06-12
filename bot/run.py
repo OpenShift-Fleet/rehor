@@ -20,6 +20,7 @@ from .agent import run_cycle
 from .config import ALLOWED_TOOLS, Config, load_config, load_mcp_servers, sanitize_env
 from .costs import record_cost
 from .merge import apply_merged_config
+from .transcripts import record_transcript
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
@@ -341,6 +342,13 @@ def main() -> None:
                     label=args.label,
                     result=result,
                     ctx=ctx,
+                )
+                record_transcript(
+                    label=args.label,
+                    result=result,
+                    ctx=ctx,
+                    cwd=str(SCRIPT_DIR),
+                    instance_id=instance_id,
                 )
             else:
                 logger.warning("Cycle produced no result")
