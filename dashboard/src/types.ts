@@ -7,6 +7,10 @@ export interface SlackNotification {
 export interface Task {
   id: number;
   jira_key: string;
+  external_key?: string;
+  source_type?: string;
+  source_url?: string;
+  artifacts?: Array<{ name: string; url: string; type: string }>;
   status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done';
   repo: string;
   branch: string;
@@ -27,6 +31,8 @@ export interface Memory {
   category: string;
   repo: string;
   jira_key: string | null;
+  external_key?: string;
+  source_type?: string;
   title: string;
   content: string;
   tags: string[];
@@ -73,6 +79,8 @@ export interface CycleEntry {
   is_error: boolean;
   no_work: boolean;
   jira_key: string | null;
+  external_key?: string;
+  source_type?: string;
   repo: string | null;
   work_type: string | null;
   summary: string | null;
@@ -171,6 +179,7 @@ export interface RepoEntry {
 
 export interface TicketEntry {
   jira_key: string;
+  external_key?: string;
   title: string | null;
   status: string | null;
   repo: string | null;

@@ -81,10 +81,26 @@ def register_task_tools(mcp: FastMCP):
         return [_row_to_task(r) for r in rows]
 
     @mcp.tool()
-    async def task_get(jira_key: str) -> dict | None:
-        """Get a single task by Jira key."""
+    async def task_get(
+        jira_key: Optional[str] = None,
+        external_key: Optional[str] = None,
+        source_type: Optional[str] = None,
+    ) -> dict | None:
+        """Get a single task by key. Prefer external_key+source_type; falls back to jira_key for backward compat."""
         pool = get_pool()
-        row = await pool.fetchrow("SELECT * FROM tasks WHERE jira_key = $1", jira_key)
+        if external_key:
+            row = await pool.fetchrow(
+                "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2",
+                external_key,
+                source_type or "jira",
+            )
+        elif jira_key:
+            row = await pool.fetchrow(
+                "SELECT * FROM tasks WHERE external_key = $1",
+                jira_key,
+            )
+        else:
+            raise ValueError("Either jira_key or external_key is required")
         return _row_to_task(row) if row else None
 
     @mcp.tool()
@@ -174,7 +190,9 @@ def register_task_tools(mcp: FastMCP):
 
     @mcp.tool()
     async def task_update(
-        jira_key: str,
+        jira_key: Optional[str] = None,
+        external_key: Optional[str] = None,
+        source_type: Optional[str] = None,
         status: Optional[str] = None,
         pr_number: Optional[int] = None,
         pr_url: Optional[str] = None,
@@ -184,12 +202,17 @@ def register_task_tools(mcp: FastMCP):
         summary: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
-        """Update fields on an existing task.
+        """Update fields on an existing task. Lookup by external_key+source_type preferred; jira_key for backward compat.
         summary: human-readable description of current state/what was done.
         metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs). Merged with existing metadata.
         For multi-repo tickets, use metadata.prs to track all PRs/MRs:
         {"prs": [{"repo": "repo1", "number": 42, "url": "...", "host": "github"}]}"""
         pool = get_pool()
+
+        lookup_key = external_key or jira_key
+        if not lookup_key:
+            raise ValueError("Either jira_key or external_key is required")
+        lookup_source = source_type or "jira"
 
         # Build dynamic SET clause
         sets = []
@@ -238,8 +261,9 @@ def register_task_tools(mcp: FastMCP):
             or (metadata is not None and "prs" in (metadata or {}))
         ):
             current = await pool.fetchrow(
-                "SELECT pr_number, pr_url, metadata FROM tasks WHERE jira_key = $1",
-                jira_key,
+                "SELECT pr_number, pr_url, metadata FROM tasks WHERE external_key = $1 AND source_type = $2",
+                lookup_key,
+                lookup_source,
             )
             if current:
                 cur_pr_number = (
@@ -260,16 +284,16 @@ def register_task_tools(mcp: FastMCP):
         if not sets:
             raise ValueError("No fields to update")
 
-        query = f"UPDATE tasks SET {', '.join(sets)} WHERE jira_key = $1 RETURNING *"
-        row = await pool.fetchrow(query, jira_key, *params)
+        query = f"UPDATE tasks SET {', '.join(sets)} WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
+        row = await pool.fetchrow(query, lookup_key, *params, lookup_source)
         if not row:
-            raise ValueError(f"Task {jira_key} not found")
+            raise ValueError(f"Task {lookup_key} not found")
         result = _row_to_task(row)
         await bus.publish(
             Event(
                 "task_updated",
                 {
-                    "jira_key": jira_key,
+                    "jira_key": result.get("jira_key") or lookup_key,
                     "status": result["status"],
                     "summary": result.get("summary"),
                 },
@@ -278,17 +302,28 @@ def register_task_tools(mcp: FastMCP):
         return result
 
     @mcp.tool()
-    async def task_remove(jira_key: str) -> dict:
-        """Archive a completed task (preserves full history)."""
+    async def task_remove(
+        jira_key: Optional[str] = None,
+        external_key: Optional[str] = None,
+        source_type: Optional[str] = None,
+    ) -> dict:
+        """Archive a completed task (preserves full history). Lookup by external_key+source_type preferred; jira_key for backward compat."""
         pool = get_pool()
+        lookup_key = external_key or jira_key
+        if not lookup_key:
+            raise ValueError("Either jira_key or external_key is required")
+        lookup_source = source_type or "jira"
         row = await pool.fetchrow(
-            "UPDATE tasks SET status = 'archived'::task_status WHERE jira_key = $1 RETURNING *",
-            jira_key,
+            "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 AND source_type = $2 RETURNING *",
+            lookup_key,
+            lookup_source,
         )
         if not row:
-            raise ValueError(f"Task {jira_key} not found")
+            raise ValueError(f"Task {lookup_key} not found")
         result = _row_to_task(row)
-        await bus.publish(Event("task_archived", {"jira_key": jira_key}))
+        await bus.publish(
+            Event("task_archived", {"jira_key": result.get("jira_key") or lookup_key})
+        )
         return result
 
     @mcp.tool()

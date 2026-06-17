@@ -75,20 +75,20 @@ async def api_tasks(request: Request) -> JSONResponse:
             )
 
     # Fetch latest Slack notification per task
-    jira_keys = [r["jira_key"] for r in rows]
+    ext_keys = [r["external_key"] or r["jira_key"] for r in rows]
     notifications = {}
-    if jira_keys:
+    if ext_keys:
         notif_rows = await pool.fetch(
             """
-            SELECT DISTINCT ON (jira_key) jira_key, event_type, message, sent_at
+            SELECT DISTINCT ON (external_key) external_key, event_type, message, sent_at
             FROM slack_notifications
-            WHERE jira_key = ANY($1)
-            ORDER BY jira_key, sent_at DESC
+            WHERE external_key = ANY($1)
+            ORDER BY external_key, sent_at DESC
             """,
-            jira_keys,
+            ext_keys,
         )
         for nr in notif_rows:
-            notifications[nr["jira_key"]] = {
+            notifications[nr["external_key"]] = {
                 "event_type": nr["event_type"],
                 "message": nr["message"],
                 "sent_at": nr["sent_at"].isoformat(),
@@ -96,7 +96,10 @@ async def api_tasks(request: Request) -> JSONResponse:
 
     return JSONResponse(
         {
-            "items": [_task(r, notifications.get(r["jira_key"])) for r in rows],
+            "items": [
+                _task(r, notifications.get(r["external_key"] or r["jira_key"]))
+                for r in rows
+            ],
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -105,39 +108,46 @@ async def api_tasks(request: Request) -> JSONResponse:
 
 
 async def api_task_delete(request: Request) -> JSONResponse:
-    """Archive a task by jira_key (soft delete — preserves history)."""
+    """Archive a task by key (soft delete — preserves history)."""
     pool = get_pool()
-    jira_key = request.path_params.get("jira_key")
-    if not jira_key:
-        return JSONResponse({"error": "missing jira_key"}, status_code=400)
+    key = request.path_params.get("jira_key")
+    if not key:
+        return JSONResponse({"error": "missing key"}, status_code=400)
     row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'archived'::task_status WHERE jira_key = $1 RETURNING *",
-        jira_key,
+        "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 RETURNING *",
+        key,
     )
     if not row:
-        return JSONResponse({"error": f"Task {jira_key} not found"}, status_code=404)
-    await bus.publish(Event("task_archived", {"jira_key": jira_key}))
-    return JSONResponse({"archived": True, "jira_key": jira_key, "task": _task(row)})
+        return JSONResponse({"error": f"Task {key} not found"}, status_code=404)
+    await bus.publish(Event("task_archived", {"jira_key": row["jira_key"] or key}))
+    return JSONResponse(
+        {"archived": True, "jira_key": row["jira_key"] or key, "task": _task(row)}
+    )
 
 
 async def api_task_unarchive(request: Request) -> JSONResponse:
-    """Restore an archived task back to paused so the bot can pick it up."""
+    """Restore an archived task back to in_progress so the bot can pick it up."""
     pool = get_pool()
-    jira_key = request.path_params.get("jira_key")
-    if not jira_key:
-        return JSONResponse({"error": "missing jira_key"}, status_code=400)
+    key = request.path_params.get("jira_key")
+    if not key:
+        return JSONResponse({"error": "missing key"}, status_code=400)
     row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'in_progress'::task_status, paused_reason = NULL WHERE jira_key = $1 AND status = 'archived'::task_status RETURNING *",
-        jira_key,
+        "UPDATE tasks SET status = 'in_progress'::task_status, paused_reason = NULL WHERE external_key = $1 AND status = 'archived'::task_status RETURNING *",
+        key,
     )
     if not row:
         return JSONResponse(
-            {"error": f"Task {jira_key} not found or not archived"}, status_code=404
+            {"error": f"Task {key} not found or not archived"}, status_code=404
         )
     await bus.publish(
-        Event("task_updated", {"jira_key": jira_key, "status": "in_progress"})
+        Event(
+            "task_updated",
+            {"jira_key": row["jira_key"] or key, "status": "in_progress"},
+        )
     )
-    return JSONResponse({"unarchived": True, "jira_key": jira_key, "task": _task(row)})
+    return JSONResponse(
+        {"unarchived": True, "jira_key": row["jira_key"] or key, "task": _task(row)}
+    )
 
 
 async def api_memories(request: Request) -> JSONResponse:
@@ -613,9 +623,9 @@ async def api_analytics(request: Request) -> JSONResponse:
         SELECT
             CASE
                 WHEN summary ILIKE '%%investigation%%' OR work_type = 'investigation' THEN 'investigation'
-                WHEN jira_key IS NOT NULL AND (
+                WHEN external_key IS NOT NULL AND (
                     summary ILIKE '%%CVE%%' OR summary ILIKE '%%cve%%'
-                    OR jira_key IN (SELECT DISTINCT jira_key FROM tasks WHERE title ILIKE '%%CVE%%')
+                    OR external_key IN (SELECT DISTINCT external_key FROM tasks WHERE title ILIKE '%%CVE%%')
                 ) THEN 'cve'
                 WHEN work_type = 'pr_review' THEN 'pr_review'
                 WHEN work_type = 'new_ticket' THEN 'new_ticket'
@@ -640,7 +650,7 @@ async def api_analytics(request: Request) -> JSONResponse:
     repo_rows = await pool.fetch(
         f"""
         SELECT repo,
-            COUNT(DISTINCT jira_key) AS tickets,
+            COUNT(DISTINCT external_key) AS tickets,
             COUNT(*) AS cycles,
             ROUND(SUM(cost_usd)::numeric, 2) AS total_cost,
             ROUND(AVG(num_turns)::numeric, 1) AS avg_turns
@@ -656,7 +666,7 @@ async def api_analytics(request: Request) -> JSONResponse:
     ticket_rows = await pool.fetch(
         f"""
         SELECT
-            c.jira_key,
+            c.external_key AS jira_key,
             t.title,
             t.status::text AS task_status,
             t.repo,
@@ -666,9 +676,9 @@ async def api_analytics(request: Request) -> JSONResponse:
             ROUND(SUM(c.cost_usd)::numeric, 2) AS total_cost,
             ROUND(EXTRACT(EPOCH FROM (MAX(c.timestamp) - MIN(c.timestamp)))/3600.0, 1) AS hours_span
         FROM cycles c
-        LEFT JOIN tasks t ON t.jira_key = c.jira_key
-        WHERE {date_filter} AND c.jira_key IS NOT NULL AND NOT c.no_work
-        GROUP BY c.jira_key, t.title, t.status, t.repo
+        LEFT JOIN tasks t ON t.external_key = c.external_key
+        WHERE {date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
+        GROUP BY c.external_key, t.title, t.status, t.repo
         ORDER BY total_cycles DESC
         LIMIT 30
         """,
@@ -680,7 +690,7 @@ async def api_analytics(request: Request) -> JSONResponse:
         f"""
         SELECT
             COUNT(*) AS total_cycles,
-            COUNT(DISTINCT jira_key) FILTER (WHERE jira_key IS NOT NULL AND NOT no_work) AS unique_tickets,
+            COUNT(DISTINCT external_key) FILTER (WHERE external_key IS NOT NULL AND NOT no_work) AS unique_tickets,
             ROUND(SUM(cost_usd)::numeric, 2) AS total_cost,
             ROUND(AVG(cost_usd) FILTER (WHERE NOT no_work)::numeric, 2) AS avg_cost_per_work_cycle,
             ROUND(AVG(num_turns) FILTER (WHERE NOT no_work)::numeric, 1) AS avg_turns,
@@ -714,10 +724,10 @@ async def api_analytics(request: Request) -> JSONResponse:
             COUNT(*) FILTER (WHERE review_count = 1) AS one_review,
             COUNT(*) FILTER (WHERE review_count > 1) AS multi_review
         FROM (
-            SELECT jira_key, COUNT(*) FILTER (WHERE work_type = 'pr_review') AS review_count
+            SELECT external_key, COUNT(*) FILTER (WHERE work_type = 'pr_review') AS review_count
             FROM cycles
-            WHERE {date_filter} AND jira_key IS NOT NULL AND NOT no_work
-            GROUP BY jira_key
+            WHERE {date_filter} AND external_key IS NOT NULL AND NOT no_work
+            GROUP BY external_key
         ) sub
         """,
         *date_params,
@@ -1044,9 +1054,21 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
 
 
 def _task(row, slack_notif=None) -> dict:
+    raw_artifacts = row.get("artifacts")
+    if isinstance(raw_artifacts, str):
+        artifacts = json.loads(raw_artifacts)
+    elif raw_artifacts is not None:
+        artifacts = raw_artifacts
+    else:
+        artifacts = []
+
     result = {
         "id": row["id"],
         "jira_key": row["jira_key"],
+        "external_key": row.get("external_key"),
+        "source_type": row.get("source_type"),
+        "source_url": row.get("source_url"),
+        "artifacts": artifacts,
         "status": row["status"],
         "repo": row["repo"],
         "branch": row["branch"],
@@ -1084,6 +1106,8 @@ def _cycle(row) -> dict:
         "is_error": row["is_error"],
         "no_work": row["no_work"],
         "jira_key": row.get("jira_key"),
+        "external_key": row.get("external_key"),
+        "source_type": row.get("source_type"),
         "repo": row.get("repo"),
         "work_type": row.get("work_type"),
         "summary": row.get("summary"),
@@ -1096,6 +1120,8 @@ def _memory(row) -> dict:
         "category": row["category"],
         "repo": row["repo"],
         "jira_key": row["jira_key"],
+        "external_key": row.get("external_key"),
+        "source_type": row.get("source_type"),
         "title": row["title"],
         "content": row["content"],
         "tags": list(row["tags"]) if row["tags"] else [],
