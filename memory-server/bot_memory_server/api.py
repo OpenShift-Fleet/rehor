@@ -110,7 +110,7 @@ async def api_tasks(request: Request) -> JSONResponse:
 async def api_task_delete(request: Request) -> JSONResponse:
     """Archive a task by key (soft delete — preserves history)."""
     pool = get_pool()
-    key = request.path_params.get("jira_key")
+    key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
     row = await pool.fetchrow(
@@ -128,7 +128,7 @@ async def api_task_delete(request: Request) -> JSONResponse:
 async def api_task_unarchive(request: Request) -> JSONResponse:
     """Restore an archived task back to in_progress so the bot can pick it up."""
     pool = get_pool()
-    key = request.path_params.get("jira_key")
+    key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
     row = await pool.fetchrow(
@@ -184,7 +184,7 @@ async def api_memories(request: Request) -> JSONResponse:
     offset_idx = idx
 
     rows = await pool.fetch(
-        f"SELECT id, category, repo, jira_key, title, content, tags, created_at, metadata FROM memories {where} ORDER BY created_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}",
+        f"SELECT id, category, repo, jira_key, external_key, source_type, title, content, tags, created_at, metadata FROM memories {where} ORDER BY created_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}",
         *params,
     )
     return JSONResponse(
@@ -226,7 +226,7 @@ async def api_memory_search(request: Request) -> JSONResponse:
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
     rows = await pool.fetch(
         f"""
-        SELECT id, category, repo, jira_key, title, content, tags, created_at, metadata,
+        SELECT id, category, repo, jira_key, external_key, source_type, title, content, tags, created_at, metadata,
                embedding <=> $1 AS distance
         FROM memories {where}
         ORDER BY distance LIMIT $2
@@ -295,7 +295,7 @@ async def api_memory_get(request: Request) -> JSONResponse:
     if not memory_id:
         return JSONResponse({"error": "missing memory id"}, status_code=400)
     row = await pool.fetchrow(
-        "SELECT id, category, repo, jira_key, title, content, tags, created_at, metadata FROM memories WHERE id = $1",
+        "SELECT id, category, repo, jira_key, external_key, source_type, title, content, tags, created_at, metadata FROM memories WHERE id = $1",
         int(memory_id),
     )
     if not row:
@@ -341,7 +341,6 @@ async def api_memory_upload(request: Request) -> JSONResponse:
             category = m["category"]
             content = m["content"]
             repo = m.get("repo")
-            jira_key = m.get("jira_key")
             tags = m.get("tags", [])
             metadata = m.get("metadata", {})
 
@@ -356,8 +355,9 @@ async def api_memory_upload(request: Request) -> JSONResponse:
                 continue
 
             vector = embed(f"{title}\n{content}")
-            external_key = jira_key
-            source_type = "jira" if jira_key else None
+            external_key = m.get("external_key") or m.get("jira_key")
+            source_type = m.get("source_type") or ("jira" if external_key else None)
+            jira_key = m.get("jira_key") or external_key
             row = await pool.fetchrow(
                 """
                 INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata,
@@ -404,6 +404,8 @@ async def api_bot_status(request: Request) -> JSONResponse:
             "state": row["state"],
             "message": row["message"],
             "jira_key": row["jira_key"],
+            "external_key": row.get("external_key"),
+            "source_type": row.get("source_type"),
             "repo": row["repo"],
             "instance_id": row.get("instance_id"),
             "cycle_start": row["cycle_start"].isoformat()
@@ -420,7 +422,6 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
     body = await request.json()
     state = body.get("state")
     message = body.get("message", "")
-    jira_key = body.get("jira_key")
     repo = body.get("repo")
 
     if state not in ("working", "idle", "error"):
@@ -428,8 +429,9 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             {"error": "state must be working, idle, or error"}, status_code=400
         )
 
-    external_key = jira_key
-    source_type = "jira" if jira_key else None
+    external_key = body.get("external_key") or body.get("jira_key")
+    source_type = body.get("source_type") or ("jira" if external_key else None)
+    jira_key = body.get("jira_key") or external_key
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, jira_key = $3, repo = $4,
@@ -449,6 +451,8 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
         "state": row["state"],
         "message": row["message"],
         "jira_key": row["jira_key"],
+        "external_key": row.get("external_key"),
+        "source_type": row.get("source_type"),
         "repo": row["repo"],
         "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
         "updated_at": row["updated_at"].isoformat(),
@@ -483,6 +487,8 @@ async def api_instances(request: Request) -> JSONResponse:
                 "state": r["state"],
                 "message": r["message"],
                 "jira_key": r["jira_key"],
+                "external_key": r.get("external_key"),
+                "source_type": r.get("source_type"),
                 "repo": r["repo"],
                 "cycle_start": r["cycle_start"].isoformat()
                 if r["cycle_start"]
@@ -557,9 +563,9 @@ async def api_costs_add(request: Request) -> JSONResponse:
     pool = get_pool()
     body = await request.json()
 
-    jira_key = body.get("jira_key")
-    external_key = jira_key
-    source_type = "jira" if jira_key else None
+    external_key = body.get("external_key") or body.get("jira_key")
+    source_type = body.get("source_type") or ("jira" if external_key else None)
+    jira_key = body.get("jira_key") or external_key
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
@@ -1011,7 +1017,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
         f"""
         SELECT
             cr.task_id,
-            COALESCE(t.jira_key, cr.progress->>'jira_key') AS jira_key,
+            COALESCE(t.external_key, t.jira_key, cr.progress->>'external_key', cr.progress->>'jira_key') AS jira_key,
             t.title,
             t.status::text AS task_status,
             COALESCE(t.repo, cr.progress->>'repo') AS repo,
@@ -1024,7 +1030,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
         FROM cycle_runs cr
         LEFT JOIN tasks t ON t.id = cr.task_id
         {where}
-        GROUP BY cr.task_id, COALESCE(t.jira_key, cr.progress->>'jira_key'),
+        GROUP BY cr.task_id, COALESCE(t.external_key, t.jira_key, cr.progress->>'external_key', cr.progress->>'jira_key'),
                  t.title, t.status, COALESCE(t.repo, cr.progress->>'repo')
         ORDER BY MAX(cr.started_at) DESC
         """,

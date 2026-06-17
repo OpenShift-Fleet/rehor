@@ -99,8 +99,8 @@ from .api import (  # noqa: E402
 )
 
 mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
-mcp.custom_route("/api/tasks/{jira_key:path}", methods=["DELETE"])(api_task_delete)
-mcp.custom_route("/api/tasks/{jira_key:path}/unarchive", methods=["POST"])(
+mcp.custom_route("/api/tasks/{key:path}", methods=["DELETE"])(api_task_delete)
+mcp.custom_route("/api/tasks/{key:path}/unarchive", methods=["POST"])(
     api_task_unarchive
 )
 mcp.custom_route("/api/memories", methods=["GET"])(api_memories)
