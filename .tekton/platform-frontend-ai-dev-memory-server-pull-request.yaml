@@ -278,12 +278,13 @@ spec:
             done
 
             pip install --quiet asyncpg pytest pytest-asyncio
+            JIRA_URL=https://redhat.atlassian.net \
             PGSQL_HOSTNAME=$(params.PGSQL_HOSTNAME) \
             PGSQL_PORT=$(params.PGSQL_PORT) \
             PGSQL_USER=$(params.PGSQL_USER) \
             PGSQL_PASSWORD=$(params.PGSQL_PASSWORD) \
             PGSQL_DATABASE=$(params.PGSQL_DATABASE) \
-            python -m pytest tests/test_db_migration.py -v -p no:cacheprovider
+            python -m pytest tests/ -v -p no:cacheprovider --ignore=tests/test_cycle_runs.py --ignore=tests/test_memory_upload.py
     - name: prefetch-dependencies
       params:
       - name: input

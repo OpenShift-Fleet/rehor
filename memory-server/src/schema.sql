@@ -166,6 +166,38 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Stage 1: Generic task system columns (RHCLOUD-48376)
+-- Additive only — all nullable, no constraints yet. Backfilled by migration 001.
+DO $$ BEGIN
+    -- tasks: core generic columns + artifacts
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_url TEXT;
+    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS artifacts JSONB DEFAULT '[]';
+
+    -- bot_status
+    ALTER TABLE bot_status ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE bot_status ADD COLUMN IF NOT EXISTS source_type TEXT;
+
+    -- bot_instances
+    ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS source_type TEXT;
+
+    -- cycles
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS source_type TEXT;
+
+    -- slack_notifications
+    ALTER TABLE slack_notifications ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE slack_notifications ADD COLUMN IF NOT EXISTS source_type TEXT;
+
+    -- memories
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_type TEXT;
+EXCEPTION
+    WHEN duplicate_column THEN NULL;
+END $$;
+
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
 -- Re-run this after seeding data:
