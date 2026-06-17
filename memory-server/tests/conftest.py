@@ -12,7 +12,7 @@ DB_CONFIG = {
     "database": os.getenv("PGSQL_DATABASE", "devbot_migration_test"),
 }
 
-SCHEMA_PATH = Path(__file__).parent.parent / "src" / "schema.sql"
+SCHEMA_PATH = Path(__file__).parent.parent / "bot_memory_server" / "schema.sql"
 
 
 @pytest_asyncio.fixture

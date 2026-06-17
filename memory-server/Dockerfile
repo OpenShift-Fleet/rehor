@@ -18,11 +18,11 @@ WORKDIR /app
 COPY memory-server/pyproject.toml memory-server/uv.lock* ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY memory-server/src/ src/
+COPY memory-server/bot_memory_server/ bot_memory_server/
 
 # Copy dashboard build output into static dir
-COPY --from=dashboard /app/memory-server/src/static/index.html src/static/index.html
-COPY --from=dashboard /app/memory-server/src/static/assets/ src/static/assets/
+COPY --from=dashboard /app/memory-server/bot_memory_server/static/index.html bot_memory_server/static/index.html
+COPY --from=dashboard /app/memory-server/bot_memory_server/static/assets/ bot_memory_server/static/assets/
 
 RUN uv sync --frozen --no-dev
 
@@ -39,4 +39,4 @@ EXPOSE 8080
 # Run python directly from the pre-built venv — avoids uv cache init permission
 # issues with OpenShift arbitrary UIDs (astral-sh/uv#10023)
 ENV PATH="/app/.venv/bin:$PATH"
-CMD ["python", "-m", "src.server"]
+CMD ["python", "-m", "bot_memory_server.server"]

@@ -4,7 +4,7 @@ Additive only — no columns removed, no constraints changed.
 Idempotent — safe to run multiple times (skips rows where external_key is already set).
 
 Usage:
-    python -m memory_server.migrations.m001_generic_tasks
+    python -m bot_memory_server.migrations.m001_generic_tasks
 """
 
 import asyncio

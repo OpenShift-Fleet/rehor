@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from src.api import api_memory_upload
+from bot_memory_server.api import api_memory_upload
 
 app = Starlette(
     routes=[Route("/api/memories/upload", api_memory_upload, methods=["POST"])]
@@ -37,13 +37,13 @@ def mock_pool():
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=None)
     pool.fetchrow = AsyncMock(side_effect=lambda q, *a: _fake_row(1, a[3], a[0]))
-    with patch("src.api.get_pool", return_value=pool):
+    with patch("bot_memory_server.api.get_pool", return_value=pool):
         yield pool
 
 
 @pytest.fixture
 def mock_embed():
-    with patch("src.api.embed", return_value=[0.0] * 384) as m:
+    with patch("bot_memory_server.api.embed", return_value=[0.0] * 384) as m:
         yield m
 
 
