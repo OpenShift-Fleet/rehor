@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
+from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
 from ..events import Event, bus
 from ..models import Task
@@ -13,6 +14,14 @@ MAX_ACTIVE = 10
 
 
 def _row_to_task(row) -> dict:
+    raw_artifacts = row.get("artifacts")
+    if isinstance(raw_artifacts, str):
+        artifacts = json.loads(raw_artifacts)
+    elif raw_artifacts is not None:
+        artifacts = raw_artifacts
+    else:
+        artifacts = []
+
     task = Task(
         id=row["id"],
         jira_key=row["jira_key"],
@@ -30,6 +39,10 @@ def _row_to_task(row) -> dict:
         metadata=json.loads(row["metadata"])
         if isinstance(row["metadata"], str)
         else (row["metadata"] or {}),
+        external_key=row.get("external_key"),
+        source_type=row.get("source_type"),
+        source_url=row.get("source_url"),
+        artifacts=artifacts,
     )
     return task.model_dump(mode="json")
 
@@ -118,10 +131,16 @@ def register_task_tools(mcp: FastMCP):
 
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
+        meta_dict = metadata or {}
+        artifacts = build_artifacts(pr_number, pr_url, meta_dict)
+        source_url = f"{JIRA_BASE_URL}/{jira_key}" if JIRA_BASE_URL else None
         row = await pool.fetchrow(
             """
-            INSERT INTO tasks (jira_key, status, repo, branch, pr_number, pr_url, title, summary, instance_id, metadata)
-            VALUES ($1, $2::task_status, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO tasks (jira_key, status, repo, branch, pr_number, pr_url,
+                               title, summary, instance_id, metadata,
+                               external_key, source_type, source_url, artifacts)
+            VALUES ($1, $2::task_status, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14)
             RETURNING *
             """,
             jira_key,
@@ -133,7 +152,11 @@ def register_task_tools(mcp: FastMCP):
             title,
             summary,
             instance_id,
-            json.dumps(metadata or {}),
+            json.dumps(meta_dict),
+            jira_key,
+            "jira",
+            source_url,
+            json.dumps(artifacts),
         )
         result = _row_to_task(row)
         await bus.publish(
@@ -208,6 +231,32 @@ def register_task_tools(mcp: FastMCP):
             sets.append(f"metadata = metadata || ${idx}::jsonb")
             params.append(json.dumps(metadata))
 
+        # Rebuild artifacts when PR-related fields change
+        if (
+            pr_number is not None
+            or pr_url is not None
+            or (metadata is not None and "prs" in (metadata or {}))
+        ):
+            current = await pool.fetchrow(
+                "SELECT pr_number, pr_url, metadata FROM tasks WHERE jira_key = $1",
+                jira_key,
+            )
+            if current:
+                cur_pr_number = (
+                    pr_number if pr_number is not None else current["pr_number"]
+                )
+                cur_pr_url = pr_url if pr_url is not None else current["pr_url"]
+                cur_meta = current["metadata"]
+                if isinstance(cur_meta, str):
+                    cur_meta = json.loads(cur_meta)
+                cur_meta = cur_meta or {}
+                if metadata is not None:
+                    cur_meta.update(metadata)
+                new_artifacts = build_artifacts(cur_pr_number, cur_pr_url, cur_meta)
+                idx += 1
+                sets.append(f"artifacts = ${idx}")
+                params.append(json.dumps(new_artifacts))
+
         if not sets:
             raise ValueError("No fields to update")
 
@@ -280,11 +329,14 @@ def register_task_tools(mcp: FastMCP):
         repo: The repo being worked in (if any).
         instance_id: Bot instance name for multi-instance setups."""
         pool = get_pool()
+        external_key = jira_key
+        source_type = "jira" if jira_key else None
         # Legacy singleton update (backward compat)
         row = await pool.fetchrow(
             """
             UPDATE bot_status SET state = $1, message = $2, jira_key = $3, repo = $4,
                 instance_id = COALESCE($5, instance_id),
+                external_key = $6, source_type = $7,
                 cycle_start = CASE WHEN state = 'idle' AND $1 = 'working' THEN NOW() ELSE cycle_start END,
                 updated_at = NOW()
             WHERE id = 1 RETURNING *
@@ -294,17 +346,21 @@ def register_task_tools(mcp: FastMCP):
             jira_key,
             repo,
             instance_id,
+            external_key,
+            source_type,
         )
         # Multi-instance upsert
         if instance_id:
             await pool.execute(
                 """
-                INSERT INTO bot_instances (instance_id, state, message, jira_key, repo, cycle_start, updated_at)
-                VALUES ($1, $2, $3, $4, $5,
+                INSERT INTO bot_instances (instance_id, state, message, jira_key, repo,
+                                           external_key, source_type, cycle_start, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7,
                     CASE WHEN $2 = 'working' THEN NOW() ELSE NULL END,
                     NOW())
                 ON CONFLICT (instance_id) DO UPDATE SET
                     state = $2, message = $3, jira_key = $4, repo = $5,
+                    external_key = $6, source_type = $7,
                     cycle_start = CASE
                         WHEN bot_instances.state = 'idle' AND $2 = 'working' THEN NOW()
                         ELSE bot_instances.cycle_start
@@ -316,6 +372,8 @@ def register_task_tools(mcp: FastMCP):
                 message,
                 jira_key,
                 repo,
+                external_key,
+                source_type,
             )
         result = {
             "state": row["state"],

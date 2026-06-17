@@ -60,10 +60,13 @@ def register_rag_tools(mcp: FastMCP):
         Tags: free-form labels like bug-fix, cve, css, patternfly, dependency-upgrade, ci, ui-change, testing."""
         pool = get_pool()
         vector = embed(f"{title}\n{content}")
+        external_key = jira_key
+        source_type = "jira" if jira_key else None
         row = await pool.fetchrow(
             """
-            INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata,
+                                  external_key, source_type)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING *
             """,
             category,
@@ -74,6 +77,8 @@ def register_rag_tools(mcp: FastMCP):
             tags or [],
             vector,
             json.dumps(metadata or {}),
+            external_key,
+            source_type,
         )
         result = _row_to_memory(row)
         await bus.publish(

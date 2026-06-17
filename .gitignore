@@ -20,10 +20,10 @@ __pycache__/
 .python-version
 dashboard/node_modules/
 # Dashboard build output (built in Dockerfile, not committed)
-memory-server/src/static/assets/
-memory-server/src/static/index.html
-memory-server/src/static/app.js
-memory-server/src/static/style.css
+memory-server/bot_memory_server/static/assets/
+memory-server/bot_memory_server/static/index.html
+memory-server/bot_memory_server/static/app.js
+memory-server/bot_memory_server/static/style.css
 sa-key.json
 .ssh/
 .gitconfig

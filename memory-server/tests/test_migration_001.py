@@ -5,8 +5,6 @@ Tests run against real Postgres via the CI sidecar (or local instance).
 
 import json
 import os
-import sys
-from pathlib import Path
 
 import pytest
 
@@ -14,8 +12,7 @@ from conftest import SCHEMA_PATH
 
 os.environ.setdefault("JIRA_URL", "https://redhat.atlassian.net")
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from migrations.m001_generic_tasks import _build_artifacts, run_migration  # noqa: E402
+from bot_memory_server.migrations.m001_generic_tasks import run_migration  # noqa: E402
 
 
 TABLES_WITH_GENERIC_COLS = [
@@ -244,7 +241,7 @@ async def test_backfill_other_tables(db):
         "[" + ",".join(["0"] * 384) + "]",
     )
 
-    stats = await run_migration(db)
+    await run_migration(db)
 
     bs = await db.fetchrow("SELECT * FROM bot_status WHERE id = 1")
     assert bs["external_key"] == "RHCLOUD-600"

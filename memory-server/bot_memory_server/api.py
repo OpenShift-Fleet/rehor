@@ -26,12 +26,6 @@ async def api_tasks(request: Request) -> JSONResponse:
 
     exclude = request.query_params.get("exclude_status")
 
-    instance_clause = ""
-    instance_params: list = []
-    if instance_id:
-        instance_clause = " AND instance_id = $__idx__"
-        instance_params = [instance_id]
-
     if status:
         base_params = [status]
         where = "WHERE status = $1::task_status"
@@ -352,10 +346,13 @@ async def api_memory_upload(request: Request) -> JSONResponse:
                 continue
 
             vector = embed(f"{title}\n{content}")
+            external_key = jira_key
+            source_type = "jira" if jira_key else None
             row = await pool.fetchrow(
                 """
-                INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata,
+                                      external_key, source_type)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING *
                 """,
                 category,
@@ -366,6 +363,8 @@ async def api_memory_upload(request: Request) -> JSONResponse:
                 tags or [],
                 vector,
                 json.dumps(metadata or {}),
+                external_key,
+                source_type,
             )
             await bus.publish(
                 Event(
@@ -419,9 +418,12 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             {"error": "state must be working, idle, or error"}, status_code=400
         )
 
+    external_key = jira_key
+    source_type = "jira" if jira_key else None
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, jira_key = $3, repo = $4,
+            external_key = $5, source_type = $6,
             cycle_start = CASE WHEN state = 'idle' AND $1 = 'working' THEN NOW() ELSE cycle_start END,
             updated_at = NOW()
         WHERE id = 1 RETURNING *
@@ -430,6 +432,8 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
         message,
         jira_key,
         repo,
+        external_key,
+        source_type,
     )
     result = {
         "state": row["state"],
@@ -543,13 +547,17 @@ async def api_costs_add(request: Request) -> JSONResponse:
     pool = get_pool()
     body = await request.json()
 
+    jira_key = body.get("jira_key")
+    external_key = jira_key
+    source_type = "jira" if jira_key else None
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            jira_key, repo, work_type, summary)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                            jira_key, repo, work_type, summary,
+                            external_key, source_type)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *
         """,
         body.get("label", ""),
@@ -564,10 +572,12 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("model", ""),
         body.get("is_error", False),
         body.get("no_work", False),
-        body.get("jira_key"),
+        jira_key,
         body.get("repo"),
         body.get("work_type"),
         body.get("summary"),
+        external_key,
+        source_type,
     )
     cycle = _cycle(row)
     await bus.publish(Event("cycle_recorded", cycle))

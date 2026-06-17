@@ -65,12 +65,15 @@ def register_slack_tools(mcp: FastMCP):
         # Record notification
         await pool.execute(
             """
-            INSERT INTO slack_notifications (jira_key, event_type, message)
-            VALUES ($1, $2, $3)
+            INSERT INTO slack_notifications (jira_key, event_type, message,
+                                             external_key, source_type)
+            VALUES ($1, $2, $3, $4, $5)
             """,
             jira_key,
             event_type,
             message,
+            jira_key,
+            "jira",
         )
 
         await bus.publish(

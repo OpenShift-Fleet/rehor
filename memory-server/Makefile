@@ -12,10 +12,10 @@ lock:
 	uv lock
 
 run:
-	uv run python -m src.server
+	uv run python -m bot_memory_server.server
 
 dev: up
-	uv run python -m src.server
+	uv run python -m bot_memory_server.server
 
 # Docker
 up:

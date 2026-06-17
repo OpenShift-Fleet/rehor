@@ -19,6 +19,10 @@ class Task(BaseModel):
     paused_reason: str | None = None
     instance_id: str | None = None
     metadata: dict[str, Any] = {}
+    external_key: str | None = None
+    source_type: str | None = None
+    source_url: str | None = None
+    artifacts: list[dict[str, Any]] = []
 
 
 class Memory(BaseModel):
@@ -31,6 +35,8 @@ class Memory(BaseModel):
     tags: list[str] = []
     created_at: datetime
     metadata: dict[str, Any] = {}
+    external_key: str | None = None
+    source_type: str | None = None
 
 
 class MemorySearchResult(Memory):

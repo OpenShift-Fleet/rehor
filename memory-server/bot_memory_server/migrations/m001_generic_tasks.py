@@ -4,20 +4,19 @@ Additive only — no columns removed, no constraints changed.
 Idempotent — safe to run multiple times (skips rows where external_key is already set).
 
 Usage:
-    python -m memory_server.migrations.m001_generic_tasks
+    python -m bot_memory_server.migrations.m001_generic_tasks
 """
 
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path
 
 import asyncpg
 
-SCHEMA_PATH = Path(__file__).parent.parent / "schema.sql"
+from ..artifacts import JIRA_BASE_URL, build_artifacts
 
-JIRA_BASE_URL = os.environ["JIRA_URL"].rstrip("/") + "/browse"
+SCHEMA_PATH = Path(__file__).parent.parent / "schema.sql"
 
 SIMPLE_TABLES = [
     "bot_status",
@@ -40,30 +39,6 @@ def _build_dsn() -> str:
     return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
 
-def _build_artifacts(pr_number, pr_url, metadata) -> list[dict]:
-    artifacts = []
-    seen_urls: set[str] = set()
-
-    if pr_number and pr_url:
-        artifacts.append(
-            {"name": f"PR #{pr_number}", "url": pr_url, "type": "pull_request"}
-        )
-        seen_urls.add(pr_url)
-
-    meta = metadata if isinstance(metadata, dict) else {}
-    for pr in meta.get("prs", []):
-        url = pr.get("url", "")
-        if not url or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        number = pr.get("number", "?")
-        pr_type = "merge_request" if pr.get("host") == "gitlab" else "pull_request"
-        prefix = "MR" if pr_type == "merge_request" else "PR"
-        artifacts.append({"name": f"{prefix} #{number}", "url": url, "type": pr_type})
-
-    return artifacts
-
-
 async def run_migration(conn: asyncpg.Connection) -> dict:
     schema = SCHEMA_PATH.read_text()
     await conn.execute(schema)
@@ -79,7 +54,7 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
         if isinstance(meta, str):
             meta = json.loads(meta)
 
-        artifacts = _build_artifacts(row["pr_number"], row["pr_url"], meta)
+        artifacts = build_artifacts(row["pr_number"], row["pr_url"], meta)
         source_url = f"{JIRA_BASE_URL}/{row['jira_key']}" if row["jira_key"] else None
 
         await conn.execute(

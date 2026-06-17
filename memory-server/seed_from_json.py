@@ -18,7 +18,7 @@ async def main():
     conn = await asyncpg.connect(url)
 
     # Run schema and register vector type
-    schema = (Path(__file__).parent / "src" / "schema.sql").read_text()
+    schema = (Path(__file__).parent / "bot_memory_server" / "schema.sql").read_text()
     await conn.execute(schema)
     await register_vector(conn)
 
@@ -166,7 +166,7 @@ async def main():
 
     # --- Seed memories ---
     # Load embedding model
-    from src.embeddings import embed
+    from bot_memory_server.embeddings import embed
 
     memories = [
         # Learnings from completed tickets

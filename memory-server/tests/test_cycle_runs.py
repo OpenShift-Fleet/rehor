@@ -1,6 +1,5 @@
 """Tests for cycle-runs REST API and MCP tools."""
 
-import asyncio
 import base64
 import json
 from datetime import datetime, timezone
@@ -11,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
 
-from src.api import api_cycle_runs, api_cycle_run_transcript
+from bot_memory_server.api import api_cycle_runs, api_cycle_run_transcript
 
 
 app = Starlette(
@@ -53,7 +52,7 @@ def mock_pool():
     )
     pool.fetch = AsyncMock(return_value=[_fake_cycle_run_row()])
     pool.execute = AsyncMock()
-    with patch("src.api.get_pool", return_value=pool):
+    with patch("bot_memory_server.api.get_pool", return_value=pool):
         yield pool
 
 
@@ -318,13 +317,13 @@ def mock_pool_for_tools():
             ),
         ]
     )
-    with patch("src.tools.cycles.get_pool", return_value=pool):
+    with patch("bot_memory_server.tools.cycles.get_pool", return_value=pool):
         yield pool
 
 
 @pytest.fixture
 def mcp_with_tools(mock_pool_for_tools):
-    from src.tools.cycles import register_cycle_tools
+    from bot_memory_server.tools.cycles import register_cycle_tools
     from fastmcp import FastMCP
 
     mcp = FastMCP(name="test")
