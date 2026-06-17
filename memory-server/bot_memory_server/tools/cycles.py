@@ -38,8 +38,10 @@ _CYCLE_RUN_COLUMNS = (
 def register_cycle_tools(mcp: FastMCP):
     @mcp.tool()
     async def progress_store(
-        task_id: int,
         instance_id: str,
+        task_id: Optional[int] = None,
+        external_key: Optional[str] = None,
+        source_type: Optional[str] = None,
         cycle_type: str = "task_work",
         progress: Optional[dict] = None,
         started_at: Optional[str] = None,
@@ -50,6 +52,8 @@ def register_cycle_tools(mcp: FastMCP):
         """Store a structured progress summary for the current cycle.
         Called by the bot before a cycle ends to persist what happened.
         task_id: The DB task ID (from task_add/task_get result). Use 0 or omit for idle/error cycles.
+        external_key: Jira key or external identifier. If provided without task_id, resolves the task automatically.
+        source_type: Source type for external_key lookup (default 'jira').
         instance_id: Bot instance name.
         cycle_type: One of 'task_work', 'triage_only', 'idle', 'error'.
         progress: Structured JSON with keys like last_step, next_step, files_changed, commits, key_decisions, blockers, notes.
@@ -62,6 +66,15 @@ def register_cycle_tools(mcp: FastMCP):
             progress = json.loads(progress)
 
         resolved_task_id = task_id if task_id and task_id > 0 else None
+
+        if not resolved_task_id and external_key:
+            row = await pool.fetchrow(
+                "SELECT id FROM tasks WHERE external_key = $1 AND source_type = $2",
+                external_key,
+                source_type or "jira",
+            )
+            if row:
+                resolved_task_id = row["id"]
 
         parsed_started = datetime.fromisoformat(started_at) if started_at else None
         parsed_finished = datetime.fromisoformat(finished_at) if finished_at else None

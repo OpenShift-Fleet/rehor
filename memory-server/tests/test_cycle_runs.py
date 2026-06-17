@@ -371,6 +371,37 @@ async def test_progress_store_null_task(mock_pool_for_tools, mcp_with_tools):
 
 
 @pytest.mark.asyncio
+async def test_progress_store_external_key_resolution(mcp_with_tools):
+    """progress_store resolves task_id from external_key when task_id is not provided."""
+    pool = MagicMock()
+    # First call: lookup task by external_key → returns id=99
+    # Second call: INSERT → returns cycle_run row
+    pool.fetchrow = AsyncMock(
+        side_effect=[
+            {"id": 99},  # task lookup result
+            _fake_cycle_run_row(id=5, task_id=99),  # INSERT result
+        ]
+    )
+    with patch("bot_memory_server.tools.cycles.get_pool", return_value=pool):
+        store_fn = await _get_tool_fn(mcp_with_tools, "progress_store")
+        result = await store_fn(
+            instance_id="test",
+            external_key="RHCLOUD-1234",
+            cycle_type="task_work",
+        )
+
+    assert result["task_id"] == 99
+    assert pool.fetchrow.call_count == 2
+    # First call should be the task lookup
+    lookup_query = pool.fetchrow.call_args_list[0][0][0]
+    assert "external_key" in lookup_query
+    # Second call is the INSERT with resolved task_id=99
+    insert_args = pool.fetchrow.call_args_list[1][0]
+    assert "INSERT INTO cycle_runs" in insert_args[0]
+    assert insert_args[1] == 99  # resolved_task_id
+
+
+@pytest.mark.asyncio
 async def test_progress_load(mock_pool_for_tools, mcp_with_tools):
     load_fn = await _get_tool_fn(mcp_with_tools, "progress_load")
 

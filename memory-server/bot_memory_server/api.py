@@ -907,6 +907,20 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
     if task_id is not None:
         task_id = int(task_id) if task_id else None
 
+    progress = body.get("progress")
+    if isinstance(progress, str):
+        progress = json.loads(progress)
+
+    if not task_id and progress:
+        ext_key = progress.get("external_key") or progress.get("jira_key")
+        if ext_key:
+            row = await pool.fetchrow(
+                "SELECT id FROM tasks WHERE external_key = $1 AND source_type = 'jira'",
+                ext_key,
+            )
+            if row:
+                task_id = row["id"]
+
     transcript_bytes = None
     transcript_b64 = body.get("transcript_b64")
     if transcript_b64:
@@ -916,10 +930,6 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
     finished_at = body.get("finished_at")
     parsed_started = datetime.fromisoformat(started_at) if started_at else None
     parsed_finished = datetime.fromisoformat(finished_at) if finished_at else None
-
-    progress = body.get("progress")
-    if isinstance(progress, str):
-        progress = json.loads(progress)
 
     row = await pool.fetchrow(
         f"""
@@ -1001,7 +1011,12 @@ async def api_cycle_run_transcript(request: Request) -> Response:
 
 
 async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
-    """GET /api/cycle-runs/by-task — cycle runs grouped by task with summary stats."""
+    """GET /api/cycle-runs/by-task — cycle runs grouped by task with summary stats.
+
+    Merges orphan cycle_runs (task_id=NULL) with task-linked runs when they
+    share the same external_key/jira_key. Uses a resolved_key CTE so that
+    orphan runs don't create duplicate groups.
+    """
     pool = get_pool()
     instance_id = request.query_params.get("instance_id")
 
@@ -1015,24 +1030,46 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
 
     rows = await pool.fetch(
         f"""
+        WITH resolved AS (
+            SELECT
+                cr.*,
+                COALESCE(
+                    t_direct.id,
+                    t_key.id
+                ) AS resolved_task_id,
+                COALESCE(
+                    t_direct.external_key,
+                    t_direct.jira_key,
+                    t_key.external_key,
+                    t_key.jira_key,
+                    cr.progress->>'external_key',
+                    cr.progress->>'jira_key'
+                ) AS resolved_key,
+                COALESCE(t_direct.title, t_key.title) AS resolved_title,
+                COALESCE(t_direct.status, t_key.status) AS resolved_status,
+                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo
+            FROM cycle_runs cr
+            LEFT JOIN tasks t_direct ON t_direct.id = cr.task_id
+            LEFT JOIN tasks t_key ON cr.task_id IS NULL
+                AND t_key.external_key = COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key')
+                AND t_key.source_type = 'jira'
+            {where}
+        )
         SELECT
-            cr.task_id,
-            COALESCE(t.external_key, t.jira_key, cr.progress->>'external_key', cr.progress->>'jira_key') AS jira_key,
-            t.title,
-            t.status::text AS task_status,
-            COALESCE(t.repo, cr.progress->>'repo') AS repo,
+            MAX(resolved_task_id) AS task_id,
+            resolved_key AS jira_key,
+            MAX(resolved_title) AS title,
+            MAX(resolved_status::text) AS task_status,
+            MAX(resolved_repo) AS repo,
             COUNT(*) AS cycle_count,
-            COUNT(*) FILTER (WHERE cr.transcript IS NOT NULL) AS transcript_count,
-            SUM(cr.tool_calls) AS total_tool_calls,
-            SUM(cr.tokens_used) AS total_tokens,
-            MIN(cr.started_at) AS first_cycle,
-            MAX(cr.started_at) AS last_cycle
-        FROM cycle_runs cr
-        LEFT JOIN tasks t ON t.id = cr.task_id
-        {where}
-        GROUP BY cr.task_id, COALESCE(t.external_key, t.jira_key, cr.progress->>'external_key', cr.progress->>'jira_key'),
-                 t.title, t.status, COALESCE(t.repo, cr.progress->>'repo')
-        ORDER BY MAX(cr.started_at) DESC
+            COUNT(*) FILTER (WHERE transcript IS NOT NULL) AS transcript_count,
+            SUM(tool_calls) AS total_tool_calls,
+            SUM(tokens_used) AS total_tokens,
+            MIN(started_at) AS first_cycle,
+            MAX(started_at) AS last_cycle
+        FROM resolved
+        GROUP BY resolved_key
+        ORDER BY MAX(started_at) DESC
         """,
         *params,
     )
