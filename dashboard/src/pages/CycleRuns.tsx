@@ -440,10 +440,16 @@ function TaskGroupCard({
   );
 }
 
+function groupKey(g: TaskCycleGroup): string {
+  if (g.task_id != null) return `t:${g.task_id}`;
+  if (g.jira_key) return `k:${g.jira_key}`;
+  return 'orphan';
+}
+
 export default function CycleRuns({ instanceId }: { instanceId?: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [groups, setGroups] = useState<TaskCycleGroup[]>([]);
-  const [expandedTaskId, setExpandedTaskId] = useState<number | null | undefined>(undefined);
+  const [expandedGroupKey, setExpandedGroupKey] = useState<string | undefined>(undefined);
   const [runs, setRuns] = useState<CycleRun[]>([]);
   const [selectedRun, setSelectedRun] = useState<CycleRun | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(false);
@@ -489,7 +495,8 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     if (cycleParam && groups.length > 0) {
       const cycleId = parseInt(cycleParam);
       const tid = taskParam ? parseInt(taskParam) : null;
-      setExpandedTaskId(tid);
+      const match = groups.find((g) => g.task_id === tid);
+      setExpandedGroupKey(match ? groupKey(match) : tid != null ? `t:${tid}` : 'orphan');
       loadCyclesForTask(tid).then((items) => {
         const found = items.find((r: CycleRun) => r.id === cycleId);
         if (found) setSelectedRun(found);
@@ -505,18 +512,19 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     });
   }, [onEvent, loadGroups]);
 
-  const handleGroupClick = async (taskId: number | null) => {
-    if (expandedTaskId === taskId) {
-      setExpandedTaskId(undefined);
+  const handleGroupClick = async (g: TaskCycleGroup) => {
+    const key = groupKey(g);
+    if (expandedGroupKey === key) {
+      setExpandedGroupKey(undefined);
       setRuns([]);
       setSelectedRun(null);
       setFullscreen(false);
       return;
     }
-    setExpandedTaskId(taskId);
+    setExpandedGroupKey(key);
     setSelectedRun(null);
     setFullscreen(false);
-    await loadCyclesForTask(taskId);
+    await loadCyclesForTask(g.task_id);
   };
 
   const handleSelectRun = (run: CycleRun) => {
@@ -555,14 +563,14 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
         <div className="task-group-list">
           {groups.length === 0 && <div className="empty-state">No cycle runs found</div>}
           {groups.map((g) => {
-            const key = g.task_id ?? 'orphan';
-            const isExpanded = expandedTaskId === g.task_id;
+            const gk = groupKey(g);
+            const isExpanded = expandedGroupKey === gk;
             return (
-              <div key={key}>
+              <div key={gk}>
                 <TaskGroupCard
                   group={g}
                   expanded={isExpanded}
-                  onClick={() => handleGroupClick(g.task_id)}
+                  onClick={() => handleGroupClick(g)}
                   instanceId={instanceId}
                 />
                 {isExpanded && (
