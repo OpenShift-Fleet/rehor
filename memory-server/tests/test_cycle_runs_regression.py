@@ -89,22 +89,35 @@ async def test_cycle_runs_by_task_grouping(db):
 
     rows = await db.fetch(
         """
+        WITH resolved AS (
+            SELECT cr.*,
+                COALESCE(t_direct.id, t_key.id) AS resolved_task_id,
+                COALESCE(t_direct.external_key, t_direct.jira_key,
+                         t_key.external_key, t_key.jira_key,
+                         cr.progress->>'external_key', cr.progress->>'jira_key') AS resolved_key,
+                COALESCE(t_direct.title, t_key.title) AS resolved_title,
+                COALESCE(t_direct.status, t_key.status) AS resolved_status,
+                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo
+            FROM cycle_runs cr
+            LEFT JOIN tasks t_direct ON t_direct.id = cr.task_id
+            LEFT JOIN tasks t_key ON cr.task_id IS NULL
+                AND t_key.external_key = COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key')
+                AND t_key.source_type = 'jira'
+        )
         SELECT
-            cr.task_id,
-            COALESCE(t.jira_key, cr.progress->>'jira_key') AS jira_key,
-            t.title,
-            t.status::text AS task_status,
+            MAX(resolved_task_id) AS task_id,
+            resolved_key AS jira_key,
+            MAX(resolved_title) AS title,
+            MAX(resolved_status::text) AS task_status,
             COUNT(*) AS cycle_count,
-            COUNT(*) FILTER (WHERE cr.transcript IS NOT NULL) AS transcript_count,
-            SUM(cr.tool_calls) AS total_tool_calls,
-            SUM(cr.tokens_used) AS total_tokens,
-            MIN(cr.started_at) AS first_cycle,
-            MAX(cr.started_at) AS last_cycle
-        FROM cycle_runs cr
-        LEFT JOIN tasks t ON t.id = cr.task_id
-        GROUP BY cr.task_id, COALESCE(t.jira_key, cr.progress->>'jira_key'),
-                 t.title, t.status
-        ORDER BY MAX(cr.started_at) DESC
+            COUNT(*) FILTER (WHERE transcript IS NOT NULL) AS transcript_count,
+            SUM(tool_calls) AS total_tool_calls,
+            SUM(tokens_used) AS total_tokens,
+            MIN(started_at) AS first_cycle,
+            MAX(started_at) AS last_cycle
+        FROM resolved
+        GROUP BY resolved_key
+        ORDER BY MAX(started_at) DESC
         """
     )
     assert len(rows) == 1
@@ -150,7 +163,7 @@ async def test_cycle_runs_by_task_instance_filter(db):
 
 @pytest.mark.asyncio
 async def test_cycle_runs_orphan_grouping(db):
-    """Cycle runs with no task group by progress->>'jira_key' fallback."""
+    """Cycle runs with no task and no matching task group by progress->>'jira_key'."""
     await _apply_schema(db)
 
     await _insert_cycle_run(
@@ -162,31 +175,144 @@ async def test_cycle_runs_orphan_grouping(db):
     await _insert_cycle_run(
         db,
         task_id=None,
-        progress={"jira_key": "RHCLOUD-4020", "repo": "orphan-repo"},
+        progress={"jira_key": "RHCLOUD-4020", "repo": "other-orphan-repo"},
         tool_calls=25,
     )
 
     rows = await db.fetch(
         """
+        WITH resolved AS (
+            SELECT cr.*,
+                COALESCE(t_direct.id, t_key.id) AS resolved_task_id,
+                COALESCE(t_direct.external_key, t_direct.jira_key,
+                         t_key.external_key, t_key.jira_key,
+                         cr.progress->>'external_key', cr.progress->>'jira_key') AS resolved_key,
+                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo
+            FROM cycle_runs cr
+            LEFT JOIN tasks t_direct ON t_direct.id = cr.task_id
+            LEFT JOIN tasks t_key ON cr.task_id IS NULL
+                AND t_key.external_key = COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key')
+                AND t_key.source_type = 'jira'
+        )
         SELECT
-            cr.task_id,
-            COALESCE(t.jira_key, cr.progress->>'jira_key') AS jira_key,
-            COALESCE(t.repo, cr.progress->>'repo') AS repo,
+            MAX(resolved_task_id) AS task_id,
+            resolved_key AS jira_key,
+            MAX(resolved_repo) AS repo,
             COUNT(*) AS cycle_count,
-            SUM(cr.tool_calls) AS total_tool_calls
-        FROM cycle_runs cr
-        LEFT JOIN tasks t ON t.id = cr.task_id
-        GROUP BY cr.task_id, COALESCE(t.jira_key, cr.progress->>'jira_key'),
-                 t.title, t.status, COALESCE(t.repo, cr.progress->>'repo')
+            SUM(tool_calls) AS total_tool_calls
+        FROM resolved
+        GROUP BY resolved_key
         """
     )
     assert len(rows) == 1
     r = rows[0]
     assert r["task_id"] is None
     assert r["jira_key"] == "RHCLOUD-4020"
-    assert r["repo"] == "orphan-repo"
     assert r["cycle_count"] == 2
     assert r["total_tool_calls"] == 40
+
+
+# --- Orphans merge with task-linked runs ---
+
+
+@pytest.mark.asyncio
+async def test_cycle_runs_orphan_merges_with_task(db):
+    """Orphan cycle_runs with matching jira_key merge into the task group.
+
+    Reproduces the prod bug where RHCLOUD-47818 appeared 3 times:
+    2 orphan groups + 1 task-linked group. After fix, should be 1 group.
+    """
+    await _apply_schema(db)
+    task = await _insert_task(db, "RHCLOUD-4025")
+    task_id = task["id"]
+
+    # Task-linked cycle
+    await _insert_cycle_run(db, task_id=task_id, tool_calls=50, tokens_used=10000)
+    # Orphan cycles (created before task existed or without task_id)
+    await _insert_cycle_run(
+        db,
+        task_id=None,
+        progress={"jira_key": "RHCLOUD-4025", "repo": "test-repo"},
+        tool_calls=30,
+        tokens_used=8000,
+        transcript=b"data",
+    )
+    await _insert_cycle_run(
+        db,
+        task_id=None,
+        progress={"jira_key": "RHCLOUD-4025", "repo": "other-repo"},
+        tool_calls=20,
+        tokens_used=5000,
+    )
+
+    # Use the new resolved CTE query (same as api_cycle_runs_by_task)
+    rows = await db.fetch(
+        """
+        WITH resolved AS (
+            SELECT
+                cr.*,
+                COALESCE(t_direct.id, t_key.id) AS resolved_task_id,
+                COALESCE(
+                    t_direct.external_key, t_direct.jira_key,
+                    t_key.external_key, t_key.jira_key,
+                    cr.progress->>'external_key', cr.progress->>'jira_key'
+                ) AS resolved_key,
+                COALESCE(t_direct.title, t_key.title) AS resolved_title,
+                COALESCE(t_direct.status, t_key.status) AS resolved_status,
+                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo
+            FROM cycle_runs cr
+            LEFT JOIN tasks t_direct ON t_direct.id = cr.task_id
+            LEFT JOIN tasks t_key ON cr.task_id IS NULL
+                AND t_key.external_key = COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key')
+                AND t_key.source_type = 'jira'
+        )
+        SELECT
+            MAX(resolved_task_id) AS task_id,
+            resolved_key AS jira_key,
+            COUNT(*) AS cycle_count,
+            COUNT(*) FILTER (WHERE transcript IS NOT NULL) AS transcript_count,
+            SUM(tool_calls) AS total_tool_calls,
+            SUM(tokens_used) AS total_tokens
+        FROM resolved
+        GROUP BY resolved_key
+        ORDER BY MAX(started_at) DESC
+        """
+    )
+    # All 3 runs should merge into 1 group
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["jira_key"] == "RHCLOUD-4025"
+    assert r["task_id"] == task_id
+    assert r["cycle_count"] == 3
+    assert r["transcript_count"] == 1
+    assert r["total_tool_calls"] == 100
+    assert r["total_tokens"] == 23000
+
+
+# --- POST /api/cycle-runs resolves task_id from progress.jira_key ---
+
+
+@pytest.mark.asyncio
+async def test_cycle_run_post_resolves_task_id(db):
+    """When POST /api/cycle-runs receives task_id=null but progress has jira_key,
+    it should resolve the task_id from the tasks table."""
+    await _apply_schema(db)
+    task = await _insert_task(db, "RHCLOUD-4026")
+    task_id = task["id"]
+
+    # Simulate what api_cycle_runs_add does: resolve task_id from progress
+    progress = {"jira_key": "RHCLOUD-4026", "repo": "test-repo"}
+    ext_key = progress.get("external_key") or progress.get("jira_key")
+    resolved = await db.fetchrow(
+        "SELECT id FROM tasks WHERE external_key = $1 AND source_type = 'jira'",
+        ext_key,
+    )
+    resolved_task_id = resolved["id"] if resolved else None
+
+    run = await _insert_cycle_run(
+        db, task_id=resolved_task_id, progress=progress, tool_calls=42
+    )
+    assert run["task_id"] == task_id
 
 
 # --- Progress roundtrip with external_key task ---
