@@ -6,16 +6,16 @@ export interface SlackNotification {
 
 export interface Task {
   id: number;
-  jira_key: string;
-  external_key?: string;
-  source_type?: string;
-  source_url?: string;
-  artifacts?: Array<{ name: string; url: string; type: string }>;
+  external_key: string;
+  source_type: string;
+  source_url: string | null;
+  artifacts: Array<{ name: string; url: string; type: string }>;
+  jira_key?: string;
   status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done';
   repo: string;
   branch: string;
-  pr_number: number | null;
-  pr_url: string | null;
+  pr_number?: number | null;
+  pr_url?: string | null;
   title: string | null;
   summary: string | null;
   created_at: string;
@@ -30,9 +30,9 @@ export interface Memory {
   id: number;
   category: string;
   repo: string;
-  jira_key: string | null;
-  external_key?: string;
-  source_type?: string;
+  external_key: string | null;
+  source_type: string | null;
+  jira_key?: string | null;
   title: string;
   content: string;
   tags: string[];
@@ -45,7 +45,10 @@ export interface BotInstance {
   instance_id: string;
   state: 'working' | 'idle' | 'error' | 'unknown';
   message: string;
-  jira_key: string | null;
+  external_key: string | null;
+  source_type: string | null;
+  source_url: string | null;
+  jira_key?: string | null;
   repo: string | null;
   cycle_start: string | null;
   updated_at: string;
@@ -56,7 +59,10 @@ export interface BotInstance {
 export interface BotStatus {
   state: 'working' | 'idle' | 'error' | 'unknown';
   message: string;
-  jira_key: string | null;
+  external_key: string | null;
+  source_type: string | null;
+  source_url: string | null;
+  jira_key?: string | null;
   repo: string | null;
   instance_id: string | null;
   cycle_start: string | null;
@@ -78,9 +84,9 @@ export interface CycleEntry {
   model: string;
   is_error: boolean;
   no_work: boolean;
-  jira_key: string | null;
-  external_key?: string;
-  source_type?: string;
+  external_key: string | null;
+  source_type: string | null;
+  jira_key?: string | null;
   repo: string | null;
   work_type: string | null;
   summary: string | null;
@@ -114,7 +120,8 @@ export interface EmbeddingPoint {
 
 export interface TaskCycleGroup {
   task_id: number | null;
-  jira_key: string | null;
+  external_key: string | null;
+  jira_key?: string | null;
   title: string | null;
   task_status: string | null;
   repo: string | null;
@@ -178,8 +185,8 @@ export interface RepoEntry {
 }
 
 export interface TicketEntry {
-  jira_key: string;
-  external_key?: string;
+  external_key: string;
+  jira_key?: string;
   title: string | null;
   status: string | null;
   repo: string | null;

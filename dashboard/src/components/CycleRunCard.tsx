@@ -1,5 +1,5 @@
 import type { CycleRun } from '../types';
-import { timeAgo, formatDuration, formatTokens, JIRA_BASE } from '../utils';
+import { timeAgo, formatDuration, formatTokens, sourceUrl } from '../utils';
 import { fetchCycleRunTranscript } from '../api';
 
 interface Props {
@@ -21,7 +21,8 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
     run.started_at && run.finished_at
       ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
       : null;
-  const jiraKey = progress.jira_key as string | undefined;
+  const extKey = (progress.external_key || progress.jira_key) as string | undefined;
+  const extUrl = sourceUrl({ external_key: extKey, source_type: progress.source_type as string });
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -74,15 +75,15 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
           <span className="cycle-run-tokens">{formatTokens(run.tokens_used)} tokens</span>
         )}
       </div>
-      {jiraKey && (
+      {extKey && (
         <a
-          href={JIRA_BASE + jiraKey}
+          href={extUrl || '#'}
           target="_blank"
           rel="noopener noreferrer"
           className="cycle-run-jira"
           onClick={(e) => e.stopPropagation()}
         >
-          {jiraKey}
+          {extKey}
         </a>
       )}
       {progress.summary && (

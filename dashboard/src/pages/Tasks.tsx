@@ -50,8 +50,8 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
     });
   }, [onEvent, load]);
 
-  const handleDelete = async (jiraKey: string) => {
-    await deleteTask(jiraKey);
+  const handleDelete = async (key: string) => {
+    await deleteTask(key);
     setSelected(null);
     load();
   };

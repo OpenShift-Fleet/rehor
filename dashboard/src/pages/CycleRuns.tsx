@@ -5,7 +5,7 @@ import type { CycleRun, TaskCycleGroup } from '../types';
 import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from '../api';
 import { useWS } from '../hooks/useWebSocket';
 import CycleRunCard from '../components/CycleRunCard';
-import { timeAgo, formatDuration, formatTokens, JIRA_BASE } from '../utils';
+import { timeAgo, formatDuration, formatTokens, sourceUrl, displayKey } from '../utils';
 
 import JSZip from 'jszip';
 
@@ -22,9 +22,10 @@ function downloadText(content: string, filename: string) {
   downloadBlob(new Blob([content], { type: 'application/x-ndjson' }), filename);
 }
 
-async function downloadAllTranscripts(taskId: number | null, jiraKey: string | null, instanceId?: string) {
-  const params: { task_id?: number; instance_id?: string; limit: number } = { limit: 100 };
+async function downloadAllTranscripts(taskId: number | null, key: string | null, instanceId?: string) {
+  const params: { task_id?: number | 'none'; instance_id?: string; limit: number } = { limit: 100 };
   if (taskId != null) params.task_id = taskId;
+  else if (!key) params.task_id = 'none';
   if (instanceId) params.instance_id = instanceId;
   const res = await fetchCycleRuns(params);
   const runs: CycleRun[] = res.items || [];
@@ -40,7 +41,7 @@ async function downloadAllTranscripts(taskId: number | null, jiraKey: string | n
     }
   }
 
-  const label = jiraKey || (taskId != null ? `task-${taskId}` : 'orphan');
+  const label = key || (taskId != null ? `task-${taskId}` : 'orphan');
   const blob = await zip.generateAsync({ type: 'blob' });
   downloadBlob(blob, `transcripts-${label}.zip`);
 }
@@ -337,7 +338,7 @@ function CycleRunDetail({
             <div className="progress-info">
               {progress.last_step && <div><strong>Last step:</strong> {progress.last_step}</div>}
               {progress.next_step && <div><strong>Next step:</strong> {progress.next_step}</div>}
-              {progress.jira_key && <div><strong>Jira:</strong> {progress.jira_key}</div>}
+              {(progress.external_key || progress.jira_key) && <div><strong>Source:</strong> {progress.external_key || progress.jira_key}</div>}
               {progress.summary && <div><strong>Summary:</strong> {progress.summary}</div>}
               {progress.files_changed && (
                 <div>
@@ -382,14 +383,16 @@ function TaskGroupCard({
   onClick: () => void;
   instanceId?: string;
 }) {
-  const label = group.jira_key || (group.task_id != null ? `Task #${group.task_id}` : 'Orphan cycles');
+  const key = displayKey(group);
+  const url = sourceUrl(group);
+  const label = key || (group.task_id != null ? `Task #${group.task_id}` : 'Orphan cycles');
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setDownloading(true);
     try {
-      await downloadAllTranscripts(group.task_id, group.jira_key, instanceId);
+      await downloadAllTranscripts(group.task_id, key || null, instanceId);
     } finally {
       setDownloading(false);
     }
@@ -399,14 +402,14 @@ function TaskGroupCard({
     <div className={`task-group-card${expanded ? ' expanded' : ''}`} onClick={onClick}>
       <div className="task-group-header">
         <div className="task-group-title">
-          {group.jira_key ? (
+          {key ? (
             <a
-              href={JIRA_BASE + group.jira_key}
+              href={url || '#'}
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
             >
-              {group.jira_key}
+              {key}
             </a>
           ) : (
             <span>{label}</span>
@@ -442,7 +445,8 @@ function TaskGroupCard({
 
 function groupKey(g: TaskCycleGroup): string {
   if (g.task_id != null) return `t:${g.task_id}`;
-  if (g.jira_key) return `k:${g.jira_key}`;
+  const key = g.external_key || g.jira_key;
+  if (key) return `k:${key}`;
   return 'orphan';
 }
 
@@ -471,11 +475,12 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setGroups(data || []);
   }, [instanceId]);
 
-  const loadCyclesForTask = useCallback(async (taskId: number | null) => {
+  const loadCyclesForTask = useCallback(async (taskId: number | null, orphan = false) => {
     setLoadingRuns(true);
     try {
-      const params: { task_id?: number; instance_id?: string; limit: number } = { limit: 50 };
+      const params: { task_id?: number | 'none'; instance_id?: string; limit: number } = { limit: 50 };
       if (taskId != null) params.task_id = taskId;
+      else if (orphan) params.task_id = 'none';
       if (instanceId) params.instance_id = instanceId;
       const res = await fetchCycleRuns(params);
       setRuns(res.items || []);
@@ -497,7 +502,7 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
       const tid = taskParam ? parseInt(taskParam) : null;
       const match = groups.find((g) => g.task_id === tid);
       setExpandedGroupKey(match ? groupKey(match) : tid != null ? `t:${tid}` : 'orphan');
-      loadCyclesForTask(tid).then((items) => {
+      loadCyclesForTask(tid, tid == null).then((items) => {
         const found = items.find((r: CycleRun) => r.id === cycleId);
         if (found) setSelectedRun(found);
       });
@@ -524,7 +529,8 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setExpandedGroupKey(key);
     setSelectedRun(null);
     setFullscreen(false);
-    await loadCyclesForTask(g.task_id);
+    const isOrphan = g.task_id == null && !g.external_key && !g.jira_key;
+    await loadCyclesForTask(g.task_id, isOrphan);
   };
 
   const handleSelectRun = (run: CycleRun) => {

@@ -34,8 +34,8 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
     });
   }, [onEvent, load]);
 
-  const handleUnarchive = async (jiraKey: string) => {
-    await unarchiveTask(jiraKey);
+  const handleUnarchive = async (key: string) => {
+    await unarchiveTask(key);
     setSelected(null);
     load();
   };

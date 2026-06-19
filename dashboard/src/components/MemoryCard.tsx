@@ -1,5 +1,5 @@
 import type { Memory } from '../types';
-import { JIRA_BASE } from '../utils';
+import { sourceUrl, displayKey } from '../utils';
 
 interface Props {
   memory: Memory;
@@ -33,14 +33,14 @@ export default function MemoryCard({ memory, selected, showSimilarity, onClick }
           {memory.category.replace(/_/g, ' ')}
         </span>
         {memory.repo && <span className="memory-repo">{memory.repo}</span>}
-        {memory.jira_key && (
+        {displayKey(memory) && (
           <a
-            href={JIRA_BASE + memory.jira_key}
+            href={sourceUrl(memory) || '#'}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
           >
-            {memory.jira_key}
+            {displayKey(memory)}
           </a>
         )}
         {memory.tags.length > 0 && (

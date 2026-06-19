@@ -22,12 +22,12 @@ export async function fetchTasks(params: { status?: string; exclude_status?: str
   return (await fetch('/api/tasks?' + qs)).json();
 }
 
-export async function deleteTask(jiraKey: string) {
-  return fetch('/api/tasks/' + encodeURIComponent(jiraKey), { method: 'DELETE' });
+export async function deleteTask(key: string) {
+  return fetch('/api/tasks/' + encodeURIComponent(key), { method: 'DELETE' });
 }
 
-export async function unarchiveTask(jiraKey: string) {
-  return fetch('/api/tasks/' + encodeURIComponent(jiraKey) + '/unarchive', { method: 'POST' });
+export async function unarchiveTask(key: string) {
+  return fetch('/api/tasks/' + encodeURIComponent(key) + '/unarchive', { method: 'POST' });
 }
 
 export async function fetchMemories(params: { category?: string; repo?: string; tag?: string; limit?: number; offset?: number }) {
@@ -73,7 +73,7 @@ export async function fetchCosts(days = 30, limit = 200, dateFrom?: string, date
   return (await fetch(`/api/costs?${qs}`)).json();
 }
 
-export async function fetchCycleRuns(params: { task_id?: number; instance_id?: string; cycle_type?: string; limit?: number; offset?: number }) {
+export async function fetchCycleRuns(params: { task_id?: number | 'none'; instance_id?: string; cycle_type?: string; limit?: number; offset?: number }) {
   const qs = new URLSearchParams();
   if (params.task_id != null) qs.set('task_id', String(params.task_id));
   if (params.instance_id) qs.set('instance_id', params.instance_id);

@@ -16,7 +16,7 @@ import {
 } from 'recharts';
 import type { CycleEntry, DailyAggregate, AnalyticsData } from '../types';
 import { fetchCosts, fetchAnalytics } from '../api';
-import { formatDuration, formatTokens, JIRA_BASE } from '../utils';
+import { formatDuration, formatTokens, sourceUrl, displayKey } from '../utils';
 import { useWS } from '../hooks/useWebSocket';
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
@@ -141,9 +141,9 @@ function CycleRow({ c }: { c: CycleEntry }) {
         {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
       </div>
       <div className="cycle-work">
-        {c.jira_key ? (
-          <a href={`${JIRA_BASE}${c.jira_key}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
-            {c.jira_key}
+        {displayKey(c) ? (
+          <a href={sourceUrl(c) || '#'} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
+            {displayKey(c)}
           </a>
         ) : (
           <span style={{ color: 'var(--text-dim)' }}>—</span>
@@ -224,7 +224,7 @@ export default function Costs() {
       turns: c.num_turns,
       is_error: c.is_error,
       no_work: c.no_work,
-      jira_key: c.jira_key,
+      jira_key: displayKey(c),
       repo: c.repo,
       work_type: c.work_type,
       summary: c.summary,
@@ -261,8 +261,8 @@ export default function Costs() {
 
   // Ticket lifecycle stacked bar
   const ticketBarData = tickets.slice(0, 15).map(t => ({
-    key: t.jira_key,
-    title: t.title ? (t.title.length > 40 ? t.title.slice(0, 38) + '...' : t.title) : t.jira_key,
+    key: displayKey(t),
+    title: t.title ? (t.title.length > 40 ? t.title.slice(0, 38) + '...' : t.title) : displayKey(t),
     impl: t.impl_cycles,
     review: t.review_cycles,
     total_cost: t.total_cost,

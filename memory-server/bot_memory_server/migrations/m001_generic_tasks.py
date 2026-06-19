@@ -68,6 +68,20 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
         )
         stats["tasks"] += 1
 
+    # Backfill cycle_runs.task_id where NULL but progress has a matching task key
+    cr_result = await conn.execute(
+        """
+        UPDATE cycle_runs cr
+        SET task_id = t.id
+        FROM tasks t
+        WHERE cr.task_id IS NULL
+          AND t.external_key = COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key')
+          AND t.source_type = 'jira'
+          AND COALESCE(cr.progress->>'external_key', cr.progress->>'jira_key') IS NOT NULL
+        """
+    )
+    stats["cycle_runs"] = int(cr_result.split()[-1]) if cr_result else 0
+
     for table in SIMPLE_TABLES:
         has_jira_key = await conn.fetchval(
             "SELECT EXISTS ("

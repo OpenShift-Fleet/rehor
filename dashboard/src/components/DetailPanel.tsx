@@ -1,5 +1,5 @@
 import type { Task, Memory } from '../types';
-import { timeAgo, JIRA_BASE } from '../utils';
+import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 interface MemoryDetailProps {
   type: 'memory';
@@ -12,8 +12,8 @@ interface TaskDetailProps {
   type: 'task';
   task: Task;
   onClose: () => void;
-  onDelete?: (jiraKey: string) => void;
-  onUnarchive?: (jiraKey: string) => void;
+  onDelete?: (key: string) => void;
+  onUnarchive?: (key: string) => void;
 }
 
 type Props = MemoryDetailProps | TaskDetailProps;
@@ -57,11 +57,11 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
               <span>{memory.repo}</span>
             </div>
           )}
-          {memory.jira_key && (
+          {displayKey(memory) && (
             <div className="detail-meta-item">
-              <span className="detail-label">Jira</span>
-              <a href={JIRA_BASE + memory.jira_key} target="_blank" rel="noopener noreferrer">
-                {memory.jira_key}
+              <span className="detail-label">Source</span>
+              <a href={sourceUrl(memory) || '#'} target="_blank" rel="noopener noreferrer">
+                {displayKey(memory)}
               </a>
             </div>
           )}
@@ -103,11 +103,14 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
   );
 }
 
-function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailProps, 'type'> & { onDelete?: (jiraKey: string) => void; onUnarchive?: (jiraKey: string) => void }) {
+function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailProps, 'type'> & { onDelete?: (key: string) => void; onUnarchive?: (key: string) => void }) {
   const meta = task.metadata || {};
   const prs: Array<{ repo: string; number: number; url: string; host: string }> =
     meta.prs || [];
   const repos: string[] = meta.repos || [task.repo];
+  const key = displayKey(task);
+  const url = sourceUrl(task);
+  const artifacts = task.artifacts || [];
 
   const statusLabels: Record<string, string> = {
     in_progress: 'In Progress',
@@ -122,9 +125,11 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
     <div className="detail-panel">
       <div className="detail-header">
         <h3>
-          <a href={JIRA_BASE + task.jira_key} target="_blank" rel="noopener noreferrer">
-            {task.jira_key}
-          </a>
+          {url ? (
+            <a href={url} target="_blank" rel="noopener noreferrer">{key}</a>
+          ) : (
+            <span>{key}</span>
+          )}
           {task.title && <> &mdash; {task.title}</>}
         </h3>
         <button className="detail-close" onClick={onClose}>X</button>
@@ -146,7 +151,21 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
             <code className="mono">{task.branch}</code>
           </div>
 
-          {prs.length > 0 ? (
+          {artifacts.length > 0 ? (
+            <div className="detail-meta-item">
+              <span className="detail-label">Artifacts</span>
+              <div>
+                {artifacts.map((a, i) => (
+                  <div key={i}>
+                    <a href={a.url} target="_blank" rel="noopener noreferrer">
+                      {a.name}
+                    </a>
+                    {a.type && <span className="artifact-type"> ({a.type})</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : prs.length > 0 ? (
             <div className="detail-meta-item">
               <span className="detail-label">PRs</span>
               <div>
@@ -158,13 +177,6 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
                   </div>
                 ))}
               </div>
-            </div>
-          ) : task.pr_number ? (
-            <div className="detail-meta-item">
-              <span className="detail-label">PR</span>
-              <a href={task.pr_url || '#'} target="_blank" rel="noopener noreferrer">
-                #{task.pr_number}
-              </a>
             </div>
           ) : null}
 
@@ -229,12 +241,12 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
 
         <div className="detail-actions">
           {onUnarchive && (
-            <button className="btn-unarchive" onClick={() => onUnarchive(task.jira_key)}>
+            <button className="btn-unarchive" onClick={() => onUnarchive(key)}>
               Restore Task
             </button>
           )}
           {onDelete && (
-            <button className="btn-delete" onClick={() => onDelete(task.jira_key)}>
+            <button className="btn-delete" onClick={() => onDelete(key)}>
               Archive Task
             </button>
           )}

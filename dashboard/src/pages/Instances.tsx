@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { BotInstance } from '../types';
 import { fetchInstances } from '../api';
 import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, JIRA_BASE } from '../utils';
+import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
@@ -73,15 +73,15 @@ export default function Instances() {
             </div>
 
             <div className="instance-card-meta">
-              {inst.jira_key && (
+              {displayKey(inst) && (
                 <a
-                  href={JIRA_BASE + inst.jira_key}
+                  href={sourceUrl(inst) || '#'}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="banner-jira"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {inst.jira_key}
+                  {displayKey(inst)}
                 </a>
               )}
               {inst.repo && <span className="banner-repo">{inst.repo}</span>}

@@ -854,7 +854,9 @@ async def api_cycle_runs(request: Request) -> JSONResponse:
     offset = int(request.query_params.get("offset", "0"))
 
     conditions, params, idx = [], [], 0
-    if task_id:
+    if task_id == "none":
+        conditions.append("task_id IS NULL")
+    elif task_id:
         idx += 1
         conditions.append(f"task_id = ${idx}")
         params.append(int(task_id))
@@ -1047,7 +1049,8 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
                 ) AS resolved_key,
                 COALESCE(t_direct.title, t_key.title) AS resolved_title,
                 COALESCE(t_direct.status, t_key.status) AS resolved_status,
-                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo
+                COALESCE(t_direct.repo, t_key.repo, cr.progress->>'repo') AS resolved_repo,
+                COALESCE(t_direct.source_type, t_key.source_type) AS resolved_source_type
             FROM cycle_runs cr
             LEFT JOIN tasks t_direct ON t_direct.id = cr.task_id
             LEFT JOIN tasks t_key ON cr.task_id IS NULL
@@ -1058,6 +1061,8 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
         SELECT
             MAX(resolved_task_id) AS task_id,
             resolved_key AS jira_key,
+            resolved_key AS external_key,
+            MAX(resolved_source_type) AS source_type,
             MAX(resolved_title) AS title,
             MAX(resolved_status::text) AS task_status,
             MAX(resolved_repo) AS repo,
@@ -1080,6 +1085,8 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
             {
                 "task_id": r["task_id"],
                 "jira_key": r["jira_key"],
+                "external_key": r["external_key"],
+                "source_type": r["source_type"],
                 "title": r["title"],
                 "task_status": r["task_status"],
                 "repo": r["repo"],

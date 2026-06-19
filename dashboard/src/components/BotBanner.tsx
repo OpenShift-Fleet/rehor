@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { BotStatus } from '../types';
-import { timeAgo, JIRA_BASE } from '../utils';
+import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 interface Props {
   status: BotStatus;
@@ -49,14 +49,14 @@ export default function BotBanner({ status }: Props) {
         </span>
       </div>
       <div className="banner-meta">
-        {status.jira_key && (
+        {displayKey(status) && (
           <a
-            href={JIRA_BASE + status.jira_key}
+            href={sourceUrl(status) || '#'}
             target="_blank"
             rel="noopener noreferrer"
             className="banner-jira"
           >
-            {status.jira_key}
+            {displayKey(status)}
           </a>
         )}
         {status.repo && <span className="banner-repo">{status.repo}</span>}

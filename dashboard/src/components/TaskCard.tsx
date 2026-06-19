@@ -1,5 +1,5 @@
 import type { Task } from '../types';
-import { timeAgo, JIRA_BASE } from '../utils';
+import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 interface Props {
   task: Task;
@@ -16,8 +16,19 @@ const statusLabels: Record<string, string> = {
   archived: 'Archived',
 };
 
+const sourceTypeColors: Record<string, string> = {
+  jira: 'blue',
+  github: 'dark',
+  gitlab: 'orange',
+  scheduled: 'purple',
+  manual: 'dim',
+};
+
 export default function TaskCard({ task, selected, onClick }: Props) {
   const step = task.metadata?.last_step;
+  const url = sourceUrl(task);
+  const key = displayKey(task);
+  const firstArtifact = task.artifacts?.[0];
 
   return (
     <div
@@ -25,15 +36,24 @@ export default function TaskCard({ task, selected, onClick }: Props) {
       onClick={onClick}
     >
       <div className="task-card-header">
-        <a
-          href={JIRA_BASE + task.jira_key}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="task-jira-key"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {task.jira_key}
-        </a>
+        {url ? (
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="task-jira-key"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {key}
+          </a>
+        ) : (
+          <span className="task-jira-key">{key}</span>
+        )}
+        {task.source_type && task.source_type !== 'jira' && (
+          <span className={`source-type-badge ${sourceTypeColors[task.source_type] || 'dim'}`}>
+            {task.source_type}
+          </span>
+        )}
         <span className={`status-badge ${task.status}`}>
           {statusLabels[task.status] || task.status}
         </span>
@@ -41,15 +61,15 @@ export default function TaskCard({ task, selected, onClick }: Props) {
       {task.title && <div className="task-card-title">{task.title}</div>}
       <div className="task-card-meta">
         <span className="task-repo">{task.repo}</span>
-        {task.pr_number && (
+        {firstArtifact && (
           <a
-            href={task.pr_url || '#'}
+            href={firstArtifact.url}
             target="_blank"
             rel="noopener noreferrer"
             className="task-pr"
             onClick={(e) => e.stopPropagation()}
           >
-            PR #{task.pr_number}
+            {firstArtifact.name}
           </a>
         )}
         <span className="task-created" title={task.created_at}>
