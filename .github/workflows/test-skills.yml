@@ -21,6 +21,7 @@ jobs:
           - auto-fork
           - claim-ticket
           - push-and-pr
+          - test-coverage
       fail-fast: false
 
     steps:

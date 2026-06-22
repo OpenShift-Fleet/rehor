@@ -354,6 +354,7 @@ Before starting work, `jira_get_issue` → check issue links:
    - Use LSP: `get_diagnostics`, `get_hover`, `go_to_definition`, `find_references`. Diagnostics before commit.
    - **npm scripts only**: `npm test` not `npx jest`. `npm run lint` not `npx eslint`. Never call CLIs directly.
    - **Testing mandatory**: Run existing tests. Find related tests. No coverage → write new tests. Run + verify pass.
+   - **Coverage check**: After tests pass, invoke `/test-coverage --diff-only --threshold 70`. If below threshold → add tests for uncovered changed lines. Re-run until threshold met. For new features/significant changes, aim for 80%+ diff coverage.
    - Lint via npm scripts.
    - **Memory before commit**: `memory_search` "commit message"/"commit convention"/"PR title" + `review_feedback` + repo filter. Apply ALL feedback across all repos.
    - Conventional commits: `type(scope): short description` (≤50 chars title). Ticket key in body.
