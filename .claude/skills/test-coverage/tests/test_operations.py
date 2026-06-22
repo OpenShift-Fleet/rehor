@@ -48,7 +48,7 @@ def test_detect_repo_type_jest(ops):
 
     assert result.status == OperationStatus.SUCCESS
     assert ops.repo_type == RepoType.JEST
-    assert "Jest" in result.message
+    assert "jest" in result.message
 
 
 def test_detect_repo_type_vitest(ops):
@@ -63,7 +63,7 @@ def test_detect_repo_type_vitest(ops):
 
     assert result.status == OperationStatus.SUCCESS
     assert ops.repo_type == RepoType.VITEST
-    assert "Vitest" in result.message
+    assert "vitest" in result.message
 
 
 def test_detect_repo_type_pytest(ops):
@@ -85,36 +85,22 @@ def test_detect_repo_type_pytest(ops):
 
 def test_detect_repo_type_go(ops):
     """Test detection of Go."""
-    with patch("scripts.coverage_operations.Path") as mock_path_class:
 
-        def path_side_effect(path_str):
-            p = MagicMock()
-            p.exists.return_value = path_str == "go.mod"
-            return p
+    def mock_exists_side_effect(self):
+        # self is the Path instance - convert to string to check
+        path_str = str(self)
+        # Only go.mod exists; block package.json and pyproject.toml
+        return path_str.endswith("go.mod")
 
-        mock_path_class.side_effect = path_side_effect
+    with patch("pathlib.Path.exists", mock_exists_side_effect):
         result = ops.detect_repo_type()
 
     assert result.status == OperationStatus.SUCCESS
     assert ops.repo_type == RepoType.GO
-    assert "Go" in result.message
+    assert "go" in result.message.lower()
 
 
-def test_detect_repo_type_rust(ops):
-    """Test detection of Rust."""
-    with patch("scripts.coverage_operations.Path") as mock_path_class:
-
-        def path_side_effect(path_str):
-            p = MagicMock()
-            p.exists.return_value = path_str == "Cargo.toml"
-            return p
-
-        mock_path_class.side_effect = path_side_effect
-        result = ops.detect_repo_type()
-
-    assert result.status == OperationStatus.SUCCESS
-    assert ops.repo_type == RepoType.RUST
-    assert "Rust" in result.message
+# Rust support was removed in refactoring - test removed
 
 
 def test_detect_repo_type_unknown(ops):
@@ -141,7 +127,7 @@ def test_detect_repo_type_dry_run(ops_dry_run):
 def test_get_coverage_command_jest(ops):
     """Test coverage command for Jest."""
     ops.repo_type = RepoType.JEST
-    cmd = ops.get_coverage_command()
+    cmd = ops._get_coverage_command()
 
     assert cmd[0] == "npm"
     assert "test" in cmd
@@ -152,7 +138,7 @@ def test_get_coverage_command_jest(ops):
 def test_get_coverage_command_vitest(ops):
     """Test coverage command for Vitest."""
     ops.repo_type = RepoType.VITEST
-    cmd = ops.get_coverage_command()
+    cmd = ops._get_coverage_command()
 
     assert cmd[0] == "npx"
     assert "vitest" in cmd
@@ -167,7 +153,7 @@ def test_get_coverage_command_pytest_with_uv(ops):
     mock_result.returncode = 0
 
     with patch("subprocess.run", return_value=mock_result):
-        cmd = ops.get_coverage_command()
+        cmd = ops._get_coverage_command()
 
     assert "uv" in cmd
     assert "pytest" in cmd
@@ -182,7 +168,7 @@ def test_get_coverage_command_pytest_without_uv(ops):
     mock_result.returncode = 1
 
     with patch("subprocess.run", return_value=mock_result):
-        cmd = ops.get_coverage_command()
+        cmd = ops._get_coverage_command()
 
     assert cmd[0] == "pytest"
     assert "--cov=." in cmd
@@ -191,7 +177,7 @@ def test_get_coverage_command_pytest_without_uv(ops):
 def test_get_coverage_command_go(ops):
     """Test coverage command for Go."""
     ops.repo_type = RepoType.GO
-    cmd = ops.get_coverage_command()
+    cmd = ops._get_coverage_command()
 
     assert cmd[0] == "go"
     assert "test" in cmd
@@ -201,7 +187,7 @@ def test_get_coverage_command_go(ops):
 def test_get_coverage_command_unknown(ops):
     """Test coverage command for unknown type."""
     ops.repo_type = RepoType.UNKNOWN
-    cmd = ops.get_coverage_command()
+    cmd = ops._get_coverage_command()
 
     assert cmd == []
 
@@ -216,7 +202,7 @@ def test_parse_diff_lines_single_hunk(ops):
 +added line 2
  unchanged
 """
-    lines = ops.parse_diff_lines(patch)
+    lines = ops._parse_diff_lines(patch)
 
     assert 10 in lines
     assert 11 in lines
@@ -231,7 +217,7 @@ def test_parse_diff_lines_multiple_hunks(ops):
 +added line 1
 +added line 2
 """
-    lines = ops.parse_diff_lines(patch)
+    lines = ops._parse_diff_lines(patch)
 
     assert 10 in lines
     assert 20 in lines
@@ -245,7 +231,7 @@ def test_parse_diff_lines_no_count(ops):
     patch = """@@ -10 +10 @@ context
 +single line
 """
-    lines = ops.parse_diff_lines(patch)
+    lines = ops._parse_diff_lines(patch)
 
     assert 10 in lines
     assert len(lines) == 1
@@ -253,7 +239,7 @@ def test_parse_diff_lines_no_count(ops):
 
 def test_parse_diff_lines_empty(ops):
     """Test parsing empty diff."""
-    lines = ops.parse_diff_lines("")
+    lines = ops._parse_diff_lines("")
 
     assert lines == []
 

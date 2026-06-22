@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
@@ -23,15 +23,12 @@ def test_workflow_dry_run():
 
 def test_workflow_no_coverage_tool():
     """Test workflow when no coverage tool detected."""
-    with patch("scripts.coverage_operations.Path") as mock_path:
-
-        def path_side_effect(path_str):
-            p = MagicMock()
-            p.exists.return_value = False  # No config files exist
-            return p
-
-        mock_path.side_effect = path_side_effect
-
+    # Mock Path.exists to return False for ALL files
+    # AND mock Path.open to prevent real file access
+    with (
+        patch("pathlib.Path.exists", return_value=False),
+        patch("builtins.open", side_effect=FileNotFoundError("No config files")),
+    ):
         ops = CoverageOperations(threshold=70.0, dry_run=False)
         result = ops.execute_workflow()
 
