@@ -55,22 +55,21 @@ async def test_task_insert_read(db):
 
     await db.execute(
         """
-        INSERT INTO tasks (jira_key, status, repo, branch)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO tasks (external_key, source_type, status, repo, branch)
+        VALUES ($1, $2, $3, $4, $5)
         """,
         "TEST-1",
+        "jira",
         "in_progress",
         "test-repo",
         "bot/TEST-1",
     )
 
-    task = await db.fetchrow("SELECT * FROM tasks WHERE jira_key = $1", "TEST-1")
+    task = await db.fetchrow("SELECT * FROM tasks WHERE external_key = $1", "TEST-1")
     assert task is not None
     assert task["status"] == "in_progress"
     assert task["repo"] == "test-repo"
     assert task["branch"] == "bot/TEST-1"
-    assert task["pr_number"] is None
-    assert task["pr_url"] is None
 
 
 @pytest.mark.asyncio
@@ -79,8 +78,9 @@ async def test_task_unique_constraint(db):
     await db.execute(schema)
 
     await db.execute(
-        "INSERT INTO tasks (jira_key, status, repo, branch) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO tasks (external_key, source_type, status, repo, branch) VALUES ($1, $2, $3, $4, $5)",
         "DUP-1",
+        "jira",
         "in_progress",
         "repo",
         "bot/DUP-1",
@@ -88,8 +88,9 @@ async def test_task_unique_constraint(db):
 
     with pytest.raises(asyncpg.UniqueViolationError):
         await db.execute(
-            "INSERT INTO tasks (jira_key, status, repo, branch) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO tasks (external_key, source_type, status, repo, branch) VALUES ($1, $2, $3, $4, $5)",
             "DUP-1",
+            "jira",
             "pr_open",
             "repo2",
             "bot/DUP-1-2",
@@ -102,13 +103,14 @@ async def test_foreign_keys(db):
     await db.execute(schema)
 
     await db.execute(
-        "INSERT INTO tasks (jira_key, status, repo, branch) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO tasks (external_key, source_type, status, repo, branch) VALUES ($1, $2, $3, $4, $5)",
         "FK-1",
+        "jira",
         "in_progress",
         "repo",
         "bot/FK-1",
     )
-    task_id = await db.fetchval("SELECT id FROM tasks WHERE jira_key = $1", "FK-1")
+    task_id = await db.fetchval("SELECT id FROM tasks WHERE external_key = $1", "FK-1")
 
     await db.execute(
         """

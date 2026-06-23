@@ -81,7 +81,7 @@ If provided at startup: "Your instance ID is: <id>". Used for multi-instance iso
 - `task_check_capacity(instance_id=...)` — check capacity scoped to this instance
 - `bot_status_update(instance_id=...)` — identify which instance is reporting
 
-`task_update` and `task_get` don't need instance_id (they work by jira_key).
+`task_update` and `task_get` don't need instance_id (they work by external_key).
 
 If no instance_id is set, all task tools work globally (backward compatible).
 
@@ -94,12 +94,12 @@ MCP server `bot-memory` provides task tracking (cap 10 active) + RAG memory (vec
 | Tool | Purpose |
 |------|---------|
 | `task_list` | List tasks, filter by `status`, `instance_id?` |
-| `task_get` | Get task by `jira_key` |
-| `task_add` | Add task. **Fails if ≥10 active.** Params: `jira_key, repo, branch, status, pr_number?, pr_url?, title?, summary?, metadata?, instance_id?` |
-| `task_update` | Update: `jira_key, status?, pr_number?, pr_url?, last_addressed?, paused_reason?, title?, summary?, metadata?` (metadata merged) |
+| `task_get` | Get task by `external_key` + `source_type` |
+| `task_add` | Add task. **Fails if ≥10 active.** Params: `external_key, repo, branch, status, source_type?, title?, summary?, metadata?, instance_id?` |
+| `task_update` | Update: `external_key, source_type?, status?, last_addressed?, paused_reason?, title?, summary?, metadata?` (metadata merged) |
 | `task_remove` | Archive task (sets `archived`, preserves history) |
 | `task_check_capacity` | `{active, max: 10, has_capacity}`. Params: `instance_id?` |
-| `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `jira_key?`, `repo?`, `instance_id?` |
+| `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`, `instance_id?` |
 
 Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `paused`.
 
@@ -122,7 +122,7 @@ Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `p
 
 | Tool | Purpose |
 |------|---------|
-| `memory_store` | Store learning w/ embedding. Params: `category, title, content, repo?, jira_key?, tags?, metadata?` |
+| `memory_store` | Store learning w/ embedding. Params: `category, title, content, repo?, external_key?, source_type?, tags?, metadata?` |
 | `memory_search` | Semantic search. Params: `query, category?, repo?, tag?, limit?` |
 | `memory_list` | List recent. Params: `category?, repo?, tag?, limit?` |
 | `memory_delete` | Delete by `id` |
@@ -145,7 +145,7 @@ Use `/slack-notify` skill (NOT direct `slack_notify` MCP tool):
 python3 .claude/skills/slack-notify/slack_notify.py <JIRA_KEY> <EVENT_TYPE> "<MESSAGE>" 2>&1
 ```
 
-Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h cooldown per jira_key (automatic).
+Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h cooldown per external_key (automatic).
 
 **Event types**: `pr_created`, `release_pending`, `needs_help`, `infra_error`, `review_reminder`.
 
@@ -164,7 +164,7 @@ ONE item per cycle. Priority order:
 
 **Status updates** via `bot_status_update`:
 - Cycle start: `working`, "Starting cycle — triaging tasks..."
-- Pick task: include `jira_key` + `repo`
+- Pick task: include `external_key` + `repo`
 - Cycle end: `idle`, "Cycle complete. Sleeping..." or "No work found. Sleeping..."
 - Error: `error`, "<what went wrong>"
 
@@ -298,7 +298,7 @@ Before starting work, `jira_get_issue` → check issue links:
 
 1. **Claim**: `$BOT_JIRA_EMAIL` for assignee (never `jira_get_user_profile`). `jira_update_issue` assignee → `jira_get_transitions` → `jira_transition_issue` "In Progress" → **Sprint**: `jira_get_issue` fields=`customfield_10020` first — active/future sprint exists → **SKIP** (Jira overwrites existing sprint on add). No sprint → `BOT_BOARD_ID`/`BOT_BOARD_NAME` env → `jira_get_sprints_from_board` active → `jira_add_issues_to_sprint`. Neither env set → skip. **NEVER hardcode board IDs or use doc examples.**
 
-2. **Track**: `task_add` w/ `jira_key, repo, branch (bot/<KEY>), in_progress, title, summary, metadata`:
+2. **Track**: `task_add` w/ `external_key, repo, branch (bot/<KEY>), in_progress, title, summary, metadata`:
    ```json
    {"last_step": "branch_created", "next_step": "implement", "repos": ["pdf-generator", "app-interface"]}
    ```
@@ -385,7 +385,7 @@ Before starting work, `jira_get_issue` → check issue links:
     **PR body**: Use the `/push-and-pr` skill's `--find-template` to discover the repo's PR template. If found, fill in each section (see SKILL.md for details). If not found, fall back to freeform: ticket key + changes summary.
     Readonly repos: include config changes in Jira comment.
 
-11. **Track PRs**: `task_update` status `pr_open`, `pr_number`, `pr_url`, `summary`, `last_addressed`. Multi-repo: `metadata.prs`:
+11. **Track PRs**: `task_update` status `pr_open`, `summary`, `last_addressed`. PRs tracked via `metadata.prs`. Multi-repo: `metadata.prs`:
     ```json
     {"last_step": "pr_opened", "files_changed": [...], "commits": [...],
      "prs": [{"repo": "...", "number": 42, "url": "...", "host": "github"}]}
@@ -407,7 +407,7 @@ Keep task record updated throughout (not just end). `task_update` w/ `summary` +
 Persists structured progress across cycles. Separate from `task_update` — creates **history**, not just current state.
 
 **On resume** (existing task, not new):
-1. `task_get(jira_key)` → note `id` field = `task_id`
+1. `task_get(external_key)` → note `id` field = `task_id`
 2. `progress_load(task_id=<id>)` → last 5 cycle summaries
 3. Use returned progress → understand prior decisions, files, blockers, where left off
 

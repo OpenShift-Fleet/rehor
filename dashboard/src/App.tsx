@@ -158,7 +158,6 @@ function AppInner() {
           external_key: currentInstance.external_key,
           source_type: currentInstance.source_type,
           source_url: currentInstance.source_url,
-          jira_key: currentInstance.jira_key,
           repo: currentInstance.repo,
           instance_id: currentInstance.instance_id,
           cycle_start: currentInstance.cycle_start,

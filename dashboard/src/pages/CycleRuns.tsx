@@ -338,7 +338,7 @@ function CycleRunDetail({
             <div className="progress-info">
               {progress.last_step && <div><strong>Last step:</strong> {progress.last_step}</div>}
               {progress.next_step && <div><strong>Next step:</strong> {progress.next_step}</div>}
-              {(progress.external_key || progress.jira_key) && <div><strong>Source:</strong> {progress.external_key || progress.jira_key}</div>}
+              {progress.external_key && <div><strong>Source:</strong> {progress.external_key}</div>}
               {progress.summary && <div><strong>Summary:</strong> {progress.summary}</div>}
               {progress.files_changed && (
                 <div>
@@ -445,7 +445,7 @@ function TaskGroupCard({
 
 function groupKey(g: TaskCycleGroup): string {
   if (g.task_id != null) return `t:${g.task_id}`;
-  const key = g.external_key || g.jira_key;
+  const key = g.external_key;
   if (key) return `k:${key}`;
   return 'orphan';
 }
@@ -529,7 +529,7 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setExpandedGroupKey(key);
     setSelectedRun(null);
     setFullscreen(false);
-    const isOrphan = g.task_id == null && !g.external_key && !g.jira_key;
+    const isOrphan = g.task_id == null && !g.external_key;
     await loadCyclesForTask(g.task_id, isOrphan);
   };
 

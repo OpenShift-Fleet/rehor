@@ -43,7 +43,7 @@ export default function Toasts() {
 
       const data = event.data || {};
       const detail =
-        data.external_key || data.jira_key || data.title || (data.id ? `#${data.id}` : '');
+        data.external_key || data.title || (data.id ? `#${data.id}` : '');
       const message =
         data.summary || data.status || data.category || '';
 

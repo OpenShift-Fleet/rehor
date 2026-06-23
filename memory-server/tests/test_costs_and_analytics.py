@@ -26,30 +26,27 @@ async def _apply_schema(db):
 
 
 async def _insert_task(
-    db, jira_key, status="in_progress", repo="test-repo", title=None
+    db, external_key, status="in_progress", repo="test-repo", title=None
 ):
     await db.execute(
         """
-        INSERT INTO tasks (jira_key, status, repo, branch, title,
-                           external_key, source_type, source_url, artifacts, metadata)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO tasks (external_key, source_type, source_url, status, repo, branch, title, metadata)
+        VALUES ($1, $2, $3, $4::task_status, $5, $6, $7, $8) RETURNING id
         """,
-        jira_key,
+        external_key,
+        "jira",
+        f"{JIRA_BASE_URL}/{external_key}",
         status,
         repo,
-        f"bot/{jira_key}",
+        f"bot/{external_key}",
         title,
-        jira_key,
-        "jira",
-        f"{JIRA_BASE_URL}/{jira_key}",
-        json.dumps([]),
         json.dumps({}),
     )
 
 
 async def _insert_cycle(
     db,
-    jira_key=None,
+    external_key=None,
     repo=None,
     work_type=None,
     cost_usd=0.50,
@@ -60,7 +57,6 @@ async def _insert_cycle(
     summary=None,
     timestamp=None,
 ):
-    ts_clause = "$14" if timestamp else "NOW()"
     params = [
         "test-label",
         "sess-1",
@@ -74,30 +70,30 @@ async def _insert_cycle(
         "claude-opus-4",
         is_error,
         no_work,
-        jira_key,
+        external_key,
+        "jira" if external_key else None,
     ]
     if timestamp:
         params.append(timestamp)
-    params.extend([repo, work_type, summary, jira_key, "jira" if jira_key else None])
+    params.extend([repo, work_type, summary])
 
-    ts_idx = 14 if timestamp else None
-    repo_idx = 15 if timestamp else 14
+    ek_idx = 13
+    st_idx = 14
+    ts_idx = 15 if timestamp else None
+    repo_idx = 16 if timestamp else 15
     wt_idx = repo_idx + 1
     sum_idx = wt_idx + 1
-    ek_idx = sum_idx + 1
-    st_idx = ek_idx + 1
 
     row = await db.fetchrow(
         f"""
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                            model, is_error, no_work, jira_key,
+                            model, is_error, no_work, external_key, source_type,
                             {"timestamp," if timestamp else ""}
-                            repo, work_type, summary,
-                            external_key, source_type)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                            repo, work_type, summary)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, ${ek_idx}, ${st_idx},
                 {"$" + str(ts_idx) + "," if timestamp else ""}
-                ${repo_idx}, ${wt_idx}, ${sum_idx}, ${ek_idx}, ${st_idx})
+                ${repo_idx}, ${wt_idx}, ${sum_idx})
         RETURNING *
         """,
         *params,
@@ -112,10 +108,9 @@ async def _insert_cycle(
 async def test_cycle_record_and_serialization(db):
     await _apply_schema(db)
     row = await _insert_cycle(
-        db, jira_key="RHCLOUD-3000", repo="test-repo", work_type="new_ticket"
+        db, external_key="RHCLOUD-3000", repo="test-repo", work_type="new_ticket"
     )
 
-    assert row["jira_key"] == "RHCLOUD-3000"
     assert row["external_key"] == "RHCLOUD-3000"
     assert row["source_type"] == "jira"
     assert row["repo"] == "test-repo"
@@ -166,10 +161,10 @@ async def test_analytics_summary_stats(db):
     await _apply_schema(db)
 
     await _insert_cycle(
-        db, jira_key="RHCLOUD-3010", work_type="new_ticket", cost_usd=1.00
+        db, external_key="RHCLOUD-3010", work_type="new_ticket", cost_usd=1.00
     )
     await _insert_cycle(
-        db, jira_key="RHCLOUD-3011", work_type="pr_review", cost_usd=2.00
+        db, external_key="RHCLOUD-3011", work_type="pr_review", cost_usd=2.00
     )
     await _insert_cycle(db, no_work=True, cost_usd=0.10)
     await _insert_cycle(db, is_error=True, cost_usd=0.05)
@@ -206,13 +201,13 @@ async def test_analytics_work_type_breakdown(db):
 
     await _insert_cycle(
         db,
-        jira_key="RHCLOUD-CVE-1",
+        external_key="RHCLOUD-CVE-1",
         work_type="new_ticket",
         summary="Fix CVE-2024-1234",
     )
-    await _insert_cycle(db, work_type="pr_review", jira_key="RHCLOUD-3020")
+    await _insert_cycle(db, work_type="pr_review", external_key="RHCLOUD-3020")
     await _insert_cycle(
-        db, summary="investigation of logging issue", jira_key="RHCLOUD-3021"
+        db, summary="investigation of logging issue", external_key="RHCLOUD-3021"
     )
     await _insert_cycle(db, no_work=True)
 
@@ -252,9 +247,9 @@ async def test_analytics_work_type_breakdown(db):
 async def test_analytics_repo_breakdown(db):
     await _apply_schema(db)
 
-    await _insert_cycle(db, jira_key="RHCLOUD-3030", repo="repo-a")
-    await _insert_cycle(db, jira_key="RHCLOUD-3031", repo="repo-a")
-    await _insert_cycle(db, jira_key="RHCLOUD-3032", repo="repo-b")
+    await _insert_cycle(db, external_key="RHCLOUD-3030", repo="repo-a")
+    await _insert_cycle(db, external_key="RHCLOUD-3031", repo="repo-a")
+    await _insert_cycle(db, external_key="RHCLOUD-3032", repo="repo-b")
 
     rows = await db.fetch(
         """
@@ -284,21 +279,21 @@ async def test_analytics_ticket_lifecycle(db):
 
     await _insert_cycle(
         db,
-        jira_key="RHCLOUD-3040",
+        external_key="RHCLOUD-3040",
         repo="test-repo",
         work_type="new_ticket",
         cost_usd=1.00,
     )
     await _insert_cycle(
         db,
-        jira_key="RHCLOUD-3040",
+        external_key="RHCLOUD-3040",
         repo="test-repo",
         work_type="pr_review",
         cost_usd=0.50,
     )
     await _insert_cycle(
         db,
-        jira_key="RHCLOUD-3040",
+        external_key="RHCLOUD-3040",
         repo="test-repo",
         work_type="pr_review",
         cost_usd=0.30,
@@ -307,7 +302,7 @@ async def test_analytics_ticket_lifecycle(db):
     rows = await db.fetch(
         """
         SELECT
-            c.external_key AS jira_key,
+            c.external_key,
             t.title,
             t.status::text AS task_status,
             COUNT(*) AS total_cycles,
@@ -323,7 +318,7 @@ async def test_analytics_ticket_lifecycle(db):
     )
     assert len(rows) == 1
     r = rows[0]
-    assert r["jira_key"] == "RHCLOUD-3040"
+    assert r["external_key"] == "RHCLOUD-3040"
     assert r["title"] == "Fix button color"
     assert r["total_cycles"] == 3
     assert r["impl_cycles"] == 1
@@ -339,15 +334,15 @@ async def test_analytics_review_rounds(db):
     await _apply_schema(db)
 
     # Ticket A: 0 review cycles
-    await _insert_cycle(db, jira_key="RHCLOUD-3050", work_type="new_ticket")
+    await _insert_cycle(db, external_key="RHCLOUD-3050", work_type="new_ticket")
     # Ticket B: 1 review cycle
-    await _insert_cycle(db, jira_key="RHCLOUD-3051", work_type="new_ticket")
-    await _insert_cycle(db, jira_key="RHCLOUD-3051", work_type="pr_review")
+    await _insert_cycle(db, external_key="RHCLOUD-3051", work_type="new_ticket")
+    await _insert_cycle(db, external_key="RHCLOUD-3051", work_type="pr_review")
     # Ticket C: 3 review cycles
-    await _insert_cycle(db, jira_key="RHCLOUD-3052", work_type="new_ticket")
-    await _insert_cycle(db, jira_key="RHCLOUD-3052", work_type="pr_review")
-    await _insert_cycle(db, jira_key="RHCLOUD-3052", work_type="pr_review")
-    await _insert_cycle(db, jira_key="RHCLOUD-3052", work_type="pr_review")
+    await _insert_cycle(db, external_key="RHCLOUD-3052", work_type="new_ticket")
+    await _insert_cycle(db, external_key="RHCLOUD-3052", work_type="pr_review")
+    await _insert_cycle(db, external_key="RHCLOUD-3052", work_type="pr_review")
+    await _insert_cycle(db, external_key="RHCLOUD-3052", work_type="pr_review")
 
     row = await db.fetchrow(
         """
@@ -385,7 +380,7 @@ async def test_task_list_status_filter(db):
         "in_progress",
     )
     assert len(rows) == 1
-    assert rows[0]["jira_key"] == "RHCLOUD-3060"
+    assert rows[0]["external_key"] == "RHCLOUD-3060"
 
 
 # --- Task list: exclude_status filter ---
@@ -403,7 +398,7 @@ async def test_task_list_exclude_status(db):
         "archived",
     )
     assert len(rows) == 2
-    keys = {r["jira_key"] for r in rows}
+    keys = {r["external_key"] for r in rows}
     assert "RHCLOUD-3071" not in keys
 
 
@@ -436,14 +431,12 @@ async def test_task_list_slack_notification_join(db):
     await _insert_task(db, "RHCLOUD-3090")
 
     await db.execute(
-        """INSERT INTO slack_notifications (jira_key, event_type, message,
-                                            external_key, source_type)
-           VALUES ($1, $2, $3, $4, $5)""",
-        "RHCLOUD-3090",
-        "pr_created",
-        "PR opened",
+        """INSERT INTO slack_notifications (external_key, source_type, event_type, message)
+           VALUES ($1, $2, $3, $4)""",
         "RHCLOUD-3090",
         "jira",
+        "pr_created",
+        "PR opened",
     )
 
     notif_rows = await db.fetch(
@@ -484,7 +477,7 @@ async def test_task_unarchive_restores(db):
     await _apply_schema(db)
     await _insert_task(db, "RHCLOUD-3110", status="archived")
     await db.execute(
-        "UPDATE tasks SET paused_reason = $2 WHERE jira_key = $1",
+        "UPDATE tasks SET paused_reason = $2 WHERE external_key = $1",
         "RHCLOUD-3110",
         "blocked on dependency",
     )

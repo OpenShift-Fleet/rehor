@@ -4,15 +4,9 @@ import os
 JIRA_BASE_URL = os.environ.get("JIRA_URL", "").rstrip("/") + "/browse"
 
 
-def build_artifacts(pr_number, pr_url, metadata) -> list[dict]:
+def build_artifacts(metadata) -> list[dict]:
     artifacts = []
     seen_urls: set[str] = set()
-
-    if pr_number and pr_url:
-        artifacts.append(
-            {"name": f"PR #{pr_number}", "url": pr_url, "type": "pull_request"}
-        )
-        seen_urls.add(pr_url)
 
     meta = metadata if isinstance(metadata, dict) else {}
     for pr in meta.get("prs", []):

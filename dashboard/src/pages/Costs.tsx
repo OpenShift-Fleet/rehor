@@ -71,7 +71,7 @@ function CycleChartTooltip({ active, payload }: any) {
   return (
     <div className="chart-tooltip">
       <div className="chart-tooltip-label">{d.time}</div>
-      {d.jira_key && <div style={{ fontWeight: 600 }}>{d.jira_key}{d.repo ? ` · ${d.repo}` : ''}</div>}
+      {d.external_key && <div style={{ fontWeight: 600 }}>{d.external_key}{d.repo ? ` · ${d.repo}` : ''}</div>}
       {d.work_type && <div style={{ color: 'var(--accent)' }}>{WORK_TYPE_LABELS[d.work_type] || d.work_type}</div>}
       <div>${Number(d.cost).toFixed(2)} &middot; {d.turns} turns &middot; {formatDuration(d.duration)}</div>
       <div>{formatTokens(d.output_tokens)} output &middot; {formatTokens(d.cache_read)} cache</div>
@@ -224,7 +224,7 @@ export default function Costs() {
       turns: c.num_turns,
       is_error: c.is_error,
       no_work: c.no_work,
-      jira_key: displayKey(c),
+      external_key: displayKey(c),
       repo: c.repo,
       work_type: c.work_type,
       summary: c.summary,

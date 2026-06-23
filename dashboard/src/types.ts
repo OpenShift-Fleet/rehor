@@ -10,12 +10,9 @@ export interface Task {
   source_type: string;
   source_url: string | null;
   artifacts: Array<{ name: string; url: string; type: string }>;
-  jira_key?: string;
   status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done';
   repo: string;
   branch: string;
-  pr_number?: number | null;
-  pr_url?: string | null;
   title: string | null;
   summary: string | null;
   created_at: string;
@@ -32,7 +29,6 @@ export interface Memory {
   repo: string;
   external_key: string | null;
   source_type: string | null;
-  jira_key?: string | null;
   title: string;
   content: string;
   tags: string[];
@@ -48,7 +44,6 @@ export interface BotInstance {
   external_key: string | null;
   source_type: string | null;
   source_url: string | null;
-  jira_key?: string | null;
   repo: string | null;
   cycle_start: string | null;
   updated_at: string;
@@ -62,7 +57,6 @@ export interface BotStatus {
   external_key: string | null;
   source_type: string | null;
   source_url: string | null;
-  jira_key?: string | null;
   repo: string | null;
   instance_id: string | null;
   cycle_start: string | null;
@@ -86,7 +80,6 @@ export interface CycleEntry {
   no_work: boolean;
   external_key: string | null;
   source_type: string | null;
-  jira_key?: string | null;
   repo: string | null;
   work_type: string | null;
   summary: string | null;
@@ -121,7 +114,6 @@ export interface EmbeddingPoint {
 export interface TaskCycleGroup {
   task_id: number | null;
   external_key: string | null;
-  jira_key?: string | null;
   title: string | null;
   task_status: string | null;
   repo: string | null;
@@ -186,7 +178,6 @@ export interface RepoEntry {
 
 export interface TicketEntry {
   external_key: string;
-  jira_key?: string;
   title: string | null;
   status: string | null;
   repo: string | null;

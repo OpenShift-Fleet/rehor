@@ -21,7 +21,7 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
     run.started_at && run.finished_at
       ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
       : null;
-  const extKey = (progress.external_key || progress.jira_key) as string | undefined;
+  const extKey = progress.external_key as string | undefined;
   const extUrl = sourceUrl({ external_key: extKey, source_type: progress.source_type as string });
 
   const handleDownload = async (e: React.MouseEvent) => {

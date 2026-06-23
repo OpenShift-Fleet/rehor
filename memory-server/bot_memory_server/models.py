@@ -6,12 +6,13 @@ from pydantic import BaseModel
 
 class Task(BaseModel):
     id: int
-    jira_key: str
+    external_key: str
+    source_type: str
+    source_url: str | None = None
+    artifacts: list[dict[str, Any]] = []
     status: str
     repo: str | None = None
     branch: str | None = None
-    pr_number: int | None = None
-    pr_url: str | None = None
     title: str | None = None
     summary: str | None = None
     created_at: datetime
@@ -19,24 +20,19 @@ class Task(BaseModel):
     paused_reason: str | None = None
     instance_id: str | None = None
     metadata: dict[str, Any] = {}
-    external_key: str | None = None
-    source_type: str | None = None
-    source_url: str | None = None
-    artifacts: list[dict[str, Any]] = []
 
 
 class Memory(BaseModel):
     id: int
     category: str
     repo: str | None = None
-    jira_key: str | None = None
+    external_key: str | None = None
+    source_type: str | None = None
     title: str
     content: str
     tags: list[str] = []
     created_at: datetime
     metadata: dict[str, Any] = {}
-    external_key: str | None = None
-    source_type: str | None = None
 
 
 class MemorySearchResult(Memory):

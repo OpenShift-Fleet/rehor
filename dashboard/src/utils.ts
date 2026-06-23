@@ -27,17 +27,15 @@ interface SourceLike {
   source_url?: string | null;
   source_type?: string | null;
   external_key?: string | null;
-  jira_key?: string | null;
 }
 
 export function sourceUrl(item: SourceLike): string | null {
   if (item.source_url) return item.source_url;
-  const key = item.external_key || item.jira_key;
-  if (!key) return null;
-  if (item.source_type === 'jira') return JIRA_BASE + key;
+  if (!item.external_key) return null;
+  if (item.source_type === 'jira') return JIRA_BASE + item.external_key;
   return null;
 }
 
 export function displayKey(item: SourceLike): string {
-  return item.external_key || item.jira_key || '';
+  return item.external_key || '';
 }

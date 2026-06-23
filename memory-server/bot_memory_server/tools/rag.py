@@ -14,7 +14,8 @@ def _row_to_memory(row) -> dict:
         id=row["id"],
         category=row["category"],
         repo=row["repo"],
-        jira_key=row["jira_key"],
+        external_key=row.get("external_key"),
+        source_type=row.get("source_type"),
         title=row["title"],
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
@@ -31,7 +32,8 @@ def _row_to_search_result(row) -> dict:
         id=row["id"],
         category=row["category"],
         repo=row["repo"],
-        jira_key=row["jira_key"],
+        external_key=row.get("external_key"),
+        source_type=row.get("source_type"),
         title=row["title"],
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
@@ -39,7 +41,7 @@ def _row_to_search_result(row) -> dict:
         metadata=json.loads(row["metadata"])
         if isinstance(row["metadata"], str)
         else (row["metadata"] or {}),
-        similarity=1 - row["distance"],  # cosine distance → similarity
+        similarity=1 - row["distance"],
     )
     return result.model_dump(mode="json")
 
@@ -51,34 +53,35 @@ def register_rag_tools(mcp: FastMCP):
         title: str,
         content: str,
         repo: Optional[str] = None,
-        jira_key: Optional[str] = None,
+        external_key: Optional[str] = None,
+        source_type: Optional[str] = None,
         tags: Optional[list[str]] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
         """Store a memory with auto-generated embedding.
+        external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345'). Optional.
+        source_type: Source system — 'jira', 'github', etc. Inferred as 'jira' if external_key looks like a Jira key.
         Categories: learning, review_feedback, codebase_pattern.
         Tags: free-form labels like bug-fix, cve, css, patternfly, dependency-upgrade, ci, ui-change, testing."""
         pool = get_pool()
         vector = embed(f"{title}\n{content}")
-        external_key = jira_key
-        source_type = "jira" if jira_key else None
+        if external_key and not source_type:
+            source_type = "jira"
         row = await pool.fetchrow(
             """
-            INSERT INTO memories (category, repo, jira_key, title, content, tags, embedding, metadata,
-                                  external_key, source_type)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO memories (category, repo, external_key, source_type, title, content, tags, embedding, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *
             """,
             category,
             repo,
-            jira_key,
+            external_key,
+            source_type,
             title,
             content,
             tags or [],
             vector,
             json.dumps(metadata or {}),
-            external_key,
-            source_type,
         )
         result = _row_to_memory(row)
         await bus.publish(

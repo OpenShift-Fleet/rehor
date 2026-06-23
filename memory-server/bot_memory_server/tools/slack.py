@@ -11,40 +11,31 @@ from ..events import Event, bus
 
 logger = logging.getLogger(__name__)
 
-COOLDOWN_HOURS = 48  # Don't re-notify same task within this window
+COOLDOWN_HOURS = 48
 
 
 def register_slack_tools(mcp: FastMCP):
     @mcp.tool()
     async def slack_notify(
-        jira_key: Optional[str] = None,
+        external_key: str,
         event_type: str = "",
         message: str = "",
         webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
-        external_key: Optional[str] = None,
-        source_type: Optional[str] = None,
+        source_type: str = "jira",
     ) -> dict:
         """Send a Slack notification. Deduplicates by external_key (48h cooldown per ticket, any event type).
-        Lookup by external_key preferred; falls back to jira_key for backward compat.
-
+        external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
+        source_type: Source system — 'jira', 'github', etc.
         event_type: 'pr_created', 'release_pending', 'needs_help', 'infra_error', 'review_reminder'.
         message: Human-readable message to post. Keep it concise (1-2 sentences + links).
         webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var on the memory server.
 
-        Returns {"sent": true/false, "reason": "..."}.
-        Skipped silently if cooldown active or webhook not configured."""
+        Returns {"sent": true/false, "reason": "..."}."""
         pool = get_pool()
-
-        lookup_key = external_key or jira_key
-        if not lookup_key:
-            raise ValueError("Either jira_key or external_key is required")
-        lookup_source = source_type or ("jira" if jira_key else None)
-        effective_jira_key = jira_key or external_key
 
         if not webhook_url:
             return {"sent": False, "reason": "SLACK_WEBHOOK_URL not configured"}
 
-        # Check cooldown — any notification for this key within 48h
         cutoff = datetime.now(timezone.utc) - timedelta(hours=COOLDOWN_HOURS)
         recent = await pool.fetchrow(
             """
@@ -52,17 +43,16 @@ def register_slack_tools(mcp: FastMCP):
             WHERE external_key = $1 AND sent_at > $2
             ORDER BY sent_at DESC LIMIT 1
             """,
-            lookup_key,
+            external_key,
             cutoff,
         )
 
         if recent:
             return {
                 "sent": False,
-                "reason": f"Cooldown active — last {recent['event_type']} for {lookup_key} sent {recent['sent_at'].isoformat()}",
+                "reason": f"Cooldown active — last {recent['event_type']} for {external_key} sent {recent['sent_at'].isoformat()}",
             }
 
-        # Send to Slack
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(webhook_url, json={"msg": message})
@@ -71,25 +61,22 @@ def register_slack_tools(mcp: FastMCP):
             logger.error("Slack webhook failed: %s", e)
             return {"sent": False, "reason": f"Webhook error: {e}"}
 
-        # Record notification
         await pool.execute(
             """
-            INSERT INTO slack_notifications (jira_key, event_type, message,
-                                             external_key, source_type)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO slack_notifications (external_key, source_type, event_type, message)
+            VALUES ($1, $2, $3, $4)
             """,
-            effective_jira_key,
+            external_key,
+            source_type,
             event_type,
             message,
-            lookup_key,
-            lookup_source or "jira",
         )
 
         await bus.publish(
             Event(
                 "slack_notification",
                 {
-                    "jira_key": effective_jira_key,
+                    "external_key": external_key,
                     "event_type": event_type,
                     "message": message,
                 },

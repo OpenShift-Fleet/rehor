@@ -17,25 +17,28 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id              SERIAL PRIMARY KEY,
-    jira_key        TEXT NOT NULL UNIQUE,
+    external_key    TEXT NOT NULL,
+    source_type     TEXT NOT NULL,
+    source_url      TEXT,
+    artifacts       JSONB DEFAULT '[]',
     status          task_status NOT NULL DEFAULT 'in_progress',
     repo            TEXT,
     branch          TEXT,
-    pr_number       INTEGER,
-    pr_url          TEXT,
     title           TEXT,
     summary         TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_addressed  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     paused_reason   TEXT,
-    metadata        JSONB DEFAULT '{}'
+    metadata        JSONB DEFAULT '{}',
+    UNIQUE(external_key, source_type)
 );
 
 CREATE TABLE IF NOT EXISTS memories (
     id              SERIAL PRIMARY KEY,
     category        TEXT NOT NULL,
     repo            TEXT,
-    jira_key        TEXT,
+    external_key    TEXT,
+    source_type     TEXT,
     title           TEXT NOT NULL,
     content         TEXT NOT NULL,
     tags            TEXT[] DEFAULT '{}',
@@ -70,7 +73,8 @@ CREATE TABLE IF NOT EXISTS bot_status (
     id              INTEGER PRIMARY KEY DEFAULT 1,
     state           TEXT NOT NULL DEFAULT 'idle',
     message         TEXT NOT NULL DEFAULT '',
-    jira_key        TEXT,
+    external_key    TEXT,
+    source_type     TEXT,
     repo            TEXT,
     instance_id     TEXT,
     cycle_start     TIMESTAMPTZ,
@@ -104,7 +108,8 @@ CREATE TABLE IF NOT EXISTS cycles (
 
 -- Cycle work context (added retroactively — nullable for historical data)
 DO $$ BEGIN
-    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS jira_key TEXT;
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS external_key TEXT;
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS source_type TEXT;
     ALTER TABLE cycles ADD COLUMN IF NOT EXISTS repo TEXT;
     ALTER TABLE cycles ADD COLUMN IF NOT EXISTS work_type TEXT;
     ALTER TABLE cycles ADD COLUMN IF NOT EXISTS summary TEXT;
@@ -114,7 +119,8 @@ END $$;
 
 CREATE TABLE IF NOT EXISTS slack_notifications (
     id              SERIAL PRIMARY KEY,
-    jira_key        TEXT NOT NULL,
+    external_key    TEXT NOT NULL,
+    source_type     TEXT,
     event_type      TEXT NOT NULL,
     message         TEXT NOT NULL,
     sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -134,7 +140,8 @@ CREATE TABLE IF NOT EXISTS bot_instances (
     instance_id     TEXT PRIMARY KEY,
     state           TEXT NOT NULL DEFAULT 'idle',
     message         TEXT NOT NULL DEFAULT '',
-    jira_key        TEXT,
+    external_key    TEXT,
+    source_type     TEXT,
     repo            TEXT,
     cycle_start     TIMESTAMPTZ,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -142,8 +149,8 @@ CREATE TABLE IF NOT EXISTS bot_instances (
 
 -- Migrate existing bot_status row into bot_instances (if instance_id is set)
 DO $$ BEGIN
-    INSERT INTO bot_instances (instance_id, state, message, jira_key, repo, cycle_start, updated_at)
-    SELECT instance_id, state, message, jira_key, repo, cycle_start, updated_at
+    INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo, cycle_start, updated_at)
+    SELECT instance_id, state, message, external_key, source_type, repo, cycle_start, updated_at
     FROM bot_status
     WHERE id = 1 AND instance_id IS NOT NULL
     ON CONFLICT (instance_id) DO NOTHING;
@@ -166,37 +173,6 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Stage 1: Generic task system columns (RHCLOUD-48376)
--- Additive only — all nullable, no constraints yet. Backfilled by migration 001.
-DO $$ BEGIN
-    -- tasks: core generic columns + artifacts
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_type TEXT;
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS source_url TEXT;
-    ALTER TABLE tasks ADD COLUMN IF NOT EXISTS artifacts JSONB DEFAULT '[]';
-
-    -- bot_status
-    ALTER TABLE bot_status ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE bot_status ADD COLUMN IF NOT EXISTS source_type TEXT;
-
-    -- bot_instances
-    ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS source_type TEXT;
-
-    -- cycles
-    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS source_type TEXT;
-
-    -- slack_notifications
-    ALTER TABLE slack_notifications ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE slack_notifications ADD COLUMN IF NOT EXISTS source_type TEXT;
-
-    -- memories
-    ALTER TABLE memories ADD COLUMN IF NOT EXISTS external_key TEXT;
-    ALTER TABLE memories ADD COLUMN IF NOT EXISTS source_type TEXT;
-EXCEPTION
-    WHEN duplicate_column THEN NULL;
-END $$;
 
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
