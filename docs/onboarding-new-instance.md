@@ -153,6 +153,7 @@ The template creates these resources:
 2. **Proxy Service** (optional) — ClusterIP service for the per-instance proxy.
 3. **Bot Deployment** — bot container with env vars pointing to shared infra.
 4. **NetworkPolicy** — egress restricted to proxy + memory-server + DNS only. References `${PROXY_NAME}` so it correctly targets either shared or per-instance proxy.
+5. **ScaledObject** (KEDA cron scaler) — auto-scales the bot on a time-based schedule. See [Step 2b: Scheduling](#step-2b-scheduling-keda-cron-scaler).
 
 Key environment variables (already wired in the template):
 - `BOT_MEMORY_URL=http://devbot-memory-server:8080/mcp` — shared memory server
@@ -168,6 +169,24 @@ Key environment variables (already wired in the template):
 | **Per-instance** | `1` | unique name (e.g. `devbot-myteam-proxy`) | your secret name | Custom Jira credentials needed (different Jira project access) |
 
 **Why a separate proxy?** Bot pods are network-isolated — the NetworkPolicy only allows egress to the proxy and memory server. The proxy runs mcp-atlassian (Jira MCP server) with the Jira credentials baked in. To use a different Jira account, you need a separate proxy pod with different credentials. A sidecar won't work because pods in the same deployment share the same NetworkPolicy.
+
+### NetworkPolicy proxy label — Important
+
+The NetworkPolicy must use `app.kubernetes.io/name: devbot-proxy` to match the shared proxy pod. **Do NOT use `proxy`** — the proxy pod's label is `devbot-proxy`, not `proxy`. A wrong label silently blocks all egress and the bot pod will hang waiting for the executor.
+
+```yaml
+# Correct
+- to:
+  - podSelector:
+      matchLabels:
+        app.kubernetes.io/name: devbot-proxy    # ← must match the proxy pod label
+  ports:
+  - port: 3128
+    protocol: TCP
+  # ...
+```
+
+If using a per-instance proxy (`PROXY_REPLICAS=1`), use `${PROXY_NAME}` instead (it resolves to your custom proxy name).
 
 ### DNS Egress — Important
 
@@ -193,6 +212,46 @@ Using port 53 or `k8s-app: kube-dns` will cause pods to hang — they can't reso
 - [Fix DNS egress and parameterize bot name](https://github.com/RedHatInsights/hcc-ui-agent-dev/pull/7) — critical DNS fix
 - [Add BOT_JIRA_EMAIL env var](https://github.com/RedHatInsights/hcc-ui-agent-dev/pull/13) — required for ticket assignment
 - [Add sprint prefix, Slack webhook](https://github.com/RedHatInsights/hcc-ui-agent-dev/pull/14) — Slack notifications
+- [Fix proxy label in kessel NetworkPolicy](https://github.com/project-kessel/kessel-ai-dev/pull/8) — real-world example of wrong label causing bot hang
+
+---
+
+## Step 2b: Scheduling (KEDA Cron Scaler)
+
+Every instance **must** include a KEDA `ScaledObject` in its deploy template. This controls when the bot runs — without it, you'd need to manually scale replicas up and down.
+
+Add the following to `deploy/template.yaml` after the NetworkPolicy:
+
+```yaml
+# --- Cron Scaler ---
+- apiVersion: keda.sh/v1alpha1
+  kind: ScaledObject
+  metadata:
+    name: ${BOT_NAME}-cron-scaler
+    labels:
+      app.kubernetes.io/name: ${BOT_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    scaleTargetRef:
+      apiVersion: apps/v1
+      kind: Deployment
+      name: ${BOT_NAME}
+    minReplicaCount: 0
+    maxReplicaCount: 1
+    triggers:
+    - type: cron
+      metadata:
+        timezone: "Europe/Prague"
+        start: "0 9 * * 1-5"
+        end: "0 23 * * 1-5"
+        desiredReplicas: "1"
+```
+
+Adjust `timezone`, `start`, and `end` to match your team's working hours. The example above runs weekdays 9:00–23:00 Prague time.
+
+For more schedule examples (US hours, weekends, split windows, etc.) and details on how multiple triggers combine, see the full [Scheduling guide](scheduling.md).
+
+**App-interface**: Your SaaS file's `managedResourceTypes` must include `ScaledObject.keda.sh` — see [Step 4](#step-4-app-interface-configuration).
 
 ---
 
@@ -260,6 +319,19 @@ resourceTemplates:
       # PROXY_NAME: devbot-myteam-proxy
       # JIRA_SECRET_NAME: myteam-jira-secrets
 ```
+
+### Add managed resource types
+
+Your SaaS file needs `managedResourceTypes` to include all resource kinds your template creates:
+
+```yaml
+managedResourceTypes:
+- Deployment
+- NetworkPolicy
+- ScaledObject.keda.sh
+```
+
+Without `ScaledObject.keda.sh`, app-interface will prune the KEDA cron scaler on every sync.
 
 ### Add image pattern
 
@@ -391,6 +463,9 @@ After deploying, verify in order:
 ---
 
 ## Gotchas
+
+### NetworkPolicy proxy label must be `devbot-proxy`
+The proxy pod's label is `app.kubernetes.io/name: devbot-proxy` — **not** `proxy`. Using the wrong label in your NetworkPolicy silently blocks all bot egress. The bot will start but hang forever waiting for the executor connection. This has caused real outages — see [kessel-ai-dev#8](https://github.com/project-kessel/kessel-ai-dev/pull/8).
 
 ### DNS port is 5353, not 53
 OpenShift uses a custom DNS server in the `openshift-dns` namespace on port 5353. Standard port 53 or `kube-dns` selectors won't work. Symptom: pods hang forever waiting for network connections.
