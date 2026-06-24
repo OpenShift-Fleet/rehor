@@ -358,6 +358,8 @@ The bot has built-in skills (Claude Code slash commands) in `.claude/skills/`:
 | `push-and-pr` | Pushes branch and creates PR/MR via API |
 | `post-pr` | Post-PR actions (Jira transition, comments, linked issues) |
 | `wrap-up` | Handles PR merge cleanup (archival, Jira transition, Slack, branch deletion) |
+| `slack-notify` | Sends Slack notifications with 48h per-ticket cooldown |
+| `auto-fork` | Forks repos under the bot's GitHub account |
 | `gh-release-upload` | Uploads screenshots to GitHub releases for PR comments |
 
 ## Memory system
@@ -513,10 +515,12 @@ dev-bot/
     main.go              # Caddy with custom modules
     start-proxy.sh       # Start script
   memory-server/         # Persistent memory + task tracking
-    src/
+    bot_memory_server/   # Python package
       server.py          # FastMCP + Starlette + WebSocket
-      tools/             # MCP tools (task_*, memory_*, slack_notify)
+      tools/             # MCP tools (task_*, memory_*, slack_notify, cycles)
       api.py             # REST API for the dashboard
+      artifacts.py       # PR/artifact tracking
+      migrations/        # Database migrations (zero-downtime)
       static/            # Dashboard UI (React + Vite, built assets)
     docker-compose.yml   # PostgreSQL (pgvector) + memory server
   prompts/               # Interactive prompts (grooming, etc.)
