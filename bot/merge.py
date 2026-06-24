@@ -69,9 +69,7 @@ def _deep_merge(
             report.protected.append(f"settings:{dot_path}")
             continue
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(
-                result[key], value, protected_paths, report, dot_path
-            )
+            result[key] = _deep_merge(result[key], value, protected_paths, report, dot_path)
         elif key in result:
             result[key] = value
             report.overridden.append(f"settings:{dot_path}")
@@ -133,9 +131,7 @@ def merge_skills(builtin_dir: Path, remote_dir: Path, report: MergeReport) -> li
     return added
 
 
-def merge_personas(
-    builtin_dir: Path, remote_dir: Path, report: MergeReport
-) -> list[str]:
+def merge_personas(builtin_dir: Path, remote_dir: Path, report: MergeReport) -> list[str]:
     """Merge personas — remote wins on name conflicts."""
     merged = []
     if not remote_dir.is_dir():
@@ -245,9 +241,7 @@ def apply_merged_config(script_dir: Path, remote_agent_dir: Path) -> MergeReport
     if remote_repos.is_file():
         builtin_path = script_dir / "project-repos.json"
         try:
-            builtin = (
-                json.loads(builtin_path.read_text()) if builtin_path.exists() else {}
-            )
+            builtin = json.loads(builtin_path.read_text()) if builtin_path.exists() else {}
             remote = json.loads(remote_repos.read_text())
             merged = merge_project_repos(builtin, remote, report)
             builtin_path.write_text(json.dumps(merged, indent=2) + "\n")
@@ -266,11 +260,7 @@ def apply_merged_config(script_dir: Path, remote_agent_dir: Path) -> MergeReport
         merged_path = data_dir / "merged-mcp.json"
         try:
             builtin_mcp_path = script_dir / "bot" / "mcp.json"
-            builtin = (
-                json.loads(builtin_mcp_path.read_text())
-                if builtin_mcp_path.exists()
-                else {}
-            )
+            builtin = json.loads(builtin_mcp_path.read_text()) if builtin_mcp_path.exists() else {}
             remote = json.loads(remote_mcp.read_text())
             merged = merge_mcp_servers(builtin, remote, report)
             new_content = json.dumps(merged, indent=2) + "\n"
@@ -286,9 +276,7 @@ def apply_merged_config(script_dir: Path, remote_agent_dir: Path) -> MergeReport
     if remote_settings.is_file():
         settings_path = script_dir / ".claude" / "settings.json"
         try:
-            builtin = (
-                json.loads(settings_path.read_text()) if settings_path.exists() else {}
-            )
+            builtin = json.loads(settings_path.read_text()) if settings_path.exists() else {}
             remote = json.loads(remote_settings.read_text())
             merged = deep_merge_settings(builtin, remote, report)
             settings_path.write_text(json.dumps(merged, indent=2) + "\n")

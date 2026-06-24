@@ -80,9 +80,7 @@ async def test_cycle_runs_by_task_grouping(db):
     task_id = task["id"]
 
     await _insert_cycle_run(db, task_id=task_id, tool_calls=50, tokens_used=10000)
-    await _insert_cycle_run(
-        db, task_id=task_id, tool_calls=30, tokens_used=8000, transcript=b"data"
-    )
+    await _insert_cycle_run(db, task_id=task_id, tool_calls=30, tokens_used=8000, transcript=b"data")
     await _insert_cycle_run(db, task_id=task_id, tool_calls=20, tokens_used=5000)
 
     rows = await db.fetch(
@@ -309,9 +307,7 @@ async def test_cycle_run_post_resolves_task_id(db):
     )
     resolved_task_id = resolved["id"] if resolved else None
 
-    run = await _insert_cycle_run(
-        db, task_id=resolved_task_id, progress=progress, tool_calls=42
-    )
+    run = await _insert_cycle_run(db, task_id=resolved_task_id, progress=progress, tool_calls=42)
     assert run["task_id"] == task_id
 
 
@@ -343,11 +339,7 @@ async def test_progress_roundtrip_external_key(db):
     assert loaded["external_key"] == "RHCLOUD-4030"
     assert loaded["source_type"] == "jira"
 
-    stored_progress = (
-        json.loads(loaded["progress"])
-        if isinstance(loaded["progress"], str)
-        else loaded["progress"]
-    )
+    stored_progress = json.loads(loaded["progress"]) if isinstance(loaded["progress"], str) else loaded["progress"]
     assert stored_progress["last_step"] == "tests_passing"
     assert stored_progress["files_changed"] == ["src/app.tsx", "src/utils.ts"]
 
@@ -376,11 +368,7 @@ async def test_cycle_run_serialization(db):
     assert run["created_at"] is not None
     assert run["has_transcript"] is False
 
-    progress = (
-        json.loads(run["progress"])
-        if isinstance(run["progress"], str)
-        else run["progress"]
-    )
+    progress = json.loads(run["progress"]) if isinstance(run["progress"], str) else run["progress"]
     assert progress["status"] == "complete"
 
 

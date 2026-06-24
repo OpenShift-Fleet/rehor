@@ -25,9 +25,7 @@ async def _apply_schema(db):
     await db.execute(schema)
 
 
-async def _insert_task(
-    db, external_key, status="in_progress", repo="test-repo", title=None
-):
+async def _insert_task(db, external_key, status="in_progress", repo="test-repo", title=None):
     await db.execute(
         """
         INSERT INTO tasks (external_key, source_type, source_url, status, repo, branch, title, metadata)
@@ -107,9 +105,7 @@ async def _insert_cycle(
 @pytest.mark.asyncio
 async def test_cycle_record_and_serialization(db):
     await _apply_schema(db)
-    row = await _insert_cycle(
-        db, external_key="RHCLOUD-3000", repo="test-repo", work_type="new_ticket"
-    )
+    row = await _insert_cycle(db, external_key="RHCLOUD-3000", repo="test-repo", work_type="new_ticket")
 
     assert row["external_key"] == "RHCLOUD-3000"
     assert row["source_type"] == "jira"
@@ -160,12 +156,8 @@ async def test_daily_aggregates(db):
 async def test_analytics_summary_stats(db):
     await _apply_schema(db)
 
-    await _insert_cycle(
-        db, external_key="RHCLOUD-3010", work_type="new_ticket", cost_usd=1.00
-    )
-    await _insert_cycle(
-        db, external_key="RHCLOUD-3011", work_type="pr_review", cost_usd=2.00
-    )
+    await _insert_cycle(db, external_key="RHCLOUD-3010", work_type="new_ticket", cost_usd=1.00)
+    await _insert_cycle(db, external_key="RHCLOUD-3011", work_type="pr_review", cost_usd=2.00)
     await _insert_cycle(db, no_work=True, cost_usd=0.10)
     await _insert_cycle(db, is_error=True, cost_usd=0.05)
 
@@ -206,9 +198,7 @@ async def test_analytics_work_type_breakdown(db):
         summary="Fix CVE-2024-1234",
     )
     await _insert_cycle(db, work_type="pr_review", external_key="RHCLOUD-3020")
-    await _insert_cycle(
-        db, summary="investigation of logging issue", external_key="RHCLOUD-3021"
-    )
+    await _insert_cycle(db, summary="investigation of logging issue", external_key="RHCLOUD-3021")
     await _insert_cycle(db, no_work=True)
 
     rows = await db.fetch(
@@ -514,9 +504,7 @@ async def test_stats_counts(db):
         json.dumps({}),
     )
 
-    tasks_by_status = await db.fetch(
-        "SELECT status::text, COUNT(*) as count FROM tasks GROUP BY status"
-    )
+    tasks_by_status = await db.fetch("SELECT status::text, COUNT(*) as count FROM tasks GROUP BY status")
     status_map = {r["status"]: r["count"] for r in tasks_by_status}
     assert status_map["in_progress"] == 1
     assert status_map["pr_open"] == 1
@@ -525,9 +513,7 @@ async def test_stats_counts(db):
     memory_count = await db.fetchval("SELECT COUNT(*) FROM memories")
     assert memory_count == 1
 
-    memories_by_cat = await db.fetch(
-        "SELECT category, COUNT(*) as count FROM memories GROUP BY category"
-    )
+    memories_by_cat = await db.fetch("SELECT category, COUNT(*) as count FROM memories GROUP BY category")
     assert memories_by_cat[0]["category"] == "learning"
     assert memories_by_cat[0]["count"] == 1
 
@@ -560,8 +546,6 @@ async def test_tags_distinct_sorted(db):
         json.dumps({}),
     )
 
-    rows = await db.fetch(
-        "SELECT DISTINCT unnest(tags) AS tag FROM memories ORDER BY tag"
-    )
+    rows = await db.fetch("SELECT DISTINCT unnest(tags) AS tag FROM memories ORDER BY tag")
     tags = [r["tag"] for r in rows]
     assert tags == ["css", "patternfly", "testing"]

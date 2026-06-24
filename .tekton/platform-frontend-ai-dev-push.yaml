@@ -158,6 +158,76 @@ spec:
         workspace: workspace
       - name: basic-auth
         workspace: git-auth
+    - name: clone-repository-skill-tests
+      params:
+      - name: url
+        value: $(params.git-url)
+      - name: revision
+        value: $(params.revision)
+      - name: ociStorage
+        value: $(params.output-image).git
+      runAfter:
+      - init
+      taskRef:
+        params:
+        - name: name
+          value: git-clone-oci-ta
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.1@sha256:d30f13dd15daf89dd6dc645243b3444d35570d13f7840c3fd65e366022515205
+        - name: kind
+          value: task
+        resolver: bundles
+      workspaces:
+      - name: basic-auth
+        workspace: git-auth
+    - name: run-skill-tests
+      params:
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.clone-repository-skill-tests.results.SOURCE_ARTIFACT)
+      runAfter:
+      - clone-repository-skill-tests
+      taskSpec:
+        params:
+        - name: SOURCE_ARTIFACT
+          type: string
+        volumes:
+        - name: workdir
+          emptyDir: {}
+        stepTemplate:
+          volumeMounts:
+          - mountPath: /var/workdir
+            name: workdir
+            readOnly: false
+        steps:
+        - name: use-trusted-artifact
+          image: quay.io/redhat-appstudio/build-trusted-artifacts:latest@sha256:9b180776a41d9a22a1c51539f1647c60defbbd55b44bbebdd4130e33512d8b0d
+          args:
+          - use
+          - $(params.SOURCE_ARTIFACT)=/var/workdir
+        - name: run-tests
+          image: registry.access.redhat.com/ubi9/python-312:latest
+          workingDir: /var/workdir
+          securityContext:
+            runAsUser: 0
+          env:
+          - name: BOT_JIRA_EMAIL
+            value: test@example.com
+          - name: GH_USER_NAME
+            value: test-bot
+          - name: GL_USER_NAME
+            value: test-bot
+          - name: BOT_CONFIG_PATH
+            value: test-config
+          - name: BOT_INSTANCE_ID
+            value: test-instance
+          - name: BOT_CONFIG_REPO
+            value: https://github.com/test/config.git
+          script: |
+            #!/bin/bash
+            set -ex
+            pip3.12 install --quiet ".[dev]"
+            python3.12 -m ruff check .claude/skills/auto-fork/ .claude/skills/claim-ticket/ .claude/skills/post-pr/ .claude/skills/push-and-pr/ --ignore E501
+            python3.12 -m pytest -v -p no:cacheprovider
     - name: prefetch-dependencies
       params:
       - name: input

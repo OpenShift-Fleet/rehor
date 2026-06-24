@@ -148,25 +148,6 @@ ENV BUILDAH_ISOLATION=chroot
 COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./
 COPY .claude/ .claude/
 
-# Run post-pr skill tests during build (validates skill before image is finalized)
-RUN cd .claude/skills/post-pr \
-    && uv sync --frozen --all-extras \
-    && uv run pytest -v --tb=short \
-    && echo "Post-PR skill tests passed!"
-
-# Run claim-ticket skill tests during build
-RUN cd .claude/skills/claim-ticket \
-    && uv sync --frozen --all-extras \
-    && uv run ruff format --check scripts/ tests/ \
-    && uv run ruff check scripts/ tests/ \
-    && uv run pytest -v --tb=short \
-    && echo "Claim-ticket skill tests passed!"
-
-# Run push-and-pr skill tests during build
-RUN cd .claude/skills/push-and-pr \
-    && uv sync --frozen --all-extras \
-    && uv run pytest -v --tb=short \
-    && echo "Push-and-PR skill tests passed!"
 
 ENV HOME=/home/botuser
 USER botuser

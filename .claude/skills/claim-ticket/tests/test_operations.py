@@ -3,7 +3,6 @@
 from unittest.mock import Mock, patch
 
 import pytest
-
 from scripts.claim_ticket_operations import (
     ClaimTicketOperations,
     OperationStatus,

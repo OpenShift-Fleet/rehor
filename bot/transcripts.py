@@ -119,9 +119,7 @@ def record_transcript(
                 (1 - len(compressed) / len(raw)) * 100 if raw else 0,
             )
         except ImportError:
-            logger.warning(
-                "zstandard not installed — storing cycle run without transcript"
-            )
+            logger.warning("zstandard not installed — storing cycle run without transcript")
         except Exception:
             logger.warning("Failed to read/compress transcript", exc_info=True)
     else:
@@ -129,8 +127,6 @@ def record_transcript(
 
     try:
         resp = httpx.post(CYCLE_RUNS_API, json=body, timeout=10.0)
-        logger.info(
-            "Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code
-        )
+        logger.info("Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code)
     except Exception:
         logger.warning("Failed to push cycle run to %s", CYCLE_RUNS_API, exc_info=True)

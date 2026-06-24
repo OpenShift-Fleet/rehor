@@ -12,9 +12,7 @@ from pgvector.asyncpg import register_vector
 
 
 async def main():
-    url = os.environ.get(
-        "DATABASE_URL", "postgresql://bot:bot@localhost:5433/bot_memory"
-    )
+    url = os.environ.get("DATABASE_URL", "postgresql://bot:bot@localhost:5433/bot_memory")
     conn = await asyncpg.connect(url)
 
     # Run schema and register vector type
@@ -28,9 +26,7 @@ async def main():
         prs = json.loads(json_path.read_text())
         for pr in prs:
             jira_key = pr["jira"]
-            existing = await conn.fetchrow(
-                "SELECT id FROM tasks WHERE jira_key = $1", jira_key
-            )
+            existing = await conn.fetchrow("SELECT id FROM tasks WHERE jira_key = $1", jira_key)
             if existing:
                 print(f"  Task {jira_key} already exists, skipping")
                 continue
@@ -46,14 +42,8 @@ async def main():
                 pr.get("repo"),
                 pr.get("branch"),
                 pr.get("pr"),
-                datetime.fromisoformat(
-                    pr.get("created", "2026-03-19T00:00:00Z").replace("Z", "+00:00")
-                ),
-                datetime.fromisoformat(
-                    pr.get("lastAddressed", "2026-03-19T00:00:00Z").replace(
-                        "Z", "+00:00"
-                    )
-                ),
+                datetime.fromisoformat(pr.get("created", "2026-03-19T00:00:00Z").replace("Z", "+00:00")),
+                datetime.fromisoformat(pr.get("lastAddressed", "2026-03-19T00:00:00Z").replace("Z", "+00:00")),
                 pr.get("paused"),
             )
             print(f"  Task: {jira_key} ({status}, PR #{pr.get('pr')})")
@@ -141,9 +131,7 @@ async def main():
     ]
 
     for t in completed_tasks:
-        existing = await conn.fetchrow(
-            "SELECT id FROM tasks WHERE jira_key = $1", t["jira_key"]
-        )
+        existing = await conn.fetchrow("SELECT id FROM tasks WHERE jira_key = $1", t["jira_key"])
         if existing:
             print(f"  Task {t['jira_key']} already exists, skipping")
             continue
@@ -177,9 +165,7 @@ async def main():
             "repo": "notifications-frontend",
             "jira_key": "RHCLOUD-44667",
             "tags": ["bug-fix", "patternfly", "ui-change", "pf6-migration"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/883"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/883"},
         },
         {
             "category": "learning",
@@ -188,9 +174,7 @@ async def main():
             "repo": "notifications-frontend",
             "jira_key": "RHCLOUD-37880",
             "tags": ["bug-fix", "css", "patternfly", "pf6-migration"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/878"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/878"},
         },
         {
             "category": "learning",
@@ -199,9 +183,7 @@ async def main():
             "repo": "astro-virtual-assistant-frontend",
             "jira_key": "RHCLOUD-46011",
             "tags": ["feature", "ui-change"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/368"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/368"},
         },
         {
             "category": "learning",
@@ -241,9 +223,7 @@ async def main():
             "repo": "notifications-frontend",
             "jira_key": "RHCLOUD-37880",
             "tags": ["review-feedback", "css", "patternfly"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/878"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/notifications-frontend/pull/878"},
         },
         {
             "category": "review_feedback",
@@ -252,9 +232,7 @@ async def main():
             "repo": "astro-virtual-assistant-frontend",
             "jira_key": "RHCLOUD-44597",
             "tags": ["review-feedback", "css", "ui-change"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"},
         },
         {
             "category": "review_feedback",
@@ -263,9 +241,7 @@ async def main():
             "repo": "astro-virtual-assistant-frontend",
             "jira_key": "RHCLOUD-44597",
             "tags": ["review-feedback", "css", "ui-change"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"},
         },
         {
             "category": "review_feedback",
@@ -274,9 +250,7 @@ async def main():
             "repo": "astro-virtual-assistant-frontend",
             "jira_key": "RHCLOUD-44597",
             "tags": ["review-feedback", "process", "ux"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-frontend/pull/371"},
         },
         # Codebase patterns
         {
@@ -322,9 +296,7 @@ async def main():
             "repo": "learning-resources",
             "jira_key": "RHCLOUD-46251",
             "tags": ["testing", "e2e", "playwright"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/learning-resources/pull/279"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/learning-resources/pull/279"},
         },
         {
             "category": "review_feedback",
@@ -333,9 +305,7 @@ async def main():
             "repo": "learning-resources",
             "jira_key": "RHCLOUD-46251",
             "tags": ["review-feedback", "process"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/learning-resources/pull/279"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/learning-resources/pull/279"},
         },
         {
             "category": "review_feedback",
@@ -344,9 +314,7 @@ async def main():
             "repo": "astro-virtual-assistant-v2",
             "jira_key": "RHCLOUD-45699",
             "tags": ["review-feedback", "ci", "security", "github-actions"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-v2/pull/150"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-v2/pull/150"},
         },
         {
             "category": "review_feedback",
@@ -355,9 +323,7 @@ async def main():
             "repo": "astro-virtual-assistant-v2",
             "jira_key": "RHCLOUD-45699",
             "tags": ["review-feedback", "ci", "security", "github-actions"],
-            "metadata": {
-                "pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-v2/pull/150"
-            },
+            "metadata": {"pr_url": "https://github.com/RedHatInsights/astro-virtual-assistant-v2/pull/150"},
         },
         {
             "category": "codebase_pattern",
@@ -400,9 +366,7 @@ async def main():
     ]
 
     for m in memories:
-        existing = await conn.fetchrow(
-            "SELECT id FROM memories WHERE title = $1", m["title"]
-        )
+        existing = await conn.fetchrow("SELECT id FROM memories WHERE title = $1", m["title"])
         if existing:
             print(f"  Memory '{m['title'][:50]}...' already exists, skipping")
             continue

@@ -18,9 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from paths import SLEEP_FILE
 
-PROJECT_REPOS = (
-    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-)
+PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
 BOT_INCLUDE_BACKLOG = os.environ.get("BOT_INCLUDE_BACKLOG", "").lower() in (
     "1",
@@ -68,9 +66,7 @@ def build_repo_lookup(repos_dict):
 
 
 def match_repo_labels(labels, repo_lookup):
-    repo_labels = [
-        label.replace("repo:", "") for label in labels if label.startswith("repo:")
-    ]
+    repo_labels = [label.replace("repo:", "") for label in labels if label.startswith("repo:")]
     if not repo_labels:
         return []
     matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
@@ -118,9 +114,7 @@ def get_candidates():
     # Tier 3: backlog (no sprint)
     if len(candidates) < 10 and BOT_INCLUDE_BACKLOG:
         if BOT_JIRA_EMAIL:
-            assignee_filter = (
-                f'AND (assignee is EMPTY OR assignee = "{BOT_JIRA_EMAIL}") '
-            )
+            assignee_filter = f'AND (assignee is EMPTY OR assignee = "{BOT_JIRA_EMAIL}") '
         else:
             assignee_filter = "AND assignee is EMPTY "
         collect(
@@ -148,15 +142,9 @@ def get_candidates():
             {
                 "key": issue["key"],
                 "summary": fields.get("summary") or issue.get("summary", ""),
-                "status": status.get("name", "?")
-                if isinstance(status, dict)
-                else str(status),
-                "priority": priority.get("name", "?")
-                if isinstance(priority, dict)
-                else str(priority),
-                "type": issue_type.get("name", "?")
-                if isinstance(issue_type, dict)
-                else str(issue_type),
+                "status": status.get("name", "?") if isinstance(status, dict) else str(status),
+                "priority": priority.get("name", "?") if isinstance(priority, dict) else str(priority),
+                "type": issue_type.get("name", "?") if isinstance(issue_type, dict) else str(issue_type),
                 "labels": labels,
                 "repos": repos,
                 "description": fields.get("description") or "",
@@ -175,16 +163,10 @@ def fmt_candidate(c):
     else:
         repo_labels = [label for label in c["labels"] if label.startswith("repo:")]
         if repo_labels:
-            lines.append(
-                f"  repo_labels: {','.join(repo_labels)} (NO MATCH in project-repos.json)"
-            )
+            lines.append(f"  repo_labels: {','.join(repo_labels)} (NO MATCH in project-repos.json)")
         else:
             lines.append("  repos: (no repo: label)")
-    other_labels = [
-        label
-        for label in c["labels"]
-        if not label.startswith("repo:") and label != BOT_LABEL
-    ]
+    other_labels = [label for label in c["labels"] if not label.startswith("repo:") and label != BOT_LABEL]
     if other_labels:
         lines.append(f"  labels: {','.join(other_labels)}")
     for lk in c["links"][:5]:
@@ -214,9 +196,7 @@ def main():
     if not candidates:
         print("NO CANDIDATES FOUND")
         SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SLEEP_FILE.write_text(
-            json.dumps({"recommended_sleep": 3600, "reason": "no_eligible_work"})
-        )
+        SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "no_eligible_work"}))
         return
 
     print(f"NEW WORK CANDIDATES ({len(candidates)})")
@@ -229,9 +209,7 @@ def main():
     without_repos = [c for c in candidates if not c["repos"]]
     print(f"-> {len(with_repos)} with matching repos, {len(without_repos)} without")
     if with_repos:
-        print(
-            f"-> Top pick: {with_repos[0]['key']} repos={','.join(with_repos[0]['repos'])}"
-        )
+        print(f"-> Top pick: {with_repos[0]['key']} repos={','.join(with_repos[0]['repos'])}")
 
 
 if __name__ == "__main__":

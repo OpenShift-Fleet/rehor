@@ -58,8 +58,7 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
         source_url = f"{JIRA_BASE_URL}/{row['jira_key']}" if row["jira_key"] else None
 
         await conn.execute(
-            "UPDATE tasks SET external_key = $1, source_type = $2, "
-            "source_url = $3, artifacts = $4 WHERE id = $5",
+            "UPDATE tasks SET external_key = $1, source_type = $2, source_url = $3, artifacts = $4 WHERE id = $5",
             row["jira_key"],
             "jira",
             source_url,
