@@ -67,15 +67,11 @@ async def _validate(conn: asyncpg.Connection) -> list[str]:
         if orphans:
             errors.append(f"{table}: {orphans} rows with jira_key but no external_key")
 
-    null_ext = await conn.fetchval(
-        "SELECT COUNT(*) FROM tasks WHERE external_key IS NULL"
-    )
+    null_ext = await conn.fetchval("SELECT COUNT(*) FROM tasks WHERE external_key IS NULL")
     if null_ext:
         errors.append(f"tasks: {null_ext} rows with NULL external_key")
 
-    null_src = await conn.fetchval(
-        "SELECT COUNT(*) FROM tasks WHERE source_type IS NULL"
-    )
+    null_src = await conn.fetchval("SELECT COUNT(*) FROM tasks WHERE source_type IS NULL")
     if null_src:
         errors.append(f"tasks: {null_src} rows with NULL source_type")
 
@@ -126,15 +122,13 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
     )
     if not has_constraint:
         await conn.execute(
-            "ALTER TABLE tasks ADD CONSTRAINT tasks_external_key_source_type_unique "
-            "UNIQUE(external_key, source_type)"
+            "ALTER TABLE tasks ADD CONSTRAINT tasks_external_key_source_type_unique UNIQUE(external_key, source_type)"
         )
         stats["unique_constraint"] = "added"
 
     # Clean metadata.prs where artifacts already populated
     result = await conn.execute(
-        "UPDATE tasks SET metadata = metadata - 'prs' "
-        "WHERE metadata ? 'prs' AND artifacts != '[]'::jsonb"
+        "UPDATE tasks SET metadata = metadata - 'prs' WHERE metadata ? 'prs' AND artifacts != '[]'::jsonb"
     )
     cleaned = int(result.split()[-1]) if result else 0
     stats["metadata_prs_cleaned"] = cleaned

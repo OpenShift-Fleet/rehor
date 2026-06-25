@@ -1,20 +1,16 @@
 """Unit tests for auto-fork operations."""
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from auto_fork import (
     AutoForkOperations,
     OperationStatus,
     RepoInfo,
 )
-from tests.conftest import GITLAB_HOST, HOST_GITHUB, HOST_GITLAB
+from conftest import GITLAB_HOST, HOST_GITHUB, HOST_GITLAB
 
 
 @pytest.fixture

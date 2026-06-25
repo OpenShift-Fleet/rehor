@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 TURN_WARNING_THRESHOLD = 0.75  # warn at 75% of max_turns
 TURN_CRITICAL_THRESHOLD = 0.90  # urgent at 90%
 
-DASHBOARD_URL = os.environ.get(
-    "BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status"
-)
+DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status")
 
 
 @dataclass
@@ -220,11 +218,7 @@ async def run_cycle(
 
                 elif isinstance(message, ResultMessage):
                     result = message
-                    cost = (
-                        f"${message.total_cost_usd:.4f}"
-                        if message.total_cost_usd is not None
-                        else "N/A"
-                    )
+                    cost = f"${message.total_cost_usd:.4f}" if message.total_cost_usd is not None else "N/A"
                     logger.info(
                         "Cycle done: %s | turns=%s | cost=%s | duration=%sms",
                         message.subtype,
@@ -329,13 +323,7 @@ def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> N
     if not content:
         return
     try:
-        text = (
-            content
-            if isinstance(content, str)
-            else content[0].get("text", "")
-            if isinstance(content, list)
-            else ""
-        )
+        text = content if isinstance(content, str) else content[0].get("text", "") if isinstance(content, list) else ""
         if not text:
             return
         data = json.loads(text)

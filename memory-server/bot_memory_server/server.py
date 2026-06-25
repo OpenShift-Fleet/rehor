@@ -102,9 +102,7 @@ from .api import (  # noqa: E402
 
 mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
 mcp.custom_route("/api/tasks/{key:path}", methods=["DELETE"])(api_task_delete)
-mcp.custom_route("/api/tasks/{key:path}/unarchive", methods=["POST"])(
-    api_task_unarchive
-)
+mcp.custom_route("/api/tasks/{key:path}/unarchive", methods=["POST"])(api_task_unarchive)
 mcp.custom_route("/api/memories", methods=["GET"])(api_memories)
 mcp.custom_route("/api/memories/search", methods=["GET"])(api_memory_search)
 mcp.custom_route("/api/memories/upload", methods=["POST"])(api_memory_upload)
@@ -113,21 +111,15 @@ mcp.custom_route("/api/memories/{id}", methods=["GET"])(api_memory_get)
 mcp.custom_route("/api/memories/{id}", methods=["DELETE"])(api_memory_delete)
 mcp.custom_route("/api/bot-status", methods=["GET", "POST"])(api_bot_status)
 mcp.custom_route("/api/instances", methods=["GET"])(api_instances)
-mcp.custom_route("/api/instances/{instance_id}/wake", methods=["POST"])(
-    api_instance_wake_trigger
-)
-mcp.custom_route("/api/instances/{instance_id}/wake", methods=["GET"])(
-    api_instance_wake_check
-)
+mcp.custom_route("/api/instances/{instance_id}/wake", methods=["POST"])(api_instance_wake_trigger)
+mcp.custom_route("/api/instances/{instance_id}/wake", methods=["GET"])(api_instance_wake_check)
 mcp.custom_route("/api/costs", methods=["GET", "POST"])(api_costs)
 mcp.custom_route("/api/tags", methods=["GET"])(api_tags)
 mcp.custom_route("/api/stats", methods=["GET"])(api_stats)
 mcp.custom_route("/api/analytics", methods=["GET"])(api_analytics)
 mcp.custom_route("/api/cycle-runs", methods=["GET", "POST"])(api_cycle_runs)
 mcp.custom_route("/api/cycle-runs/by-task", methods=["GET"])(api_cycle_runs_by_task)
-mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(
-    api_cycle_run_transcript
-)
+mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(api_cycle_run_transcript)
 
 
 # WebSocket for live updates

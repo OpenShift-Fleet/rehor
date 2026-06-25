@@ -21,9 +21,7 @@ async def test_schema_applies(db):
     schema = SCHEMA_PATH.read_text()
     await db.execute(schema)
 
-    tables = await db.fetch(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-    )
+    tables = await db.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     table_names = {t["tablename"] for t in tables}
 
     expected = {

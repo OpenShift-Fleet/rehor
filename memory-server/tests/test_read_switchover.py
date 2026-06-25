@@ -280,9 +280,7 @@ async def test_task_response_includes_new_fields(db):
     await _apply_schema(db)
     await _insert_task(db, "RHCLOUD-2013")
 
-    row = await db.fetchrow(
-        "SELECT * FROM tasks WHERE external_key = $1", "RHCLOUD-2013"
-    )
+    row = await db.fetchrow("SELECT * FROM tasks WHERE external_key = $1", "RHCLOUD-2013")
     assert row["external_key"] == "RHCLOUD-2013"
     assert row["source_type"] == "jira"
     assert row["source_url"] == f"{JIRA_BASE_URL}/RHCLOUD-2013"
@@ -302,9 +300,7 @@ async def test_cycle_response_includes_new_fields(db):
         "jira",
     )
 
-    row = await db.fetchrow(
-        "SELECT * FROM cycles WHERE external_key = $1", "RHCLOUD-2014"
-    )
+    row = await db.fetchrow("SELECT * FROM cycles WHERE external_key = $1", "RHCLOUD-2014")
     assert row["external_key"] == "RHCLOUD-2014"
     assert row["source_type"] == "jira"
 
@@ -325,8 +321,6 @@ async def test_memory_response_includes_new_fields(db):
         ZERO_VECTOR,
     )
 
-    row = await db.fetchrow(
-        "SELECT * FROM memories WHERE external_key = $1", "RHCLOUD-2015"
-    )
+    row = await db.fetchrow("SELECT * FROM memories WHERE external_key = $1", "RHCLOUD-2015")
     assert row["external_key"] == "RHCLOUD-2015"
     assert row["source_type"] == "jira"

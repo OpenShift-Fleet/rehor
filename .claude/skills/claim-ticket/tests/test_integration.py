@@ -3,14 +3,12 @@
 from unittest.mock import patch
 
 import pytest
-
+from conftest import TEST_BOARD_ID, TEST_JIRA_KEY, TEST_MEMORY_URL
 from scripts.claim_ticket_operations import (
     ClaimTicketOperations,
     OperationStatus,
     execute_claim_ticket_workflow,
 )
-
-from .conftest import TEST_BOARD_ID, TEST_JIRA_KEY, TEST_MEMORY_URL
 
 
 @pytest.fixture(autouse=True)

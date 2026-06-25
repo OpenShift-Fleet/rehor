@@ -47,9 +47,7 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
 def mock_pool():
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=1)
-    pool.fetchrow = AsyncMock(
-        side_effect=lambda q, *a: _fake_cycle_run_row(id=1, task_id=a[0])
-    )
+    pool.fetchrow = AsyncMock(side_effect=lambda q, *a: _fake_cycle_run_row(id=1, task_id=a[0]))
     pool.fetch = AsyncMock(return_value=[_fake_cycle_run_row()])
     pool.execute = AsyncMock()
     with patch("bot_memory_server.api.get_pool", return_value=pool):
@@ -68,9 +66,7 @@ async def test_post_cycle_run_basic(mock_pool):
         "progress": {"last_step": "pr_opened", "files_changed": ["src/foo.py"]},
     }
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/cycle-runs", json=body)
 
     assert resp.status_code == 201
@@ -97,9 +93,7 @@ async def test_post_cycle_run_with_transcript(mock_pool):
         "transcript_b64": base64.b64encode(compressed).decode(),
     }
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/cycle-runs", json=body)
 
     assert resp.status_code == 201
@@ -109,19 +103,13 @@ async def test_post_cycle_run_with_transcript(mock_pool):
 
 @pytest.mark.asyncio
 async def test_post_cycle_run_no_task(mock_pool):
-    mock_pool.fetchrow = AsyncMock(
-        side_effect=lambda q, *a: _fake_cycle_run_row(
-            id=2, task_id=None, cycle_type="idle"
-        )
-    )
+    mock_pool.fetchrow = AsyncMock(side_effect=lambda q, *a: _fake_cycle_run_row(id=2, task_id=None, cycle_type="idle"))
     body = {
         "cycle_type": "idle",
         "instance_id": "test",
     }
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/cycle-runs", json=body)
 
     assert resp.status_code == 201
@@ -142,9 +130,7 @@ async def test_post_cycle_run_with_timestamps(mock_pool):
         "tokens_used": 150000,
     }
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/cycle-runs", json=body)
 
     assert resp.status_code == 201
@@ -158,9 +144,7 @@ async def test_post_cycle_run_with_timestamps(mock_pool):
 
 @pytest.mark.asyncio
 async def test_get_cycle_runs_list(mock_pool):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs")
 
     assert resp.status_code == 200
@@ -173,9 +157,7 @@ async def test_get_cycle_runs_list(mock_pool):
 
 @pytest.mark.asyncio
 async def test_get_cycle_runs_filter_by_task(mock_pool):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs?task_id=42")
 
     assert resp.status_code == 200
@@ -186,9 +168,7 @@ async def test_get_cycle_runs_filter_by_task(mock_pool):
 
 @pytest.mark.asyncio
 async def test_get_cycle_runs_filter_by_instance(mock_pool):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs?instance_id=hcc-ai-framework")
 
     assert resp.status_code == 200
@@ -199,9 +179,7 @@ async def test_get_cycle_runs_filter_by_instance(mock_pool):
 
 @pytest.mark.asyncio
 async def test_get_cycle_runs_filter_by_cycle_type(mock_pool):
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs?cycle_type=idle")
 
     assert resp.status_code == 200
@@ -213,9 +191,7 @@ async def test_get_cycle_runs_filter_by_cycle_type(mock_pool):
 @pytest.mark.asyncio
 async def test_get_cycle_runs_no_transcript_in_list(mock_pool):
     """Listing should never include transcript data."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs")
 
     data = resp.json()
@@ -231,9 +207,7 @@ async def test_get_cycle_runs_no_transcript_in_list(mock_pool):
 async def test_get_transcript_not_found(mock_pool):
     mock_pool.fetchrow = AsyncMock(return_value=None)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs/999/transcript")
 
     assert resp.status_code == 404
@@ -243,9 +217,7 @@ async def test_get_transcript_not_found(mock_pool):
 async def test_get_transcript_no_transcript_stored(mock_pool):
     mock_pool.fetchrow = AsyncMock(return_value={"transcript": None})
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs/1/transcript")
 
     assert resp.status_code == 404
@@ -257,9 +229,7 @@ async def test_get_transcript_raw(mock_pool):
     raw_bytes = b"compressed-data-here"
     mock_pool.fetchrow = AsyncMock(return_value={"transcript": raw_bytes})
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(
             "/api/cycle-runs/1/transcript",
             headers={"accept": "application/octet-stream"},
@@ -281,9 +251,7 @@ async def test_get_transcript_decompressed(mock_pool):
 
     mock_pool.fetchrow = AsyncMock(return_value={"transcript": compressed})
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/cycle-runs/1/transcript?decompress=true")
 
     assert resp.status_code == 200
@@ -306,15 +274,11 @@ async def _get_tool_fn(mcp_instance, tool_name):
 @pytest.fixture
 def mock_pool_for_tools():
     pool = MagicMock()
-    pool.fetchrow = AsyncMock(
-        side_effect=lambda q, *a: _fake_cycle_run_row(id=1, task_id=a[0])
-    )
+    pool.fetchrow = AsyncMock(side_effect=lambda q, *a: _fake_cycle_run_row(id=1, task_id=a[0]))
     pool.fetch = AsyncMock(
         return_value=[
             _fake_cycle_run_row(id=1),
-            _fake_cycle_run_row(
-                id=2, progress=json.dumps({"last_step": "tests_passing"})
-            ),
+            _fake_cycle_run_row(id=2, progress=json.dumps({"last_step": "tests_passing"})),
         ]
     )
     with patch("bot_memory_server.tools.cycles.get_pool", return_value=pool):
@@ -353,9 +317,7 @@ async def test_progress_store(mock_pool_for_tools, mcp_with_tools):
 
 @pytest.mark.asyncio
 async def test_progress_store_null_task(mock_pool_for_tools, mcp_with_tools):
-    mock_pool_for_tools.fetchrow = AsyncMock(
-        side_effect=lambda q, *a: _fake_cycle_run_row(id=3, task_id=None)
-    )
+    mock_pool_for_tools.fetchrow = AsyncMock(side_effect=lambda q, *a: _fake_cycle_run_row(id=3, task_id=None))
 
     store_fn = await _get_tool_fn(mcp_with_tools, "progress_store")
 

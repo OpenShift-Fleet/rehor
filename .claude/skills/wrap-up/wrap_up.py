@@ -16,12 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from memory_mcp import memory_call
 
-MEMORY_URL = (
-    os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
-)
-PROJECT_REPOS = (
-    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-)
+MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
 
@@ -69,9 +65,7 @@ def get_upstream_info(repo_name):
         entry = repos.get(repo_name, {})
         upstream = entry.get("upstream", "")
         host = entry.get("host", "github")
-        parsed = urllib.parse.urlparse(
-            upstream if "://" in upstream else f"https://{upstream}"
-        )
+        parsed = urllib.parse.urlparse(upstream if "://" in upstream else f"https://{upstream}")
         hostname = parsed.hostname or ""
         if "gitlab" in hostname:
             host = "gitlab"
@@ -201,9 +195,7 @@ def delete_remote_branch(repo_name, branch, host, upstream_path):
     else:
         ref = f"heads/{branch}"
         targets = [f"repos/{upstream_path}/git/refs/{ref}"]
-        fork_path = parse_repo_path(
-            json.loads(PROJECT_REPOS.read_text()).get(repo_name, {}).get("url", "")
-        )
+        fork_path = parse_repo_path(json.loads(PROJECT_REPOS.read_text()).get(repo_name, {}).get("url", ""))
         if fork_path and fork_path != upstream_path:
             targets.append(f"repos/{fork_path}/git/refs/{ref}")
         results = []

@@ -11,9 +11,7 @@ from starlette.routing import Route
 
 from bot_memory_server.api import api_memory_upload
 
-app = Starlette(
-    routes=[Route("/api/memories/upload", api_memory_upload, methods=["POST"])]
-)
+app = Starlette(routes=[Route("/api/memories/upload", api_memory_upload, methods=["POST"])])
 
 
 def _fake_row(id: int, title: str, category: str, **kwargs):
@@ -51,9 +49,7 @@ def mock_embed():
 @pytest.mark.asyncio
 async def test_returns_404_when_disabled(monkeypatch):
     monkeypatch.delenv("UPLOAD_MEMORY_PASSWORD", raising=False)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/memories/upload", json={"memories": []})
     assert resp.status_code == 404
 
@@ -61,9 +57,7 @@ async def test_returns_404_when_disabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_returns_403_wrong_token(monkeypatch):
     monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "correct-password")
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": []},
@@ -75,9 +69,7 @@ async def test_returns_403_wrong_token(monkeypatch):
 @pytest.mark.asyncio
 async def test_returns_403_missing_header(monkeypatch):
     monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "correct-password")
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/memories/upload", json={"memories": []})
     assert resp.status_code == 403
 
@@ -85,9 +77,7 @@ async def test_returns_403_missing_header(monkeypatch):
 @pytest.mark.asyncio
 async def test_upload_empty_list(monkeypatch):
     monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "secret")
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": []},
@@ -109,9 +99,7 @@ async def test_upload_single_memory(monkeypatch, mock_pool, mock_embed):
         }
     ]
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": memories},
@@ -131,13 +119,9 @@ async def test_skips_duplicates(monkeypatch, mock_pool, mock_embed):
     monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "secret")
     mock_pool.fetchval = AsyncMock(return_value=42)
 
-    memories = [
-        {"category": "learning", "title": "Existing", "content": "Already there"}
-    ]
+    memories = [{"category": "learning", "title": "Existing", "content": "Already there"}]
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": memories},
@@ -156,9 +140,7 @@ async def test_reports_missing_fields(monkeypatch, mock_pool, mock_embed):
     monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "secret")
     memories = [{"category": "learning"}]  # missing title and content
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": memories},
@@ -186,9 +168,7 @@ async def test_upload_ignores_extra_fields(monkeypatch, mock_pool, mock_embed):
         }
     ]
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
             "/api/memories/upload",
             json={"memories": memories},

@@ -21,17 +21,14 @@ def _row_to_cycle_run(row) -> dict:
         finished_at=row["finished_at"],
         tool_calls=row["tool_calls"],
         tokens_used=row["tokens_used"],
-        progress=json.loads(row["progress"])
-        if isinstance(row["progress"], str)
-        else (row["progress"] or {}),
+        progress=json.loads(row["progress"]) if isinstance(row["progress"], str) else (row["progress"] or {}),
         created_at=row["created_at"],
     )
     return run.model_dump(mode="json")
 
 
 _CYCLE_RUN_COLUMNS = (
-    "id, task_id, cycle_type, instance_id, started_at, finished_at, "
-    "tool_calls, tokens_used, progress, created_at"
+    "id, task_id, cycle_type, instance_id, started_at, finished_at, tool_calls, tokens_used, progress, created_at"
 )
 
 

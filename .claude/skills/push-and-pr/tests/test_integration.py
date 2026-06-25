@@ -7,7 +7,6 @@ from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
-
 from scripts.push_and_pr_operations import execute_push_and_pr_workflow
 
 

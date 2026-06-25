@@ -59,9 +59,7 @@ async def api_tasks(request: Request) -> JSONResponse:
         )
     else:
         if instance_id:
-            total = await pool.fetchval(
-                "SELECT COUNT(*) FROM tasks WHERE instance_id = $1", instance_id
-            )
+            total = await pool.fetchval("SELECT COUNT(*) FROM tasks WHERE instance_id = $1", instance_id)
             rows = await pool.fetch(
                 "SELECT * FROM tasks WHERE instance_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
                 instance_id,
@@ -133,9 +131,7 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
         key,
     )
     if not row:
-        return JSONResponse(
-            {"error": f"Task {key} not found or not archived"}, status_code=404
-        )
+        return JSONResponse({"error": f"Task {key} not found or not archived"}, status_code=404)
     await bus.publish(
         Event(
             "task_updated",
@@ -228,9 +224,7 @@ async def api_memory_search(request: Request) -> JSONResponse:
         """,
         *params,
     )
-    return JSONResponse(
-        [{**_memory(r), "similarity": round(1 - r["distance"], 4)} for r in rows]
-    )
+    return JSONResponse([{**_memory(r), "similarity": round(1 - r["distance"], 4)} for r in rows])
 
 
 async def api_memory_embeddings(request: Request) -> JSONResponse:
@@ -400,9 +394,7 @@ async def api_bot_status(request: Request) -> JSONResponse:
             "source_type": row.get("source_type"),
             "repo": row["repo"],
             "instance_id": row.get("instance_id"),
-            "cycle_start": row["cycle_start"].isoformat()
-            if row["cycle_start"]
-            else None,
+            "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
             "updated_at": row["updated_at"].isoformat(),
         }
     )
@@ -417,9 +409,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
     repo = body.get("repo")
 
     if state not in ("working", "idle", "error"):
-        return JSONResponse(
-            {"error": "state must be working, idle, or error"}, status_code=400
-        )
+        return JSONResponse({"error": "state must be working, idle, or error"}, status_code=400)
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
@@ -453,9 +443,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
 async def api_instances(request: Request) -> JSONResponse:
     """GET /api/instances — list all bot instances with aggregated task counts."""
     pool = get_pool()
-    instance_rows = await pool.fetch(
-        "SELECT * FROM bot_instances ORDER BY updated_at DESC"
-    )
+    instance_rows = await pool.fetch("SELECT * FROM bot_instances ORDER BY updated_at DESC")
     # Count active tasks per instance
     task_counts = await pool.fetch(
         """
@@ -478,9 +466,7 @@ async def api_instances(request: Request) -> JSONResponse:
                 "external_key": r.get("external_key"),
                 "source_type": r.get("source_type"),
                 "repo": r["repo"],
-                "cycle_start": r["cycle_start"].isoformat()
-                if r["cycle_start"]
-                else None,
+                "cycle_start": r["cycle_start"].isoformat() if r["cycle_start"] else None,
                 "updated_at": r["updated_at"].isoformat(),
                 "active_tasks": counts_map.get(r["instance_id"], 0),
                 "max_tasks": 10,
@@ -733,9 +719,7 @@ async def api_analytics(request: Request) -> JSONResponse:
                 "error_cycles": summary["error_cycles"],
                 "unique_tickets": summary["unique_tickets"],
                 "total_cost": float(summary["total_cost"] or 0),
-                "avg_cost_per_work_cycle": float(
-                    summary["avg_cost_per_work_cycle"] or 0
-                ),
+                "avg_cost_per_work_cycle": float(summary["avg_cost_per_work_cycle"] or 0),
                 "avg_turns": float(summary["avg_turns"] or 0),
                 "avg_duration_ms": float(summary["avg_duration_ms"] or 0),
                 "repos_touched": summary["repos_touched"],
@@ -788,21 +772,15 @@ async def api_analytics(request: Request) -> JSONResponse:
 
 async def api_tags(request: Request) -> JSONResponse:
     pool = get_pool()
-    rows = await pool.fetch(
-        "SELECT DISTINCT unnest(tags) AS tag FROM memories ORDER BY tag"
-    )
+    rows = await pool.fetch("SELECT DISTINCT unnest(tags) AS tag FROM memories ORDER BY tag")
     return JSONResponse([r["tag"] for r in rows])
 
 
 async def api_stats(request: Request) -> JSONResponse:
     pool = get_pool()
-    tasks_by_status = await pool.fetch(
-        "SELECT status::text, COUNT(*) as count FROM tasks GROUP BY status"
-    )
+    tasks_by_status = await pool.fetch("SELECT status::text, COUNT(*) as count FROM tasks GROUP BY status")
     memory_count = await pool.fetchval("SELECT COUNT(*) FROM memories")
-    memories_by_cat = await pool.fetch(
-        "SELECT category, COUNT(*) as count FROM memories GROUP BY category"
-    )
+    memories_by_cat = await pool.fetch("SELECT category, COUNT(*) as count FROM memories GROUP BY category")
     memories_by_repo = await pool.fetch(
         "SELECT COALESCE(repo, 'unset') as repo, COUNT(*) as count FROM memories GROUP BY repo ORDER BY count DESC"
     )
@@ -958,17 +936,13 @@ async def api_cycle_run_transcript(request: Request) -> Response:
     if not run_id:
         return JSONResponse({"error": "missing cycle run id"}, status_code=400)
 
-    row = await pool.fetchrow(
-        "SELECT transcript FROM cycle_runs WHERE id = $1", int(run_id)
-    )
+    row = await pool.fetchrow("SELECT transcript FROM cycle_runs WHERE id = $1", int(run_id))
     if not row:
         return JSONResponse({"error": f"Cycle run {run_id} not found"}, status_code=404)
 
     transcript = row["transcript"]
     if transcript is None:
-        return JSONResponse(
-            {"error": f"Cycle run {run_id} has no transcript"}, status_code=404
-        )
+        return JSONResponse({"error": f"Cycle run {run_id} has no transcript"}, status_code=404)
 
     decompress = request.query_params.get("decompress", "").lower() in (
         "true",
@@ -987,9 +961,7 @@ async def api_cycle_run_transcript(request: Request) -> Response:
                 media_type="application/x-ndjson",
             )
         except Exception as e:
-            return JSONResponse(
-                {"error": f"Decompression failed: {e}"}, status_code=500
-            )
+            return JSONResponse({"error": f"Decompression failed: {e}"}, status_code=500)
 
     return Response(
         content=bytes(transcript),
@@ -1071,9 +1043,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
                 "transcript_count": r["transcript_count"],
                 "total_tool_calls": r["total_tool_calls"],
                 "total_tokens": r["total_tokens"],
-                "first_cycle": r["first_cycle"].isoformat()
-                if r["first_cycle"]
-                else None,
+                "first_cycle": r["first_cycle"].isoformat() if r["first_cycle"] else None,
                 "last_cycle": r["last_cycle"].isoformat() if r["last_cycle"] else None,
             }
         )
@@ -1087,13 +1057,9 @@ async def api_instance_wake_trigger(request: Request) -> JSONResponse:
     if not instance_id:
         return JSONResponse({"error": "missing instance_id"}, status_code=400)
 
-    row = await pool.fetchrow(
-        "SELECT instance_id FROM bot_instances WHERE instance_id = $1", instance_id
-    )
+    row = await pool.fetchrow("SELECT instance_id FROM bot_instances WHERE instance_id = $1", instance_id)
     if not row:
-        return JSONResponse(
-            {"error": f"Instance {instance_id} not found"}, status_code=404
-        )
+        return JSONResponse({"error": f"Instance {instance_id} not found"}, status_code=404)
 
     wake_signals.add(instance_id)
     await bus.publish(Event("instance_wake", {"instance_id": instance_id}))
@@ -1136,9 +1102,7 @@ def _task(row, slack_notif=None) -> dict:
         "last_addressed": row["last_addressed"].isoformat(),
         "paused_reason": row["paused_reason"],
         "instance_id": row.get("instance_id"),
-        "metadata": json.loads(row["metadata"])
-        if isinstance(row["metadata"], str)
-        else (row["metadata"] or {}),
+        "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
     }
     if slack_notif:
         result["slack_notification"] = slack_notif
@@ -1180,9 +1144,7 @@ def _memory(row) -> dict:
         "content": row["content"],
         "tags": list(row["tags"]) if row["tags"] else [],
         "created_at": row["created_at"].isoformat(),
-        "metadata": json.loads(row["metadata"])
-        if isinstance(row["metadata"], str)
-        else (row["metadata"] or {}),
+        "metadata": json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
     }
 
 
@@ -1196,9 +1158,7 @@ def _cycle_run(row) -> dict:
         "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
         "tool_calls": row["tool_calls"],
         "tokens_used": row["tokens_used"],
-        "progress": json.loads(row["progress"])
-        if isinstance(row["progress"], str)
-        else (row["progress"] or {}),
+        "progress": json.loads(row["progress"]) if isinstance(row["progress"], str) else (row["progress"] or {}),
         "created_at": row["created_at"].isoformat(),
         "has_transcript": bool(row.get("has_transcript", False)),
     }

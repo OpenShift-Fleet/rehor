@@ -64,35 +64,25 @@ class FakeToolResultBlock:
 class TestExtractTaskId:
     def test_extracts_from_string_content(self):
         ctx = CycleContext()
-        block = FakeToolResultBlock(
-            content=json.dumps(
-                {"id": 42, "jira_key": "RHCLOUD-123", "status": "in_progress"}
-            )
-        )
+        block = FakeToolResultBlock(content=json.dumps({"id": 42, "jira_key": "RHCLOUD-123", "status": "in_progress"}))
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id == 42
 
     def test_extracts_from_list_content(self):
         ctx = CycleContext()
-        block = FakeToolResultBlock(
-            content=[{"text": json.dumps({"id": 99, "jira_key": "OME-50"})}]
-        )
+        block = FakeToolResultBlock(content=[{"text": json.dumps({"id": 99, "jira_key": "OME-50"})}])
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id == 99
 
     def test_ignores_non_task_result(self):
         ctx = CycleContext()
-        block = FakeToolResultBlock(
-            content=json.dumps({"active": 3, "max": 10, "has_capacity": True})
-        )
+        block = FakeToolResultBlock(content=json.dumps({"active": 3, "max": 10, "has_capacity": True}))
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id is None
 
     def test_ignores_result_without_jira_key(self):
         ctx = CycleContext()
-        block = FakeToolResultBlock(
-            content=json.dumps({"id": 42, "name": "not a task"})
-        )
+        block = FakeToolResultBlock(content=json.dumps({"id": 42, "name": "not a task"}))
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id is None
 
@@ -116,17 +106,13 @@ class TestExtractTaskId:
 
     def test_overwrites_with_latest_task(self):
         ctx = CycleContext(task_id=10)
-        block = FakeToolResultBlock(
-            content=json.dumps({"id": 42, "jira_key": "RHCLOUD-999"})
-        )
+        block = FakeToolResultBlock(content=json.dumps({"id": 42, "jira_key": "RHCLOUD-999"}))
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id == 42
 
     def test_ignores_string_id(self):
         ctx = CycleContext()
-        block = FakeToolResultBlock(
-            content=json.dumps({"id": "not-int", "jira_key": "RHCLOUD-1"})
-        )
+        block = FakeToolResultBlock(content=json.dumps({"id": "not-int", "jira_key": "RHCLOUD-1"}))
         _extract_task_id_from_result(block, ctx)
         assert ctx.task_id is None
 
@@ -267,9 +253,7 @@ class TestRecordTranscript:
             )
 
         mock_post.assert_called_once()
-        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get(
-            "json"
-        )
+        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert "transcript_b64" not in body
         assert body["cycle_type"] == "idle"
 
@@ -304,9 +288,7 @@ class TestRecordTranscript:
         ):
             record_transcript(label="test", result=result, ctx=ctx, cwd="/test")
 
-        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get(
-            "json"
-        )
+        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert body["task_id"] is None
         assert body["cycle_type"] == "idle"
 
@@ -320,7 +302,5 @@ class TestRecordTranscript:
         ):
             record_transcript(label="test", result=result, ctx=ctx, cwd="/test")
 
-        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get(
-            "json"
-        )
+        body = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert body["cycle_type"] == "error"

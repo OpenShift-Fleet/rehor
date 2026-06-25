@@ -20,9 +20,7 @@ def _row_to_memory(row) -> dict:
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
         created_at=row["created_at"],
-        metadata=json.loads(row["metadata"])
-        if isinstance(row["metadata"], str)
-        else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
     )
     return memory.model_dump(mode="json")
 
@@ -38,9 +36,7 @@ def _row_to_search_result(row) -> dict:
         content=row["content"],
         tags=list(row["tags"]) if row["tags"] else [],
         created_at=row["created_at"],
-        metadata=json.loads(row["metadata"])
-        if isinstance(row["metadata"], str)
-        else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
         similarity=1 - row["distance"],
     )
     return result.model_dump(mode="json")

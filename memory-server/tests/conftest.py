@@ -18,9 +18,7 @@ SCHEMA_PATH = Path(__file__).parent.parent / "bot_memory_server" / "schema.sql"
 @pytest_asyncio.fixture
 async def db():
     conn = await asyncpg.connect(**DB_CONFIG)
-    tables = await conn.fetch(
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-    )
+    tables = await conn.fetch("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     for t in tables:
         await conn.execute(f"DROP TABLE IF EXISTS {t['tablename']} CASCADE")
     await conn.execute("DROP EXTENSION IF EXISTS vector CASCADE")

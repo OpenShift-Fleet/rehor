@@ -17,13 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from paths import SLEEP_FILE
 
-MEMORY_URL = (
-    os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
-)
+MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 INSTANCE_ID = os.environ.get("BOT_INSTANCE_ID", "")
-PROJECT_REPOS = (
-    Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
-)
+PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
 
 
 def http_get(url, headers=None, timeout=10):
@@ -43,9 +39,7 @@ def _instance_param():
 
 
 def get_tasks():
-    data = http_get(
-        f"{MEMORY_URL}/api/tasks?exclude_status=archived&limit=50{_instance_param()}"
-    )
+    data = http_get(f"{MEMORY_URL}/api/tasks?exclude_status=archived&limit=50{_instance_param()}")
     return data.get("items", []) if data else []
 
 
@@ -54,13 +48,7 @@ def get_capacity():
         f"{MEMORY_URL}/api/tasks?exclude_status=archived&exclude_status=done&exclude_status=paused&limit=50{_instance_param()}"
     )
     if data and "items" in data:
-        n = len(
-            [
-                t
-                for t in data["items"]
-                if t.get("status") in ("in_progress", "pr_open", "pr_changes")
-            ]
-        )
+        n = len([t for t in data["items"] if t.get("status") in ("in_progress", "pr_open", "pr_changes")])
         return n, 10
     return 0, 10
 
@@ -205,11 +193,7 @@ def fmt_comments(comments, label, since=None):
         return f"  {label}: (none)"
     if since:
         since_prefix = since[:16]
-        comments = [
-            c
-            for c in comments
-            if (c.get("t", c.get("created", ""))[:16]) > since_prefix
-        ]
+        comments = [c for c in comments if (c.get("t", c.get("created", ""))[:16]) > since_prefix]
     if not comments:
         return f"  {label}: (none since last_addressed)"
     comments = list(reversed(comments))
@@ -217,9 +201,7 @@ def fmt_comments(comments, label, since=None):
     for c in comments:
         author = c.get(
             "a",
-            c.get("author", {}).get("displayName", "?")
-            if isinstance(c.get("author"), dict)
-            else c.get("author", "?"),
+            c.get("author", {}).get("displayName", "?") if isinstance(c.get("author"), dict) else c.get("author", "?"),
         )
         t = c.get("t", c.get("created", ""))[:16]
         body = c.get("b", c.get("body", ""))
@@ -340,9 +322,7 @@ def enrich(task):
     jira = jira_issue(task.get("jira_key", ""))
     jira_comments = []
     if jira:
-        jira_comments = (
-            jira.get("fields", {}).get("comment", {}).get("comments") or []
-        )[-10:]
+        jira_comments = (jira.get("fields", {}).get("comment", {}).get("comments") or [])[-10:]
 
     return {
         "task": task,
@@ -370,9 +350,7 @@ def fmt_task(e):
 
     for p in e["prs"]:
         issue_str = ",".join(p["issues"]) if p["issues"] else "clean"
-        lines.append(
-            f"  PR {p['repo']}#{p['num']} ({p['host']}) state={p['state']} [{issue_str}]"
-        )
+        lines.append(f"  PR {p['repo']}#{p['num']} ({p['host']}) state={p['state']} [{issue_str}]")
 
     last_addr = t.get("last_addressed")
     if e["pr_comments"]:
@@ -456,23 +434,17 @@ def main():
     tasks = get_tasks()
     active_n, max_n = get_capacity()
 
-    active = [
-        t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")
-    ]
+    active = [t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")]
     paused = [t for t in tasks if t.get("status") == "paused"]
     done = [t for t in tasks if t.get("status") == "done"]
 
-    print(
-        f"TRIAGE | capacity: {active_n}/{max_n} | active: {len(active)} | paused: {len(paused)} | done: {len(done)}"
-    )
+    print(f"TRIAGE | capacity: {active_n}/{max_n} | active: {len(active)} | paused: {len(paused)} | done: {len(done)}")
     print()
 
     if not active:
         print("NO ACTIVE TASKS -> Priority 2 (new Jira work)")
         if done:
-            print(
-                f"done pending archival: {','.join(t.get('jira_key', '?') for t in done)}"
-            )
+            print(f"done pending archival: {','.join(t.get('jira_key', '?') for t in done)}")
         if paused:
             print(f"paused: {','.join(t.get('jira_key', '?') for t in paused)}")
         return
@@ -509,11 +481,7 @@ def main():
             for i in issues
         ):
             feedback.append(e)
-        elif (
-            t.get("status") == "in_progress"
-            and not t.get("pr_number")
-            and not meta.get("prs")
-        ):
+        elif t.get("status") == "in_progress" and not t.get("pr_number") and not meta.get("prs"):
             interrupted.append(e)
         elif has_new_pr_feedback(e):
             feedback.append(e)
@@ -529,9 +497,7 @@ def main():
             print()
 
     if closed:
-        print(
-            f"== CLOSED ({len(closed)}) — PR closed without merge, investigate + archive or reopen =="
-        )
+        print(f"== CLOSED ({len(closed)}) — PR closed without merge, investigate + archive or reopen ==")
         for e in closed:
             print(fmt_task(e))
             print()
@@ -564,35 +530,20 @@ def main():
         print(f"== CLEAN ({len(clean)}) — no action ==")
         for e in clean:
             t = e["task"]
-            print(
-                f"  {t.get('jira_key', '?')} [{t.get('status', '?')}] {t.get('repo', '?')}"
-            )
+            print(f"  {t.get('jira_key', '?')} [{t.get('status', '?')}] {t.get('repo', '?')}")
         print()
 
     if paused:
-        print(
-            f"PAUSED: {' | '.join(t.get('jira_key', '?') + ':' + str(t.get('paused_reason', '')) for t in paused)}"
-        )
+        print(f"PAUSED: {' | '.join(t.get('jira_key', '?') + ':' + str(t.get('paused_reason', '')) for t in paused)}")
     if done:
         print(f"DONE (archive?): {','.join(t.get('jira_key', '?') for t in done)}")
 
-    total = (
-        len(merged)
-        + len(closed)
-        + len(ci_fail)
-        + len(conflict)
-        + len(feedback)
-        + len(interrupted)
-    )
+    total = len(merged) + len(closed) + len(ci_fail) + len(conflict) + len(feedback) + len(interrupted)
     if total == 0:
         print("-> all clean -> Priority 2")
         if active_n >= max_n:
             SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SLEEP_FILE.write_text(
-                json.dumps(
-                    {"recommended_sleep": 3600, "reason": "at_capacity_all_clean"}
-                )
-            )
+            SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "at_capacity_all_clean"}))
     else:
         print(f"-> {total} task(s) need work. Top bucket first. ONE/cycle.")
 

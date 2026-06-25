@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-
 from scripts.post_pr_operations import (
     OperationResult,
     OperationStatus,

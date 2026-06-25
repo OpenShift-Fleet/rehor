@@ -37,9 +37,7 @@ def _row_to_task(row) -> dict:
         last_addressed=row["last_addressed"],
         paused_reason=row["paused_reason"],
         instance_id=row.get("instance_id"),
-        metadata=json.loads(row["metadata"])
-        if isinstance(row["metadata"], str)
-        else (row["metadata"] or {}),
+        metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
     )
     return task.model_dump(mode="json")
 
@@ -130,19 +128,14 @@ def register_task_tools(mcp: FastMCP):
             )
         if count >= MAX_ACTIVE:
             raise ValueError(
-                f"Cannot add task: {count} active tasks (max {MAX_ACTIVE}). "
-                "Complete or pause existing tasks first."
+                f"Cannot add task: {count} active tasks (max {MAX_ACTIVE}). Complete or pause existing tasks first."
             )
 
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
         meta_dict = metadata or {}
         artifacts = build_artifacts(meta_dict)
-        source_url = (
-            f"{JIRA_BASE_URL}/{external_key}"
-            if JIRA_BASE_URL and source_type == "jira"
-            else None
-        )
+        source_url = f"{JIRA_BASE_URL}/{external_key}" if JIRA_BASE_URL and source_type == "jira" else None
         row = await pool.fetchrow(
             """
             INSERT INTO tasks (external_key, source_type, source_url, artifacts,
@@ -366,9 +359,7 @@ def register_task_tools(mcp: FastMCP):
             "external_key": row["external_key"],
             "repo": row["repo"],
             "instance_id": row.get("instance_id") or instance_id,
-            "cycle_start": row["cycle_start"].isoformat()
-            if row["cycle_start"]
-            else None,
+            "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
             "updated_at": row["updated_at"].isoformat(),
         }
         await bus.publish(Event("bot_status", result))

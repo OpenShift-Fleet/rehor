@@ -9,11 +9,7 @@ CACHE_TTL = timedelta(hours=24)
 
 # Automated bot accounts — always treated as trusted, skip org membership check.
 # Set via TRUSTED_BOT_ACCOUNTS env var (comma-separated). Empty = no trusted bots.
-BOT_ACCOUNTS = frozenset(
-    b.strip().lower()
-    for b in os.environ.get("TRUSTED_BOT_ACCOUNTS", "").split(",")
-    if b.strip()
-)
+BOT_ACCOUNTS = frozenset(b.strip().lower() for b in os.environ.get("TRUSTED_BOT_ACCOUNTS", "").split(",") if b.strip())
 
 
 def register_org_member_tools(mcp: FastMCP):
