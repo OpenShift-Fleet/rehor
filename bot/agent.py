@@ -164,7 +164,8 @@ async def run_cycle(
     )
 
     instance_line = (
-        f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update).'
+        f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}"'
+        f" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update)."
         if instance_id
         else ""
     )
@@ -245,7 +246,7 @@ async def run_cycle(
         # Extract a short summary from the result text
         if not ctx.summary and result_text:
             # Take the last meaningful line (usually the conclusion)
-            lines = [l.strip() for l in result_text.strip().splitlines() if l.strip()]
+            lines = [line.strip() for line in result_text.strip().splitlines() if line.strip()]
             if lines:
                 ctx.summary = lines[-1][:200]
 

@@ -1,5 +1,7 @@
 """Configuration loading for the dev bot."""
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -19,6 +21,99 @@ class Config:
     idle_interval: int
     cycle_timeout: int
     board_key: str
+
+
+@dataclass
+class InstanceConfig:
+    """Per-instance preset selection from instance.yaml or env var fallback."""
+
+    workflow: str = "jira-sprint"
+    source: str = "jira"
+    envs: list[str] | None = None  # None = all available, [] = none
+    claude_md_strategy: str = "ignore"  # replace / append / ignore
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> InstanceConfig:
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        claude_md = data.get("claude_md")
+        strategy = claude_md.get("strategy", "ignore") if isinstance(claude_md, dict) else "ignore"
+        return cls(
+            workflow=data.get("workflow", "jira-sprint"),
+            source=data.get("source", "jira"),
+            envs=data.get("envs"),
+            claude_md_strategy=strategy,
+        )
+
+    @classmethod
+    def from_env(cls) -> InstanceConfig:
+        workflow = os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
+        envs_str = os.environ.get("BOT_ENV_PRESETS")
+        envs: list[str] | None = None
+        if envs_str is not None:
+            envs = [e.strip() for e in envs_str.split(",") if e.strip()]
+        return cls(workflow=workflow, envs=envs)
+
+
+def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
+    """Load instance.yaml from remote config, or fall back to env vars/defaults."""
+    logger = logging.getLogger(__name__)
+    if remote_agent_dir:
+        yaml_path = remote_agent_dir / "instance.yaml"
+        if yaml_path.is_file():
+            ic = InstanceConfig.from_yaml(yaml_path)
+            logger.info(
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s",
+                ic.workflow,
+                ic.source,
+                ic.envs,
+            )
+            return ic
+
+    ic = InstanceConfig.from_env()
+    logger.info("No instance.yaml — env/defaults: workflow=%s, envs=%s", ic.workflow, ic.envs)
+    return ic
+
+
+def resolve_active_envs(script_dir: Path, instance_config: InstanceConfig) -> list[str]:
+    """Resolve which env presets are active. None = all available."""
+    if instance_config.envs is not None:
+        return list(instance_config.envs)
+    envs_dir = script_dir / "presets" / "envs"
+    if not envs_dir.is_dir():
+        return []
+    return sorted(d.name for d in envs_dir.iterdir() if d.is_dir() and d.name != ".gitkeep")
+
+
+def validate_instance_config(script_dir: Path, instance_config: InstanceConfig) -> None:
+    """Validate instance config references exist. FATAL on missing workflow, WARNING on missing env."""
+    logger = logging.getLogger(__name__)
+    presets = script_dir / "presets"
+
+    wf_dir = presets / "workflows" / instance_config.workflow
+    if not wf_dir.is_dir():
+        logger.error("FATAL: Workflow preset '%s' not found at %s", instance_config.workflow, wf_dir)
+        sys.exit(1)
+
+    if instance_config.envs is not None:
+        for env in instance_config.envs:
+            env_dir = presets / "envs" / env
+            if not env_dir.is_dir():
+                logger.warning("Env preset '%s' not found — skipping", env)
+
+    active = resolve_active_envs(script_dir, instance_config)
+    for env_name in active:
+        manifest_path = presets / "envs" / env_name / "manifest.yaml"
+        if not manifest_path.is_file():
+            continue
+        with open(manifest_path) as f:
+            manifest = yaml.safe_load(f) or {}
+        requires = manifest.get("requires", {})
+        for var in requires.get("env_vars", []):
+            if not os.environ.get(var):
+                logger.warning("Env preset '%s' requires '%s' (not set)", env_name, var)
+
+    logger.info("Instance config validated: workflow=%s, envs=%s", instance_config.workflow, active)
 
 
 def load_config(script_dir: Path) -> Config:

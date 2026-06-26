@@ -19,7 +19,17 @@ from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
 from .agent import run_cycle
-from .config import ALLOWED_TOOLS, Config, load_config, load_mcp_servers, sanitize_env, validate_manifest
+from .config import (
+    ALLOWED_TOOLS,
+    Config,
+    InstanceConfig,
+    load_config,
+    load_instance_config,
+    load_mcp_servers,
+    sanitize_env,
+    validate_instance_config,
+    validate_manifest,
+)
 from .costs import record_cost
 from .merge import apply_merged_config
 from .transcripts import record_transcript
@@ -229,23 +239,46 @@ def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
     return sleep_seconds
 
 
-def assemble_claude_md(script_dir: Path) -> None:
-    """Concatenate core + workflow preset CLAUDE.md into project root."""
+def assemble_claude_md(
+    script_dir: Path,
+    instance_config: InstanceConfig | None = None,
+    remote_agent_dir: Path | None = None,
+) -> None:
+    """Concatenate core + workflow preset CLAUDE.md into project root.
+
+    Supports instance CLAUDE.md via claude_md_strategy:
+      replace — core + instance CLAUDE.md (skip workflow)
+      append  — core + workflow + instance CLAUDE.md
+      ignore  — core + workflow only (default)
+    """
     logger = logging.getLogger(__name__)
     presets = script_dir / "presets"
     core = presets / "core" / "CLAUDE.md"
 
-    workflow = os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
-    wf_path = presets / "workflows" / workflow / "CLAUDE.md"
+    workflow = instance_config.workflow if instance_config else os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
+    strategy = instance_config.claude_md_strategy if instance_config else "ignore"
 
     if not core.is_file():
         logger.warning("Core CLAUDE.md not found at %s — skipping assembly", core)
         return
+
     parts = [core.read_text()]
-    if wf_path.is_file():
-        parts.append(wf_path.read_text())
+
+    instance_md = remote_agent_dir / "CLAUDE.md" if remote_agent_dir else None
+    has_instance_md = instance_md is not None and instance_md.is_file()
+
+    if strategy == "replace" and has_instance_md:
+        parts.append(instance_md.read_text())
+        logger.info("CLAUDE.md strategy=replace — using instance CLAUDE.md instead of workflow")
     else:
-        logger.warning("Workflow CLAUDE.md not found at %s — using core only", wf_path)
+        wf_path = presets / "workflows" / workflow / "CLAUDE.md"
+        if wf_path.is_file():
+            parts.append(wf_path.read_text())
+        else:
+            logger.warning("Workflow CLAUDE.md not found at %s — using core only", wf_path)
+        if strategy == "append" and has_instance_md:
+            parts.append(instance_md.read_text())
+            logger.info("CLAUDE.md strategy=append — appended instance CLAUDE.md")
 
     output = script_dir / "CLAUDE.md"
     output.write_text("".join(parts))
@@ -336,8 +369,15 @@ def main() -> None:
     config = load_config(SCRIPT_DIR)
     mcp_servers = load_mcp_servers(SCRIPT_DIR)
 
-    workflow = os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
-    validate_manifest(SCRIPT_DIR, workflow, mcp_servers)
+    # Initial config sync + instance config load (before validation so
+    # instance.yaml can override the workflow preset)
+    initial_agent_dir = sync_config_repo()
+    if initial_agent_dir:
+        apply_merged_config(SCRIPT_DIR, initial_agent_dir)
+    instance_config = load_instance_config(initial_agent_dir)
+
+    validate_manifest(SCRIPT_DIR, instance_config.workflow, mcp_servers)
+    validate_instance_config(SCRIPT_DIR, instance_config)
 
     # Remove secrets from env so Bash subprocesses can't leak them.
     # MCP servers already have resolved values. gh/glab use config files.
@@ -375,7 +415,8 @@ def main() -> None:
             if remote_agent_dir:
                 apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
-            assemble_claude_md(SCRIPT_DIR)
+            instance_config = load_instance_config(remote_agent_dir)
+            assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir)
 
             logger.info("Running agent cycle...")
 
