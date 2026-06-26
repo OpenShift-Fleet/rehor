@@ -54,6 +54,7 @@ Create your instance config. This entire directory gets COPYed into the image at
 ```
 instance/my-config/
 └── agent/
+    ├── instance.yaml         # preset selection (workflow, env presets, CLAUDE.md strategy)
     ├── project-repos.json    # repos this instance works on
     ├── mcp.json              # MCP server overrides (usually just Jira)
     └── personas/             # domain-specific guidelines
@@ -61,6 +62,36 @@ instance/my-config/
         │   └── prompt.md
         └── ...
 ```
+
+#### `instance.yaml`
+
+Declares which workflow and env presets your instance uses. **Required for all new instances.**
+
+```yaml
+workflow: jira-sprint
+source: jira
+envs:
+  - browser
+  - slack
+  - container-scan
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `workflow` | string | `jira-sprint` | Which workflow preset to use. Must exist in `presets/workflows/`. |
+| `source` | string | `jira` | Ticket source. Currently: `jira`. Future: `github`, `gitlab`. |
+| `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
+| `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
+
+Available env presets:
+- `browser` — Chromium + chrome-devtools MCP for visual verification (requires `PLAYWRIGHT_BROWSERS_PATH`, set automatically)
+- `container-scan` — Grype + Buildah for CVE scanning
+- `slack` — Slack notifications via webhook (requires `SLACK_WEBHOOK_URL`)
+- `dev-proxy` — Caddy reverse proxy for stage UI verification (requires `PROXY_HOST`)
+
+List only the presets your instance actually needs. Omitting unused ones saves container startup time and avoids unnecessary env var requirements.
+
+For the full preset system reference, see [preset-migration-guide.md](migrations/preset-migration-guide.md).
 
 #### `project-repos.json`
 
