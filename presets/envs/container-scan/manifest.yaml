@@ -1,0 +1,10 @@
+name: container-scan
+type: env
+description: Grype vulnerability scanning and Buildah container image building
+
+install: install.sh
+
+provides:
+  tools:
+    - grype
+    - buildah

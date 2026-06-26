@@ -1,0 +1,20 @@
+name: browser
+type: env
+description: Chrome DevTools for visual verification and screenshot capture
+
+install: install.sh
+entrypoint_scripts:
+  - entrypoint.d/10-chromium.sh
+
+provides:
+  mcp_servers:
+    chrome-devtools:
+      type: stdio
+      command: npx
+      args: ["-y", "chrome-devtools-mcp"]
+  skills:
+    - gh-release-upload
+
+requires:
+  env_vars:
+    - PLAYWRIGHT_BROWSERS_PATH
