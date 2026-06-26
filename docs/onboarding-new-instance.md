@@ -318,7 +318,7 @@ Konflux auto-generates the `.tekton/` pipeline files when you onboard. The impor
 
 ## Step 4: App-Interface Configuration
 
-Follow the [app-interface onboarding guide](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/docs/app-sre/onboarding.md) for full details. Below is what's specific to adding a bot instance.
+The namespace, app, and shared infrastructure (proxy, memory server, secrets) are already deployed by the primary instance. You do **not** need to do the full app-interface onboarding — just add your instance as a new deployment to the existing namespace.
 
 ### Add to `deploy.yml`
 
