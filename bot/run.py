@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
 from .agent import run_cycle
-from .config import ALLOWED_TOOLS, Config, load_config, load_mcp_servers, sanitize_env
+from .config import ALLOWED_TOOLS, Config, load_config, load_mcp_servers, sanitize_env, validate_manifest
 from .costs import record_cost
 from .merge import apply_merged_config
 from .transcripts import record_transcript
@@ -335,6 +335,9 @@ def main() -> None:
 
     config = load_config(SCRIPT_DIR)
     mcp_servers = load_mcp_servers(SCRIPT_DIR)
+
+    workflow = os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
+    validate_manifest(SCRIPT_DIR, workflow, mcp_servers)
 
     # Remove secrets from env so Bash subprocesses can't leak them.
     # MCP servers already have resolved values. gh/glab use config files.

@@ -8,6 +8,7 @@ dependencies = [
     "filelock",
     "httpx",
     "python-dotenv",
+    "pyyaml>=6.0",
     "zstandard>=0.23",
 ]
 
@@ -33,6 +34,7 @@ dev-bot = "bot.run:main"
 
 [tool.pytest.ini_options]
 testpaths = [
+    "bot/tests",
     ".claude/skills/auto-fork/tests",
     ".claude/skills/claim-ticket/tests",
     ".claude/skills/post-pr/tests",

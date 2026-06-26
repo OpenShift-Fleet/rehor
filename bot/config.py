@@ -1,10 +1,14 @@
 """Configuration loading for the dev bot."""
 
 import json
+import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+import yaml
 
 
 @dataclass
@@ -82,6 +86,68 @@ def _resolve_env_vars(obj):
     if isinstance(obj, list):
         return [_resolve_env_vars(v) for v in obj]
     return obj
+
+
+def load_manifest(script_dir: Path, workflow: str) -> dict | None:
+    """Load manifest.yaml for a workflow preset. Returns None if not found."""
+    path = script_dir / "presets" / "workflows" / workflow / "manifest.yaml"
+    if not path.is_file():
+        return None
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+def validate_manifest(
+    script_dir: Path,
+    workflow: str,
+    mcp_servers: dict,
+) -> None:
+    """Validate workflow manifest requirements at startup.
+
+    FATAL (sys.exit) on missing required MCP servers or env vars.
+    WARNING on missing optional env vars or absent manifest.
+    """
+    logger = logging.getLogger(__name__)
+    manifest = load_manifest(script_dir, workflow)
+    if manifest is None:
+        logger.warning("No manifest.yaml for workflow '%s' — skipping validation", workflow)
+        return
+
+    requires = manifest.get("requires", {})
+    errors: list[str] = []
+
+    # Collect all available MCP server names: bot/mcp.json + merged + persona
+    # servers are in `mcp_servers`; root .mcp.json (SDK-loaded) checked separately.
+    available_servers = set(mcp_servers.keys())
+    root_mcp = script_dir / ".mcp.json"
+    if root_mcp.is_file():
+        with open(root_mcp) as f:
+            root_data = json.load(f)
+        available_servers.update(root_data.get("mcpServers", {}).keys())
+
+    for server in requires.get("mcp_servers", []):
+        if server not in available_servers:
+            errors.append(f"Required MCP server '{server}' not configured")
+
+    for var in requires.get("env_vars", []):
+        if not os.environ.get(var):
+            errors.append(f"Required env var '{var}' not set")
+
+    if errors:
+        for err in errors:
+            logger.error("FATAL: %s", err)
+        logger.error(
+            "Workflow '%s' manifest validation failed — %d error(s). Check deployment config.",
+            workflow,
+            len(errors),
+        )
+        sys.exit(1)
+
+    for var in requires.get("optional_env_vars", []):
+        if not os.environ.get(var):
+            logger.warning("Optional env var '%s' not set", var)
+
+    logger.info("Manifest validation passed for workflow '%s'", workflow)
 
 
 # Env vars that contain secrets and must be removed before starting
