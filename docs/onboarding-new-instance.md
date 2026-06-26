@@ -351,7 +351,7 @@ resourceTemplates:
       BOT_CONFIG_REPO: https://github.com/YourOrg/my-bot-instance.git
       BOT_CONFIG_PATH: instance/my-config
       SLACK_WEBHOOK_URL: 'https://hooks.slack.com/...'
-      # --- Per-instance proxy (optional — only if custom Jira creds needed) ---
+      # --- Per-instance proxy (optional — only if custom Jira, and other creds needed) ---
       # PROXY_IMAGE: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
       # PROXY_IMAGE_TAG: <proxy-image-sha>
       # PROXY_REPLICAS: '1'
@@ -398,28 +398,24 @@ Your instance deploys to the **same namespace** as the primary instance — that
 
 ### Vault Secrets
 
-The bot uses the **shared** `devbot-secrets` Vault secret (deployed by the primary instance). All bot instances share the same GitHub/GitLab/GPG/GCP credentials.
+Every instance needs its own Vault secret with Jira credentials — a custom Jira identity means a custom proxy container. The memory server can still be shared.
 
-**Instance-specific Jira credentials**: If your instance needs its own Jira identity (e.g. access to a project the shared account can't reach), add a second Vault secret to the namespace YAML:
+Add a Vault secret to the namespace YAML:
 
 ```yaml
 # In namespaces/stage.hcmais01ue1.yml
 openshiftResources:
 - provider: vault-secret
-  path: insights/secrets/insights-dev/platform-experience-dev/ai-sdlc-credentials
-  name: devbot-secrets           # shared — already exists
-  version: 14
-  annotations:
-    qontract.recycle: "true"
-- provider: vault-secret
   path: your/vault/path/jira-credentials
-  name: myteam-jira-secrets      # instance-specific
+  name: myteam-jira-secrets
   version: 1
   annotations:
     qontract.recycle: "true"
 ```
 
-The instance-specific secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters.
+The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters so the instance gets its own proxy pod with these credentials.
+
+The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
 
 ### Reference: Existing app-interface config
 
