@@ -152,6 +152,7 @@ ENV BUILDAH_ISOLATION=chroot
 COPY dev-bot/config.json dev-bot/CLAUDE.md dev-bot/.mcp.json dev-bot/entrypoint.sh ./
 COPY dev-bot/.claude/ .claude/
 COPY dev-bot/presets/ presets/
+RUN bash -c 'shopt -s nullglob; for script in presets/envs/*/install.sh; do bash "$script"; done'
 
 ENV HOME=/home/botuser
 USER botuser
