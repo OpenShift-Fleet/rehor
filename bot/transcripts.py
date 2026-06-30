@@ -130,3 +130,31 @@ def record_transcript(
         logger.info("Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code)
     except Exception:
         logger.warning("Failed to push cycle run to %s", CYCLE_RUNS_API, exc_info=True)
+
+
+def post_orphan_cycle(
+    instance_id: str,
+    cycle_type: str,
+    content: str,
+    task_id: int | None = None,
+) -> None:
+    """Post a cycle run to the dashboard without a Claude session (preflight skip/error)."""
+    now = datetime.now(timezone.utc)
+    body: dict = {
+        "task_id": task_id,
+        "cycle_type": cycle_type,
+        "instance_id": instance_id,
+        "started_at": now.isoformat(),
+        "finished_at": now.isoformat(),
+        "tool_calls": 0,
+        "tokens_used": 0,
+        "progress": {
+            "summary": content[:2000] if content else None,
+            "work_type": cycle_type,
+        },
+    }
+    try:
+        resp = httpx.post(CYCLE_RUNS_API, json=body, timeout=10.0)
+        logger.info("Orphan cycle posted: id=%s type=%s", resp.json().get("id"), cycle_type)
+    except Exception:
+        logger.warning("Failed to post orphan cycle to %s", CYCLE_RUNS_API, exc_info=True)

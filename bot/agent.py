@@ -147,6 +147,7 @@ async def run_cycle(
     allowed_tools: list[str],
     cwd: str,
     instance_id: str | None = None,
+    preflight_prompt: str | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     turn_hook = _make_turn_budget_hook(config.max_turns)
@@ -169,15 +170,32 @@ async def run_cycle(
         if instance_id
         else ""
     )
-    prompt = (
-        f"Your primary label is: {label}.{instance_line} "
-        "Follow the instructions in CLAUDE.md. "
-        "Start by invoking the /triage skill to pre-gather task and PR data. "
+
+    caveman_line = (
         "IMPORTANT: Use ULTRA caveman output for all internal text — "
         "drop articles, filler, hedging, conjunctions. Abbreviate: DB/auth/config/req/res/fn/impl/env/dep/pkg. "
         "Arrows for causality (X → Y). One word when one word enough. "
         "Normal language ONLY for Jira comments, PR descriptions, commit messages."
     )
+
+    if preflight_prompt:
+        prompt = (
+            f"Your primary label is: {label}.{instance_line} "
+            "Follow the instructions in CLAUDE.md. "
+            f"{caveman_line}\n\n"
+            "## Pre-flight Data\n\n"
+            "The following data was gathered by pre-flight scripts. "
+            "Do NOT re-fetch task statuses, PR statuses, or Jira comments already shown below. "
+            "Do NOT invoke /triage — triage data is already provided.\n\n"
+            f"{preflight_prompt}"
+        )
+    else:
+        prompt = (
+            f"Your primary label is: {label}.{instance_line} "
+            "Follow the instructions in CLAUDE.md. "
+            "Start by invoking the /triage skill to pre-gather task and PR data. "
+            f"{caveman_line}"
+        )
 
     result = None
     ctx = CycleContext()

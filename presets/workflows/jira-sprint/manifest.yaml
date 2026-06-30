@@ -2,6 +2,12 @@ name: jira-sprint
 type: workflow
 description: Jira sprint workflow — triage, implementation, PR maintenance
 
+preflight:
+  - 01-gh-pr-status.py
+  - 02-gl-mr-status.py
+  - 03-jira-triage.py
+  - 04-find-work.py
+
 shared_skills:
   - push-and-pr
   - post-pr

@@ -32,7 +32,8 @@ from .config import (
 )
 from .costs import record_cost
 from .merge import apply_merged_config
-from .transcripts import record_transcript
+from .preflight import run_preflight
+from .transcripts import post_orphan_cycle, record_transcript
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
@@ -192,6 +193,12 @@ def _check_wake_signal(instance_id: str) -> bool:
             return data.get("wake", False)
     except (URLError, OSError, json.JSONDecodeError, Exception):
         return False
+
+
+def _write_sleep_signal(seconds: int, reason: str) -> None:
+    """Write a sleep signal file for the runner to read after the cycle."""
+    SLEEP_SIGNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SLEEP_SIGNAL_FILE.write_text(json.dumps({"recommended_sleep": seconds, "reason": reason}))
 
 
 def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
@@ -409,6 +416,8 @@ def main() -> None:
         config.idle_interval,
     )
 
+    consecutive_preflight_errors = 0
+
     try:
         while True:
             remote_agent_dir = sync_config_repo()
@@ -417,6 +426,35 @@ def main() -> None:
 
             instance_config = load_instance_config(remote_agent_dir)
             assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir)
+
+            # --- Pre-flight: gather data before starting AI session ---
+            preflight_result = run_preflight(SCRIPT_DIR, instance_config.workflow, remote_agent_dir, instance_id)
+
+            preflight_prompt = None
+            if preflight_result is not None:
+                if preflight_result.action == "error":
+                    consecutive_preflight_errors += 1
+                    logger.error("Preflight error (consecutive: %d)", consecutive_preflight_errors)
+                    post_orphan_cycle(instance_id or args.label, "error", preflight_result.transcript)
+                    error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
+                    _write_sleep_signal(error_sleep, "preflight_error")
+                    _read_sleep_signal(config, instance_id)
+                    cleanup_between_cycles(SCRIPT_DIR)
+                    continue
+
+                if preflight_result.action == "skip":
+                    consecutive_preflight_errors = 0
+                    logger.info("Preflight skip — no session needed")
+                    post_orphan_cycle(instance_id or args.label, "idle", preflight_result.transcript)
+                    _write_sleep_signal(300, "preflight_skip")
+                    _read_sleep_signal(config, instance_id)
+                    cleanup_between_cycles(SCRIPT_DIR)
+                    continue
+
+                # action == "start"
+                consecutive_preflight_errors = 0
+                preflight_prompt = preflight_result.prompt
+                logger.info("Preflight start — launching session with pre-fetched data")
 
             logger.info("Running agent cycle...")
 
@@ -430,6 +468,7 @@ def main() -> None:
                             allowed_tools=ALLOWED_TOOLS,
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
+                            preflight_prompt=preflight_prompt,
                         ),
                         timeout=config.cycle_timeout,
                     )
