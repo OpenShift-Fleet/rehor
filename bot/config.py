@@ -124,7 +124,7 @@ def load_config(script_dir: Path) -> Config:
         model=raw["claude"]["model"],
         max_turns=raw["claude"]["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
-        idle_interval=raw["polling"].get("idleIntervalSeconds", 3600),
+        idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
         cycle_timeout=raw["claude"].get("cycleTimeoutSeconds", 1800),
         board_key=raw["jira"]["boardKey"],
     )

@@ -196,7 +196,7 @@ def main():
     if not candidates:
         print("NO CANDIDATES FOUND")
         SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "no_eligible_work"}))
+        SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 300, "reason": "no_eligible_work"}))
         return
 
     print(f"NEW WORK CANDIDATES ({len(candidates)})")

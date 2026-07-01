@@ -11,8 +11,8 @@ ONE item per cycle. Priority order:
 - Error: `error`, "<what went wrong>"
 
 **Sleep signaling**: Skills write `data/cycle-sleep.json` to tell the Python runner how long to sleep. The agent does NOT need to manage this — it's automatic:
-- `/triage` writes `recommended_sleep: 3600` when at capacity + all tasks clean (nothing actionable)
-- `/new-work` writes `recommended_sleep: 3600` when no eligible candidates found
+- `/triage` writes `recommended_sleep: 300` when at capacity + all tasks clean (nothing actionable)
+- `/new-work` writes `recommended_sleep: 300` when no eligible candidates found
 - No signal file = standard 300s sleep (work was done)
 - The runner reads and deletes the file after each cycle
 

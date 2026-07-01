@@ -557,7 +557,7 @@ def main():
         print("-> all clean -> Priority 2")
         if active_n >= max_n:
             SLEEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 3600, "reason": "at_capacity_all_clean"}))
+            SLEEP_FILE.write_text(json.dumps({"recommended_sleep": 300, "reason": "at_capacity_all_clean"}))
     else:
         print(f"-> {total} task(s) need work. Top bucket first. ONE/cycle.")
 
