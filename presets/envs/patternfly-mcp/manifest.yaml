@@ -1,0 +1,15 @@
+name: patternfly-mcp
+type: env
+description: PatternFly component guidance MCP server
+
+install: install.sh
+
+requires:
+  presets:
+    - node
+
+provides:
+  mcp_servers:
+    hcc-patternfly-data-view:
+      type: stdio
+      command: hcc-patternfly-data-view

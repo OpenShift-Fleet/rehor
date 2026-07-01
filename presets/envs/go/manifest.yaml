@@ -1,0 +1,15 @@
+name: go
+type: env
+description: Go via goenv (version manager) + golangci-lint — switch versions with goenv install/global
+
+install: install.sh
+
+provides:
+  binaries:
+    - go
+    - goenv
+    - golangci-lint
+
+env_vars:
+  GOENV_ROOT: "/usr/local/goenv"
+  GOPATH: "/home/botuser/go"
