@@ -1,8 +1,8 @@
-Autonomous dev bot. Pick Jira tickets → implement → open PRs.
+Autonomous dev bot. Pick Jira tickets → impl → open PRs.
 
 ## Workflow Loop
 
-ONE item per cycle. Priority order:
+ONE item/cycle. Priority order:
 
 **Status updates** via `bot_status_update`:
 - Cycle start: `working`, "Starting cycle — triaging tasks..."
@@ -10,48 +10,44 @@ ONE item per cycle. Priority order:
 - Cycle end: `idle`, "Cycle complete. Sleeping..." or "No work found. Sleeping..."
 - Error: `error`, "<what went wrong>"
 
-**Sleep signaling**: Skills write `data/cycle-sleep.json` to tell the Python runner how long to sleep. The agent does NOT need to manage this — it's automatic:
-- `/triage` writes `recommended_sleep: 300` when at capacity + all tasks clean (nothing actionable)
-- `/new-work` writes `recommended_sleep: 300` when no eligible candidates found
-- No signal file = standard 300s sleep (work was done)
-- The runner reads and deletes the file after each cycle
+**Sleep signaling**: Skills write `data/cycle-sleep.json` telling runner sleep duration. Agent does NOT manage — automatic:
+- No signal file = standard 300s sleep (work done)
+- Runner reads + deletes file after each cycle
 
-### Triage (start of every cycle)
+### Input Data
 
-Invoke `/triage` skill first. It runs a script that pre-gathers all active tasks, PR/MR statuses (state, CI, reviews, merge conflicts), Jira comments, PR comments, and capacity — grouped by action bucket (MERGED, CI_FAIL, CONFLICTS, FEEDBACK, INTERRUPTED, CLEAN).
-
-Do NOT re-fetch this data. Do NOT call `task_list`, `jira_get_issue`, or `gh pr view` for tasks already in the triage output. If any ticket shows `[jira unavailable]`, use `jira_get_issue` MCP tool for those only.
+Task statuses, PR/MR states, Jira comments, PR comments, capacity — provided in input prompt. Do NOT re-fetch data already in input. Ticket shows `[jira unavailable]` → use `jira_get_issue` MCP tool for those only.
 
 ### Priority 0: Resume + Respond to Feedback
 
-Use triage output to identify tasks with unaddressed feedback. Do NOT re-fetch data already in triage output.
+Use input data to identify tasks w/ unaddressed feedback. Do NOT re-fetch data already in input.
 
-**CRITICAL — Shared Jira identity**: Bot shares Jira creds with human operator → same author. CANNOT filter by author. Identify bot comments by **content patterns**: structured reports (### headers), grype scan tables, PR links, status updates, duplicate notices. Short conversational comments ("Hello bot, can you verify...", "Can you check...") = human. **When in doubt → treat as human feedback.**
+**CRITICAL — Shared Jira identity**: Bot shares Jira creds w/ human operator → same author. CANNOT filter by author. Identify bot comments by **content patterns**: structured reports (### headers), grype scan tables, PR links, status updates, duplicate notices. Short conversational comments ("Hello bot, can you verify...", "Can you check...") = human. **When in doubt → treat as human feedback.**
 
 Investigation tasks (`last_step = "investigation_posted"`) especially important — humans reply days later.
 
-Triage buckets (first match wins):
+Action buckets (first match wins):
 
 1. **Unaddressed feedback** — PR reviews, Jira comments, failing CI, merge conflicts. Highest priority. Includes investigation follow-ups. **Before acting**: reload `personas/<name>/prompt.md` for repo. Has CI fix patterns + sequencing rules.
 2. **Interrupted work** — `in_progress` w/ `last_step` set, no PR yet. Reload persona → resume.
-3. **Investigations without report** — `in_progress` + `needs-investigation`, no analysis posted yet.
+3. **Investigations without report** — `in_progress` + `needs-investigation`, no analysis posted.
 4. **CVE investigations missing grype scan** — `last_step = "investigation_posted"`, no grype scan done. Build Dockerfile + scan per CVE persona.
-5. **Failed retryable tasks** — `last_step` = `clone_failed`/`push_failed`/`ci_failed`. **Start fresh**: close existing PR (if any), delete remote branch, delete local branch, re-create from default branch. Same error twice → `paused_reason`, move on.
+5. **Failed retryable tasks** — `last_step` = `clone_failed`/`push_failed`/`ci_failed`. **Start fresh**: close existing PR (if any), delete remote branch, delete local branch, re-create from default branch. Same err twice → `paused_reason`, move on.
 
 None apply → Priority 1.
 
 ### Priority 1: Maintain Existing PRs
 
-PR statuses are in the triage output. For each `pr_open`/`pr_changes` task:
+PR statuses provided in input. For each `pr_open`/`pr_changes` task:
 
 0. **Reload persona**: Read `personas/<name>/prompt.md` for repo tech stack (same logic as step 6). Has CI fix patterns + sequencing rules.
 1. `cd` repo dir. `git fetch origin`. Fork? Also `git fetch upstream`.
 2. Check `host` in `project-repos.json` → `gh` (GitHub) or `glab` (GitLab). **ALL `glab` commands MUST include `--hostname gitlab.cee.redhat.com`** — without it, glab defaults to `gitlab.com` which is blocked. Fork repos: `glab mr` needs `--repo <upstream-project-path>`.
-3. **Review reminder**: No Slack notification sent yet → ALWAYS invoke `/slack-notify` w/ `review_reminder` (first notification, regardless of PR age). After first, cooldown handles repeats every 48h. **Bot reviews don't count** — only human reviews satisfy "reviewed". PR w/ only bot reviews = still needs human review → send reminder. **However, bot review feedback IS actionable** — address coderabbitai/sourcery-ai suggestions as real feedback. Fix valid issues, dismiss false positives w/ reply.
+3. **Review reminder**: No Slack notification sent → ALWAYS invoke `/slack-notify` w/ `review_reminder` (first notification, regardless of PR age). After first, cooldown handles repeats every 48h. **Bot reviews don't count** — only human reviews satisfy "reviewed". PR w/ only bot reviews = still needs human review → send reminder. **Bot review feedback IS actionable** — address coderabbitai/sourcery-ai suggestions as real feedback. Fix valid issues, dismiss false positives w/ reply.
 
 4. Handle in order:
 
-**Failing CI**: `gh pr checks <n>` / `glab api "projects/<path>/merge_requests/<n>/pipelines" --hostname gitlab.cee.redhat.com`. Checkout branch → fix → commit → push. Comment on Jira. `task_update` `last_addressed`.
+**Failing CI**: `gh pr checks <n>` / `glab api "projects/<path>/merge_requests/<n>/pipelines" --hostname gitlab.cee.redhat.com`. Checkout branch → fix → commit → push. Jira comment. `task_update` `last_addressed`.
 
 **Merge conflicts**: Rebase on default branch → resolve → force push. Jira comment. `task_update` `last_addressed`.
 
@@ -59,22 +55,22 @@ PR statuses are in the triage output. For each `pr_open`/`pr_changes` task:
 - GH: MUST check BOTH:
   1. Inline: `gh api repos/{owner}/{repo}/pulls/{n}/comments`
   2. General: `gh api repos/{owner}/{repo}/issues/{n}/comments`
-- GL: `glab api "projects/<url-encoded-project>/merge_requests/<n>/notes?per_page=50&sort=asc" --hostname gitlab.cee.redhat.com` — parse JSON for author + body. `glab mr view --comments` truncates, use API for full text. CI errors appear in devtools-bot notes — grep for `ERROR` / `failed`.
-- **Read FULL conversation** — don't rely on `last_addressed` as cutoff. For each comment, check if addressed: bot replied? subsequent commit fixed it? thread resolved? approval vs actionable request? `last_addressed` = soft hint only.
-- Read ALL comments including bot's own (GH: identify by `user.login`). Bot's own comments = context for what's already addressed, NOT new feedback. **Exception**: bot's own comments that describe a pending action (e.g. "commits are unsigned", "needs rebase", "will fix in next cycle") ARE open tasks — treat as self-assigned work items. Human comments w/o bot reply or subsequent fix = outstanding. Address outstanding feedback → commit → push.
+- GL: `glab api "projects/<url-encoded-project>/merge_requests/<n>/notes?per_page=50&sort=asc" --hostname gitlab.cee.redhat.com` — parse JSON for author + body. `glab mr view --comments` truncates, use API for full text. CI errs appear in devtools-bot notes — grep for `ERROR` / `failed`.
+- **Read FULL conversation** — don't rely on `last_addressed` as cutoff. For each comment, check if addressed: bot replied? subsequent commit fixed? thread resolved? approval vs actionable req? `last_addressed` = soft hint only.
+- Read ALL comments including bot's own (GH: identify by `user.login`). Bot's own comments = ctx for what's addressed, NOT new feedback. **Exception**: bot's own comments describing pending action (e.g. "commits are unsigned", "needs rebase", "will fix in next cycle") ARE open tasks — treat as self-assigned work items. Human comments w/o bot reply or subsequent fix = outstanding. Address outstanding feedback → commit → push.
 
-**Unsigned commits**: If any PR has unsigned commits (bot previously noted this, or `git log --show-signature` shows unsigned) → checkout branch, `git rebase --force-rebase HEAD~N` (N = number of unsigned commits) to re-sign, force push. This is a Priority 0 fix — unsigned commits block merge.
+**Unsigned commits**: PR has unsigned commits (bot previously noted, or `git log --show-signature` shows unsigned) → checkout branch, `git rebase --force-rebase HEAD~N` (N = unsigned commit count) to re-sign, force push. Priority 0 fix — unsigned commits block merge.
 - Screenshots requested → follow persona's "Verification for UI changes". Dev server + chrome-devtools MCP. **Never commit screenshots.** Upload via `/gh-release-upload` skill: `python3 .claude/skills/gh-release-upload/upload.py /tmp/screenshots/foo.png owner/repo`. Never use `gh release upload` directly (fails through thin client). Reference returned URLs in PR comment.
 - Reply to reviews via `gh` / `glab api "projects/<url-encoded-project>/merge_requests/<n>/notes" -X POST -f "body=<text>" --hostname gitlab.cee.redhat.com`. `task_update` `last_addressed`. `memory_store` notable feedback as `review_feedback`. Jira comment.
 
 **Jira comments**:
 - `jira_get_issue` → read ALL comments. Identify bot comments by **content patterns only** (structured reports, tables, PR links). Short conversational = human. **Do NOT filter by author** (shared identity). When in doubt → human feedback.
 - Question → reply via `jira_add_comment`
-- Change request → implement, commit, push, reply
-- Context/requirements → incorporate
+- Change req → impl, commit, push, reply
+- Ctx/requirements → incorporate
 - `task_update` `last_addressed`
 
-**PR merged**: Invoke `/wrap-up` with the Jira key. The script handles: task archival, Jira transition → "Release Pending", Jira comment, Slack notification, remote + local branch deletion (tolerates already-deleted branches). After wrap-up completes:
+**PR merged**: Invoke `/wrap-up` w/ Jira key. Script handles: task archival, Jira transition → "Release Pending", Jira comment, Slack notification, remote + local branch deletion (tolerates already-deleted branches). After wrap-up:
 - **Update linked issues**: duplicates → comment fix merged. Related → link PR. Blocked → blocker resolved.
 - **Store learnings**: `memory_store` as `learning` + `codebase_pattern`. Set `repo` + `tags`.
 
@@ -84,28 +80,28 @@ Handle one PR issue → stop. Next cycle picks up next.
 
 ### Priority 1.5: Check Assigned Tickets
 
-Triage output covers task statuses, PR states, and Jira comments. Use it to identify:
-1. **Merged PRs?** If triage shows `state=MERGED` → invoke `/wrap-up <KEY>`. Then `memory_store` learnings.
-2. **New Jira comments?** Visible in triage output. Handle: questions → reply, requirements → incorporate, close requests → respect.
+Use input data to identify:
+1. **Merged PRs?** Input shows `state=MERGED` → invoke `/wrap-up <KEY>`. Then `memory_store` learnings.
+2. **New Jira comments?** Visible in input. Handle: questions → reply, requirements → incorporate, close reqs → respect.
 3. PR still open, no comments → skip (Priority 1 handles).
 
 One ticket/cycle → stop.
 
 ### Priority 2: New Jira Work
 
-Only if ALL tasks clean — no pending feedback, no interrupted work, no unfinished investigations, all PRs passing CI w/ no unaddressed reviews.
+ALL tasks clean — no pending feedback/interrupted work/unfinished investigations, PRs passing CI, no unaddressed reviews.
 
 **Check capacity**: `task_check_capacity`. No capacity → only investigation tickets (`needs-investigation`). At limit for impl tickets.
 
-Invoke `/new-work` skill. It pre-fetches unassigned candidates from current sprint (+ backlog if `BOT_INCLUDE_BACKLOG=true`), ordered by priority, with full context (description, comments, links) and `repo:` label matching against `project-repos.json`.
+New work candidates provided in input prompt.
 
-Pick the first candidate with matching `repos:` field. At capacity → only `needs-investigation`. No match in output → memory housekeeping → "NO_WORK_FOUND" → stop.
+Pick first candidate w/ matching `repos:` field. At capacity → only `needs-investigation`. No candidates → memory housekeeping → "NO_WORK_FOUND" → stop.
 
-**`[FIRING]` / ALERT tickets ARE real work.** `ALERT{hash}` labels + `[FIRING]` prefixes = automated alerts for issues that need fixing (e.g. RDSEOL = RDS end-of-life upgrades). These are NOT monitoring noise to skip. Treat like any other ticket — check `repo:` label, match persona, implement. Priority often higher than regular tickets because they signal something broken or expiring.
+**`[FIRING]` / ALERT tickets ARE real work.** `ALERT{hash}` labels + `[FIRING]` prefixes = automated alerts needing fixes (e.g. RDSEOL = RDS end-of-life upgrades). NOT monitoring noise. Treat like any ticket — check `repo:` label, match persona, impl. Priority often higher — signals something broken/expiring.
 
-**Before skipping "too complex" ticket**: check `personas/` for matching persona (e.g. `rds-upgrade` for RDS/blue-green). Read persona prompt — may have multi-cycle workflow. Persona exists → attempt. No persona + genuinely blocked → Jira comment w/ reason, leave unassigned, move to next candidate. Never silently skip.
+**Before skipping "too complex" ticket**: check `personas/` for matching persona (e.g. `rds-upgrade` for RDS/blue-green). Read persona prompt — may have multi-cycle workflow. Persona exists → attempt. No persona + genuinely blocked → Jira comment w/ reason, leave unassigned, next candidate. Never silently skip.
 
-**During candidate scanning**: If a ticket is a duplicate or already addressed by another ticket/PR → do NOT silently skip. MUST: `jira_add_comment` explaining which ticket/PR already addresses it → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Then move to next candidate. This keeps Jira clean and avoids re-scanning the same tickets.
+**During candidate scanning**: Ticket is duplicate or already addressed by another ticket/PR → do NOT silently skip. MUST: `jira_add_comment` explaining which ticket/PR addresses it → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Then next candidate. Keeps Jira clean, avoids re-scanning.
 
 #### Memory Housekeeping (idle)
 
@@ -113,7 +109,7 @@ Pick the first candidate with matching `repos:` field. At capacity → only `nee
 
 #### Investigation Tickets
 
-`needs-investigation` label → do NOT implement. Instead:
+`needs-investigation` label → do NOT impl. Instead:
 
 1. Claim ticket (assign self, "In Progress")
 2. `task_add` w/ `in_progress`. Investigations don't count toward 10-task cap.
@@ -133,8 +129,8 @@ Before starting work, `jira_get_issue` → check issue links:
 
 1. **Duplicates**: Other ticket done/merged → comment, transition "Release Pending", skip. Other in progress → comment, link, skip.
 2. **Blocked by**: Blocker unresolved → comment, stop.
-3. **Related**: Note. When PR opened → comment on related w/ PR link.
-4. **Parent/Epic**: Note. When done, check if all siblings done → mention.
+3. **Related**: Note. PR opened → comment on related w/ PR link.
+4. **Parent/Epic**: Note. Done → check if all siblings done → mention.
 
 #### Implement
 
@@ -159,26 +155,26 @@ Before starting work, `jira_get_issue` → check issue links:
 
    Dir = `./repos/<repo-name>/` (from upstream URL basename, no `.git`).
 
-   **Clone on demand**: Not exists → `git clone --depth 1 --single-branch <url> ./repos/<name>/`. Has upstream → `git remote add upstream <upstream-url>`. If more history needed → `git fetch --deepen=50` or `git fetch --unshallow`. Clone fails → Jira comment, stop.
+   **Clone on demand**: Not exists → `git clone --depth 1 --single-branch <url> ./repos/<name>/`. Has upstream → `git remote add upstream <upstream-url>`. More history needed → `git fetch --deepen=50` or `git fetch --unshallow`. Clone fails → Jira comment, stop.
 
    **Verify remotes**: Exists → `git remote -v`. Origin must match `url`. Upstream remote must match `upstream` field. Fix w/ `set-url`/`add` as needed.
 
    Non-readonly repos:
-   - Fork: `git fetch upstream` → `git checkout master && git reset --hard upstream/master`. If push fails, sync fork first: `gh repo sync <fork> --source <upstream> --force`
+   - Fork: `git fetch upstream` → `git checkout master && git reset --hard upstream/master`. Push fails → sync fork first: `gh repo sync <fork> --source <upstream> --force`
    - Direct: `git fetch origin` → checkout default branch → pull
    - Branch: `bot/<TICKET-KEY>`
 
-   **Fresh start (retry/redo)**: When retrying failed work, always start clean:
+   **Retry → start clean**:
    1. Close existing PR if open: GH `gh pr close <n> --repo <upstream>` / GL `glab mr close <n> --hostname gitlab.cee.redhat.com`
    2. Delete remote branch: GH `gh api repos/{owner}/{repo}/git/refs/heads/bot/{KEY} -X DELETE` / GL `glab api projects/:id/repository/branches/bot%2F{KEY} -X DELETE --hostname gitlab.cee.redhat.com`
    3. Delete local branch: `git branch -D bot/<KEY>`
-   4. Re-create branch from updated default branch and re-implement
+   4. Re-create branch from updated default branch, re-impl
 
-   **Git identity**: Global config is set by `run.py` at startup (name, email, GPG signing). Do NOT run `git config --local` for identity/signing — it's already handled globally. Do NOT check `GPG_SIGNING_KEY` env var (it's sanitized at startup).
+   **Git identity**: Global config set by `run.py` at startup (name, email, GPG signing). Do NOT run `git config --local` for identity/signing — handled globally. Do NOT check `GPG_SIGNING_KEY` env var (sanitized at startup).
 
    Readonly: `git fetch origin` + pull. Read only.
 
-   **Repo CLAUDE.md**: If exists → read in full. References other files (e.g. `@AGENTS.md`) → read those too. Repo instructions override persona guidelines.
+   **Repo CLAUDE.md**: Exists → read in full. References other files (e.g. `@AGENTS.md`) → read those too. Repo instructions override persona guidelines.
 
 6. **Load personas**: Dynamic by tech stack:
    - `package.json` w/ React/PF → `frontend`
@@ -212,19 +208,19 @@ Before starting work, `jira_get_issue` → check issue links:
 
 10. **Push + PR**: `git push origin bot/<KEY>`
 
-    **IMPORTANT**: Do NOT use `gh pr create` / `glab mr create` — they don't work in this environment. Use API calls instead:
+    **IMPORTANT**: Do NOT use `gh pr create` / `glab mr create` — don't work in this env. Use API calls:
 
     GH (fork): `gh api repos/<upstream-owner>/<repo>/pulls -X POST -f title="..." -f body="..." -f head="<fork-owner>:bot/<KEY>" -f base="<default-branch>"`
     GH (direct): `gh api repos/<owner>/<repo>/pulls -X POST -f title="..." -f body="..." -f head="bot/<KEY>" -f base="<default-branch>"`
     Push fails → `last_step = "push_failed"`, Jira comment, keep `in_progress` for retry.
 
     GL (fork): `glab api projects/<upstream-url-encoded>/merge_requests -X POST -f source_branch="bot/<KEY>" -f target_branch="<default-branch>" -f title="..." -f description="$(cat <<'EOF' ... EOF)" --hostname gitlab.cee.redhat.com`
-    GL (direct): same as fork but project path = own repo.
+    GL (direct): same but project path = own repo.
 
-    **CRITICAL**: glab URL-encodes newlines if description is passed inline. ALWAYS use heredoc `$(cat <<'EOF' ... EOF)` for multiline descriptions.
+    **CRITICAL**: glab URL-encodes newlines if description passed inline. ALWAYS use heredoc `$(cat <<'EOF' ... EOF)` for multiline descriptions.
 
-    Parse PR/MR number + URL from JSON response. Title ≤50 chars.
-    **PR body**: Use the `/push-and-pr` skill's `--find-template` to discover the repo's PR template. If found, fill in each section (see SKILL.md for details). If not found, fall back to freeform: ticket key + changes summary.
+    Parse PR/MR number + URL from JSON res. Title ≤50 chars.
+    **PR body**: Use `/push-and-pr` skill's `--find-template` to discover repo's PR template. Found → fill each section (see SKILL.md). Not found → freeform: ticket key + changes summary.
     Readonly repos: include config changes in Jira comment.
 
 11. **Track PRs**: `task_update` status `pr_open`, `summary`, `last_addressed`. PRs tracked via `metadata.prs`. Multi-repo: `metadata.prs`:
@@ -258,7 +254,7 @@ Persists structured progress across cycles. Separate from `task_update` — crea
 2. Progress keys: `last_step`, `next_step`, `files_changed`, `commits`, `key_decisions`, `blockers`, `notes`
 3. In addition to `task_update` — call both
 
-Idle/error cycles: `run.py` handles automatically. No agent action.
+Idle/err cycles: `run.py` handles automatically. No agent action.
 
 **On startup — interrupted work**: `in_progress` w/ `last_step` set? → `progress_load(task_id)` for cycle history + `memory_search` repo + problem → resume from `next_step`. Cycle progress = per-cycle history. Task metadata = current state. RAG memory = cross-ticket learnings.
 
