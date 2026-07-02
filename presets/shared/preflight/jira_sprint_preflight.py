@@ -3,9 +3,10 @@
 Single script replacing the former 03-jira-triage + 04-find-work split.
 Returns start only when there's genuinely actionable work:
   - Active tasks with Jira feedback or interrupted work → start
+  - Active tasks all clean + capacity + new candidates → start
   - No active tasks + new candidates found → start
   - No active tasks + no candidates → skip
-  - Active tasks, all Jira-clean → skip (PR status scripts handle CI/reviews)
+  - Active tasks, all Jira-clean, no capacity or no candidates → skip
 """
 
 import os
@@ -312,14 +313,11 @@ def main():
             jira_cleanup()
             return
 
-        # Active tasks but all Jira-clean — PR status scripts handle CI/reviews
-        save_state({"jira": {"feedback": 0, "interrupted": 0}})
-        output_result("skip", "\n".join(lines))
-        jira_cleanup()
-        return
+        # Active tasks but all Jira-clean — still search for new work if capacity allows
 
-    # Phase 2: No active tasks — include done/paused info, then search for new work
-    lines.append("No active tasks")
+    # Phase 2: Search for new work candidates (capacity permitting)
+    if not active:
+        lines.append("No active tasks")
     if done:
         lines.append(f"done pending archival: {','.join(t.get('external_key', '?') for t in done)}")
     if paused:

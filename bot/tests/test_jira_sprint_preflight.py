@@ -149,7 +149,8 @@ def test_active_with_feedback_returns_start(env_vars, monkeypatch, capsys):
     assert "JIRA FEEDBACK" in out["content"]
 
 
-def test_active_all_clean_returns_skip(env_vars, monkeypatch, capsys):
+def test_active_all_clean_no_candidates_returns_skip(env_vars, monkeypatch, capsys):
+    """Active tasks all Jira-clean, falls through to Phase 2, no candidates → skip."""
     tasks = _mock_tasks(
         active=[
             {
@@ -172,12 +173,64 @@ def test_active_all_clean_returns_skip(env_vars, monkeypatch, capsys):
     monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
     monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
     monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.load_project_repos", lambda: {})
+    monkeypatch.setattr("jira_sprint_preflight.build_repo_lookup", lambda x: {})
+    monkeypatch.setattr("jira_sprint_preflight._get_candidates", lambda rl: [])
     monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
 
     main()
     out = json.loads(capsys.readouterr().out.strip())
     assert out["status"] == "skip"
-    assert "CLEAN" in out["content"]
+    assert "No eligible work" in out["content"]
+
+
+def test_active_all_clean_with_candidates_returns_start(env_vars, monkeypatch, capsys):
+    """Active tasks all Jira-clean but capacity + candidates → start (the bug fix)."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-3",
+                "status": "pr_open",
+                "repo": "my-repo",
+                "last_addressed": "2026-07-01T12:00:00",
+                "metadata": {"prs": [{"repo": "my-repo", "number": 1, "host": "github"}]},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "Code Review"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    candidates = [
+        {
+            "key": "TEST-99",
+            "summary": "New feature",
+            "status": "New",
+            "priority": "High",
+            "type": "Story",
+            "labels": ["hcc-ai-test", "repo:my-repo"],
+            "repos": ["my-repo"],
+            "description": "Build it",
+            "comments": [],
+            "links": [],
+        }
+    ]
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.load_project_repos", lambda: {})
+    monkeypatch.setattr("jira_sprint_preflight.build_repo_lookup", lambda x: {})
+    monkeypatch.setattr("jira_sprint_preflight._get_candidates", lambda rl: candidates)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "TEST-99" in out["content"]
 
 
 def test_at_capacity_investigation_only(env_vars, monkeypatch, capsys):
