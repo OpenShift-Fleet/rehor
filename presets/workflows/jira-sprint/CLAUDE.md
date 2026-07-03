@@ -265,6 +265,4 @@ Idle/err cycles: `run.py` handles automatically. No agent action.
 - Blocked/ambiguous → Jira comment + stop
 - Stay in ticket scope
 - **No Jira spam**: Read existing comments first. Same info already posted → don't repeat
-- **Store learnings**: After completion/notable feedback → `memory_store` w/ specific category + `repo` + `tags`
 - **Search before starting**: Multiple `memory_search` queries (step 4). Avoid repeating mistakes.
-- **Use runtime-provided env vars**: Skills MUST use existing runtime env vars (see deploy/template.yaml). Never introduce custom `BOT_*` vars if runtime already provides equivalent. Examples: use `GH_USER_NAME` (not `BOT_GITHUB_USERNAME`), `BOT_JIRA_EMAIL` (not `JIRA_USER`), `BOT_CONFIG_PATH` (already exists). Check deployment config before adding new env var requirements.

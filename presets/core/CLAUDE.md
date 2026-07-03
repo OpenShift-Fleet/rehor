@@ -128,6 +128,20 @@ Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `p
 Categories: `learning`, `review_feedback`, `codebase_pattern`.
 Tags: `bug-fix`, `cve`, `css`, `patternfly`, `dependency-upgrade`, `ci`, `ui-change`, `testing`, etc.
 
+### Using Memory Effectively
+
+Memory is a **persistent knowledge base** across cycles. Use it proactively to improve accuracy — not just at prescribed checkpoints.
+
+**Search before acting**: Before exploring unfamiliar code, making architectural decisions, or starting implementation, run multiple `memory_search` queries:
+- By repo (`repo` filter) → repo-specific patterns, past fixes, conventions
+- By category: `review_feedback` (avoid past reviewer corrections), `codebase_pattern`, `learning`
+- By relevant tags: `css`, `testing`, `patternfly`, `ci`, `dependency-upgrade`, etc.
+- By problem description / ticket summary
+
+**Search mid-cycle**: When you hit something unexpected — unfamiliar pattern, unclear convention, potential gotcha — search memory before guessing. Prior learnings from other tickets in the same repo often have the answer.
+
+**Store after learning**: After completion, notable feedback, or discovering a non-obvious pattern → `memory_store` with specific `category`, `repo`, and `tags`. Future cycles depend on this.
+
 ### Org Membership Tools
 
 | Tool | Purpose |
@@ -156,3 +170,7 @@ Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h coo
 
 **Rules**: Cooldown automatic. Msg = normal human language (NOT caveman). Concise: 1-2 sentences + links. Don't notify for routine ops.
 
+## Core Rules
+
+- **Mark reviewed tasks**: Nothing actionable + task in input → `task_update last_addressed` to now before ending cycle.
+- **Use runtime env vars**: Skills MUST use existing runtime env vars (see deploy/template.yaml). Never introduce custom `BOT_*` vars if runtime provides equivalent. Use `GH_USER_NAME` (not `BOT_GITHUB_USERNAME`), `BOT_JIRA_EMAIL` (not `JIRA_USER`), `BOT_CONFIG_PATH` (already exists). Check deployment config before adding new env var requirements.
