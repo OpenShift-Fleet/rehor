@@ -43,8 +43,9 @@ presets/
 │   │   │   ├── claim-ticket/
 │   │   │   └── wrap-up/
 │   │   ├── preflight/                 # Pre-session scripts
-│   │   │   ├── 01-triage.py
-│   │   │   └── 02-find-work.py
+│   │   │   ├── 01-gh-pr-status.py
+│   │   │   ├── 02-gl-mr-status.py
+│   │   │   └── 03-jira-sprint.py
 │   │   └── manifest.yaml
 │   │
 │   ├── reviewer/                      # Future: PR review only
@@ -635,21 +636,63 @@ The runner validates the JSON and rejects malformed output (treated as `error` w
 
 ### Directory Layout
 
-Pre-flight scripts live in the workflow preset alongside skills:
+Pre-flight checks are split into **shared modules** (reusable across workflows) and **workflow entry points** (thin wrappers that import and call the shared modules). This mirrors how skills work — shared logic lives in one place, workflows compose what they need.
+
+#### Shared preflight modules
+
+Reusable data-gathering modules live in `presets/shared/preflight/`. Each is a self-contained Python module with a `main()` function that prints the JSON protocol to stdout. They are not executed directly by the runner — workflow entry points import and call them.
+
+```
+presets/shared/preflight/
+├── gh_pr_status.py                # GH PR health: CI, conflicts, reviews, comments
+├── gl_mr_status.py                # GL MR health: pipelines, conflicts, threads
+├── jira_triage.py                 # Jira issue state, comments, linked issues (reusable)
+└── jira_sprint_preflight.py       # Combined triage + find-work for jira-sprint workflow
+```
+
+The split follows forge boundaries — each module handles one data source:
+
+| Module | Data source | What it checks |
+|--------|------------|----------------|
+| `gh_pr_status` | GitHub API via `gh` CLI | PR state, CI checks, merge conflicts, review decisions, PR comments (inline + general) |
+| `gl_mr_status` | GitLab API via `glab` CLI | MR state, pipeline status, conflicts, unresolved threads, MR notes |
+| `jira_sprint_preflight` | Jira API via `jira_mcp.py` + memory API | Triage (feedback, interrupted work) + new work candidates. Single holistic decision. |
+| `jira_triage` | Jira API via `jira_mcp.py` | Issue status, comments, labels, linked issues (reusable by other workflows) |
+
+PR status modules fetch the active task list from the memory server independently (cheap localhost call). Each classifies tasks into action buckets and decides `start`/`skip` based on whether actionable items exist. The jira-sprint preflight combines triage and candidate search into one script to avoid false-positive starts.
+
+#### Workflow entry points
+
+Each workflow's `preflight/` directory contains numbered entry points that the runner executes. These are thin wrappers — typically one-liners that import a shared module and call `main()`:
 
 ```
 presets/workflows/jira-sprint/
 ├── CLAUDE.md
-├── preflight/                     # NEW: pre-session scripts
-│   ├── 01-triage.py               # Check active tasks, PR statuses, feedback
-│   └── 02-find-work.py            # Check for new eligible tickets
+├── preflight/                     # Entry points executed by runner
+│   ├── 01-gh-pr-status.py         # → imports shared gh_pr_status, calls main()
+│   ├── 02-gl-mr-status.py         # → imports shared gl_mr_status, calls main()
+│   └── 03-jira-sprint.py          # → imports shared jira_sprint_preflight, calls main()
 ├── skills/
-│   ├── triage/                    # Full AI triage (receives preflight output)
+│   ├── triage/
 │   └── new-work/
 └── manifest.yaml
 ```
 
-Numbered for execution order, same convention as `entrypoint.d/`.
+Numbered for execution order, same convention as `entrypoint.d/`. The jira-sprint preflight combines triage and candidate search — one script, one holistic start/skip decision. Cross-workflow checks (GH/GL PR status) use shared modules.
+
+A different workflow (e.g. `kanban`) would compose differently:
+
+```
+presets/workflows/kanban/
+├── preflight/
+│   ├── 01-gh-pr-status.py         # Same shared module
+│   └── 02-kanban-triage.py        # Kanban-specific: board column query + triage
+└── manifest.yaml
+```
+
+The runner adds `presets/shared/preflight/` to `sys.path` before executing workflow entry points, so `from gh_pr_status import main` resolves without path manipulation in each script.
+
+#### Instance-specific pre-flight
 
 Instance config repos can add their own pre-flight scripts:
 
@@ -663,7 +706,7 @@ rehor-config/
 │   └── project-repos.json
 ```
 
-Execution order: workflow pre-flights first (01-*, 02-*), then instance pre-flights (50-*). Use high numbers for instance scripts to avoid collisions. Same exit code semantics — an instance script can skip the session or inject additional context.
+Execution order: workflow pre-flights first (01-*, 02-*, 03-*, 04-*), then instance pre-flights (50-*). Use high numbers for instance scripts to avoid collisions. Same JSON protocol — an instance script can skip the session or inject additional context.
 
 ### Execution Flow
 
@@ -673,12 +716,14 @@ run.py loop:
   2. load_instance_config()
   3. resolve_presets()
   4. run_preflight()                    # NEW
-     ├── 01-triage.py           (workflow)  → exit 0, stdout = task statuses + action buckets
-     ├── 02-find-work.py        (workflow)  → exit 0, stdout = candidate ticket details
-     └── 50-check-deploy-freeze (instance)  → exit 0/2, custom checks
-     Result: combined stdout → session_context
-  5. IF all scripts exit 2 → post orphan cycle ("nothing to do") → sleep
-  6. ELSE → assemble_claude_md() → start session with session_context as input
+     ├── 01-gh-pr-status.py    (workflow, shared)  → GH PR health checks
+     ├── 02-gl-mr-status.py    (workflow, shared)  → GL MR health checks
+     ├── 03-jira-sprint.py     (workflow, shared)  → Jira triage + candidate search
+     └── 50-check-deploy-freeze (instance)          → custom checks
+     Result: aggregated JSON → session prompt or orphan cycle
+  5. IF all scripts skip → post orphan cycle ("nothing to do") → sleep
+  6. IF any error → post error cycle → backoff sleep
+  7. ELSE → assemble_claude_md() → start session with preflight content as input
 ```
 
 ### Runtime Environment
@@ -744,7 +789,7 @@ Pre-flight scripts run in order. The runner collects all results and applies thi
 - **All scripts return `skip`** → no session. All `skip` contents are concatenated as the orphan cycle transcript.
 - **Any script returns `error`** → no session. Error content posted as error cycle transcript. Remaining scripts still run (gather diagnostic info).
 
-This means `01-triage.py` can return `skip` (no active tasks need attention) while `02-find-work.py` returns `start` (found a new candidate) — and the session starts with both outputs.
+This means `01-gh-pr-status.py` can return `skip` (no PRs need attention) while `03-jira-sprint.py` returns `start` (found new candidates) — and the session starts with both outputs.
 
 ```python
 # run.py (simplified)
@@ -777,9 +822,9 @@ The triage/new-work skills still exist as AI skills, but they receive pre-fetche
 
 Scripts run in order but can short-circuit the chain:
 
-- `01-triage.py` returns `start` (feedback found) → remaining scripts still run (gather full context), but session is guaranteed to start
-- `01-triage.py` returns `skip` → continue to `02-find-work.py`
-- `02-find-work.py` returns `skip` → all scripts returned `skip` → no session
+- `01-gh-pr-status.py` returns `start` (PR needs attention) → remaining scripts still run (gather full context), but session is guaranteed to start
+- `01-gh-pr-status.py` returns `skip` → continue to `02-gl-mr-status.py`, then `03-jira-sprint.py`
+- `03-jira-sprint.py` returns `skip` (no feedback, no candidates) → all scripts returned `skip` → no session
 - Any script returns `error` → remaining scripts still run, but session won't start
 
 A script can also exit non-zero without valid JSON — the runner treats this as `error` with stderr as the content. This handles crashes, syntax errors, and timeouts gracefully.
@@ -799,8 +844,9 @@ name: jira-sprint
 type: workflow
 
 preflight:
-  - 01-triage.py
-  - 02-find-work.py
+  - 01-gh-pr-status.py
+  - 02-gl-mr-status.py
+  - 03-jira-sprint.py
 
 shared_skills:
   - push-and-pr
@@ -902,7 +948,7 @@ Add per-instance configuration that selects workflow + env presets.
 Move data-gathering out of AI sessions to save tokens on idle cycles.
 
 1. Add preflight runner to `run.py`
-2. Create `01-triage.py` and `02-find-work.py` for jira-sprint workflow
+2. Create PR status scripts (`01-gh-pr-status.py`, `02-gl-mr-status.py`) and combined jira-sprint preflight (`03-jira-sprint.py`)
 3. Existing triage/new-work skills become pure reasoning (receive pre-fetched data)
 
 ### Phase 5: Workflow Presets + Shared Skills

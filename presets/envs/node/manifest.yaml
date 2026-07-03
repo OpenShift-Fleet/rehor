@@ -1,0 +1,15 @@
+name: node
+type: env
+description: Node.js via nvm (version manager) — switch versions with nvm use/install
+
+install: install.sh
+
+provides:
+  binaries:
+    - node
+    - npm
+    - npx
+    - nvm
+
+env_vars:
+  NVM_DIR: "/usr/local/nvm"

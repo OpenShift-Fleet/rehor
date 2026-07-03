@@ -46,7 +46,7 @@ def get_task(jira_key):
     if not data or "items" not in data:
         return None
     for t in data["items"]:
-        if t.get("jira_key") == jira_key:
+        if t.get("external_key") == jira_key:
             return t
     return None
 
@@ -152,7 +152,7 @@ def slack_notify(jira_key, pr_info):
     result = memory_call(
         "slack_notify",
         {
-            "jira_key": jira_key,
+            "external_key": jira_key,
             "event_type": "release_pending",
             "message": msg,
             "webhook_url": webhook_url,

@@ -1,0 +1,36 @@
+name: jira-sprint
+type: workflow
+description: Jira sprint workflow — triage, implementation, PR maintenance
+
+preflight:
+  - 01-gh-pr-status.py
+  - 02-gl-mr-status.py
+  - 03-jira-sprint.py
+
+shared_skills:
+  - push-and-pr
+  - post-pr
+  - auto-fork
+
+provides:
+  claude_md: CLAUDE.md
+  skills:
+    - triage
+    - new-work
+    - claim-ticket
+    - wrap-up
+
+requires:
+  mcp_servers:
+    - bot-memory
+    - mcp-atlassian
+  env_vars:
+    - BOT_LABEL
+    - BOT_INSTANCE_ID
+    - BOT_JIRA_EMAIL
+  optional_env_vars:
+    - BOT_CONFIG_REPO
+    - BOT_BOARD_ID
+    - BOT_BOARD_NAME
+    - SLACK_WEBHOOK_URL
+    - BOT_INCLUDE_BACKLOG

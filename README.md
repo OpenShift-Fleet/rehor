@@ -10,6 +10,7 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
+| [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
 | [Scheduling](docs/scheduling.md) | KEDA cron scaling for bot instances (business hours only) |
 
 ## Prerequisites

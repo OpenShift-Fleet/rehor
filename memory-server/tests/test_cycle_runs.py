@@ -6,12 +6,10 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bot_memory_server.api import api_cycle_run_transcript, api_cycle_runs
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
-
-from bot_memory_server.api import api_cycle_runs, api_cycle_run_transcript
-
 
 app = Starlette(
     routes=[
@@ -26,7 +24,13 @@ app = Starlette(
 
 
 def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
-    """Build a dict that looks like an asyncpg Record for cycle_runs."""
+    """Build a dict that looks like an asyncpg Record for cycle_runs.
+
+    Uses ``has_transcript`` (bool) to match the SQL alias produced by
+    ``_CYCLE_RUN_LIST_COLUMNS``.  The MCP-tool tests still pass
+    ``transcript`` (raw bytes) through their own column set, so we
+    keep that key as a fallback.
+    """
     now = datetime.now(timezone.utc)
     return {
         "id": id,
@@ -39,7 +43,7 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
         "tokens_used": kwargs.get("tokens_used", 100000),
         "progress": kwargs.get("progress", json.dumps({"last_step": "implemented"})),
         "created_at": kwargs.get("created_at", now),
-        "transcript": kwargs.get("transcript"),
+        "has_transcript": kwargs.get("has_transcript", False),
     }
 
 
@@ -86,6 +90,9 @@ async def test_post_cycle_run_with_transcript(mock_pool):
     compressor = zstd.ZstdCompressor(level=19)
     compressed = compressor.compress(transcript_data)
 
+    # First fetchrow = UPDATE (no orphan found → None), second = INSERT
+    mock_pool.fetchrow = AsyncMock(side_effect=[None, _fake_cycle_run_row(id=1, task_id=42, has_transcript=True)])
+
     body = {
         "task_id": 42,
         "cycle_type": "task_work",
@@ -99,6 +106,39 @@ async def test_post_cycle_run_with_transcript(mock_pool):
     assert resp.status_code == 201
     data = resp.json()
     assert data["has_transcript"] is True
+
+
+@pytest.mark.asyncio
+async def test_post_cycle_run_transcript_links_to_orphan(mock_pool):
+    """When a progress_store record exists, the transcript UPDATE should find and attach to it."""
+    transcript_data = b'{"role": "assistant", "content": "hello"}\n'
+
+    import zstandard as zstd
+
+    compressor = zstd.ZstdCompressor(level=19)
+    compressed = compressor.compress(transcript_data)
+
+    # UPDATE finds the orphan → returns updated row
+    mock_pool.fetchrow = AsyncMock(return_value=_fake_cycle_run_row(id=99, task_id=42, has_transcript=True))
+
+    body = {
+        "task_id": 42,
+        "cycle_type": "task_work",
+        "instance_id": "test-instance",
+        "transcript_b64": base64.b64encode(compressed).decode(),
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/cycle-runs", json=body)
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["has_transcript"] is True
+    assert data["id"] == 99
+    # Only one fetchrow call — the UPDATE succeeded, no INSERT needed
+    assert mock_pool.fetchrow.call_count == 1
+    query = mock_pool.fetchrow.call_args[0][0]
+    assert "UPDATE cycle_runs" in query
 
 
 @pytest.mark.asyncio

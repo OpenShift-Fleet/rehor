@@ -5,7 +5,7 @@ Uses the MCP Python SDK for proper session handling over streamable HTTP.
 Usage:
     from memory_mcp import memory_call
 
-    data = memory_call("slack_notify", {"jira_key": "X", ...})
+    data = memory_call("slack_notify", {"external_key": "X", ...})
 """
 
 import asyncio
@@ -30,8 +30,8 @@ async def _ensure_session():
     if not MEMORY_MCP_URL:
         raise RuntimeError("BOT_MEMORY_URL not set")
 
-    from mcp.client.streamable_http import streamablehttp_client
     from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
 
     _cm_transport = streamablehttp_client(MEMORY_MCP_URL)
     _read, _write, _ = await _cm_transport.__aenter__()

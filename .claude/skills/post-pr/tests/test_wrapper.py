@@ -73,15 +73,25 @@ class TestGetTask:
         """Test successful task retrieval."""
         mock_http.return_value = {
             "items": [
-                {"jira_key": "TEST-123", "pr_url": "https://github.com/org/repo/pull/1", "pr_number": 1},
-                {"jira_key": "TEST-456", "pr_url": "https://github.com/org/repo/pull/2", "pr_number": 2},
+                {
+                    "external_key": "TEST-123",
+                    "jira_key": "TEST-123",
+                    "pr_url": "https://github.com/org/repo/pull/1",
+                    "pr_number": 1,
+                },
+                {
+                    "external_key": "TEST-456",
+                    "jira_key": "TEST-456",
+                    "pr_url": "https://github.com/org/repo/pull/2",
+                    "pr_number": 2,
+                },
             ]
         }
 
         task = post_pr.get_task("TEST-123")
 
         assert task is not None
-        assert task["jira_key"] == "TEST-123"
+        assert task["external_key"] == "TEST-123"
         assert task["pr_number"] == 1
 
     @patch("post_pr.http_request")
@@ -89,7 +99,12 @@ class TestGetTask:
         """Test task not found."""
         mock_http.return_value = {
             "items": [
-                {"jira_key": "TEST-456", "pr_url": "https://github.com/org/repo/pull/2", "pr_number": 2},
+                {
+                    "external_key": "TEST-456",
+                    "jira_key": "TEST-456",
+                    "pr_url": "https://github.com/org/repo/pull/2",
+                    "pr_number": 2,
+                },
             ]
         }
 
@@ -219,7 +234,7 @@ class TestMainFunction:
         """Test successful main execution."""
         # Setup mocks
         mock_get_task.return_value = {
-            "jira_key": "TEST-123",
+            "external_key": "TEST-123",
             "pr_url": "https://github.com/org/repo/pull/1",
             "pr_number": 1,
             "summary": "Test PR",
@@ -252,7 +267,7 @@ class TestMainFunction:
     def test_main_invalid_task_data(self, mock_get_task):
         """Test main exits when task data is invalid."""
         mock_get_task.return_value = {
-            "jira_key": "TEST-123",
+            "external_key": "TEST-123",
             # Missing pr_url and pr_number
         }
 
@@ -267,7 +282,7 @@ class TestMainFunction:
     def test_main_workflow_failure(self, mock_workflow, mock_get_task):
         """Test main exits with error when workflow fails."""
         mock_get_task.return_value = {
-            "jira_key": "TEST-123",
+            "external_key": "TEST-123",
             "pr_url": "https://github.com/org/repo/pull/1",
             "pr_number": 1,
             "summary": "Test PR",

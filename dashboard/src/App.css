@@ -435,6 +435,13 @@ header {
   color: var(--text-dim);
   border-color: var(--text-dim);
 }
+.bot-banner .wake-btn {
+  border: none;
+  padding: 2px 4px;
+}
+.bot-banner .wake-btn:hover {
+  background: rgba(63, 185, 80, 0.15);
+}
 
 /* Tab nav */
 .tab-nav {

@@ -566,7 +566,7 @@ class ClaimTicketOperations:
         logger.info(f"Adding {jira_key} to memory server...")
 
         task_payload = {
-            "jira_key": jira_key,
+            "external_key": jira_key,
             "status": "in_progress",
             "assigned_to": self.bot_account_id or "unknown",
             "board_id": self.board_id,

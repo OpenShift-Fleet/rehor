@@ -19,10 +19,21 @@ from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
 from .agent import run_cycle
-from .config import ALLOWED_TOOLS, Config, load_config, load_mcp_servers, sanitize_env
+from .config import (
+    ALLOWED_TOOLS,
+    Config,
+    InstanceConfig,
+    load_config,
+    load_instance_config,
+    load_mcp_servers,
+    sanitize_env,
+    validate_instance_config,
+    validate_manifest,
+)
 from .costs import record_cost
 from .merge import apply_merged_config
-from .transcripts import record_transcript
+from .preflight import run_preflight
+from .transcripts import post_orphan_cycle, record_transcript
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
@@ -184,6 +195,12 @@ def _check_wake_signal(instance_id: str) -> bool:
         return False
 
 
+def _write_sleep_signal(seconds: int, reason: str) -> None:
+    """Write a sleep signal file for the runner to read after the cycle."""
+    SLEEP_SIGNAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SLEEP_SIGNAL_FILE.write_text(json.dumps({"recommended_sleep": seconds, "reason": reason}))
+
+
 def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
     """Read sleep duration from skill-written signal file.
 
@@ -227,6 +244,52 @@ def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
         time.sleep(sleep_seconds)
 
     return sleep_seconds
+
+
+def assemble_claude_md(
+    script_dir: Path,
+    instance_config: InstanceConfig | None = None,
+    remote_agent_dir: Path | None = None,
+) -> None:
+    """Concatenate core + workflow preset CLAUDE.md into project root.
+
+    Supports instance CLAUDE.md via claude_md_strategy:
+      replace — core + instance CLAUDE.md (skip workflow)
+      append  — core + workflow + instance CLAUDE.md
+      ignore  — core + workflow only (default)
+    """
+    logger = logging.getLogger(__name__)
+    presets = script_dir / "presets"
+    core = presets / "core" / "CLAUDE.md"
+
+    workflow = instance_config.workflow if instance_config else os.environ.get("BOT_WORKFLOW_PRESET", "jira-sprint")
+    strategy = instance_config.claude_md_strategy if instance_config else "ignore"
+
+    if not core.is_file():
+        logger.warning("Core CLAUDE.md not found at %s — skipping assembly", core)
+        return
+
+    parts = [core.read_text()]
+
+    instance_md = remote_agent_dir / "CLAUDE.md" if remote_agent_dir else None
+    has_instance_md = instance_md is not None and instance_md.is_file()
+
+    if strategy == "replace" and has_instance_md:
+        parts.append(instance_md.read_text())
+        logger.info("CLAUDE.md strategy=replace — using instance CLAUDE.md instead of workflow")
+    else:
+        wf_path = presets / "workflows" / workflow / "CLAUDE.md"
+        if wf_path.is_file():
+            parts.append(wf_path.read_text())
+        else:
+            logger.warning("Workflow CLAUDE.md not found at %s — using core only", wf_path)
+        if strategy == "append" and has_instance_md:
+            parts.append(instance_md.read_text())
+            logger.info("CLAUDE.md strategy=append — appended instance CLAUDE.md")
+
+    output = script_dir / "CLAUDE.md"
+    output.write_text("".join(parts))
+    logger.info("Assembled CLAUDE.md from core + %s (%d bytes)", workflow, output.stat().st_size)
 
 
 def cleanup_between_cycles(script_dir: Path) -> None:
@@ -313,6 +376,16 @@ def main() -> None:
     config = load_config(SCRIPT_DIR)
     mcp_servers = load_mcp_servers(SCRIPT_DIR)
 
+    # Initial config sync + instance config load (before validation so
+    # instance.yaml can override the workflow preset)
+    initial_agent_dir = sync_config_repo()
+    if initial_agent_dir:
+        apply_merged_config(SCRIPT_DIR, initial_agent_dir)
+    instance_config = load_instance_config(initial_agent_dir)
+
+    validate_manifest(SCRIPT_DIR, instance_config.workflow, mcp_servers)
+    validate_instance_config(SCRIPT_DIR, instance_config)
+
     # Remove secrets from env so Bash subprocesses can't leak them.
     # MCP servers already have resolved values. gh/glab use config files.
     sanitize_env()
@@ -343,11 +416,45 @@ def main() -> None:
         config.idle_interval,
     )
 
+    consecutive_preflight_errors = 0
+
     try:
         while True:
             remote_agent_dir = sync_config_repo()
             if remote_agent_dir:
                 apply_merged_config(SCRIPT_DIR, remote_agent_dir)
+
+            instance_config = load_instance_config(remote_agent_dir)
+            assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir)
+
+            # --- Pre-flight: gather data before starting AI session ---
+            preflight_result = run_preflight(SCRIPT_DIR, instance_config.workflow, remote_agent_dir, instance_id)
+
+            preflight_prompt = None
+            if preflight_result is not None:
+                if preflight_result.action == "error":
+                    consecutive_preflight_errors += 1
+                    logger.error("Preflight error (consecutive: %d)", consecutive_preflight_errors)
+                    post_orphan_cycle(instance_id or args.label, "error", preflight_result.transcript)
+                    error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
+                    _write_sleep_signal(error_sleep, "preflight_error")
+                    _read_sleep_signal(config, instance_id)
+                    cleanup_between_cycles(SCRIPT_DIR)
+                    continue
+
+                if preflight_result.action == "skip":
+                    consecutive_preflight_errors = 0
+                    logger.info("Preflight skip — no session needed")
+                    post_orphan_cycle(instance_id or args.label, "idle", preflight_result.transcript)
+                    _write_sleep_signal(300, "preflight_skip")
+                    _read_sleep_signal(config, instance_id)
+                    cleanup_between_cycles(SCRIPT_DIR)
+                    continue
+
+                # action == "start"
+                consecutive_preflight_errors = 0
+                preflight_prompt = preflight_result.prompt
+                logger.info("Preflight start — launching session with pre-fetched data")
 
             logger.info("Running agent cycle...")
 
@@ -361,6 +468,7 @@ def main() -> None:
                             allowed_tools=ALLOWED_TOOLS,
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
+                            preflight_prompt=preflight_prompt,
                         ),
                         timeout=config.cycle_timeout,
                     )
@@ -389,7 +497,7 @@ def main() -> None:
             else:
                 logger.warning("Cycle produced no result")
 
-            sleep_seconds = _read_sleep_signal(config, instance_id)
+            _read_sleep_signal(config, instance_id)
 
             cleanup_between_cycles(SCRIPT_DIR)
     finally:

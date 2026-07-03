@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import type { BotStatus } from '../types';
+import { wakeInstance } from '../api';
+import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
 
 interface Props {
@@ -9,6 +11,30 @@ interface Props {
 export default function BotBanner({ status }: Props) {
   const [elapsed, setElapsed] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [waking, setWaking] = useState(false);
+  const { onEvent } = useWS();
+
+  const handleWake = useCallback(async () => {
+    if (!status.instance_id) return;
+    setWaking(true);
+    try {
+      await wakeInstance(status.instance_id);
+    } catch {
+      setWaking(false);
+    }
+  }, [status.instance_id]);
+
+  useEffect(() => {
+    return onEvent((event) => {
+      if (
+        event.type === 'bot_status' &&
+        event.data.instance_id === status.instance_id &&
+        event.data.state === 'working'
+      ) {
+        setWaking(false);
+      }
+    });
+  }, [onEvent, status.instance_id]);
 
   useEffect(() => {
     if (status.state !== 'working' || !status.cycle_start) {
@@ -65,6 +91,22 @@ export default function BotBanner({ status }: Props) {
         <span className="banner-updated" title={status.updated_at}>
           {timeAgo(status.updated_at)}
         </span>
+        {status.state === 'idle' && status.instance_id && (
+          <button
+            className={`wake-btn${waking ? ' waking' : ''}`}
+            disabled={waking}
+            onClick={handleWake}
+            title="Wake bot \u2014 start next cycle immediately"
+          >
+            {waking ? (
+              'Waking\u2026'
+            ) : (
+              <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
+                <path d="M0 0 L12 7 L0 14 Z" />
+              </svg>
+            )}
+          </button>
+        )}
         <button
           className="banner-toggle"
           onClick={() => setExpanded(!expanded)}

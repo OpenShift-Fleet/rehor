@@ -147,7 +147,10 @@ ENV BUILDAH_ISOLATION=chroot
 # Copy bot config files
 COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./
 COPY .claude/ .claude/
+COPY presets/ presets/
 
+# Run env preset install scripts (no-op until presets are extracted)
+RUN bash -c 'shopt -s nullglob; for script in presets/envs/*/install.sh; do bash "$script"; done'
 
 ENV HOME=/home/botuser
 USER botuser

@@ -54,6 +54,7 @@ Create your instance config. This entire directory gets COPYed into the image at
 ```
 instance/my-config/
 └── agent/
+    ├── instance.yaml         # preset selection (workflow, env presets, CLAUDE.md strategy)
     ├── project-repos.json    # repos this instance works on
     ├── mcp.json              # MCP server overrides (usually just Jira)
     └── personas/             # domain-specific guidelines
@@ -61,6 +62,36 @@ instance/my-config/
         │   └── prompt.md
         └── ...
 ```
+
+#### `instance.yaml`
+
+Declares which workflow and env presets your instance uses. **Required for all new instances.**
+
+```yaml
+workflow: jira-sprint
+source: jira
+envs:
+  - browser
+  - slack
+  - container-scan
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `workflow` | string | `jira-sprint` | Which workflow preset to use. Must exist in `presets/workflows/`. |
+| `source` | string | `jira` | Ticket source. Currently: `jira`. Future: `github`, `gitlab`. |
+| `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
+| `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
+
+Available env presets:
+- `browser` — Chromium + chrome-devtools MCP for visual verification (requires `PLAYWRIGHT_BROWSERS_PATH`, set automatically)
+- `container-scan` — Grype + Buildah for CVE scanning
+- `slack` — Slack notifications via webhook (requires `SLACK_WEBHOOK_URL`)
+- `dev-proxy` — Caddy reverse proxy for stage UI verification (requires `PROXY_HOST`)
+
+List only the presets your instance actually needs. Omitting unused ones saves container startup time and avoids unnecessary env var requirements.
+
+For the full preset system reference, see [preset-migration-guide.md](migrations/preset-migration-guide.md).
 
 #### `project-repos.json`
 
@@ -257,7 +288,15 @@ For more schedule examples (US hours, weekends, split windows, etc.) and details
 
 ## Step 3: Konflux CI/CD
 
-Follow the Konflux onboarding guide to register your repo. Key config:
+**This step must be completed before Step 4 (app-interface).** App-interface references the Quay image built by Konflux — if the image doesn't exist or isn't public, the deployment will fail.
+
+Follow the Konflux onboarding rules to register your repo. The key requirements:
+
+1. **Onboard your repo to Konflux** — follow the standard Konflux onboarding process for your tenant namespace
+2. **Configure a ReleasePlan** — your component needs a ReleasePlan and corresponding ReleasePlanAdmission so that push builds produce a release to your Quay prod repo
+3. **Make the image public** — configure the ReleasePlanAdmission to set the image repository as public. This is handled within the release config, not manually in Quay
+
+Pipeline config:
 
 ```yaml
 # .tekton/my-bot-push.yaml (and pull-request.yaml)
@@ -268,7 +307,7 @@ path-context: .
 Konflux auto-generates the `.tekton/` pipeline files when you onboard. The important bits:
 - Dockerfile path points to `dev-bot/Dockerfile.runner` (the submodule)
 - Build context is `.` (the runner repo root)
-- Push builds go to your Quay prod repo
+- Push builds go to your Quay prod repo (via the ReleasePlan)
 - PR builds go to `quay.io/redhat-user-workloads/...` with 5-day expiry
 
 ### Reference PRs
@@ -279,7 +318,7 @@ Konflux auto-generates the `.tekton/` pipeline files when you onboard. The impor
 
 ## Step 4: App-Interface Configuration
 
-Follow the [app-interface onboarding guide](https://gitlab.cee.redhat.com/service/app-interface/-/blob/master/docs/app-sre/onboarding.md) for full details. Below is what's specific to adding a bot instance.
+The namespace, app, and shared infrastructure (proxy, memory server, secrets) are already deployed by the primary instance. You do **not** need to do the full app-interface onboarding — just add your instance as a new deployment to the existing namespace.
 
 ### Add to `deploy.yml`
 
@@ -312,7 +351,7 @@ resourceTemplates:
       BOT_CONFIG_REPO: https://github.com/YourOrg/my-bot-instance.git
       BOT_CONFIG_PATH: instance/my-config
       SLACK_WEBHOOK_URL: 'https://hooks.slack.com/...'
-      # --- Per-instance proxy (optional — only if custom Jira creds needed) ---
+      # --- Per-instance proxy (optional — only if custom Jira, and other creds needed) ---
       # PROXY_IMAGE: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
       # PROXY_IMAGE_TAG: <proxy-image-sha>
       # PROXY_REPLICAS: '1'
@@ -359,32 +398,28 @@ Your instance deploys to the **same namespace** as the primary instance — that
 
 ### Vault Secrets
 
-The bot uses the **shared** `devbot-secrets` Vault secret (deployed by the primary instance). All bot instances share the same GitHub/GitLab/GPG/GCP credentials.
+Every instance needs its own Vault secret with Jira credentials — a custom Jira identity means a custom proxy container. The memory server can still be shared.
 
-**Instance-specific Jira credentials**: If your instance needs its own Jira identity (e.g. access to a project the shared account can't reach), add a second Vault secret to the namespace YAML:
+Add a Vault secret to the namespace YAML:
 
 ```yaml
 # In namespaces/stage.hcmais01ue1.yml
 openshiftResources:
 - provider: vault-secret
-  path: insights/secrets/insights-dev/platform-experience-dev/ai-sdlc-credentials
-  name: devbot-secrets           # shared — already exists
-  version: 14
-  annotations:
-    qontract.recycle: "true"
-- provider: vault-secret
   path: your/vault/path/jira-credentials
-  name: myteam-jira-secrets      # instance-specific
+  name: myteam-jira-secrets
   version: 1
   annotations:
     qontract.recycle: "true"
 ```
 
-The instance-specific secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters.
+The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters so the instance gets its own proxy pod with these credentials.
+
+The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
 
 ### Reference: Existing app-interface config
 
-The platform-frontend-ai-dev app-interface directory (`data/services/insights/platform-frontend-ai-dev/`) contains:
+Use the framework instance ([`hcc-ui-agent-dev`](https://github.com/RedHatInsights/hcc-ui-agent-dev)) as your reference — it always has the latest configuration. Its app-interface directory (`data/services/insights/platform-frontend-ai-dev/`) contains:
 
 | File | Purpose |
 |------|---------|
@@ -431,7 +466,7 @@ After deploying, verify in order:
 3. **Memory server reachable**: `oc exec <pod> -- curl -s http://devbot-memory-server:8080/health`
 4. **Executor reachable**: check logs for "Connected to executor at devbot-proxy:9090"
 5. **Config loaded**: check logs for remote config sync from `BOT_CONFIG_REPO`
-6. **Scale up**: set `BOT_REPLICAS: '1'` in deploy.yml, bump ref
+6. **Enable via schedule**: configure the KEDA cron scaler (see [Step 2b](#step-2b-scheduling-keda-cron-scaler)) to run during your team's working hours. Don't set `BOT_REPLICAS: '1'` permanently — use the schedule to avoid unnecessary token consumption on weekends and off-hours
 
 ---
 
@@ -487,10 +522,10 @@ When changes span multiple repos, merge in this order:
 2. **dev-bot** (core changes) — second
 3. **runner instance** (submodule bump) — last, after dev-bot merges
 
-### Shared Jira identity
-By default, all bot instances share the same Jira credentials (`devbot-secrets/jira-email`). The bot cannot filter comments by author — it identifies its own comments by content patterns (structured reports, PR links, tables), not by username.
+### Shared identities
+All bot instances share credentials from `devbot-secrets` — Jira, GitHub, GitLab, GPG, and GCP. This means all instances push code, open PRs, and comment on Jira as the same user. The bot identifies its own Jira comments by content patterns (structured reports, PR links, tables), not by username.
 
-If your instance needs a different Jira identity (e.g. access to a restricted project), deploy a per-instance proxy with custom credentials. See the **Shared vs Per-Instance Proxy** table in Step 2 and **Vault Secrets** in Step 4.
+A different identity (Jira, GitHub, or GitLab) requires a separate proxy instance — credentials are baked into the proxy container, not the bot pod. See **Shared vs Per-Instance Proxy** in Step 2 and **Vault Secrets** in Step 4.
 
 ### `BOT_BOARD_NAME` is fragile
 If someone renames the Jira board, `claim-ticket` breaks. Consider using `BOT_BOARD_ID` (stable numeric ID) instead. The ticket query (`new-work`) doesn't use the board at all — it's label-only with `sprint in openSprints()`.

@@ -87,11 +87,11 @@ def get_task(jira_key):
             return None
 
         for t in data["items"]:
-            if t.get("jira_key") == jira_key:
+            if t.get("external_key") == jira_key:
                 logger.info(f"Found task {jira_key}")
                 return t
 
-        available = [t.get("jira_key") for t in data.get("items", [])]
+        available = [t.get("external_key") for t in data.get("items", [])]
         logger.error(f"Task {jira_key} not found. Available tasks: {available}")
         return None
     except Exception as e:

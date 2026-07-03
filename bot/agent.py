@@ -147,6 +147,7 @@ async def run_cycle(
     allowed_tools: list[str],
     cwd: str,
     instance_id: str | None = None,
+    preflight_prompt: str | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     turn_hook = _make_turn_budget_hook(config.max_turns)
@@ -164,19 +165,37 @@ async def run_cycle(
     )
 
     instance_line = (
-        f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update).'
+        f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}"'
+        f" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update)."
         if instance_id
         else ""
     )
-    prompt = (
-        f"Your primary label is: {label}.{instance_line} "
-        "Follow the instructions in CLAUDE.md. "
-        "Start by invoking the /triage skill to pre-gather task and PR data. "
+
+    caveman_line = (
         "IMPORTANT: Use ULTRA caveman output for all internal text — "
         "drop articles, filler, hedging, conjunctions. Abbreviate: DB/auth/config/req/res/fn/impl/env/dep/pkg. "
         "Arrows for causality (X → Y). One word when one word enough. "
         "Normal language ONLY for Jira comments, PR descriptions, commit messages."
     )
+
+    if preflight_prompt:
+        prompt = (
+            f"Your primary label is: {label}.{instance_line} "
+            "Follow the instructions in CLAUDE.md. "
+            f"{caveman_line}\n\n"
+            "## Pre-flight Data\n\n"
+            "The following data was gathered by pre-flight scripts. "
+            "Do NOT re-fetch task statuses, PR statuses, or Jira comments already shown below. "
+            "Do NOT invoke /triage — triage data is already provided.\n\n"
+            f"{preflight_prompt}"
+        )
+    else:
+        prompt = (
+            f"Your primary label is: {label}.{instance_line} "
+            "Follow the instructions in CLAUDE.md. "
+            "Start by invoking the /triage skill to pre-gather task and PR data. "
+            f"{caveman_line}"
+        )
 
     result = None
     ctx = CycleContext()
@@ -245,7 +264,7 @@ async def run_cycle(
         # Extract a short summary from the result text
         if not ctx.summary and result_text:
             # Take the last meaningful line (usually the conclusion)
-            lines = [l.strip() for l in result_text.strip().splitlines() if l.strip()]
+            lines = [line.strip() for line in result_text.strip().splitlines() if line.strip()]
             if lines:
                 ctx.summary = lines[-1][:200]
 

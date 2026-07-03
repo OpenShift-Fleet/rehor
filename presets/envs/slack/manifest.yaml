@@ -1,0 +1,11 @@
+name: slack
+type: env
+description: Slack notifications via webhook
+
+provides:
+  skills:
+    - slack-notify
+
+requires:
+  env_vars:
+    - SLACK_WEBHOOK_URL

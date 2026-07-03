@@ -1,0 +1,21 @@
+name: dev-proxy
+type: env
+description: Custom Caddy reverse proxy for local UI verification against stage
+
+install: install.sh
+entrypoint_scripts:
+  - entrypoint.d/20-dev-proxy.sh
+
+provides:
+  tools:
+    - caddy
+  settings:
+    sandbox:
+      allowBash:
+        - "start-dev-proxy.sh"
+
+requires:
+  env_vars:
+    - PROXY_HOST
+  optional_env_vars:
+    - PROXY_PORT
