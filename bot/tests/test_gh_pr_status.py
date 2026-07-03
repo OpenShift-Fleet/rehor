@@ -96,18 +96,14 @@ def test_old_review_before_last_addressed_ignored():
 
 def test_new_review_after_last_addressed_kept():
     """Reviews submitted after last_addressed should still trigger."""
-    reviews = [
-        {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T09:00:00Z"}
-    ]
+    reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T09:00:00Z"}]
     state, issues = classify_gh(_make_pr(reviews=reviews), last_addressed="2026-07-03T07:37:00+00:00")
     assert "review:alice" in issues
 
 
 def test_no_last_addressed_keeps_all_reviews():
     """Without last_addressed, all reviews should be considered."""
-    reviews = [
-        {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-06-20T10:00:00Z"}
-    ]
+    reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-06-20T10:00:00Z"}]
     state, issues = classify_gh(_make_pr(reviews=reviews), last_addressed="")
     assert "review:alice" in issues
 
@@ -129,9 +125,7 @@ def test_mixed_old_and_new_reviews():
 
 def test_review_at_exact_last_addressed_ignored():
     """Review at exactly last_addressed timestamp should be ignored (already seen)."""
-    reviews = [
-        {"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T07:37:00Z"}
-    ]
+    reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T07:37:00Z"}]
     state, issues = classify_gh(_make_pr(reviews=reviews), last_addressed="2026-07-03T07:37:00+00:00")
     assert "review:alice" not in issues
 
