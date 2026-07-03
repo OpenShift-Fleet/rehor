@@ -69,8 +69,12 @@ def gh_pr_comments(owner_repo, num):
     return comments
 
 
-def classify_gh(pr):
-    """Classify a GH PR into (state, issues_list)."""
+def classify_gh(pr, last_addressed=""):
+    """Classify a GH PR into (state, issues_list).
+
+    Reviews submitted before last_addressed are ignored — the bot already
+    handled them in a prior cycle.
+    """
     state = pr.get("state", "UNKNOWN")
     if state == "MERGED":
         return "MERGED", ["merged"]
@@ -85,8 +89,12 @@ def classify_gh(pr):
         issues.append(f"ci_fail:{','.join(failed)}")
     if pr.get("reviewDecision") == "CHANGES_REQUESTED":
         issues.append("changes_requested")
+    last_prefix = last_addressed[:16] if last_addressed else ""
     for rv in pr.get("reviews") or []:
         rstate = rv.get("state", "")
+        submitted = (rv.get("submittedAt") or "")[:16]
+        if last_prefix and submitted and submitted <= last_prefix:
+            continue
         author = rv.get("author", {}).get("login", "?")
         if rstate == "CHANGES_REQUESTED":
             issues.append(f"review:{author}")
@@ -118,7 +126,7 @@ def enrich_gh(task):
         data = gh_pr(up, pr_num)
         if not data:
             continue
-        state, issues = classify_gh(data)
+        state, issues = classify_gh(data, last_addressed=task.get("last_addressed", ""))
         pr_results.append(
             {
                 "repo": pr_repo,
