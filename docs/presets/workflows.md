@@ -49,22 +49,33 @@ These run before each Claude session to avoid burning tokens on idle cycles:
 |--------|------|---------------|
 | `01-gh-pr-status.py` | `presets/workflows/jira-sprint/preflight/` | GitHub PR states — CI, conflicts, reviews |
 | `02-gl-mr-status.py` | `presets/workflows/jira-sprint/preflight/` | GitLab MR states — pipelines, threads |
-| `03-jira-triage.py` | `presets/workflows/jira-sprint/preflight/` | Jira comments on active tasks |
-| `04-find-work.py` | `presets/workflows/jira-sprint/preflight/` | New Jira candidates if capacity available |
+| `03-jira-sprint.py` | `presets/workflows/jira-sprint/preflight/` | Jira triage (feedback, interrupted work) + new work candidates |
 
 Each outputs `{"status": "start"|"skip", "content": "..."}`. If all return `skip`, no Claude session starts — the cycle sleeps.
+
+#### Filtering logic
+
+The preflight scripts apply several filters to avoid false-positive starts:
+
+- **`last_addressed` filtering** — PR reviews and Jira comments submitted before the task's `last_addressed` timestamp are ignored. The bot updates `last_addressed` via `task_update` after each cycle, so already-handled feedback doesn't re-trigger a session. This applies to GH PR reviews (`classify_gh`), GL MR threads, and Jira comments.
+
+- **`repo:` label gate** — Jira candidates without a `repo:` label are excluded from the start decision. Tickets missing this label cannot be worked on (no target repo), so they log a skip message instead of wasting a Claude session. Candidates with unresolvable `repo:` labels (label exists but doesn't match `project-repos.json`) are also excluded.
+
+- **Current-state checks** — CI failures, merge conflicts, and mergeable state are always checked regardless of `last_addressed` since they reflect the current PR state, not a point-in-time event.
 
 ### Skills Included
 
 | Skill | Purpose |
 |-------|---------|
 | `triage` | Task classification and prioritization |
-| `new-work` | Jira candidate search (3-tier: sprint → backlog → all) |
+| `new-work` | Jira candidate search (sprint → bot-assigned → backlog) |
 | `claim-ticket` | Ticket assignment + sprint placement |
 | `wrap-up` | Post-merge cleanup (archival, Jira transition, branch deletion) |
 | `push-and-pr` | Push branch and open PR with template detection |
 | `post-pr` | Post-PR Jira comment, linked issue updates, Slack notification |
 | `auto-fork` | Fork creation for new repos |
+| `gh-release-upload` | Upload release artifacts to GitHub releases |
+| `slack-notify` | Send Slack notifications via webhook |
 
 ### Required Configuration
 
@@ -98,20 +109,33 @@ These MCP servers must be available (typically via the shared proxy):
 presets/workflows/jira-sprint/
 ├── CLAUDE.md              # Decision loop instructions (the bot's "brain")
 ├── manifest.yaml          # Metadata — preflight list, skills, requirements
-├── skills/                # Workflow-specific skills
-│   ├── triage/
-│   │   └── triage.py
-│   ├── new-work/
-│   │   └── new_work.py
-│   ├── claim-ticket/
-│   │   └── claim_ticket.py
-│   └── wrap-up/
-│       └── wrap_up.py
-├── preflight/             # Pre-session scripts
-│   ├── 01-gh-pr-status.py
-│   ├── 02-gl-mr-status.py
-│   ├── 03-jira-triage.py
-│   └── 04-find-work.py
+└── preflight/             # Pre-session scripts (thin wrappers → shared modules)
+    ├── 01-gh-pr-status.py
+    ├── 02-gl-mr-status.py
+    └── 03-jira-sprint.py
+```
+
+Skills live in `.claude/skills/` (shared across workflows):
+
+```
+.claude/skills/
+├── triage/
+├── new-work/
+├── claim-ticket/
+├── wrap-up/
+├── push-and-pr/
+├── post-pr/
+├── auto-fork/
+├── gh-release-upload/
+├── slack-notify/
+├── jira_mcp.py            # Shared Jira MCP helper
+└── memory_mcp.py          # Shared memory MCP helper
+```
+
+Personas live in the instance config repo (not in the workflow):
+
+```
+instance/<your-config>/agent/
 └── personas/              # Tech-stack guidelines
     ├── frontend/prompt.md
     ├── backend/prompt.md
@@ -120,15 +144,14 @@ presets/workflows/jira-sprint/
     └── cve/prompt.md
 ```
 
-### Instance Personas Override
+### Instance Personas
 
-Your instance can override or extend personas by placing them in your config repo:
+Personas are defined in your instance config repo. They provide tech-stack-specific guidelines the bot follows when working in a particular repo context.
 
 ```
 instance/<your-config>/agent/
 └── personas/
-    └── frontend/
-        └── prompt.md      # Your custom frontend guidelines
+    ├── frontend/prompt.md    # React/TS guidelines
+    ├── backend/prompt.md     # Go/Python guidelines
+    └── config/prompt.md      # YAML/Jsonnet guidelines
 ```
-
-Instance personas take precedence over the workflow's built-in personas for the same name.
