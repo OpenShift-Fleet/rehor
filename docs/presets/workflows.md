@@ -155,3 +155,12 @@ instance/<your-config>/agent/
     ├── backend/prompt.md     # Go/Python guidelines
     └── config/prompt.md      # YAML/Jsonnet guidelines
 ```
+
+---
+
+## Custom Workflows
+
+The preset system supports custom workflows beyond the built-in `jira-sprint`. You can create workflows for monitoring, scheduled tasks, review-only bots, or any specialized automation.
+
+- [Creating custom workflows](custom-workflows.md) — Full guide to building your own workflow with directory structure, manifest, CLAUDE.md assembly, and examples
+- [Writing custom preflight scripts](custom-preflight.md) — How to write pre-session data-gathering scripts for your workflow

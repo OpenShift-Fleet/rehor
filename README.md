@@ -11,6 +11,8 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
 | [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
+| [Custom Workflows](docs/presets/custom-workflows.md) | Guide to building custom workflows for your instance |
+| [Custom Preflight Scripts](docs/presets/custom-preflight.md) | Guide to writing pre-session data-gathering scripts |
 | [Scheduling](docs/scheduling.md) | KEDA cron scaling for bot instances (business hours only) |
 
 ## Prerequisites
