@@ -212,7 +212,11 @@ def main():
         elif "closed" in issues:
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_fail.append(e)
+            ci_only = all(i.startswith("ci_fail") for i in issues)
+            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
         elif any(i in ("changes_requested",) or i.startswith("review:") for i in issues):
