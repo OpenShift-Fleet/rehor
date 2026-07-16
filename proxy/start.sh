@@ -60,6 +60,7 @@ SQUID_PID=$!
 MCP_PID=""
 if [ -n "${JIRA_URL:-}" ] && [ -n "${JIRA_USERNAME:-}" ] && [ -n "${JIRA_API_TOKEN:-}" ]; then
     MCP_PORT="${MCP_ATLASSIAN_PORT:-8444}"
+    ALLOW_GLOBAL_CRED_FALLBACK=true \
     JIRA_URL="${JIRA_URL}" \
     JIRA_USERNAME="${JIRA_USERNAME}" \
     JIRA_API_TOKEN="${JIRA_API_TOKEN}" \
