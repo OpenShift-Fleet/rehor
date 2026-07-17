@@ -1,0 +1,204 @@
+# Rehor Dev-Bot — Impact Assessment
+
+> Generated: {{generated_date}}
+
+## Executive Summary
+
+[Rehor](https://github.com/RedHatInsights/platform-frontend-ai-dev) is an autonomous AI developer bot built on Claude CLI that picks up Jira tickets, writes code, opens pull requests, and responds to code review — all without human intervention. In ~{{period_days}} days of production operation, Rehor has delivered **{{total_prmrs}}+ pull requests and merge requests** ({{total_gh_prs}} GitHub PRs + {{total_gl_mrs}} GitLab MRs) across **{{unique_repos}} repositories**, serving **10 engineering teams** from **9 production instances** deployed on Red Hat's Konflux/App-Interface infrastructure, handling **[{{total_tickets}} Jira tickets](https://redhat.atlassian.net/issues/?filter=107017)**.
+
+> **Note:** The {{total_gh_prs}} GitHub PRs include both the dedicated bot account ([platex-rehor-bot](https://github.com/platex-rehor-bot) — [{{bot_prs_total}} PRs](https://github.com/pulls?q=is%3Apr+author%3Aplatex-rehor-bot)) and PRs opened under developer personal accounts during the pre-infrastructure period (~{{personal_prs}} additional PRs identified via Jira comment links). The {{total_gl_mrs}} GitLab MRs are internal app-interface merge requests. Not all {{total_tickets}} Jira tickets have associated PRs linked — some were grooming/triage-only, and some comment formats could not be matched automatically.
+
+---
+
+## Deployment & Infrastructure
+
+### Production Instances: 9
+
+| Instance | Cluster | Workflow | Teams/Repos |
+|----------|---------|----------|-------------|
+| **hcc-framework-agent-dev** | stone-prd-rh01 | jira-sprint | 46 repos — HCC Platex Services |
+| **hcc-ui-agent-dev** | stone-prd-rh01 | jira-sprint | 31 repos — RH Platform Experience |
+| **consoledot-integrations-bot** | stone-prd-rh01 | jira-sprint | 10 repos — HCC Integrations |
+| **fabric-access-ai-dev** | stone-prd-rh01 | jira-sprint | 2 repos — HCC Access Management |
+| **kessel-ai-dev** | stone-prd-rh01 | jira-sprint | 1 repo — Project Kessel |
+| **fleetshift-bot-instance** | stone-prd-rh01 | jira-sprint | 2 repos — FleetShift |
+| **nxtcm-ui-agent** | stone-prd-rh01 | jira-sprint | 1 repo — Console Next |
+| **obsint-processing-ai-bot-instance** | kflux-prd-rh02 | jira-sprint | 22 repos (3 configs) — Obsint Processing |
+| **lsc-bot-instance** | kflux-prd-rh02 | cve | CVE remediation — Lightspeed Core |
+
+**Additional scheduled workflows:**
+- `backlog-grooming` — automated ticket triage and labeling
+- `watchduty` — monitors PR statuses and nudges stale reviews
+
+**Clusters:** 2 (stone-prd-rh01, kflux-prd-rh02)
+
+### Architecture Highlights
+
+- **5-layer security**: network-isolated bot containers behind egress proxy, no direct internet access, no credential access, sandboxed command execution
+- **KEDA cron scaling**: bots auto-scale to 0 outside working hours (Mon–Thu 9:00–23:00 CET)
+- **MCP-based tooling**: Jira, GitHub, GitLab access via Model Context Protocol servers running in proxy sidecar
+- **Persistent memory**: cross-session memory server for learning from past work and code review feedback
+
+---
+
+## Teams Served: 10
+
+1. **HCC Platex Services** (Console Platform Framework)
+2. **RH Platform Experience** (HCC UI)
+3. **HCC Integrations** (Consoledot Integrations)
+4. **HCC Access Management** (Fabric Access / RBAC)
+5. **Project Kessel** (Authorization service)
+6. **FleetShift** (Fleet management)
+7. **Obsint Processing** (Observability & Intelligence)
+8. **Lightspeed Core** — *onboarding* (instance deployed, CVE workflow configured, no repos/tickets yet)
+9. **Console Next** (Next-gen console)
+10. **OCP** (OpenShift Container Platform) — *onboarding soon*
+
+---
+
+## GitHub Pull Requests
+
+**Total GitHub PRs: {{total_gh_prs}}** | **Total GitLab MRs: {{total_gl_mrs}}** | **Combined: {{total_prmrs}} PR/MRs**
+
+**Bot account ([platex-rehor-bot](https://github.com/platex-rehor-bot)): [{{bot_prs_total}}](https://github.com/pulls?q=is%3Apr+author%3Aplatex-rehor-bot)** | **Merged: [{{bot_prs_merged}}](https://github.com/pulls?q=is%3Apr+is%3Amerged+author%3Aplatex-rehor-bot) ({{merge_rate}}%)** | **Open: [{{bot_prs_open}}](https://github.com/pulls?q=is%3Apr+is%3Aopen+author%3Aplatex-rehor-bot)** | **Closed (not merged): {{bot_prs_closed_not_merged}}**
+
+> An additional ~{{personal_prs}} GitHub PRs were opened under developer personal accounts during the pre-infrastructure period — identified via Jira comment links. The {{total_gl_mrs}} GitLab MRs are internal app-interface merge requests tracked via Jira comments.
+
+### Timeline
+
+- **First bot PR:** {{first_pr_date_formatted}}
+- **Period:** ~{{period_days}} days ({{first_pr_date_formatted}} – {{today_formatted}})
+- **Average:** ~{{prs_per_day}} PRs/day
+
+### By Category
+
+{{TABLE_PR_CATEGORIES}}
+
+### Organizations & Repos
+
+**{{unique_orgs}} GitHub organizations**, **{{unique_repos}} repositories**
+
+{{TABLE_ORGS}}
+
+### Top Repositories
+
+{{TABLE_TOP_REPOS}}
+
+---
+
+## Jira Tickets
+
+**Tracked in filter:** [107017](https://redhat.atlassian.net/issues/?filter=107017)
+
+**Total tickets in filter:** {{total_tickets}}
+
+> The {{total_tickets}} ticket count is accurate — Jira tracked all bot work from day one, including the pre-infrastructure period when the bot ran locally on developer machines.
+
+### Bot Labels in Jira
+
+{{LIST_BOT_LABELS}}
+
+### By Issue Type (from filter)
+
+{{TABLE_TICKET_TYPES}}
+
+### Notable Campaigns
+
+- **Lightwell HCC onboarding**: Rapid onboarding of Lightwell UI into the HCC platform — 5 tickets covering route theming, navigation simplification, masthead customization, and glass theme integration, all delivered in a very short timeframe ([RHCLOUD-48934](https://redhat.atlassian.net/browse/RHCLOUD-48934), [RHCLOUD-48935](https://redhat.atlassian.net/browse/RHCLOUD-48935), [RHCLOUD-48936](https://redhat.atlassian.net/browse/RHCLOUD-48936), [RHCLOUD-48966](https://redhat.atlassian.net/browse/RHCLOUD-48966), [RHCLOUD-49079](https://redhat.atlassian.net/browse/RHCLOUD-49079))
+- **GovCloud CVE remediation**: Batch processing of CVE tickets across multiple repositories, systematically updating vulnerable dependencies
+- **Dark mode implementation**: Multi-repo campaign to add PatternFly dark theme support across HCC frontend applications
+- **Dependency modernization**: Systematic updates of outdated npm packages, webpack configs, and build tooling
+- **Release management**: Automated production release PRs with changelog generation
+
+---
+
+## Example PRs with Conversation
+
+*Examples showing AI-human collaboration — the bot opens a PR, engineers review, the bot responds to feedback and iterates.*
+
+### CVE / Security Fixes
+
+| Repo | PR | Title | Review Comments |
+|------|-----|-------|----------------|
+| [RedHatInsights/sources-ui](https://github.com/RedHatInsights/sources-ui) | [#1487](https://github.com/RedHatInsights/sources-ui/pull/1487) | fix(deps): update build-tools submodule for CVE remediation | 5 |
+| [RedHatInsights/chrome-service-backend](https://github.com/RedHatInsights/chrome-service-backend) | [#1139](https://github.com/RedHatInsights/chrome-service-backend/pull/1139) | fix(deps): update Go deps + RPM security fixes | 4 |
+| [project-kessel/insights-rbac](https://github.com/project-kessel/insights-rbac) | [#3001](https://github.com/project-kessel/insights-rbac/pull/3001) | fix(permissions): require auth for unscoped role binding list | 4 |
+
+### Bug Fixes
+
+| Repo | PR | Title | Review Comments |
+|------|-----|-------|----------------|
+| [project-kessel/insights-rbac](https://github.com/project-kessel/insights-rbac) | [#2993](https://github.com/project-kessel/insights-rbac/pull/2993) | fix(role-binding): expand platform roles before pagination | 13 |
+| [RedHatInsights/insights-chrome](https://github.com/RedHatInsights/insights-chrome) | [#3505](https://github.com/RedHatInsights/insights-chrome/pull/3505) | fix(va): guard VA rendering with feature flag | 12 |
+| [RedHatInsights/learning-resources](https://github.com/RedHatInsights/learning-resources) | [#326](https://github.com/RedHatInsights/learning-resources/pull/326) | fix(help-panel): keep panel open on in-console navigation | 11 |
+| [RedHatInsights/quickstarts](https://github.com/RedHatInsights/quickstarts) | [#443](https://github.com/RedHatInsights/quickstarts/pull/443) | fix(seed): wrap seeding in transaction to prevent race condition | 9 |
+
+### Feature Implementations
+
+| Repo | PR | Title | Review Comments |
+|------|-----|-------|----------------|
+| [project-kessel/insights-rbac](https://github.com/project-kessel/insights-rbac) | [#2990](https://github.com/project-kessel/insights-rbac/pull/2990) | feat(workspace): cache root and default workspaces | 18 |
+| [RedHatInsights/insights-chrome](https://github.com/RedHatInsights/insights-chrome) | [#3550](https://github.com/RedHatInsights/insights-chrome/pull/3550) | feat(settings): add Scheduler drawer behind flag | 17 |
+| [RedHatInsights/insights-chrome](https://github.com/RedHatInsights/insights-chrome) | [#3499](https://github.com/RedHatInsights/insights-chrome/pull/3499) | feat(search): support external links in results | 16 |
+| [RedHatInsights/learning-resources](https://github.com/RedHatInsights/learning-resources) | [#299](https://github.com/RedHatInsights/learning-resources/pull/299) | feat(creator): add Load from File to YAML editor | 14 |
+
+### Dependency Updates
+
+| Repo | PR | Title | Review Comments |
+|------|-----|-------|----------------|
+| [RedHatInsights/insights-rbac-ui](https://github.com/RedHatInsights/insights-rbac-ui) | [#2345](https://github.com/RedHatInsights/insights-rbac-ui/pull/2345) | chore(renovate): migrate to shared frontend preset | 6 |
+| [RedHatInsights/javascript-clients](https://github.com/RedHatInsights/javascript-clients) | [#498](https://github.com/RedHatInsights/javascript-clients/pull/498) | fix(build-utils): remediate CVE-2026-27904 minimatch ReDoS | 3 |
+
+### Releases / Deployment
+
+| Repo | PR | Title | Review Comments |
+|------|-----|-------|----------------|
+| [RedHatInsights/quickstarts](https://github.com/RedHatInsights/quickstarts) | [#466](https://github.com/RedHatInsights/quickstarts/pull/466) | build: migrate to hardened/hummingbird base image | 3 |
+| [RedHatInsights/chrome-service-backend](https://github.com/RedHatInsights/chrome-service-backend) | [#1135](https://github.com/RedHatInsights/chrome-service-backend/pull/1135) | build: migrate to hardened/hummingbird base image | 3 |
+
+---
+
+## How It Works
+
+1. **Ticket pickup**: Bot reads from Jira sprint board or backlog, picks the highest-priority unassigned ticket
+2. **Context gathering**: Reads the ticket, linked docs, repo code, and its own memory of past work
+3. **Implementation**: Clones the repo, creates a branch, writes code, runs tests
+4. **PR creation**: Opens a pull request with structured description linking back to the Jira ticket
+5. **Code review loop**: Responds to reviewer comments, pushes fixes, iterates until approved
+6. **Completion**: Transitions Jira ticket to Done after merge
+
+### Key Capabilities
+
+- **Multi-language**: TypeScript/JavaScript (React), Go, Python, YAML/config
+- **Full CI awareness**: Runs linters, type checks, and tests before pushing
+- **Review responsiveness**: Reads PR comments and iterates on feedback autonomously
+- **Memory**: Learns from past code reviews and applies lessons to future work
+- **Preflight checks**: Validates work against configurable quality gates before submission
+- **Multiple workflows**: Sprint work, CVE remediation, backlog grooming, PR maintenance
+
+---
+
+## Impact Summary
+
+| Metric | Value |
+|--------|-------|
+| Production instances | 9 |
+| Teams served | 10 (8 active + 2 onboarding) |
+| Total PR/MRs | {{total_prmrs}}+ ({{total_gh_prs}} GitHub + {{total_gl_mrs}} GitLab) |
+| GitHub PRs ([bot account](https://github.com/platex-rehor-bot)) | [{{bot_prs_total}}](https://github.com/pulls?q=is%3Apr+author%3Aplatex-rehor-bot) |
+| GitHub PRs (all, incl. personal accounts) | {{total_gh_prs}} |
+| GitLab MRs | {{total_gl_mrs}} |
+| PRs merged (bot account) | [{{bot_prs_merged}}](https://github.com/pulls?q=is%3Apr+is%3Amerged+author%3Aplatex-rehor-bot) ({{merge_rate}}% merge rate) |
+| Repositories touched | {{unique_repos}} |
+| GitHub organizations | {{unique_orgs}} |
+| Jira tickets tracked | [{{total_tickets}}](https://redhat.atlassian.net/issues/?filter=107017) |
+| Tickets with GitHub PRs | {{tickets_with_gh_prs}} |
+| Tickets with GitLab MRs | {{tickets_with_gl_mrs}} |
+| Vulnerabilities handled | {{ticket_type_Vulnerability}} |
+| Bugs fixed | {{ticket_type_Bug}} |
+| Features delivered (stories) | {{ticket_type_Story}} |
+| Tasks completed | {{ticket_type_Task}} |
+| PRs per day (avg) | ~{{prs_per_day}} (bot account) |
+| Operational since | {{first_pr_date_month_year}} (~{{period_days}} days) |
+| [Rehor source code](https://github.com/RedHatInsights/platform-frontend-ai-dev) | Open source |
+| [Full ticket/PR spreadsheet](https://docs.google.com/spreadsheets/d/1P8GlXEZ0ctA7TFa_76B9ztJ203nePzb2LqHzK_gpUrg/edit) | All {{total_tickets}} tickets with PR/MR links |
