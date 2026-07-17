@@ -126,6 +126,20 @@ CREATE TABLE IF NOT EXISTS slack_notifications (
     sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS slack_digest_queue (
+    id              SERIAL PRIMARY KEY,
+    instance_id     TEXT,
+    jira_key        TEXT NOT NULL,
+    event_type      TEXT NOT NULL,
+    pr_url          TEXT,
+    pr_number       INTEGER,
+    repo            TEXT,
+    title           TEXT,
+    message         TEXT NOT NULL,
+    queued_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    sent            BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 CREATE TABLE IF NOT EXISTS org_members (
     id              SERIAL PRIMARY KEY,
     username        TEXT NOT NULL,

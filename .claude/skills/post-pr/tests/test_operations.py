@@ -331,86 +331,67 @@ class TestJiraAddComment:
 
 
 class TestSlackNotify:
-    """Test slack_notify operation."""
+    """Test slack_notify operation (via memory-server MCP)."""
 
-    @patch("scripts.post_pr_operations.httpx.Client")
-    def test_slack_notify_success(self, mock_client_class, operations):
-        """Test successful Slack notification."""
-        mock_client = Mock()
-        mock_client_class.return_value.__enter__.return_value = mock_client
-
-        mock_post_response = Mock()
-        mock_post_response.raise_for_status = Mock()
-
-        mock_client.post.return_value = mock_post_response
+    @patch("scripts.post_pr_operations.memory_call")
+    def test_slack_notify_success(self, mock_memory_call, operations, monkeypatch):
+        """Test successful Slack notification via MCP."""
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+        mock_memory_call.return_value = {"sent": True, "reason": "ok"}
 
         result = operations.slack_notify(
-            pr_url="https://github.com/test/repo/pull/1", pr_number=1, summary="Test PR", channel="#test-channel"
+            pr_url="https://github.com/test/repo/pull/1",
+            pr_number=1,
+            summary="Test PR",
+            ticket_id="TICKET-123",
         )
 
         assert result.status == OperationStatus.SUCCESS
         assert result.operation == "slack_notify"
-        assert "#test-channel" in result.message
-        assert result.details["channel"] == "#test-channel"
 
-        mock_client.post.assert_called_once()
-        call_args = mock_client.post.call_args
-
-        assert call_args[0][0] == "https://hooks.slack.com/test"
-        assert call_args[1]["timeout"] == 30.0
-
-        message_json = call_args[1]["json"]
-        assert message_json["channel"] == "#test-channel"
-        assert message_json["text"] == "New PR created: #1"
-        assert "attachments" in message_json
-        assert len(message_json["attachments"]) == 1
-
-        attachment = message_json["attachments"][0]
-        assert attachment["color"] == "good"
-
-        fields = attachment["fields"]
-        assert len(fields) == 2
-        assert fields[0]["title"] == "PR"
-        assert "<https://github.com/test/repo/pull/1|#1>" in fields[0]["value"]
-        assert fields[0]["short"] is True
-        assert fields[1]["title"] == "Summary"
-        assert fields[1]["value"] == "Test PR"
-        assert fields[1]["short"] is False
+        mock_memory_call.assert_called_once()
+        call_args = mock_memory_call.call_args
+        assert call_args[0][0] == "slack_notify"
+        params = call_args[0][1]
+        assert params["external_key"] == "TICKET-123"
+        assert params["event_type"] == "pr_created"
+        assert params["webhook_url"] == "https://hooks.slack.com/test"
+        assert params["pr_url"] == "https://github.com/test/repo/pull/1"
+        assert params["pr_number"] == 1
+        assert "Test PR" in params["message"]
 
     def test_slack_notify_no_webhook(self, temp_dir, monkeypatch):
         """Test Slack notification fails without webhook."""
-        monkeypatch.delenv("POST_PR_SLACK_WEBHOOK", raising=False)
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
         operations = PostPROperations(
             slack_webhook="",
             memory_store_path=str(temp_dir / "memory.json"),
         )
 
         result = operations.slack_notify(
-            pr_url="https://github.com/test/repo/pull/2", pr_number=2, summary="Test", channel="#test"
+            pr_url="https://github.com/test/repo/pull/2",
+            pr_number=2,
+            summary="Test",
+            ticket_id="TICKET-456",
         )
 
         assert result.status == OperationStatus.FAILED
         assert "Slack webhook not configured" in result.message
 
-    @patch("scripts.post_pr_operations.httpx.Client")
-    def test_slack_notify_default_channel(self, mock_client_class, operations):
-        """Test Slack notification with default channel."""
-        mock_client = Mock()
-        mock_client_class.return_value.__enter__.return_value = mock_client
+    @patch("scripts.post_pr_operations.memory_call")
+    def test_slack_notify_queued_for_digest(self, mock_memory_call, operations, monkeypatch):
+        """Test Slack notification queued in digest mode."""
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+        mock_memory_call.return_value = {"sent": False, "queued": True, "reason": "Queued for daily digest"}
 
-        mock_post_response = Mock()
-        mock_post_response.raise_for_status = Mock()
-
-        mock_client.post.return_value = mock_post_response
-
-        result = operations.slack_notify(pr_url="https://github.com/test/repo/pull/3", pr_number=3, summary="Test PR")
+        result = operations.slack_notify(
+            pr_url="https://github.com/test/repo/pull/3",
+            pr_number=3,
+            summary="Test PR",
+            ticket_id="TICKET-789",
+        )
 
         assert result.status == OperationStatus.SUCCESS
-        assert result.details["channel"] == "#hcc-ai-assistant"
-
-        call_args = mock_client.post.call_args
-        message_json = call_args[1]["json"]
-        assert message_json["channel"] == "#hcc-ai-assistant"
 
 
 class TestMemoryStore:

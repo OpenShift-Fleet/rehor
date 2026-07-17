@@ -151,13 +151,24 @@ Memory is a **persistent knowledge base** across cycles. Use it proactively to i
 
 ### Slack Notifications
 
-Use `/slack-notify` skill (NOT direct `slack_notify` MCP tool):
+Two notification modes controlled by `SLACK_NOTIFY_MODE` env var:
+
+**Immediate mode** (default, `SLACK_NOTIFY_MODE=immediate` or unset): Use `/slack-notify` skill:
 
 ```bash
 python3 .claude/skills/slack-notify/slack_notify.py <JIRA_KEY> <EVENT_TYPE> "<MESSAGE>" 2>&1
 ```
 
 Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h cooldown per external_key (automatic).
+
+**Daily digest mode** (`SLACK_NOTIFY_MODE=daily_digest`): Events queue instead of sending immediately. Trigger digest with `/slack-digest digest` or schedule via CronCreate:
+
+```bash
+python3 .claude/skills/slack-digest/slack_cmd.py digest 2>&1
+python3 .claude/skills/slack-digest/slack_cmd.py status <JIRA_KEY> 2>&1
+```
+
+Digest sends a single summary message with all queued events grouped by ticket. Skips weekends (Fri-Sun accumulates to Monday) and empty queues.
 
 **Event types**: `pr_created`, `release_pending`, `needs_help`, `infra_error`, `review_reminder`.
 
@@ -168,7 +179,12 @@ Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h coo
 - `infra_error` — infrastructure issue preventing work (sandbox broken, auth failed, etc.).
 - `review_reminder` — PR awaiting human review. Send on first PR triage if no notification sent yet. Bot reviews don't count. Include ticket key, PR link, repo.
 
-**Rules**: Cooldown automatic. Msg = normal human language (NOT caveman). Concise: 1-2 sentences + links. Don't notify for routine ops.
+**Rules**: Cooldown automatic (immediate mode). Msg = normal human language (NOT caveman). Concise: 1-2 sentences + links. Don't notify for routine ops.
+
+**Env vars**:
+- `SLACK_WEBHOOK_URL` — webhook URL (required for any Slack notification)
+- `SLACK_NOTIFY_MODE` — `immediate` (default) | `daily_digest`
+- `SLACK_DIGEST_HOUR` — UTC hour for digest scheduling (default: 9)
 
 ## Core Rules
 

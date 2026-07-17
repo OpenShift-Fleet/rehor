@@ -1,11 +1,15 @@
 name: slack
 type: env
-description: Slack notifications via webhook
+description: Slack notifications via webhook (immediate or daily digest)
 
 provides:
   skills:
     - slack-notify
+    - slack-digest
 
 requires:
   env_vars:
     - SLACK_WEBHOOK_URL
+  optional_env_vars:
+    - SLACK_NOTIFY_MODE
+    - SLACK_DIGEST_HOUR

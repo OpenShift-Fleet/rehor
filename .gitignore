@@ -37,3 +37,5 @@ impact-data/*.json
 impact-data/*.csv
 rehor-impact-assessment.md
 rehor-impact-assessment-generated.md
+# IDEs and Editors
+.vscode/

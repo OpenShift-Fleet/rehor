@@ -26,10 +26,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jira_mcp import jira_call
+from memory_mcp import memory_call
 
 logging.basicConfig(level=logging.INFO, format="[post-pr] %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -493,54 +492,65 @@ class PostPROperations:
             )
 
     def slack_notify(
-        self, pr_url: str, pr_number: int, summary: str, channel: str = "#hcc-ai-assistant"
+        self, pr_url: str, pr_number: int, summary: str, ticket_id: str, channel: str = "#hcc-ai-assistant"
     ) -> OperationResult:
-        """Send Slack notification for pr_created event.
+        """Send Slack notification for pr_created event via memory-server MCP.
+
+        Routes through the unified slack_notify MCP tool, gaining 48h deduplication
+        and daily digest support.
 
         Args:
-            pr_url: GitHub PR URL
+            pr_url: GitHub/GitLab PR URL
             pr_number: PR number
             summary: PR summary
-            channel: Slack channel (default: #hcc-ai-assistant)
+            ticket_id: JIRA ticket ID (used as external_key for deduplication)
+            channel: Slack channel (unused — channel is determined by webhook URL)
 
         Returns:
             OperationResult with success/failure status
         """
         try:
             if not self.slack_webhook:
-                raise ValueError("Slack webhook not configured (set POST_PR_SLACK_WEBHOOK)")
+                raise ValueError("Slack webhook not configured (set SLACK_WEBHOOK_URL)")
 
-            message = {
-                "channel": channel,
-                "text": f"New PR created: #{pr_number}",
-                "attachments": [
-                    {
-                        "color": "good",
-                        "fields": [
-                            {"title": "PR", "value": f"<{pr_url}|#{pr_number}>", "short": True},
-                            {"title": "Summary", "value": summary, "short": False},
-                        ],
-                    }
-                ],
-            }
+            message = f"New PR created: <{pr_url}|#{pr_number}>\nSummary: {summary}"
 
             if self.dry_run:
-                logger.info(f"[DRY RUN] Would send Slack notification to {channel}: {message}")
+                logger.info(f"[DRY RUN] Would send Slack notification: {message}")
             else:
-                with httpx.Client() as client:
-                    response = client.post(
-                        self.slack_webhook,
-                        json=message,
-                        timeout=30.0,
-                    )
-                    response.raise_for_status()
-                    logger.info(f"Sent Slack notification to {channel}")
+                repo = None
+                try:
+                    info = self._parse_pr_url(pr_url)
+                    repo = f"{info['owner']}/{info['repo']}" if info.get("owner") else info.get("repo")
+                except Exception:
+                    pass
+
+                result = memory_call(
+                    "slack_notify",
+                    {
+                        "external_key": ticket_id,
+                        "event_type": "pr_created",
+                        "message": message,
+                        "webhook_url": self.slack_webhook,
+                        "pr_url": pr_url,
+                        "pr_number": pr_number,
+                        "repo": repo,
+                        "title": summary,
+                    },
+                )
+                if result and result.get("sent"):
+                    logger.info("Sent Slack notification via MCP")
+                elif result and result.get("queued"):
+                    logger.info("Slack notification queued for digest")
+                else:
+                    reason = result.get("reason", "unknown") if result else "MCP call failed"
+                    logger.warning(f"Slack notification not sent: {reason}")
 
             return OperationResult(
                 operation="slack_notify",
                 status=OperationStatus.SUCCESS,
-                message=f"Sent notification to {channel}",
-                details={"channel": channel, "pr_url": pr_url},
+                message="Slack notification processed",
+                details={"pr_url": pr_url},
             )
 
         except Exception as e:
@@ -648,7 +658,7 @@ def execute_post_pr_workflow(
     JIRA operations use MCP via jira_call.
     """
     jira_url = jira_url or os.getenv("POST_PR_JIRA_URL", "https://redhat.atlassian.net")
-    slack_webhook = slack_webhook or os.getenv("POST_PR_SLACK_WEBHOOK")
+    slack_webhook = slack_webhook or os.getenv("SLACK_WEBHOOK_URL")
     memory_store_path = memory_store_path or os.getenv("POST_PR_MEMORY_STORE", "/tmp/memory.json")
 
     skip_operations = skip_operations or []
@@ -706,7 +716,7 @@ def execute_post_pr_workflow(
 
     # Operation 4: Slack notification
     if "slack" not in skip_operations:
-        result = operations.slack_notify(pr_url, pr_number, summary, slack_channel)
+        result = operations.slack_notify(pr_url, pr_number, summary, ticket_id, slack_channel)
         results.append(result)
         if result.status == OperationStatus.FAILED:
             return WorkflowResult(

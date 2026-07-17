@@ -24,7 +24,7 @@ def env_vars(temp_dir):
     original_env = os.environ.copy()
 
     os.environ["POST_PR_JIRA_URL"] = "https://test-jira.example.com"
-    os.environ["POST_PR_SLACK_WEBHOOK"] = "https://hooks.slack.com/test"
+    os.environ["SLACK_WEBHOOK_URL"] = "https://hooks.slack.com/test"
     os.environ["POST_PR_MEMORY_STORE"] = str(temp_dir / "memory.json")
 
     yield
@@ -63,7 +63,7 @@ def mock_apis():
     with (
         patch("scripts.post_pr_operations.subprocess.run") as mock_run,
         patch("scripts.post_pr_operations.jira_call") as mock_jira_call,
-        patch("scripts.post_pr_operations.httpx.Client") as mock_client_class,
+        patch("scripts.post_pr_operations.memory_call") as mock_memory_call,
     ):
         mock_run.side_effect = _make_gh_side_effect()
 
@@ -73,11 +73,7 @@ def mock_apis():
             {"id": "12345"},
         ]
 
-        mock_client = Mock()
-        mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_post_response = Mock()
-        mock_post_response.raise_for_status = Mock()
-        mock_client.post.return_value = mock_post_response
+        mock_memory_call.return_value = {"sent": True, "reason": "ok"}
 
         yield mock_run, mock_jira_call
 
@@ -167,7 +163,7 @@ class TestFullWorkflow:
 
     def test_workflow_fails_fast_on_error(self, temp_dir, monkeypatch):
         """Test that workflow stops on first error (fail-fast)."""
-        monkeypatch.delenv("POST_PR_SLACK_WEBHOOK", raising=False)
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
         monkeypatch.setenv("POST_PR_MEMORY_STORE", str(temp_dir / "memory.json"))
 
         with patch("scripts.post_pr_operations.subprocess.run") as mock_run:
@@ -221,7 +217,7 @@ class TestWorkflowEdgeCases:
 
         assert result.success is True
         slack_op = next(op for op in result.operations if op.operation == "slack_notify")
-        assert slack_op.details["channel"] == "#hcc-ai-assistant"
+        assert slack_op.status == OperationStatus.SUCCESS
 
     def test_workflow_with_long_summary(self, env_vars, mock_apis):
         """Test workflow with very long PR summary."""

@@ -80,7 +80,7 @@ Environment variables for API integration:
 - `GITHUB_TOKEN` or `GH_TOKEN`: GitHub API token for PR operations
 - `POST_PR_JIRA_TOKEN`: JIRA API token for issue transitions and comments
 - `POST_PR_JIRA_EMAIL`: Email address for JIRA Basic authentication
-- `POST_PR_SLACK_WEBHOOK`: Slack incoming webhook URL for notifications
+- `SLACK_WEBHOOK_URL`: Slack incoming webhook URL for notifications
 
 **Optional:**
 - `POST_PR_JIRA_URL`: JIRA instance URL (default: https://redhat.atlassian.net)
@@ -91,7 +91,7 @@ Environment variables for API integration:
 - All inputs are known at PR creation time; no LLM reasoning needed
 - Operations execute sequentially with fail-fast error handling
 - Designed for speed: ~5-6 tool calls → 1 script execution
-- Full API integration: GitHub REST API, JIRA Cloud API v3, Slack webhooks
+- Full API integration: GitHub REST API, JIRA Cloud API v3, Slack via memory-server MCP
 - Uses Basic authentication for JIRA Cloud (email + API token)
 - Supports both dry-run mode and skip operations for flexibility
 - Logging to stdout for visibility in Claude Code output
