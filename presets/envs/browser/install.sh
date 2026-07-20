@@ -2,10 +2,9 @@
 # Browser env preset — Chromium + Playwright + chrome-devtools MCP
 set -e
 
-# Skip if already installed (idempotent during transition period)
-if command -v chrome-devtools-mcp &>/dev/null && [ -d "${PLAYWRIGHT_BROWSERS_PATH:-/opt/pw-browsers}" ]; then
-    echo "browser preset: already installed, skipping"
-    exit 0
+if ! command -v npx &>/dev/null; then
+    echo "ERROR: browser preset requires node preset (npx not found)" >&2
+    exit 1
 fi
 
 # Chromium runtime libraries

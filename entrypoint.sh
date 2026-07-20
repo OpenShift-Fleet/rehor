@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bot container entrypoint — decode secrets, start Chromium, launch bot.
+# Bot container entrypoint — decode secrets, run env presets, launch bot.
 set -e
 
 # --- Verify required CLI tools ---
@@ -177,26 +177,10 @@ if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
     wait_for_http "memory-server" "$BOT_MEMORY_HEALTH_URL" "${BOT_MEMORY_HEALTH_TIMEOUT:-120}"
 fi
 
-
-# Start headless Chromium in background (Playwright-installed binary)
-CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -type f | head -1)
-"$CHROME_BIN" \
-    --headless --no-sandbox --disable-gpu \
-    --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
-    --remote-allow-origins=* \
-    --ignore-certificate-errors \
-    --host-resolver-rules='MAP consent.trustarc.com 127.0.0.1' \
-    --proxy-server="${HTTPS_PROXY:-http://proxy:3128}" \
-    --proxy-bypass-list='*.foo.redhat.com;localhost;127.0.0.1' \
-    --no-first-run --disable-sync --disable-extensions --disable-popup-blocking &
-
-# Wait for Chromium to be ready
-until curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; do sleep 1; done
-
-# Run env preset entrypoint scripts (no-op until presets are extracted)
+# Run env preset entrypoint scripts (Chromium, dev-proxy, etc.)
 shopt -s nullglob
 for script in presets/envs/*/entrypoint.d/*.sh; do bash "$script"; done
 shopt -u nullglob
 
-echo "Credentials configured. Chromium started. Starting bot with label: ${BOT_LABEL}"
+echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
 exec uv run dev-bot --label "$BOT_LABEL"

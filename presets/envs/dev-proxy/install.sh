@@ -2,14 +2,12 @@
 # Dev-proxy env preset — custom Caddy for local UI verification against stage
 set -e
 
-# Skip if already installed (idempotent during transition period)
-# During transition, Caddy is built via multi-stage Dockerfile builder
-if command -v caddy &>/dev/null; then
-    echo "dev-proxy preset: caddy already installed, skipping"
-    exit 0
+if ! command -v go &>/dev/null; then
+    echo "ERROR: dev-proxy preset requires go preset (go not found)" >&2
+    exit 1
 fi
 
-# Build Caddy from source (for when multi-stage builder is removed)
+# Build Caddy from source
 if [ -d /home/botuser/app/dev-proxy ]; then
     cd /home/botuser/app/dev-proxy
     go build -o /usr/local/bin/caddy .

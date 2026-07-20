@@ -4,12 +4,6 @@ set -e
 
 export NVM_DIR="${NVM_DIR:-/usr/local/nvm}"
 
-# Skip if already installed (idempotent during transition period)
-if [ -s "$NVM_DIR/nvm.sh" ] && command -v node &>/dev/null; then
-    echo "node preset: already installed ($(node --version)), skipping"
-    exit 0
-fi
-
 # Install nvm
 mkdir -p "$NVM_DIR"
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash

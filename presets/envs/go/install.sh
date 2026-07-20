@@ -3,13 +3,6 @@
 set -e
 
 export GOENV_ROOT="${GOENV_ROOT:-/usr/local/goenv}"
-
-# Skip if already installed (idempotent during transition period)
-if [ -d "$GOENV_ROOT" ] && command -v go &>/dev/null && command -v golangci-lint &>/dev/null; then
-    echo "go preset: already installed ($(go version)), skipping"
-    exit 0
-fi
-
 ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
 
 # Install goenv
