@@ -177,9 +177,21 @@ if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
     wait_for_http "memory-server" "$BOT_MEMORY_HEALTH_URL" "${BOT_MEMORY_HEALTH_TIMEOUT:-120}"
 fi
 
-# Run env preset entrypoint scripts (Chromium, dev-proxy, etc.)
+# Run env preset entrypoint scripts — only for installed envs
+INSTALLED_ENVS=""
+for cfg in instance/*/agent/instance.yaml; do
+    [ -f "$cfg" ] || continue
+    INSTALLED_ENVS="$INSTALLED_ENVS $(sed -n '/^envs:/,/^[^ ]/{ s/^  - //p }' "$cfg")"
+done
+INSTALLED_ENVS=$(echo "$INSTALLED_ENVS" | tr ' ' '\n' | sort -u | xargs)
 shopt -s nullglob
-for script in presets/envs/*/entrypoint.d/*.sh; do bash "$script"; done
+if [ -z "$INSTALLED_ENVS" ]; then
+    for script in presets/envs/*/entrypoint.d/*.sh; do bash "$script"; done
+else
+    for env in $INSTALLED_ENVS; do
+        for script in presets/envs/$env/entrypoint.d/*.sh; do bash "$script"; done
+    done
+fi
 shopt -u nullglob
 
 echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"

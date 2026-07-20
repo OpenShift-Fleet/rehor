@@ -7,7 +7,11 @@ if curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
     exit 0
 fi
 
-CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -type f | head -1)
+CHROME_BIN=$(find "${PLAYWRIGHT_BROWSERS_PATH:-/nonexistent}" -name chrome -type f 2>/dev/null | head -1)
+if [ -z "$CHROME_BIN" ]; then
+    echo "Chromium not installed, skipping"
+    exit 0
+fi
 "$CHROME_BIN" \
     --headless --no-sandbox --disable-gpu \
     --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
