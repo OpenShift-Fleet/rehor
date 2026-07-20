@@ -59,12 +59,13 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
         "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
         "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
         "model": model,
+        "model_usage": model_usage if model_usage else {},
         "is_error": getattr(result, "subtype", "") != "success",
         "no_work": _is_no_work(result_text),
     }
 
     if ctx:
-        entry["jira_key"] = ctx.jira_key
+        entry["external_key"] = ctx.jira_key
         entry["repo"] = ctx.repo
         entry["work_type"] = ctx.work_type
         entry["summary"] = ctx.summary
@@ -86,8 +87,16 @@ def record_cost(costs_file: Path, label: str, result, ctx: CycleContext | None =
 
     # Push to dashboard API
     try:
-        httpx.post(COSTS_API, json=entry, timeout=3.0)
-    except Exception:
-        logger.debug("Failed to push cost to dashboard API (dashboard may be down)")
+        resp = httpx.post(COSTS_API, json=entry, timeout=3.0)
+        if not resp.is_success:
+            logger.warning(
+                "Cost push failed: HTTP %d: %s",
+                resp.status_code,
+                resp.text[:200],
+            )
+    except httpx.TimeoutException:
+        logger.warning("Cost push timed out after 3s")
+    except Exception as e:
+        logger.warning("Cost push failed: %s", e)
 
     return entry["no_work"]
