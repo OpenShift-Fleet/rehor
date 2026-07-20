@@ -1,6 +1,54 @@
 # Rehor Roadmap
 
-Planned improvements and new capabilities for the Rehor autonomous development platform. Items are listed by theme, not priority order.
+Planned improvements and new capabilities for the Rehor autonomous development platform.
+
+---
+
+## Suggested priority
+
+Start with items that are low-cost, reuse existing data, and unblock later work.
+
+**Tier 1 — Foundations (do first, in this order):**
+
+1. **CI Foundation** — merge gate for all components. Prerequisite for safe iteration on everything else.
+2. **Logging & Observability** — structured logs, cycle correlation ID, preflight duration. Low cost, immediate engineer and platform-team value.
+3. **Run Identity** — stable `run_id` linking cost, task, transcript, PR, and outcome. Required before cost analysis or improvement agents are useful.
+
+**Tier 2 — Direct engineer value:**
+
+4. **Agentic SDLC Integration** — pin and install the plugin, integrate one lifecycle skill first. Reuses existing battle-tested skills rather than building custom implementations.
+5. **Shared Memory MCP** — read-only semantic search. Low infrastructure cost, direct value to engineers using local agentic tools.
+6. **Model Customization & Cost Tiering** — per-workflow defaults and cost tracking. Measure where spend concentrates before building per-task routing.
+7. **Task Blocker Explanation** — expose preflight decisions in dashboard. Reuses existing data, directly reduces engineer debugging time.
+8. **Ticket Readiness Doctor** — analyze ticket specification quality before execution, request missing info, store findings for reuse.
+
+**Tier 3 — Larger scope (after foundations exist):**
+
+9. **Failure Fingerprinting** — group recurring failures for faster diagnosis. Builds on logging and run identity from tier 1.
+10. **Onboarding Agent** — schema, validator, dry-run, PR generator first. Conversational multi-channel agent later.
+11. **Improvement Agent** — depends on telemetry from tiers 1–2. Primary input: PR review comments and `review_feedback` memories. Start with SQL analytics, not per-transcript LLM analysis.
+12. **Workflow Presets** — one preset at a time, driven by team demand.
+
+Engineer experience items (§9–§12) pair naturally with platform foundations: run identity provides stable IDs that improvement analysis references, and logging & observability supplies structured events that blocker explanations and failure fingerprinting consume. Prioritize platform foundations first so engineer experience features build on real data rather than ad-hoc log parsing.
+
+---
+
+## Status
+
+| Item | Status |
+|------|--------|
+| CI Foundation | Planned |
+| Logging & Observability | Planned |
+| Run Identity | Planned |
+| Shared Memory MCP | Planned |
+| Agentic SDLC Integration | Planned |
+| Model Customization | Planned |
+| Task Blocker Explanation | Planned |
+| Ticket Readiness Doctor | Planned |
+| Failure Fingerprinting | Planned |
+| Onboarding Agent | Planned |
+| Improvement Agent | Planned (after telemetry exists) |
+| Workflow Presets | Planned (scrum-jira exists today) |
 
 ---
 
@@ -15,7 +63,10 @@ Expose the memory server as a read-only MCP endpoint that engineers can connect 
 - MCP resource endpoints for browsing memories by instance, type, and topic
 - MCP tool for semantic search across all memories
 - Authentication via existing platform identity
+- Rate limits and clear instance/tenant filtering
 - Documentation for connecting from local Claude Code / Cursor / OpenCode
+
+**First slice:** Read-only semantic search with authentication, rate limits, and instance/tenant filtering. Keep write access and cross-instance aggregation for later.
 
 **Future:** Enable write access from local sessions so engineers can contribute knowledge back to the shared memory (e.g., document a fix the bot should learn from).
 
@@ -39,6 +90,8 @@ A dedicated bot instance that automates onboarding new teams and repos onto the 
 - Opens a PR to add the new instance to the fleet
 - Validates the setup with a dry-run preflight
 
+**First slice:** Configuration schema, validator, dry-run, and PR generator. The multi-channel conversational agent can come after the core validation loop is reliable.
+
 ---
 
 ## 3. Instance Improvement Agent
@@ -51,12 +104,14 @@ A meta-agent that analyzes bot instance performance and opens PRs to improve the
 - Reviews instance transcripts to find recurring patterns, issues, and inefficiencies
 - Identifies repetitive task sequences that should become skills
 - Detects preflight gaps (tickets that start but shouldn't have)
-- Analyzes feedback patterns (repeated human corrections → instruction updates)
+- Mines PR review comments and `review_feedback` memories for recurring corrections — the bot already stores these, but no automated process aggregates or acts on them
 - Opens PRs with concrete improvements:
   - New or refined preflight checks
   - New skills for repetitive task patterns
-  - Updated CLAUDE.md instructions based on feedback trends
+  - Updated CLAUDE.md instructions based on review feedback trends
   - Workflow optimizations
+
+**First slice:** Useful after telemetry and run identity exist. Primary input: PR review comments (already collected by preflight) and `review_feedback` memories (already stored by the wrap-up skill). Start with aggregating recurring review corrections using SQL/analytics before running LLM analysis. Run an LLM auditor weekly or on demand, not on every transcript. Require human approval for any generated PRs.
 
 ---
 
@@ -72,6 +127,8 @@ Expand the workflow preset library beyond the current scrum-based Jira workflow.
 - **review-bot** — Dedicated to code review. Watches for PRs on configured repos, provides review feedback, and verifies fixes.
 
 Each preset includes its own workflow CLAUDE.md, preflight checks, and default configuration.
+
+**First slice:** Add one preset only when a team is ready to use it. Do not build all presets as a batch — each needs a real user to validate against.
 
 ---
 
@@ -110,15 +167,121 @@ Configure which AI models are used for different tasks and workflows, matching m
 - The main loop deciding which ticket to work on → mid-tier model
 - Implementing a multi-file feature from a Jira story → top-tier model
 
+**First slice:** Begin with per-workflow model defaults and cost tracking per model tier. The current runner creates one `ClaudeAgentOptions` with one model per session, so per-task model switching and sub-agent tiers require a larger architecture change — scope that separately after measuring where spend concentrates.
+
 ---
 
-## Status
+## 7. CI Foundation
 
-| Item | Status |
-|------|--------|
-| Shared Memory MCP | Planned |
-| Onboarding Agent | Planned |
-| Improvement Agent | Planned |
-| Workflow Presets | Planned (scrum-jira exists today) |
-| Agentic SDLC Integration | Planned |
-| Model Customization | Planned |
+Add required CI checks for all platform components before expanding into full governance.
+
+**Why:** Without CI, regressions in core components are caught late or not at all. A reliable check suite is a prerequisite for safe iteration on every other roadmap item.
+
+**Scope:**
+- Required checks for Python (bot runner, presets), Go (memory-server), and dashboard components
+- Linting, type checking, and unit tests as merge gates
+- A clear contribution guide for adding checks when new components land
+
+**Success metric:** No PR merges without passing checks for affected components.
+
+---
+
+## 8. Logging & Observability
+
+Add structured logging and traceability across bot runs so engineers and the platform team can diagnose issues without reading raw transcripts.
+
+**Why:** The current logging infrastructure is unstructured plain text with no cross-event correlation:
+- `bot/run.py` uses `[%(asctime)s] %(message)s` format — no structured/JSON logging anywhere, no `structlog` or equivalent in the project.
+- No correlation ID links events across a single cycle. The main loop runs preflight → agent cycle → cost recording → transcript storage, but each step logs independently. `session_id` from Claude SDK is captured *after* the cycle ends, never used during it. Preflight scripts have zero ID awareness.
+- Preflight duration is not tracked — `_run_script()` runs subprocesses but never records timing. Only the Claude SDK's `duration_ms` on the agent cycle itself is captured.
+- Multiple silent failures: dashboard status push uses bare `except Exception: pass` (`bot/agent.py:59-61`); cost API push catches all exceptions at DEBUG level only (`bot/costs.py:88-91`); WebSocket events swallow all errors silently (`server.py:133`).
+- Engineers diagnose issues by grepping `data/bot.log` (plain text, append mode). There is no way to filter by cycle, task, or error class.
+
+**Scope:**
+- Structured log format (JSON) with consistent fields across runner, preflight, and dashboard components
+- Cycle correlation ID linking all events within a single bot run
+- Preflight duration tracking
+- Fix silent failures: log dashboard-post, cost-push, and WebSocket errors at WARNING level with context
+- No external observability tooling exists today (no Prometheus, OpenTelemetry, Sentry) — structured logs are the prerequisite for adding any of these later
+
+**First slice:** Structured logs, a cycle correlation ID, and fix silent `except Exception: pass` blocks. Defer centralized log aggregation until the format is stable.
+
+---
+
+## 9. Run Identity
+
+Add a stable identifier that links all artifacts produced by a single bot run.
+
+**Why:** Cost data, task outcomes, transcripts, PRs, and feedback currently lack a common key. Without run identity, cross-cutting queries ("how much did this ticket cost?" or "which runs produced rejected PRs?") require manual correlation.
+
+**Scope:**
+- A stable `run_id` generated at cycle start
+- Propagated to cost records, task/ticket references, transcript metadata, PR metadata, and outcome/feedback records
+- Queryable from the dashboard
+
+**First slice:** Generate `run_id`, attach it to cost and transcript records. Extend to PR metadata and dashboard after the core ID is stable.
+
+---
+
+## 10. Task Blocker Explanation
+
+Show why Rehor did not pick up a task and what an engineer must do next. The task detail view should expose the latest preflight decision, failed checks, stale inputs, retry timing, and a short remediation message.
+
+**Why:** Engineers cannot currently ask "why hasn't PROJ-123 been picked up?" Preflight produces free-text skip reasons (e.g., "No eligible work — 3 candidates lack repo: labels"), but these are dumped as a single text blob into idle cycle runs (`progress.summary`, truncated to 2000 chars), not linked to individual tasks. The dashboard shows paused tasks with `paused_reason` and idle cycle run summaries, but candidate tickets that were evaluated and skipped have no representation in the dashboard at all — they only exist in Jira. The Task model has no field for `last_skip_reason` or `last_preflight_result`. Today, engineers must go to the Cycle Runs page, filter for "idle" cycle type, read free-text summaries across multiple cycles, and piece together why their ticket wasn't picked — or read runner logs directly.
+
+**Scope:**
+- Add per-ticket skip reasons to preflight output (structured reason codes, not just free text)
+- Link skip decisions to individual tasks or Jira tickets in the dashboard
+- Render existing preflight output in the dashboard with stable reason codes
+- Short remediation message per reason code
+- Manual recheck action (after explanation is reliable)
+
+**First slice:** Add a `last_skip_reason` field to the Task model and populate it from preflight output. Render per-ticket skip reasons in the dashboard with links to the affected Jira ticket, repository, or PR. Add a manual recheck action only after the explanation is reliable.
+
+**Guardrail:** Do not use an LLM to interpret deterministic state. Success means an engineer can resolve common blocked tasks without reading runner logs or asking the platform team.
+
+---
+
+## 11. Ticket Readiness Doctor
+
+Validate whether a Jira ticket is sufficiently well-specified for Rehor to work on it, and improve it when it isn't.
+
+**Why:** Underspecified tickets are the most common reason bot runs produce wrong or incomplete results. The bot starts work, discovers ambiguity mid-implementation, and either guesses wrong or stalls. Catching specification gaps before execution saves bot cycles and engineer rework.
+
+**Scope:**
+- Analyze ticket description, acceptance criteria, and linked context for completeness and clarity
+- Identify missing information: unclear requirements, ambiguous scope, missing acceptance criteria, undefined edge cases
+- Update the ticket with specific questions and a structured summary of what's missing
+- Request more information from the reporter via Jira comment
+- Store detailed findings (what was checked, what gaps were found, what context was gathered) so a subsequent bot session can reuse them without re-analyzing the ticket
+- Return structured pass, warning, and failure results with reasons
+
+**First slice:** Run ticket analysis as part of preflight. If gaps found, comment on the ticket requesting clarification and mark the task as not ready. Store findings in run metadata for reuse by future sessions.
+
+**Guardrail:** Do not silently skip underspecified tickets — always explain what's missing and what the reporter should add. Do not fabricate missing requirements.
+
+---
+
+## 12. Failure Fingerprinting
+
+Group recurring preflight, tool, build, and CI failures so engineers can recognize known problems and reuse proven fixes.
+
+**Why:** Recurring failures are already a real problem being worked around manually:
+- The workflow hardcodes three failure classes (`clone_failed`, `push_failed`, `ci_failed`) with retry-then-pause logic — primitive manual fingerprinting in prompt instructions.
+- Known issues are documented as prose in persona files (e.g., the RBAC persona documents a Redis health check false positive) — not queryable or aggregatable.
+- Persona files contain repo-specific CI fix patterns, but they are referenced by the agent at runtime, not searchable across instances.
+- The runner uses exponential backoff (`consecutive_preflight_errors`, up to 300s) for transient recurring failures.
+
+Despite this, the system has no infrastructure for error analysis: errors are stored as a single `is_error=True` boolean or `cycle_type="error"` string with free-text summaries. The dashboard shows error count as one undifferentiated number. The memory system has no failure or workaround category.
+
+**Scope:**
+- Normalize deterministic error signatures
+- Count occurrences by repository and workflow
+- Link each signature to recent examples and an optional human-maintained workaround
+- Add a `failure` or `known_issue` memory category so the bot can store and recall structured workarounds
+- Add semantic clustering only if exact fingerprints prove insufficient
+
+**First slice:** Normalize deterministic error signatures, count occurrences by repository and workflow, and link each signature to recent examples and an optional human-maintained workaround. Add an error breakdown to the dashboard (replacing the current single error count).
+
+**Guardrail:** Never hide the original error or automatically apply a fix from a fingerprint. Success means repeated incidents are diagnosed faster and the platform team can prioritize the most common failure classes.
+
