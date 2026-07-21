@@ -124,12 +124,16 @@ def setup_logging() -> None:
 REMOTE_CONFIG_DIR = DATA_DIR / "remote-config"
 
 
-def sync_config_repo() -> Path | None:
-    """Clone or pull BOT_CONFIG_REPO. Returns agent config dir or None."""
+def sync_config_repo() -> tuple[Path | None, Path | None]:
+    """Clone or pull BOT_CONFIG_REPO.
+
+    Returns (profile_agent_dir, shared_agent_dir).
+    shared_agent_dir is the sibling ``shared/agent/`` directory if it exists.
+    """
     logger = logging.getLogger(__name__)
     repo_url = os.environ.get("BOT_CONFIG_REPO")
     if not repo_url:
-        return None
+        return None, None
 
     config_dir = REMOTE_CONFIG_DIR
     try:
@@ -160,21 +164,28 @@ def sync_config_repo() -> Path | None:
                     r.returncode,
                     r.stderr.decode().strip(),
                 )
-                return None
+                return None, None
     except subprocess.TimeoutExpired:
         logger.warning("Config repo sync timed out — using built-in config")
-        return None
+        return None, None
     except Exception as exc:
         logger.warning("Config repo sync failed: %s — using built-in config", exc)
-        return None
+        return None, None
 
     sub = os.environ.get("BOT_CONFIG_PATH", "rehor-config")
-    agent_dir = config_dir / sub / "agent"
+    profile_dir = config_dir / sub
+    agent_dir = profile_dir / "agent"
     if not agent_dir.is_dir():
         logger.warning("Config repo has no %s/agent/ dir — using built-in config", sub)
-        return None
+        return None, None
 
-    return agent_dir
+    shared_agent_dir = None
+    shared_dir = profile_dir.parent / "shared" / "agent"
+    if shared_dir.is_dir():
+        shared_agent_dir = shared_dir
+        logger.info("Multi-profile: shared config at %s", shared_dir)
+
+    return agent_dir, shared_agent_dir
 
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
@@ -252,13 +263,16 @@ def assemble_claude_md(
     script_dir: Path,
     instance_config: InstanceConfig | None = None,
     remote_agent_dir: Path | None = None,
+    shared_agent_dir: Path | None = None,
 ) -> None:
-    """Concatenate core + workflow preset CLAUDE.md into project root.
+    """Concatenate core + shared + workflow preset CLAUDE.md into project root.
+
+    Layer order: core → shared → workflow → instance.
 
     Supports instance CLAUDE.md via claude_md_strategy:
-      replace — core + instance CLAUDE.md (skip workflow)
-      append  — core + workflow + instance CLAUDE.md
-      ignore  — core + workflow only (default)
+      replace — core + shared + instance CLAUDE.md (skip workflow)
+      append  — core + shared + workflow + instance CLAUDE.md
+      ignore  — core + shared + workflow only (default)
     """
     logger = logging.getLogger(__name__)
     presets = script_dir / "presets"
@@ -272,6 +286,11 @@ def assemble_claude_md(
         return
 
     parts = [core.read_text()]
+
+    shared_md = shared_agent_dir / "CLAUDE.md" if shared_agent_dir else None
+    if shared_md is not None and shared_md.is_file():
+        parts.append(shared_md.read_text())
+        logger.info("CLAUDE.md: included shared layer from %s", shared_md)
 
     instance_md = remote_agent_dir / "CLAUDE.md" if remote_agent_dir else None
     has_instance_md = instance_md is not None and instance_md.is_file()
@@ -380,7 +399,9 @@ def main() -> None:
 
     # Initial config sync + instance config load (before validation so
     # instance.yaml can override the workflow preset)
-    initial_agent_dir = sync_config_repo()
+    initial_agent_dir, initial_shared_dir = sync_config_repo()
+    if initial_shared_dir:
+        apply_merged_config(SCRIPT_DIR, initial_shared_dir)
     if initial_agent_dir:
         apply_merged_config(SCRIPT_DIR, initial_agent_dir)
     instance_config = load_instance_config(initial_agent_dir)
@@ -427,7 +448,9 @@ def main() -> None:
 
     try:
         while True:
-            remote_agent_dir = sync_config_repo()
+            remote_agent_dir, shared_agent_dir = sync_config_repo()
+            if shared_agent_dir:
+                apply_merged_config(SCRIPT_DIR, shared_agent_dir)
             if remote_agent_dir:
                 apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
@@ -437,7 +460,7 @@ def main() -> None:
                 resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),
                 resolve_active_envs(SCRIPT_DIR, instance_config),
             )
-            assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir)
+            assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir, shared_agent_dir)
 
             # --- Pre-flight: gather data before starting AI session ---
             preflight_result = run_preflight(SCRIPT_DIR, instance_config.workflow, remote_agent_dir, instance_id)
