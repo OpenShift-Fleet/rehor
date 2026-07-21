@@ -483,6 +483,173 @@ async def test_task_unarchive_restores(db):
     assert row["paused_reason"] is None
 
 
+# --- Task pause / unpause ---
+
+
+@pytest.mark.asyncio
+async def test_task_pause_sets_reason(db):
+    await _apply_schema(db)
+    await _insert_task(db, "RHCLOUD-3200", status="in_progress")
+
+    row = await db.fetchrow(
+        """UPDATE tasks SET status = 'paused'::task_status, paused_reason = $2
+           WHERE external_key = $1 AND status = ANY($3)
+           RETURNING *""",
+        "RHCLOUD-3200",
+        "waiting on UX",
+        ["in_progress", "pr_open", "pr_changes"],
+    )
+    assert row is not None
+    assert row["status"] == "paused"
+    assert row["paused_reason"] == "waiting on UX"
+
+
+@pytest.mark.asyncio
+async def test_task_unpause_restores_in_progress(db):
+    await _apply_schema(db)
+    await _insert_task(db, "RHCLOUD-3201", status="paused")
+    await db.execute(
+        "UPDATE tasks SET paused_reason = $2 WHERE external_key = $1",
+        "RHCLOUD-3201",
+        "blocked",
+    )
+
+    row = await db.fetchrow(
+        """UPDATE tasks SET status = 'in_progress'::task_status, paused_reason = NULL
+           WHERE external_key = $1 AND status = 'paused'::task_status
+           RETURNING *""",
+        "RHCLOUD-3201",
+    )
+    assert row is not None
+    assert row["status"] == "in_progress"
+    assert row["paused_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_task_unpause_restores_pr_open_when_artifact_present(db):
+    await _apply_schema(db)
+    await _insert_task(db, "RHCLOUD-3202", status="paused")
+    await db.execute(
+        """UPDATE tasks SET artifacts = $2::jsonb, paused_reason = $3
+           WHERE external_key = $1""",
+        "RHCLOUD-3202",
+        json.dumps(
+            [
+                {
+                    "name": "PR #42",
+                    "url": "https://github.com/org/repo/pull/42",
+                    "type": "pull_request",
+                }
+            ]
+        ),
+        "waiting on review",
+    )
+
+    existing = await db.fetchrow(
+        "SELECT * FROM tasks WHERE external_key = $1", "RHCLOUD-3202"
+    )
+    artifacts = existing["artifacts"]
+    if isinstance(artifacts, str):
+        artifacts = json.loads(artifacts)
+    new_status = "in_progress"
+    for artifact in artifacts or []:
+        if artifact.get("type") in ("pull_request", "merge_request"):
+            new_status = "pr_open"
+            break
+
+    row = await db.fetchrow(
+        """UPDATE tasks SET status = $2::task_status, paused_reason = NULL
+           WHERE external_key = $1 AND status = 'paused'::task_status
+           RETURNING *""",
+        "RHCLOUD-3202",
+        new_status,
+    )
+    assert row is not None
+    assert row["status"] == "pr_open"
+    assert row["paused_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_task_unpause_ignores_non_paused(db):
+    await _apply_schema(db)
+    await _insert_task(db, "RHCLOUD-3203", status="in_progress")
+
+    row = await db.fetchrow(
+        """UPDATE tasks SET status = 'in_progress'::task_status, paused_reason = NULL
+           WHERE external_key = $1 AND status = 'paused'::task_status
+           RETURNING *""",
+        "RHCLOUD-3203",
+    )
+    assert row is None
+
+
+def test_restore_status_from_row_helpers():
+    from bot_memory_server.api import _restore_status_from_row
+
+    assert _restore_status_from_row({"artifacts": [], "metadata": {}}) == "in_progress"
+    assert (
+        _restore_status_from_row(
+            {
+                "artifacts": [
+                    {
+                        "name": "PR #1",
+                        "url": "https://example.com/1",
+                        "type": "pull_request",
+                    }
+                ],
+                "metadata": {},
+            }
+        )
+        == "pr_open"
+    )
+    assert (
+        _restore_status_from_row(
+            {
+                "artifacts": "[]",
+                "metadata": json.dumps(
+                    {"prs": [{"repo": "r", "number": 1, "url": "u", "host": "github"}]}
+                ),
+            }
+        )
+        == "pr_open"
+    )
+    assert (
+        _restore_status_from_row(
+            {
+                "artifacts": [
+                    {
+                        "name": "MR #9",
+                        "url": "https://gitlab.example/9",
+                        "type": "merge_request",
+                    }
+                ],
+                "metadata": {},
+            }
+        )
+        == "pr_open"
+    )
+    # status_before_pause in metadata takes priority
+    assert (
+        _restore_status_from_row(
+            {"artifacts": [], "metadata": {"status_before_pause": "pr_changes"}}
+        )
+        == "pr_changes"
+    )
+    assert (
+        _restore_status_from_row(
+            {"artifacts": [], "metadata": json.dumps({"status_before_pause": "pr_open"})}
+        )
+        == "pr_open"
+    )
+    # invalid saved status falls back to heuristic
+    assert (
+        _restore_status_from_row(
+            {"artifacts": [], "metadata": {"status_before_pause": "done"}}
+        )
+        == "in_progress"
+    )
+
+
 # --- Stats endpoint ---
 
 

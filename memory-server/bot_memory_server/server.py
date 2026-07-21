@@ -81,6 +81,8 @@ from .api import (  # noqa: E402
     api_tasks,
     api_task_delete,
     api_task_unarchive,
+    api_task_pause,
+    api_task_unpause,
     api_memories,
     api_memory_get,
     api_memory_search,
@@ -103,6 +105,8 @@ from .api import (  # noqa: E402
 mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
 mcp.custom_route("/api/tasks/{key:path}", methods=["DELETE"])(api_task_delete)
 mcp.custom_route("/api/tasks/{key:path}/unarchive", methods=["POST"])(api_task_unarchive)
+mcp.custom_route("/api/tasks/{key:path}/pause", methods=["POST"])(api_task_pause)
+mcp.custom_route("/api/tasks/{key:path}/unpause", methods=["POST"])(api_task_unpause)
 mcp.custom_route("/api/memories", methods=["GET"])(api_memories)
 mcp.custom_route("/api/memories/search", methods=["GET"])(api_memory_search)
 mcp.custom_route("/api/memories/upload", methods=["POST"])(api_memory_upload)

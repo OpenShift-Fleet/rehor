@@ -13,10 +13,50 @@ from starlette.responses import JSONResponse, Response
 from .db import get_pool
 from .embeddings import embed
 from .events import Event, bus
+from .tools.tasks import ACTIVE_STATUSES, MAX_ACTIVE
 
 logger = logging.getLogger(__name__)
 
 wake_signals: set[str] = set()
+
+
+def _parse_json_field(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _restore_status_from_row(row) -> str:
+    """Pick active status when resuming a paused/archived task.
+
+    Uses ``status_before_pause`` stored in metadata when available,
+    falling back to artifact-based heuristic.
+    """
+    meta = _parse_json_field(row.get("metadata")) or {}
+    saved = meta.get("status_before_pause")
+    if saved and saved in ACTIVE_STATUSES:
+        return saved
+    artifacts = _parse_json_field(row.get("artifacts")) or []
+    for artifact in artifacts:
+        if artifact.get("type") in ("pull_request", "merge_request"):
+            return "pr_open"
+    if meta.get("prs"):
+        return "pr_open"
+    return "in_progress"
+
+
+async def _active_count(pool, instance_id: str | None) -> int:
+    if instance_id:
+        return await pool.fetchval(
+            "SELECT COUNT(*) FROM tasks WHERE status = ANY($1)"
+            " AND (instance_id = $2 OR instance_id IS NULL)",
+            list(ACTIVE_STATUSES),
+            instance_id,
+        )
+    return await pool.fetchval(
+        "SELECT COUNT(*) FROM tasks WHERE status = ANY($1)",
+        list(ACTIVE_STATUSES),
+    )
 
 
 async def api_tasks(request: Request) -> JSONResponse:
@@ -125,25 +165,145 @@ async def api_task_delete(request: Request) -> JSONResponse:
 
 
 async def api_task_unarchive(request: Request) -> JSONResponse:
-    """Restore an archived task back to in_progress so the bot can pick it up."""
+    """Restore an archived task so the bot can pick it up."""
     pool = get_pool()
     key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
-    row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'in_progress'::task_status, paused_reason = NULL"
-        " WHERE external_key = $1 AND status = 'archived'::task_status RETURNING *",
+
+    existing = await pool.fetchrow(
+        "SELECT * FROM tasks WHERE external_key = $1 AND status = 'archived'::task_status",
         key,
     )
-    if not row:
+    if not existing:
         return JSONResponse({"error": f"Task {key} not found or not archived"}, status_code=404)
+
+    new_status = _restore_status_from_row(existing)
+    row = await pool.fetchrow(
+        "WITH capacity AS ("
+        "  SELECT COUNT(*) AS cnt FROM tasks"
+        "  WHERE status = ANY($3)"
+        "  AND (instance_id = (SELECT instance_id FROM tasks WHERE external_key = $1) OR instance_id IS NULL)"
+        ")"
+        " UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " metadata = metadata - 'status_before_pause'"
+        " FROM capacity"
+        " WHERE tasks.external_key = $1 AND tasks.status = 'archived'::task_status"
+        " AND capacity.cnt < $4"
+        " RETURNING tasks.*",
+        key,
+        new_status,
+        list(ACTIVE_STATUSES),
+        MAX_ACTIVE,
+    )
+    if not row:
+        active = await _active_count(pool, existing.get("instance_id"))
+        if active >= MAX_ACTIVE:
+            return JSONResponse(
+                {"error": f"Cannot restore task: {active} active tasks (max {MAX_ACTIVE}). Pause or complete a task first."},
+                status_code=409,
+            )
+        return JSONResponse({"error": f"Task {key} not found or not archived"}, status_code=404)
+
     await bus.publish(
         Event(
             "task_updated",
-            {"external_key": key, "status": "in_progress"},
+            {"external_key": key, "status": new_status},
         )
     )
     return JSONResponse({"unarchived": True, "external_key": key, "task": _task(row)})
+
+
+async def api_task_pause(request: Request) -> JSONResponse:
+    """Pause an active task so the bot skips it until unpaused."""
+    pool = get_pool()
+    key = request.path_params.get("key")
+    if not key:
+        return JSONResponse({"error": "missing key"}, status_code=400)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    reason = None
+    if isinstance(body, dict):
+        reason = body.get("paused_reason")
+    if not reason:
+        reason = "Paused via dashboard"
+
+    row = await pool.fetchrow(
+        "UPDATE tasks SET status = 'paused'::task_status,"
+        " paused_reason = $2,"
+        " metadata = jsonb_set(COALESCE(metadata, '{}'), '{status_before_pause}', to_jsonb(status::text))"
+        " WHERE external_key = $1 AND status = ANY($3)"
+        " RETURNING *",
+        key,
+        reason,
+        list(ACTIVE_STATUSES),
+    )
+    if not row:
+        return JSONResponse(
+            {"error": f"Task {key} not found or not active"}, status_code=404
+        )
+    await bus.publish(
+        Event(
+            "task_updated",
+            {"external_key": key, "status": "paused", "summary": reason},
+        )
+    )
+    return JSONResponse({"paused": True, "external_key": key, "task": _task(row)})
+
+
+async def api_task_unpause(request: Request) -> JSONResponse:
+    """Resume a paused task so the bot can pick it up again."""
+    pool = get_pool()
+    key = request.path_params.get("key")
+    if not key:
+        return JSONResponse({"error": "missing key"}, status_code=400)
+
+    existing = await pool.fetchrow(
+        "SELECT * FROM tasks WHERE external_key = $1 AND status = 'paused'::task_status",
+        key,
+    )
+    if not existing:
+        return JSONResponse(
+            {"error": f"Task {key} not found or not paused"}, status_code=404
+        )
+
+    new_status = _restore_status_from_row(existing)
+    row = await pool.fetchrow(
+        "WITH capacity AS ("
+        "  SELECT COUNT(*) AS cnt FROM tasks"
+        "  WHERE status = ANY($3)"
+        "  AND (instance_id = (SELECT instance_id FROM tasks WHERE external_key = $1) OR instance_id IS NULL)"
+        ")"
+        " UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " metadata = metadata - 'status_before_pause'"
+        " FROM capacity"
+        " WHERE tasks.external_key = $1 AND tasks.status = 'paused'::task_status"
+        " AND capacity.cnt < $4"
+        " RETURNING tasks.*",
+        key,
+        new_status,
+        list(ACTIVE_STATUSES),
+        MAX_ACTIVE,
+    )
+    if not row:
+        active = await _active_count(pool, existing.get("instance_id"))
+        if active >= MAX_ACTIVE:
+            return JSONResponse(
+                {"error": f"Cannot unpause task: {active} active tasks (max {MAX_ACTIVE}). Pause or complete a task first."},
+                status_code=409,
+            )
+        return JSONResponse({"error": f"Task {key} not found or not paused"}, status_code=404)
+
+    await bus.publish(
+        Event(
+            "task_updated",
+            {"external_key": key, "status": new_status},
+        )
+    )
+    return JSONResponse({"unpaused": True, "external_key": key, "task": _task(row)})
 
 
 async def api_memories(request: Request) -> JSONResponse:
