@@ -306,5 +306,9 @@ Check the bot logs for which server failed:
 
 Check the task record in the dashboard. Look at `metadata.last_step` and `metadata.notes`. If truly stuck:
 1. Comment on the Jira ticket explaining the blocker
-2. Manually set the task status to `paused` via the dashboard
+2. Open the task in the dashboard and click **Pause Task** (optionally enter a reason)
 3. The bot will skip it and move to other work
+
+When the blocker is resolved, open the paused task and click **Unpause Task**. No SQL or cluster access needed. Unpausing restores `in_progress`, or `pr_open` if the task already has a PR/MR artifact. If the instance is already at the 10-task active capacity, unpause returns an error until another task is paused or completed.
+
+Pause/unpause only change memory-server task status — they do not transition Jira.
