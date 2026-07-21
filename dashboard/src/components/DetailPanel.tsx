@@ -14,6 +14,8 @@ interface TaskDetailProps {
   onClose: () => void;
   onDelete?: (key: string) => void;
   onUnarchive?: (key: string) => void;
+  onPause?: (key: string) => void;
+  onUnpause?: (key: string) => void;
 }
 
 type Props = MemoryDetailProps | TaskDetailProps;
@@ -103,7 +105,14 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
   );
 }
 
-function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailProps, 'type'> & { onDelete?: (key: string) => void; onUnarchive?: (key: string) => void }) {
+function TaskDetail({
+  task,
+  onClose,
+  onDelete,
+  onUnarchive,
+  onPause,
+  onUnpause,
+}: Omit<TaskDetailProps, 'type'>) {
   const meta = task.metadata || {};
   const prs: Array<{ repo: string; number: number; url: string; host: string }> =
     meta.prs || [];
@@ -111,6 +120,10 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
   const key = displayKey(task);
   const url = sourceUrl(task);
   const artifacts = task.artifacts || [];
+  const isActive =
+    task.status === 'in_progress' ||
+    task.status === 'pr_open' ||
+    task.status === 'pr_changes';
 
   const statusLabels: Record<string, string> = {
     in_progress: 'In Progress',
@@ -240,12 +253,22 @@ function TaskDetail({ task, onClose, onDelete, onUnarchive }: Omit<TaskDetailPro
         )}
 
         <div className="detail-actions">
+          {onUnpause && task.status === 'paused' && (
+            <button className="btn-unpause" onClick={() => onUnpause(key)}>
+              Unpause Task
+            </button>
+          )}
+          {onPause && isActive && (
+            <button className="btn-pause" onClick={() => onPause(key)}>
+              Pause Task
+            </button>
+          )}
           {onUnarchive && (
             <button className="btn-unarchive" onClick={() => onUnarchive(key)}>
               Restore Task
             </button>
           )}
-          {onDelete && (
+          {onDelete && task.status !== 'archived' && (
             <button className="btn-delete" onClick={() => onDelete(key)}>
               Archive Task
             </button>

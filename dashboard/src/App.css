@@ -560,10 +560,42 @@ select:focus,
   background: rgba(88, 166, 255, 0.1);
 }
 
+.btn-pause {
+  background: transparent;
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-pause:hover {
+  background: rgba(210, 153, 34, 0.1);
+}
+
+.btn-unpause {
+  background: transparent;
+  color: var(--green);
+  border: 1px solid var(--green);
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-unpause:hover {
+  background: rgba(63, 185, 80, 0.1);
+}
+
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 16px;
+}
+
+.detail-actions .btn-delete {
+  margin-top: 0;
+  width: auto;
 }
 
 /* Card grid */

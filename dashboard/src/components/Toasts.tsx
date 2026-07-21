@@ -16,6 +16,7 @@ const eventConfig: Record<string, { icon: string; label: string; border: string 
   task_added: { icon: '+', label: 'Task added', border: 'var(--green)' },
   task_updated: { icon: '~', label: 'Task updated', border: 'var(--yellow)' },
   task_removed: { icon: '-', label: 'Task removed', border: 'var(--red)' },
+  task_archived: { icon: '-', label: 'Task archived', border: 'var(--red)' },
   memory_stored: { icon: '+', label: 'Memory stored', border: 'var(--purple)' },
   memory_deleted: { icon: '-', label: 'Memory deleted', border: 'var(--red)' },
 };

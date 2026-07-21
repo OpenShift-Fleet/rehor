@@ -39,3 +39,25 @@ export function sourceUrl(item: SourceLike): string | null {
 export function displayKey(item: SourceLike): string {
   return item.external_key || '';
 }
+
+/** Confirm, run a mutating fetch, alert on failure. Returns true on success.
+ *  Pass null for message to skip the confirm dialog. */
+export async function confirmAction(
+  message: string | null,
+  action: () => Promise<Response>,
+): Promise<boolean> {
+  if (message && !window.confirm(message)) return false;
+  const res = await action();
+  if (!res.ok) {
+    let error = `Request failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) error = body.error;
+    } catch {
+      /* ignore non-JSON */
+    }
+    window.alert(error);
+    return false;
+  }
+  return true;
+}

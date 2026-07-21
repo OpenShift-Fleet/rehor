@@ -10,7 +10,7 @@ export interface Task {
   source_type: string;
   source_url: string | null;
   artifacts: Array<{ name: string; url: string; type: string }>;
-  status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done';
+  status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done' | 'archived';
   repo: string;
   branch: string;
   title: string | null;

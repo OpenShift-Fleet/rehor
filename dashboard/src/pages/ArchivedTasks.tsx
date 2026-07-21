@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { Task } from '../types';
 import { fetchTasks, unarchiveTask } from '../api';
 import { useWS } from '../hooks/useWebSocket';
+import { confirmAction } from '../utils';
 import TaskCard from '../components/TaskCard';
 import DetailPanel from '../components/DetailPanel';
 import Pagination from '../components/Pagination';
@@ -35,7 +36,11 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
   }, [onEvent, load]);
 
   const handleUnarchive = async (key: string) => {
-    await unarchiveTask(key);
+    const ok = await confirmAction(
+      `Restore task ${key}? It will become active again.`,
+      () => unarchiveTask(key),
+    );
+    if (!ok) return;
     setSelected(null);
     load();
   };

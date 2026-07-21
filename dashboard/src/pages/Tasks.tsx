@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { Task } from '../types';
-import { fetchTasks, deleteTask } from '../api';
+import { fetchTasks, deleteTask, pauseTask, unpauseTask } from '../api';
 import { useWS } from '../hooks/useWebSocket';
+import { confirmAction } from '../utils';
 import TaskCard from '../components/TaskCard';
 import DetailPanel from '../components/DetailPanel';
 import Pagination from '../components/Pagination';
@@ -51,7 +52,31 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
   }, [onEvent, load]);
 
   const handleDelete = async (key: string) => {
-    await deleteTask(key);
+    const ok = await confirmAction(
+      `Archive task ${key}? The bot will stop tracking it.`,
+      () => deleteTask(key),
+    );
+    if (!ok) return;
+    setSelected(null);
+    load();
+  };
+
+  const handlePause = async (key: string) => {
+    if (!window.confirm(`Pause task ${key}? The bot will skip it until unpaused.`)) return;
+    const reason = window.prompt('Paused reason (optional):');
+    if (reason === null) return;
+    const ok = await confirmAction(null, () => pauseTask(key, reason.trim() || undefined));
+    if (!ok) return;
+    setSelected(null);
+    load();
+  };
+
+  const handleUnpause = async (key: string) => {
+    const ok = await confirmAction(
+      `Unpause task ${key}? The bot may pick it up again.`,
+      () => unpauseTask(key),
+    );
+    if (!ok) return;
     setSelected(null);
     load();
   };
@@ -86,6 +111,8 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
             task={selected}
             onClose={() => setSelected(null)}
             onDelete={handleDelete}
+            onPause={handlePause}
+            onUnpause={handleUnpause}
           />
         </div>
       )}

@@ -30,6 +30,18 @@ export async function unarchiveTask(key: string) {
   return fetch('/api/tasks/' + encodeURIComponent(key) + '/unarchive', { method: 'POST' });
 }
 
+export async function pauseTask(key: string, pausedReason?: string) {
+  return fetch('/api/tasks/' + encodeURIComponent(key) + '/pause', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paused_reason: pausedReason || undefined }),
+  });
+}
+
+export async function unpauseTask(key: string) {
+  return fetch('/api/tasks/' + encodeURIComponent(key) + '/unpause', { method: 'POST' });
+}
+
 export async function fetchMemories(params: { category?: string; repo?: string; tag?: string; limit?: number; offset?: number }) {
   const qs = new URLSearchParams();
   if (params.category) qs.set('category', params.category);
