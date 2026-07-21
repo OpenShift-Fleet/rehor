@@ -176,5 +176,9 @@
   "scalprum/scaffolding": {
     "url": "https://github.com/platex-rehor-bot/scaffolding.git",
     "upstream": "https://github.com/scalprum/scaffolding.git"
+  },
+  "project-kessel/kessel-sdk-browser": {
+    "url": "https://github.com/platex-rehor-bot/kessel-sdk-browser.git",
+    "upstream": "https://github.com/project-kessel/kessel-sdk-browser.git"
   }
 }
