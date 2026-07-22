@@ -1,0 +1,30 @@
+name: onboarding
+type: workflow
+description: Onboard new teams to their own Rehor bot instance
+
+preflight:
+  - 01-onboarding-jira.py
+
+shared_skills:
+  - push-and-pr
+  - auto-fork
+
+provides:
+  claude_md: CLAUDE.md
+  skills:
+    - generate-instance
+    - generate-konflux
+    - generate-app-interface
+    - detect-tech-stack
+
+requires:
+  mcp_servers:
+    - bot-memory
+    - mcp-atlassian
+  env_vars:
+    - BOT_LABEL
+    - BOT_INSTANCE_ID
+    - BOT_JIRA_EMAIL
+  optional_env_vars:
+    - BOT_CONFIG_REPO
+    - SLACK_WEBHOOK_URL
