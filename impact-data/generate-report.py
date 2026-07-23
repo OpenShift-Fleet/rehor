@@ -6,7 +6,8 @@ Zero dependencies — uses only Python stdlib.
 
 Usage:
     python3 generate-report.py
-    python3 generate-report.py --stats stats.json --template impact-assessment.md.template --output ../rehor-impact-assessment.md
+    python3 generate-report.py --stats stats.json --template impact-assessment.md.template
+        --output ../rehor-impact-assessment.md
 """
 
 import argparse
@@ -14,7 +15,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, date
+from datetime import date, datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 

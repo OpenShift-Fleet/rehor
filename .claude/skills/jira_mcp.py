@@ -32,8 +32,8 @@ async def _ensure_session():
     if not JIRA_MCP_URL:
         raise RuntimeError("JIRA_MCP_URL not set")
 
-    from mcp.client.streamable_http import streamablehttp_client
     from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
 
     _cm_transport = streamablehttp_client(JIRA_MCP_URL)
     _read, _write, _ = await _cm_transport.__aenter__()

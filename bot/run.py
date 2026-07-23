@@ -103,8 +103,12 @@ def setup_git(script_dir: Path) -> None:
 
 
 def setup_logging() -> None:
-    """Configure logging to stdout and data/bot.log."""
+    """Configure logging to stdout and data/bot.log.
+
+    Set DEBUG=true env var to enable DEBUG-level logging.
+    """
     DATA_DIR.mkdir(exist_ok=True)
+    level = logging.DEBUG if os.environ.get("DEBUG") == "true" else logging.INFO
     fmt = "[%(asctime)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -114,7 +118,7 @@ def setup_logging() -> None:
     ]
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format=fmt,
         datefmt=datefmt,
         handlers=handlers,
@@ -523,6 +527,7 @@ def main() -> None:
                     "Cycle timed out after %ds — skipping to next cycle",
                     config.cycle_timeout,
                 )
+                logger.warning("Cost data for timed-out cycle lost (SDK does not expose partial usage)")
                 result, ctx = None, None
 
             if result is not None:
