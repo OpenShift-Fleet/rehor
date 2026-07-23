@@ -66,12 +66,11 @@ async def _push_status(
     except Exception as e:
         _status_fail_count += 1
         logger.debug("Dashboard push failed: %s", e)
-        if _status_fail_count >= _STATUS_FAIL_WARNING_THRESHOLD:
+        if _status_fail_count == _STATUS_FAIL_WARNING_THRESHOLD:
             logger.warning(
-                "Dashboard unreachable (%d+ consecutive failures)",
+                "Dashboard unreachable (%d consecutive failures, silencing)",
                 _STATUS_FAIL_WARNING_THRESHOLD,
             )
-            _status_fail_count = 0
 
 
 def _describe_tool_use(block) -> str:

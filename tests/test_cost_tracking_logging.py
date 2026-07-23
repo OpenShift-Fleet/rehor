@@ -16,8 +16,17 @@ from unittest.mock import AsyncMock, Mock, patch
 import httpx
 import pytest
 
+import bot.agent
 from bot.agent import _push_status
 from bot.costs import record_cost
+
+
+@pytest.fixture(autouse=True)
+def _reset_status_fail_count():
+    """Reset module-level failure counter between tests."""
+    bot.agent._status_fail_count = 0
+    yield
+    bot.agent._status_fail_count = 0
 
 
 @pytest.fixture
@@ -101,7 +110,7 @@ def test_cost_push_http_error_now_detected(tmp_costs_file, mock_result, caplog):
 
 @pytest.mark.asyncio
 async def test_status_push_failure_now_logged(caplog):
-    """FIXED: _push_status now logs failures at DEBUG, WARNING after 5 consecutive."""
+    """FIXED: _push_status logs DEBUG per failure, WARNING once at threshold, then silent."""
     caplog.set_level(logging.DEBUG)
 
     mock_client = AsyncMock()
@@ -113,45 +122,43 @@ async def test_status_push_failure_now_logged(caplog):
     assert caplog.records[0].levelname == "DEBUG"
     assert "Dashboard push failed" in caplog.text
 
-    # After 5 consecutive failures: WARNING
+    # Failures 2-4: still DEBUG only
     caplog.clear()
-    caplog.set_level(logging.INFO)
-    for _ in range(4):
+    for _ in range(3):
         await _push_status(mock_client, "working", "Test")
-
-    await _push_status(mock_client, "working", "Test")
-    # Check that WARNING was logged (don't clear between calls)
     warning_logs = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert len(warning_logs) > 0
+    assert len(warning_logs) == 0
+
+    # 5th failure: WARNING fires exactly once
+    caplog.clear()
+    await _push_status(mock_client, "working", "Test")
+    warning_logs = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_logs) == 1
     assert "Dashboard unreachable" in caplog.text
+
+    # 6th+ failures: no more warnings (silenced)
+    caplog.clear()
+    for _ in range(5):
+        await _push_status(mock_client, "working", "Test")
+    warning_logs = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_logs) == 0
 
 
 # --- Test 3: Timeout loses all cost data ---
 
 
-@pytest.mark.asyncio
-async def test_timeout_loses_cost_data(tmp_path, caplog):
-    """Prove: When cycle times out, no cost is recorded (result=None)."""
-    from bot.costs import record_cost
+def test_timeout_logs_cost_data_loss_warning(caplog):
+    """FIXED: Timeout path now warns that cost data is lost."""
+    from bot.run import handle_cycle_timeout
 
-    caplog.set_level(logging.INFO)
-    costs_file = tmp_path / "costs.jsonl"
+    caplog.set_level(logging.WARNING)
 
-    # Simulate the timeout path in run.py:477-499
-    result = None  # Set to None on timeout
+    result, ctx = handle_cycle_timeout(timeout_seconds=600)
 
-    # This is what run.py does after timeout
-    if result is not None:
-        record_cost(costs_file, "test-label", result)
-    else:
-        # No cost recorded
-        pass
-
-    # Verify no cost was written
-    assert not costs_file.exists() or costs_file.read_text() == ""
-
-    # Verify no warning about lost cost data
-    assert "cost data" not in caplog.text.lower()
+    assert result is None
+    assert ctx is None
+    assert any("Cost data for timed-out cycle lost" in r.message for r in caplog.records)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
 
 
 # --- Test 4: Local file write is resilient ---
