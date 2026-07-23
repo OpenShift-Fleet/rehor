@@ -89,6 +89,9 @@ objects:
           - containerPort: 8080
             name: http
             protocol: TCP
+          - containerPort: 9091
+            name: metrics
+            protocol: TCP
           env:
           - name: PGSQL_HOSTNAME
             valueFrom:
@@ -170,6 +173,10 @@ objects:
       targetPort: http
       protocol: TCP
       name: http
+    - port: 9091
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
 
 # --- Memory Server Route (dashboard + health) ---
 - apiVersion: route.openshift.io/v1
@@ -238,6 +245,9 @@ objects:
             protocol: TCP
           - containerPort: 8446
             name: screenshot
+            protocol: TCP
+          - containerPort: 9091
+            name: metrics
             protocol: TCP
           env:
           - name: EXECUTOR_LISTEN
@@ -341,6 +351,10 @@ objects:
       targetPort: screenshot
       protocol: TCP
       name: screenshot
+    - port: 9091
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
 
 # --- NetworkPolicy: Proxy accepts ingress from bot pods ---
 - apiVersion: networking.k8s.io/v1
@@ -371,6 +385,13 @@ objects:
         protocol: TCP
       - port: 8446
         protocol: TCP
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-customer-monitoring
+      ports:
+      - port: 9091
+        protocol: TCP
 
 # --- NetworkPolicy: Memory server accepts ingress from bot pods + OpenShift router ---
 - apiVersion: networking.k8s.io/v1
@@ -399,4 +420,11 @@ objects:
             network.openshift.io/policy-group: ingress
       ports:
       - port: 8080
+        protocol: TCP
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-customer-monitoring
+      ports:
+      - port: 9091
         protocol: TCP
