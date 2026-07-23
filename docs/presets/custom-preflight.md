@@ -265,6 +265,58 @@ if __name__ == "__main__":
     main()
 ```
 
+## Repo Discovery
+
+Preflight scripts run from the **bot repo root** — no application repos are cloned at this point. You cannot use `gh repo view`, `git remote -v`, or any command that assumes CWD is inside a cloned repo.
+
+To discover which repos the instance works on, use `load_project_repos()` and `upstream_repo()` from `common.py`:
+
+```python
+from common import load_project_repos, upstream_repo, get_tasks, get_capacity, output_result
+
+TASK_KEY_PREFIX = "my-workflow:"
+
+def main():
+    tasks = get_tasks()
+    active_n, max_n = get_capacity()
+    active = [t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")]
+
+    if active_n >= max_n:
+        output_result("skip", f"At capacity ({active_n}/{max_n})")
+        return
+
+    repos = load_project_repos()
+    candidates = []
+
+    for repo_name, cfg in repos.items():
+        up, host = upstream_repo(repo_name)
+        if not up or host != "github":
+            continue
+
+        # Skip repos with an active task
+        task_key = f"{TASK_KEY_PREFIX}{up}"
+        if any(t.get("external_key") == task_key for t in active):
+            continue
+
+        # Query the upstream repo (e.g. for open PRs)
+        items = query_upstream(up)
+        if items:
+            candidates.append({"repo_name": repo_name, "upstream": up, "items": items})
+
+    if not candidates:
+        output_result("skip", "No repos with actionable items")
+        return
+
+    best = max(candidates, key=lambda c: len(c["items"]))
+    output_result("start", json.dumps(best))
+```
+
+Key points:
+- `load_project_repos()` reads `project-repos.json` from the instance config
+- `upstream_repo(repo_name)` resolves a repo entry to `("org/repo", "github"|"gitlab")`
+- The `gh pr list --repo <upstream>` command works without a local clone — it queries the GitHub API directly
+- Filter out repos that already have an active task to avoid duplicate work
+
 ## Real Example Pattern
 
 A common pattern for custom preflight scripts is fetching data from an external service, classifying it, and deciding whether to start a session. Here's the general structure:

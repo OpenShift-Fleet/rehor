@@ -116,6 +116,25 @@ requires:
 
 ## instance.yaml Configuration
 
+**One instance = one workflow.** Each instance directory maps to its own OpenShift deployment (own pod, own schedule, own task queue). If you need a second workflow for the same repos, create a second instance directory:
+
+```
+instance/
+  rbac-config/              # Jira-driven workflow
+    agent/
+      instance.yaml         # workflow: jira-kanban
+      project-repos.json
+  rbac-config-konflux/      # Separate workflow for the same repos
+    agent/
+      instance.yaml         # workflow: ./workflows/konflux-pr-squash
+      project-repos.json    # Can reference the same repos
+      workflows/
+        konflux-pr-squash/
+          ...
+```
+
+Both instances share the memory server and can see each other's tasks, but run independently on their own schedules.
+
 Your instance config repo's `instance.yaml` controls which workflow runs and how:
 
 ```yaml
@@ -358,6 +377,92 @@ The preflight script for this pattern typically:
 3. Outputs `start` with only the actionable items, or `skip` if everything is healthy
 
 See [Writing Custom Preflight Scripts](custom-preflight.md) for the implementation details.
+
+## Task Tracking
+
+Custom workflows use the same memory server task system as built-in workflows. The agent creates and updates tasks via MCP tools (`task_add`, `task_update`, `task_get`, `task_remove`) — never via raw HTTP calls to the memory server API.
+
+### external_key conventions
+
+Every task has an `external_key` + `source_type` pair. The DB enforces `UNIQUE(external_key, source_type)`, so this combo is the task's identity.
+
+For **Jira-driven workflows**, the external_key is the Jira ticket key (`RHCLOUD-12345`) and source_type defaults to `"jira"`.
+
+For **non-Jira workflows**, you define your own key format. Use a deterministic, human-readable composite key:
+
+```
+<workflow-name>:<scope>
+```
+
+Examples:
+- `konflux-pr-squash:project-kessel/insights-rbac` — consolidation task scoped to a repo
+- `watchduty:jenkins-prod-pipeline` — monitoring task scoped to a service
+- `review-only:RedHatInsights/insights-chrome` — review task scoped to a repo
+
+If a workflow creates multiple tasks per scope (e.g. one consolidated PR per ecosystem), extend the key:
+- `konflux-pr-squash:project-kessel/insights-rbac:go`
+- `konflux-pr-squash:project-kessel/insights-rbac:python`
+
+### source_type
+
+The `task_add` MCP tool defaults `source_type` to `"jira"`. **Non-Jira workflows must pass it explicitly:**
+
+```
+task_add(
+    external_key="konflux-pr-squash:project-kessel/insights-rbac",
+    source_type="github",        # NOT the default "jira"
+    repo="insights-rbac",
+    branch="bot/consolidate-go-deps",
+    status="pr_open",
+    title="Consolidate 5 Go dependency updates",
+    metadata={
+        "prs": [{"repo": "project-kessel/insights-rbac", "number": 42, "host": "github"}],
+        "original_prs": [101, 102, 103],
+        "ecosystem": "go"
+    }
+)
+```
+
+Getting `source_type` wrong means `task_get` lookups fail (it queries by `external_key` + `source_type`), and preflight scripts that check for in-progress tasks won't find them.
+
+### Why MCP, not HTTP
+
+Your workflow CLAUDE.md should tell the agent to use `task_add`, not construct HTTP requests. The MCP tool:
+- Enforces the **capacity cap** (max 10 active tasks) — raw HTTP bypasses this
+- Publishes **events** to the SSE bus (dashboard updates, Slack notifications)
+- Builds **artifact links** automatically (Jira URLs, PR links)
+- Validates input and returns structured errors
+
+### Preflight integration
+
+Preflight scripts check the task system to avoid duplicate work. Your workflow's preflight should:
+
+1. Call `get_tasks()` to fetch active tasks
+2. Filter for tasks matching your workflow's `external_key` prefix
+3. Skip if a matching task is already in progress
+
+```python
+from common import get_tasks, get_capacity, output_result
+
+TASK_KEY_PREFIX = "my-workflow:"
+
+tasks = get_tasks()
+active = [t for t in tasks if t.get("status") in ("in_progress", "pr_open", "pr_changes")]
+
+# Already working on this?
+my_tasks = [t for t in active if t.get("external_key", "").startswith(TASK_KEY_PREFIX)]
+if my_tasks:
+    output_result("skip", f"Already in progress: {my_tasks[0]['external_key']}")
+    return
+
+# Respect capacity
+active_n, max_n = get_capacity()
+if active_n >= max_n:
+    output_result("skip", f"At capacity ({active_n}/{max_n})")
+    return
+```
+
+The built-in `gh_pr_status.py` preflight monitors all `pr_open` tasks automatically — no per-workflow polling needed. Create a task with `status="pr_open"` and PR metadata, and CI monitoring happens for free.
 
 ## Checklist: Shipping a Custom Workflow
 
