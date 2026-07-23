@@ -183,7 +183,8 @@ def register_task_tools(mcp: FastMCP):
         """Update fields on an existing task. Lookup by external_key + source_type.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         summary: human-readable description of current state/what was done.
-        metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs). Merged with existing metadata.
+        metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs).
+            Merged with existing metadata.
         For multi-repo tickets, use metadata.prs to track all PRs/MRs:
         {"prs": [{"repo": "repo1", "number": 42, "url": "...", "host": "github"}]}"""
         pool = get_pool()
@@ -266,7 +267,8 @@ def register_task_tools(mcp: FastMCP):
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
         pool = get_pool()
         row = await pool.fetchrow(
-            "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 AND source_type = $2 RETURNING *",
+            "UPDATE tasks SET status = 'archived'::task_status "
+            "WHERE external_key = $1 AND source_type = $2 RETURNING *",
             external_key,
             source_type,
         )

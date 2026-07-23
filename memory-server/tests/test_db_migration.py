@@ -6,7 +6,6 @@ Future migration stages add tests here for ALTER TABLE + backfill scripts.
 
 import asyncpg
 import pytest
-
 from conftest import SCHEMA_PATH
 
 

@@ -12,7 +12,6 @@ import os
 
 import asyncpg
 
-
 TABLES_WITH_JIRA_KEY = [
     "tasks",
     "bot_status",

@@ -8,7 +8,6 @@ import json
 import os
 
 import pytest
-
 from conftest import SCHEMA_PATH
 
 os.environ.setdefault("JIRA_URL", "https://redhat.atlassian.net")

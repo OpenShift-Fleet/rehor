@@ -8,13 +8,11 @@ import json
 import os
 
 import pytest
-
 from conftest import SCHEMA_PATH
 
 os.environ.setdefault("JIRA_URL", "https://redhat.atlassian.net")
 
-from bot_memory_server.artifacts import JIRA_BASE_URL, build_artifacts  # noqa: E402
-
+from bot_memory_server.artifacts import JIRA_BASE_URL  # noqa: E402
 
 ZERO_VECTOR = "[" + ",".join(["0"] * 384) + "]"
 

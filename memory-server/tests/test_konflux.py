@@ -1,19 +1,12 @@
 """Tests for Konflux build log retrieval tool."""
 
-import json
-from unittest.mock import patch, MagicMock
-import io
-
-import pytest
-
 from bot_memory_server.tools.konflux import (
-    _parse_details_url,
-    _is_failed,
-    _failure_reason,
     _failed_steps,
+    _failure_reason,
+    _is_failed,
+    _parse_details_url,
     _tail,
 )
-
 
 # --- _parse_details_url ---
 

@@ -5,11 +5,10 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from bot_memory_server.api import api_memory_upload
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
-
-from bot_memory_server.api import api_memory_upload
 
 app = Starlette(routes=[Route("/api/memories/upload", api_memory_upload, methods=["POST"])])
 

@@ -1,6 +1,5 @@
 import os
 
-
 JIRA_BASE_URL = os.environ.get("JIRA_URL", "").rstrip("/") + "/browse"
 
 

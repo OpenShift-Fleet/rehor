@@ -53,7 +53,8 @@ def register_cycle_tools(mcp: FastMCP):
         source_type: Source type for external_key lookup (default 'jira').
         instance_id: Bot instance name.
         cycle_type: One of 'task_work', 'triage_only', 'idle', 'error'.
-        progress: Structured JSON with keys like last_step, next_step, files_changed, commits, key_decisions, blockers, notes.
+        progress: Structured JSON with keys like last_step, next_step, files_changed,
+            commits, key_decisions, blockers, notes.
         started_at/finished_at: ISO timestamps. If omitted, started_at defaults to NOW().
         tool_calls: Number of tool calls in this cycle.
         tokens_used: Total tokens consumed."""

@@ -139,7 +139,8 @@ def register_rag_tools(mcp: FastMCP):
         limit: int = 20,
         offset: int = 0,
     ) -> dict:
-        """List recent memories, optionally filtered by category, repo, or tag. Returns {items, total, limit, offset}."""
+        """List recent memories, optionally filtered by category, repo, or tag.
+        Returns {items, total, limit, offset}."""
         pool = get_pool()
 
         conditions = []
