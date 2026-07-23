@@ -56,6 +56,10 @@
     "url": "https://github.com/platex-rehor-bot/insights-rbac.git",
     "upstream": "https://github.com/RedHatInsights/insights-rbac.git"
   },
+  "entitlements-api-go": {
+    "url": "https://github.com/platex-rehor-bot/entitlements-api-go.git",
+    "upstream": "https://github.com/RedHatInsights/entitlements-api-go.git"
+  },
   "javascript-clients": {
     "url": "https://github.com/platex-rehor-bot/javascript-clients.git",
     "upstream": "https://github.com/RedHatInsights/javascript-clients.git"
