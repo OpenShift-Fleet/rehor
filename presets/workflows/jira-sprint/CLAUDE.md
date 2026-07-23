@@ -179,7 +179,7 @@ Before starting work, `jira_get_issue` → check issue links:
 
 6. **Load personas**: Dynamic by tech stack:
    - `package.json` w/ React/PF → `frontend`
-   - `go.mod` → `backend`/`operator`
+   - `go.mod` → `backend`/`operator`/`entitlements` (match repo name)
    - `Pipfile`/`requirements.txt` w/ Django → `backend`/`rbac`
    - Dockerfiles/scripts/Caddyfiles → `tooling`
    - Config/YAML repo → `config`
