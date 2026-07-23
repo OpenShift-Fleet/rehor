@@ -229,7 +229,7 @@ spec:
             #!/bin/bash
             set -ex
             pip3.12 install --quiet ".[dev]"
-            python3.12 -m ruff check .claude/skills/auto-fork/ .claude/skills/claim-ticket/ .claude/skills/post-pr/ .claude/skills/push-and-pr/ --ignore E501
+            python3.12 -m ruff check presets/ --ignore E501
             python3.12 -m pytest -v -p no:cacheprovider
     - name: prefetch-dependencies
       params:

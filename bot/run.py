@@ -26,13 +26,14 @@ from .config import (
     load_config,
     load_instance_config,
     load_mcp_servers,
+    resolve_active_envs,
     resolve_workflow_dir,
     sanitize_env,
     validate_instance_config,
     validate_manifest,
 )
 from .costs import record_cost
-from .merge import apply_merged_config
+from .merge import apply_merged_config, install_skills
 from .preflight import run_preflight
 from .transcripts import post_orphan_cycle, record_transcript
 
@@ -383,6 +384,11 @@ def main() -> None:
     if initial_agent_dir:
         apply_merged_config(SCRIPT_DIR, initial_agent_dir)
     instance_config = load_instance_config(initial_agent_dir)
+    install_skills(
+        SCRIPT_DIR,
+        resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, initial_agent_dir),
+        resolve_active_envs(SCRIPT_DIR, instance_config),
+    )
 
     validate_manifest(SCRIPT_DIR, instance_config.workflow, mcp_servers, initial_agent_dir)
     validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
@@ -426,6 +432,11 @@ def main() -> None:
                 apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
             instance_config = load_instance_config(remote_agent_dir)
+            install_skills(
+                SCRIPT_DIR,
+                resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),
+                resolve_active_envs(SCRIPT_DIR, instance_config),
+            )
             assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir)
 
             # --- Pre-flight: gather data before starting AI session ---

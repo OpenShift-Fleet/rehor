@@ -35,10 +35,11 @@ dev-bot = "bot.run:main"
 [tool.pytest.ini_options]
 testpaths = [
     "bot/tests",
-    ".claude/skills/auto-fork/tests",
-    ".claude/skills/claim-ticket/tests",
-    ".claude/skills/post-pr/tests",
-    ".claude/skills/push-and-pr/tests",
+    "presets/shared/skills/auto-fork/tests",
+    "presets/shared/skills/post-pr/tests",
+    "presets/shared/skills/push-and-pr/tests",
+    "presets/workflows/jira-sprint/skills/claim-ticket/tests",
+    "presets/workflows/jira-kanban/skills/claim-ticket/tests",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

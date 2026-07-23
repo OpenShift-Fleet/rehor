@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-repo_root = Path(__file__).resolve().parent.parent.parent
+repo_root = Path(__file__).resolve().parent.parent
 
 skill_dirs = [
     repo_root / "presets" / "shared" / "skills" / "auto-fork",
@@ -28,9 +28,9 @@ for skill_path in skill_dirs:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-root = str(Path(__file__).parent)
-if root not in sys.path:
-    sys.path.insert(0, root)
+skills_root = str(repo_root / ".claude" / "skills")
+if skills_root not in sys.path:
+    sys.path.insert(0, skills_root)
 
 collect_ignore_glob = ["*/.venv/*"]
 

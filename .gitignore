@@ -37,5 +37,13 @@ impact-data/*.json
 impact-data/*.csv
 rehor-impact-assessment.md
 rehor-impact-assessment-generated.md
+# Runtime-installed skills (copied from presets at startup)
+.claude/skills/push-and-pr/
+.claude/skills/post-pr/
+.claude/skills/auto-fork/
+.claude/skills/claim-ticket/
+.claude/skills/wrap-up/
+.claude/skills/triage/
+.claude/skills/new-work/
 # IDEs and Editors
 .vscode/

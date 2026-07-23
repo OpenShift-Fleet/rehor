@@ -227,6 +227,82 @@ def _make_executable(path: Path) -> None:
         pass
 
 
+def install_skills(
+    script_dir: Path,
+    workflow_dir: Path,
+    active_envs: list[str],
+) -> list[str]:
+    """Install skills from presets into .claude/skills/.
+
+    Merge order (later layers override earlier):
+      1. Shared skills  — presets/shared/skills/<name>/
+      2. Workflow skills — <workflow_dir>/skills/<name>/
+      3. Env skills      — presets/envs/<env>/skills/<name>/
+
+    Instance skills are handled separately by merge_skills() in
+    apply_merged_config() which runs after this function.
+    """
+    skills_dir = script_dir / ".claude" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    installed: list[str] = []
+
+    manifest_path = workflow_dir / "manifest.yaml"
+    manifest: dict = {}
+    if manifest_path.is_file():
+        import yaml
+
+        with open(manifest_path) as f:
+            manifest = yaml.safe_load(f) or {}
+
+    shared_skills_dir = script_dir / "presets" / "shared" / "skills"
+    for name in manifest.get("shared_skills", []):
+        src = shared_skills_dir / name
+        if not src.is_dir():
+            logger.warning("Shared skill '%s' not found at %s", name, src)
+            continue
+        dest = skills_dir / name
+        if dest.exists():
+            shutil.rmtree(dest)
+        _copytree_safe(src, dest)
+        installed.append(f"shared:{name}")
+
+    provides = manifest.get("provides", {})
+    for name in provides.get("skills", []):
+        src = workflow_dir / "skills" / name
+        if not src.is_dir():
+            continue
+        dest = skills_dir / name
+        if dest.exists():
+            shutil.rmtree(dest)
+        _copytree_safe(src, dest)
+        installed.append(f"workflow:{name}")
+
+    presets_envs = script_dir / "presets" / "envs"
+    for env_name in active_envs:
+        env_manifest_path = presets_envs / env_name / "manifest.yaml"
+        if not env_manifest_path.is_file():
+            continue
+        import yaml
+
+        with open(env_manifest_path) as f:
+            env_manifest = yaml.safe_load(f) or {}
+        env_provides = env_manifest.get("provides", {})
+        for name in env_provides.get("skills", []):
+            src = presets_envs / env_name / "skills" / name
+            if not src.is_dir():
+                continue
+            dest = skills_dir / name
+            if dest.exists():
+                shutil.rmtree(dest)
+            _copytree_safe(src, dest)
+            installed.append(f"env/{env_name}:{name}")
+
+    if installed:
+        logger.info("Installed skills: %s", ", ".join(installed))
+
+    return installed
+
+
 def apply_merged_config(script_dir: Path, remote_agent_dir: Path) -> MergeReport:
     """Orchestrate all merge operations. Returns structured report."""
     report = MergeReport()
