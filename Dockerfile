@@ -62,7 +62,7 @@ RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 \
 
 # Go — multiple versions via GOVERSIONS build arg
 # Default Go is the first version listed. Bot switches with: eval "$(use-go 1.25.7)"
-ARG GOVERSIONS="1.24.2 1.25.7"
+ARG GOVERSIONS="1.24.2 1.25.7 1.26.5"
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && for v in $GOVERSIONS; do \
          echo "Installing Go $v..." \
