@@ -1,0 +1,261 @@
+{#- Jinja2 uses <<var>> delimiters to avoid conflict with OpenShift ${{VAR}} syntax -#}
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: << instance_name >>
+parameters:
+- name: NAMESPACE
+  value: ${{NAMESPACE}}
+- name: BOT_IMAGE
+  value: << quay_image >>
+- name: IMAGE_TAG
+  required: true
+- name: BOT_LABEL
+  value: << bot_label >>
+- name: BOT_REPLICAS
+  value: "0"
+<% if workflow == "jira-sprint" %>
+- name: BOT_BOARD_NAME
+  value: ""
+- name: BOT_SPRINT_PREFIX
+  value: ""
+- name: BOT_INCLUDE_BACKLOG
+  value: "false"
+<% elif workflow == "jira-kanban" %>
+- name: BOT_BOARD_ID
+  value: ""
+- name: BOT_JIRA_PROJECT
+  value: ""
+<% endif %>
+- name: BOT_INSTANCE_ID
+  value: ""
+- name: BOT_CONFIG_REPO
+  value: ""
+- name: BOT_NAME
+  value: << bot_name >>
+- name: BOT_CONFIG_PATH
+  value: ""
+- name: GCP_PROJECT_ID
+  required: true
+- name: GCP_REGION
+  required: true
+- name: VERTEX_ALLOWED_MODELS
+  required: true
+- name: SLACK_WEBHOOK_URL
+  value: ""
+objects:
+
+# Bot-only deployment for << instance_name >> runner instance.
+# Shared infrastructure (proxy, memory-server, secrets) deployed by
+# platform-frontend-ai-dev template in the same namespace.
+
+# --- Bot Deployment ---
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: ${{BOT_NAME}}
+    labels:
+      app.kubernetes.io/name: ${{BOT_NAME}}
+      app.kubernetes.io/component: bot
+      app.kubernetes.io/part-of: devbot
+  spec:
+    replicas: ${{BOT_REPLICAS}}
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: ${{BOT_NAME}}
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: ${{BOT_NAME}}
+          app.kubernetes.io/component: bot
+          app.kubernetes.io/part-of: devbot
+      spec:
+        containers:
+        - name: bot
+          image: ${{BOT_IMAGE}}:${{IMAGE_TAG}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: BOT_LABEL
+            value: ${{BOT_LABEL}}
+          - name: BOT_MEMORY_URL
+            value: http://devbot-memory-server:8080/mcp
+          - name: BOT_MEMORY_HEALTH_URL
+            value: http://devbot-memory-server:8080/health
+          - name: BOT_MEMORY_HEALTH_TIMEOUT
+            value: "120"
+          - name: CLAUDE_CODE_SKIP_VERTEX_AUTH
+            value: "true"
+          - name: ANTHROPIC_VERTEX_BASE_URL
+            value: http://devbot-proxy:8443
+          - name: ANTHROPIC_VERTEX_PROJECT_ID
+            value: dummy-project
+          - name: CLOUD_ML_REGION
+            value: global
+          - name: EXECUTOR_ADDR
+            value: devbot-proxy:9090
+          - name: HUSKY
+            value: "0"
+          - name: GH_USER_NAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gh-username
+          - name: GH_USER_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-email
+          - name: GL_USER_NAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gl-name
+          - name: GL_USER_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gl-email
+          - name: BOT_JIRA_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: jira-email
+<% if has_browser %>
+          - name: SSO_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: e2e-username
+          - name: SSO_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: e2e-password
+<% endif %>
+<% if workflow == "jira-sprint" %>
+          - name: BOT_BOARD_NAME
+            value: ${{BOT_BOARD_NAME}}
+          - name: BOT_SPRINT_PREFIX
+            value: ${{BOT_SPRINT_PREFIX}}
+          - name: BOT_INCLUDE_BACKLOG
+            value: ${{BOT_INCLUDE_BACKLOG}}
+<% elif workflow == "jira-kanban" %>
+          - name: BOT_BOARD_ID
+            value: ${{BOT_BOARD_ID}}
+          - name: BOT_JIRA_PROJECT
+            value: ${{BOT_JIRA_PROJECT}}
+<% endif %>
+          - name: BOT_INSTANCE_ID
+            value: ${{BOT_INSTANCE_ID}}
+          - name: BOT_CONFIG_REPO
+            value: ${{BOT_CONFIG_REPO}}
+          - name: BOT_CONFIG_PATH
+            value: ${{BOT_CONFIG_PATH}}
+          - name: BOT_DASHBOARD_URL
+            value: http://devbot-memory-server:8080/api/bot-status
+          - name: COSTS_API_URL
+            value: http://devbot-memory-server:8080/api/costs
+          - name: SLACK_WEBHOOK_URL
+            value: ${{SLACK_WEBHOOK_URL}}
+          - name: PROXY_HOST
+            value: devbot-proxy
+          - name: HTTP_PROXY
+            value: http://devbot-proxy:3128
+          - name: HTTPS_PROXY
+            value: http://devbot-proxy:3128
+          - name: http_proxy
+            value: http://devbot-proxy:3128
+          - name: https_proxy
+            value: http://devbot-proxy:3128
+          - name: NO_PROXY
+            value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
+          - name: no_proxy
+            value: devbot-memory-server,devbot-proxy,localhost,127.0.0.1
+          - name: JIRA_MCP_URL
+            value: http://devbot-proxy:8444/mcp
+          - name: GH_RELEASE_UPLOAD_URL
+            value: http://devbot-proxy:8446/upload
+          resources:
+            requests:
+              cpu: "<< cpu_req >>"
+              memory: << mem_req >>
+              ephemeral-storage: << eph_req >>
+            limits:
+              cpu: "<< cpu_lim >>"
+              memory: << mem_lim >>
+              ephemeral-storage: << eph_lim >>
+
+# --- NetworkPolicy: Bot can only reach proxy + memory-server ---
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: ${{BOT_NAME}}-egress
+    labels:
+      app.kubernetes.io/part-of: devbot
+  spec:
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: ${{BOT_NAME}}
+    policyTypes:
+    - Egress
+    egress:
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: devbot-proxy
+      ports:
+      - port: 3128
+        protocol: TCP
+      - port: 9090
+        protocol: TCP
+      - port: 8443
+        protocol: TCP
+      - port: 8444
+        protocol: TCP
+      - port: 8446
+        protocol: TCP
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: memory-server
+      ports:
+      - port: 8080
+        protocol: TCP
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-dns
+      ports:
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP
+
+# --- Cron Scaler ---
+- apiVersion: keda.sh/v1alpha1
+  kind: ScaledObject
+  metadata:
+    name: ${{BOT_NAME}}-cron-scaler
+    labels:
+      app.kubernetes.io/name: ${{BOT_NAME}}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    scaleTargetRef:
+      apiVersion: apps/v1
+      kind: Deployment
+      name: ${{BOT_NAME}}
+    minReplicaCount: 0
+    maxReplicaCount: 1
+    triggers:
+    - type: cron
+      metadata:
+        timezone: "<< keda.timezone >>"
+        start: "<< keda.start >>"
+        end: "<< keda.end >>"
+        desiredReplicas: "1"

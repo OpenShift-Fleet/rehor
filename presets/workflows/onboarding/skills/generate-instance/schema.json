@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "generate-instance requirements",
+  "type": "object",
+  "required": ["instance_name"],
+  "properties": {
+    "instance_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Name of the bot instance repo (e.g. my-team-agent-dev)"
+    },
+    "config_name": {
+      "type": "string",
+      "description": "Name of the config directory under instance/"
+    },
+    "team_name": {
+      "type": "string",
+      "description": "Human-readable team name"
+    },
+    "workflow": {
+      "type": "string",
+      "enum": ["jira-sprint", "jira-kanban"],
+      "default": "jira-sprint"
+    },
+    "source": {
+      "type": "string",
+      "default": "jira"
+    },
+    "envs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of env presets to install (e.g. node, go, browser, slack)"
+    },
+    "bot_name": {
+      "type": "string",
+      "description": "Deployment name (defaults to devbot-<config_name>)"
+    },
+    "bot_label": {
+      "type": "string",
+      "description": "Jira label the bot filters on (defaults to rehor-ai-<config_name>)"
+    },
+    "repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "url"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short name used as key in project-repos.json"
+          },
+          "url": {
+            "type": "string",
+            "description": "Upstream repo URL (HTTPS)"
+          },
+          "host": {
+            "type": "string",
+            "enum": ["github", "gitlab"],
+            "default": "github"
+          },
+          "fork_account": {
+            "type": "string",
+            "description": "Fork owner (defaults to platex-rehor-bot / platform-experience-services-bot)"
+          },
+          "fork_name": {
+            "type": "string",
+            "description": "Custom fork repo name if different from upstream"
+          },
+          "readonly": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, no fork is created — repo is read-only"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu_request": { "type": "string" },
+        "cpu_limit": { "type": "string" },
+        "memory_request": { "type": "string" },
+        "memory_limit": { "type": "string" },
+        "ephemeral_request": { "type": "string" },
+        "ephemeral_limit": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "keda_schedule": {
+      "type": "object",
+      "properties": {
+        "timezone": { "type": "string" },
+        "start": { "type": "string" },
+        "end": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "github_org": {
+      "type": "string",
+      "default": "RedHatInsights"
+    },
+    "claude_md_strategy": {
+      "type": "string",
+      "enum": ["append", "replace", "ignore"],
+      "default": "append"
+    },
+    "tech_stacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repo": { "type": "string" },
+          "envs": { "type": "array", "items": { "type": "string" } },
+          "personas": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "target_branch": {
+      "type": "string",
+      "default": "master"
+    }
+  },
+  "additionalProperties": false
+}

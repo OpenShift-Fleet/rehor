@@ -7,6 +7,8 @@ dependencies = [
     "claude-agent-sdk",
     "filelock",
     "httpx",
+    "jinja2>=3.1",
+    "jsonschema>=4.20",
     "python-dotenv",
     "pyyaml>=6.0",
     "zstandard>=0.23",
@@ -40,6 +42,7 @@ testpaths = [
     "presets/shared/skills/push-and-pr/tests",
     "presets/workflows/jira-sprint/skills/claim-ticket/tests",
     "presets/workflows/jira-kanban/skills/claim-ticket/tests",
+    "presets/workflows/onboarding/skills/generate-instance/tests",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

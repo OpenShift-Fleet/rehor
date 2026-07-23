@@ -196,6 +196,16 @@ def main():
         sys.exit(1)
 
     repo_path = sys.argv[2]
+    if not Path(repo_path).is_dir():
+        print(json.dumps({"error": f"Directory not found: {repo_path}"}))
+        sys.exit(1)
+    if not (Path(repo_path) / ".git").exists():
+        print(json.dumps({"error": f"Not a git repo: {repo_path}"}))
+        sys.exit(1)
+    saas_marker = Path(repo_path) / "data" / "services"
+    if not saas_marker.is_dir():
+        print(json.dumps({"error": f"Not an app-interface repo (missing data/services/): {repo_path}"}))
+        sys.exit(1)
     if not cfg.get("instance_name"):
         print(json.dumps({"error": "instance_name is required"}))
         sys.exit(1)

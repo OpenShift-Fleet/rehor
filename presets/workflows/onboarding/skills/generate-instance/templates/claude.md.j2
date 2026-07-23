@@ -1,0 +1,20 @@
+# << instance_name >> — Additional Instructions
+<% if repos %>
+
+## Target Repos
+<% for r in repos %>
+- **<< r.name >>**: `<< r.url >>`
+<% endfor %>
+<% endif %>
+<% if tech_stacks %>
+
+## Detected Tech Stacks
+<% for ts in tech_stacks %>
+- **<< ts.repo | default("?") >>**: envs=[<< ts.envs | default([]) | join(", ") >>], personas=[<< ts.personas | default([]) | join(", ") >>]
+<% endfor %>
+<% endif %>
+
+## Team Conventions
+
+<!-- Fill in team-specific conventions after scaffolding -->
+<!-- Examples: version managers, test commands, PR review norms -->

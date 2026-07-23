@@ -42,20 +42,30 @@ Modifies or creates the SaaS file in the `<app_interface_repo_path>` (a clone of
 }
 ```
 
+## Prerequisites
+
+The `<app_interface_repo_path>` must be a clone of the app-interface repo. The script validates that:
+1. The directory exists and is a git repo
+2. The `data/services/` directory exists (app-interface structure)
+
+Clone and checkout before running this skill.
+
 ## Two SaaS File Patterns
+
+Each team should have their own SaaS file — prefer `pattern: "separate"` for new onboardings so each team's deployment is independently manageable.
 
 ### Pattern A: Shared (`pattern: "shared"`)
 
-For **RedHatInsights** org instances. Modifies the existing shared SaaS file at:
+For instances managed directly by the Rehor platform team. Modifies the existing shared SaaS file at:
 `data/services/insights/platform-frontend-ai-dev/deploy.yml`
 
 Adds:
 1. New `imagePatterns` entry for the instance's Quay image
 2. New `resourceTemplates` entry with target namespace, images, and parameters
 
-### Pattern B: Separate (`pattern: "separate"`)
+### Pattern B: Separate (`pattern: "separate"`) — Recommended
 
-For **external org** instances. Creates a new SaaS file at:
+For team-owned instances. Creates a new SaaS file at:
 `data/services/insights/<team>/<instance_name>.yml`
 
 Includes its own schema, labels, app/pipelinesProvider refs, takeover flag,

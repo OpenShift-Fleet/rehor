@@ -17,6 +17,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .pytest_cache/
+.coverage
 .venv/
 .python-version
 dashboard/node_modules/

@@ -9,6 +9,8 @@ import json
 import os
 import sys
 
+import httpx
+
 _skills_dir = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _skills_dir)
 sys.path.insert(0, os.path.join(_skills_dir, "create-phase-tickets"))
@@ -57,15 +59,13 @@ def _create_task(epic_key, summary, phase_tickets):
         print("WARNING: BOT_MEMORY_URL not set, skipping task creation", file=sys.stderr)
         return False
 
-    import httpx
-
     payload = {
         "external_key": epic_key,
         "status": "in_progress",
         "title": summary,
         "summary": summary,
         "source": "onboarding-jira",
-        "assigned_to": BOT_INSTANCE_ID or "unknown",
+        "assigned_to": BOT_JIRA_EMAIL or BOT_INSTANCE_ID or "unknown",
         "metadata": {
             "phase": 1,
             "step": "intake",

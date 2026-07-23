@@ -21,7 +21,30 @@ python3 .claude/skills/generate-instance/generate_instance.py '<json_requirement
 
 Generates the full instance repo directory tree at `<output_dir>`.
 
-## Requirements JSON Schema
+### Validate-only mode
+
+```bash
+python3 .claude/skills/generate-instance/generate_instance.py --validate-only '<json_requirements>' 2>&1
+```
+
+Runs the full pipeline (input validation → template rendering → output validation) without writing files. Exits 0 if all checks pass, 1 with errors if any fail. Use this to test template changes.
+
+## Input Validation
+
+Input is validated against `schema.json` (JSON Schema). Invalid input is rejected before rendering. The schema enforces required fields, types, enums, and naming patterns.
+
+## Templates
+
+Templates live in `templates/` and use Jinja2 with custom delimiters (`<< >>` for variables, `<% %>` for blocks) to avoid conflicts with OpenShift `${{VAR}}` syntax. Edit the `.j2` files directly to change generated output — no Python changes needed for most modifications.
+
+| Template | Generates |
+|---|---|
+| `deploy-template.yaml.j2` | `deploy/template.yaml` — OpenShift Deployment, NetworkPolicy, KEDA ScaledObject |
+| `readme.md.j2` | `README.md` |
+| `claude.md.j2` | `instance/.../agent/CLAUDE.md` |
+| `setup.sh.j2` | `setup.sh` |
+
+## Requirements JSON Example
 
 ```json
 {

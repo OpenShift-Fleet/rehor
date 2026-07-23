@@ -159,11 +159,12 @@ def detect(repo_path):
 
     result = {
         "stack": list(dict.fromkeys(stack)),
-        "envs": sorted(envs),
-        "personas": sorted(personas),
+        "suggested_envs": sorted(envs),
+        "suggested_personas": sorted(personas),
         "default_branch": _detect_default_branch(repo_path),
         "has_dockerfile": has_dockerfile,
         "visibility": _detect_visibility(repo_path),
+        "note": "Suggestions based on file markers. Review and adjust before use.",
     }
 
     if unsupported:
