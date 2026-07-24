@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { Memory } from '../types';
-import { searchMemories } from '../api';
+import { searchMemories, deleteMemory } from '../api';
 import MemoryCard from '../components/MemoryCard';
 import DetailPanel from '../components/DetailPanel';
-import { deleteMemory } from '../api';
+import { SearchInput } from '@patternfly/react-core';
 
 export default function Search() {
   const [query, setQuery] = useState('');
@@ -19,10 +19,6 @@ export default function Search() {
     setSelected(null);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') doSearch();
-  };
-
   const handleDelete = async (id: number) => {
     await deleteMemory(id);
     setSelected(null);
@@ -32,16 +28,14 @@ export default function Search() {
   return (
     <div className="split-layout">
       <div className="split-main">
-        <div className="controls">
-          <input
-            type="text"
+        <div style={{ marginBottom: '16px' }}>
+          <SearchInput
             placeholder="Search memories..."
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="search-input"
+            onChange={(_e, val) => setQuery(val)}
+            onSearch={doSearch}
+            onClear={() => setQuery('')}
           />
-          <button onClick={doSearch} className="btn-primary">Search</button>
         </div>
         <div className="card-grid">
           {searched && results.length === 0 && (

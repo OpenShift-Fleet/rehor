@@ -4,6 +4,15 @@ import { fetchMemories, deleteMemory, fetchStats, fetchTags } from '../api';
 import MemoryCard from '../components/MemoryCard';
 import DetailPanel from '../components/DetailPanel';
 import Pagination from '../components/Pagination';
+import {
+  Flex,
+  FlexItem,
+  MenuToggle,
+  MenuToggleElement,
+  Select,
+  SelectList,
+  SelectOption
+} from '@patternfly/react-core';
 
 const CATEGORY_OPTIONS = [
   { value: '', label: 'All Categories' },
@@ -24,6 +33,9 @@ export default function Memories() {
   const [selected, setSelected] = useState<Memory | null>(null);
   const [repos, setRepos] = useState<string[]>([]);
   const [tags, setTags] = useState<string[]>([]);
+  const [isCategoryOpen, setIsCategoryOpen] = useState(false);
+  const [isRepoOpen, setIsRepoOpen] = useState(false);
+  const [isTagOpen, setIsTagOpen] = useState(false);
 
   useEffect(() => {
     fetchStats().then((s: any) => {
@@ -57,28 +69,74 @@ export default function Memories() {
     load();
   };
 
+  const categoryLabel = CATEGORY_OPTIONS.find((o) => o.value === category)?.label || 'All Categories';
+  const repoLabel = repo || 'All Repos';
+  const tagLabel = tag || 'All Tags';
+
   return (
     <div className="split-layout">
       <div className="split-main">
-        <div className="controls">
-          <select value={category} onChange={(e) => { setCategory(e.target.value); setOffset(0); }}>
-            {CATEGORY_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-          <select value={repo} onChange={(e) => { setRepo(e.target.value); setOffset(0); }}>
-            <option value="">All Repos</option>
-            {repos.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
-          <select value={tag} onChange={(e) => { setTag(e.target.value); setOffset(0); }}>
-            <option value="">All Tags</option>
-            {tags.map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-        </div>
+        <Flex gap={{ default: 'gapSm' }} style={{ marginBottom: '16px' }}>
+          <FlexItem>
+            <Select
+              isOpen={isCategoryOpen}
+              selected={category}
+              onSelect={(_e, val) => { setCategory(val as string); setOffset(0); setIsCategoryOpen(false); }}
+              onOpenChange={setIsCategoryOpen}
+              toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
+                <MenuToggle ref={toggleRef} onClick={() => setIsCategoryOpen(!isCategoryOpen)} isExpanded={isCategoryOpen}>
+                  {categoryLabel}
+                </MenuToggle>
+              )}
+            >
+              <SelectList>
+                {CATEGORY_OPTIONS.map((o) => (
+                  <SelectOption key={o.value} value={o.value}>{o.label}</SelectOption>
+                ))}
+              </SelectList>
+            </Select>
+          </FlexItem>
+          <FlexItem>
+            <Select
+              isOpen={isRepoOpen}
+              selected={repo}
+              onSelect={(_e, val) => { setRepo(val as string); setOffset(0); setIsRepoOpen(false); }}
+              onOpenChange={setIsRepoOpen}
+              toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
+                <MenuToggle ref={toggleRef} onClick={() => setIsRepoOpen(!isRepoOpen)} isExpanded={isRepoOpen}>
+                  {repoLabel}
+                </MenuToggle>
+              )}
+            >
+              <SelectList>
+                <SelectOption value="">All Repos</SelectOption>
+                {repos.map((r) => (
+                  <SelectOption key={r} value={r}>{r}</SelectOption>
+                ))}
+              </SelectList>
+            </Select>
+          </FlexItem>
+          <FlexItem>
+            <Select
+              isOpen={isTagOpen}
+              selected={tag}
+              onSelect={(_e, val) => { setTag(val as string); setOffset(0); setIsTagOpen(false); }}
+              onOpenChange={setIsTagOpen}
+              toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
+                <MenuToggle ref={toggleRef} onClick={() => setIsTagOpen(!isTagOpen)} isExpanded={isTagOpen}>
+                  {tagLabel}
+                </MenuToggle>
+              )}
+            >
+              <SelectList>
+                <SelectOption value="">All Tags</SelectOption>
+                {tags.map((t) => (
+                  <SelectOption key={t} value={t}>{t}</SelectOption>
+                ))}
+              </SelectList>
+            </Select>
+          </FlexItem>
+        </Flex>
         <div className="card-grid">
           {memories.length === 0 && <div className="empty-state">No memories found</div>}
           {memories.map((m) => (

@@ -1,5 +1,18 @@
 import type { Task } from '../types';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  CardTitle,
+  Flex,
+  FlexItem,
+  Label,
+  LabelGroup,
+  Content,
+  Icon
+} from '@patternfly/react-core';
+import { ExclamationTriangleIcon } from '@patternfly/react-icons';
 
 interface Props {
   task: Task;
@@ -16,87 +29,86 @@ const statusLabels: Record<string, string> = {
   archived: 'Archived',
 };
 
-const sourceTypeColors: Record<string, string> = {
-  jira: 'blue',
-  github: 'dark',
-  gitlab: 'orange',
-  scheduled: 'purple',
-  manual: 'dim',
+const statusColors: Record<string, 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'grey'> = {
+  in_progress: 'blue',
+  pr_open: 'green',
+  pr_changes: 'orange',
+  done: 'grey',
+  paused: 'purple',
+  archived: 'grey',
 };
 
 export default function TaskCard({ task, selected, onClick }: Props) {
-  const step = task.metadata?.last_step;
   const url = sourceUrl(task);
   const key = displayKey(task);
   const firstArtifact = task.artifacts?.[0];
 
   return (
-    <div
-      className={`task-card status-${task.status}${selected ? ' selected' : ''}`}
+    <Card
+      isCompact
+      isGlass
+      isSelected={selected}
       onClick={onClick}
+      style={{ cursor: 'pointer', borderLeft: `3px solid ${task.status === 'in_progress' ? 'var(--accent)' : task.status === 'pr_changes' ? 'var(--yellow)' : task.status === 'pr_open' ? 'var(--green)' : task.status === 'paused' ? 'var(--purple)' : 'transparent'}` }}
     >
-      <div className="task-card-header">
-        {url ? (
-          <a
-            href={url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="task-jira-key"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {key}
-          </a>
-        ) : (
-          <span className="task-jira-key">{key}</span>
-        )}
-        {task.source_type && task.source_type !== 'jira' && (
-          <span className={`source-type-badge ${sourceTypeColors[task.source_type] || 'dim'}`}>
-            {task.source_type}
-          </span>
-        )}
-        <span className={`status-badge ${task.status}`}>
-          {statusLabels[task.status] || task.status}
-        </span>
-      </div>
-      {task.title && <div className="task-card-title">{task.title}</div>}
-      <div className="task-card-meta">
-        <span className="task-repo">{task.repo}</span>
-        {firstArtifact && (
-          <a
-            href={firstArtifact.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="task-pr"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {firstArtifact.name}
-          </a>
-        )}
-        <span className="task-created" title={task.created_at}>
-          {timeAgo(task.created_at)}
-        </span>
-        {task.last_addressed && (
-          <span className="task-activity" title={task.last_addressed}>
-            active {timeAgo(task.last_addressed)}
-          </span>
-        )}
-      </div>
-      {step && <div className="task-step">Step: {step}</div>}
-      {task.instance_id && (
-        <span className="task-instance" title={`Instance: ${task.instance_id}`}>
-          {task.instance_id}
-        </span>
-      )}
-      {task.paused_reason && (
-        <div className="task-paused-reason">{task.paused_reason}</div>
-      )}
-      {task.slack_notification && (
-        <div className="task-slack-notif" title={`${task.slack_notification.event_type}: ${task.slack_notification.message}`}>
-          <span className="slack-icon">🔔</span>
-          <span className="slack-event">{task.slack_notification.event_type.replace(/_/g, ' ')}</span>
-          <span className="slack-time">{timeAgo(task.slack_notification.sent_at)}</span>
-        </div>
-      )}
-    </div>
+      <CardHeader
+        actions={{ actions: <Label color={statusColors[task.status] || 'grey'}>{statusLabels[task.status] || task.status}</Label> }}
+      >
+        <CardTitle>
+          {url ? (
+            <a href={url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontWeight: 600 }}>
+              {key}
+            </a>
+          ) : (
+            <span style={{ fontWeight: 600 }}>{key}</span>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardBody>
+        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+          {task.title && (
+            <FlexItem>
+              <Content component="p" style={{ margin: 0 }}>{task.title}</Content>
+            </FlexItem>
+          )}
+          <FlexItem>
+            <LabelGroup>
+              <Label variant="outline">{task.repo}</Label>
+              {firstArtifact && (
+                <span onClick={(e) => e.stopPropagation()}>
+                  <Label color="blue" href={firstArtifact.url}>
+                    {firstArtifact.name}
+                  </Label>
+                </span>
+              )}
+              <Label variant="outline">{timeAgo(task.created_at)}</Label>
+              {task.last_addressed && (
+                <Label variant="outline">active {timeAgo(task.last_addressed)}</Label>
+              )}
+            </LabelGroup>
+          </FlexItem>
+          {task.instance_id && (
+            <FlexItem>
+              <Label variant="outline" color="grey">{task.instance_id}</Label>
+            </FlexItem>
+          )}
+          {task.paused_reason && (
+            <FlexItem>
+              <Content component="p" style={{ margin: 0, color: 'var(--yellow)', fontSize: '13px' }}>
+                <Icon status="warning" size="sm"><ExclamationTriangleIcon /></Icon>{' '}
+                {task.paused_reason}
+              </Content>
+            </FlexItem>
+          )}
+          {task.slack_notification && (
+            <FlexItem>
+              <Label variant="outline" icon={<span>🔔</span>}>
+                {task.slack_notification.event_type.replace(/_/g, ' ')} · {timeAgo(task.slack_notification.sent_at)}
+              </Label>
+            </FlexItem>
+          )}
+        </Flex>
+      </CardBody>
+    </Card>
   );
 }

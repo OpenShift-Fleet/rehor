@@ -43,21 +43,20 @@ describe('TaskCard', () => {
     expect(screen.getByText('Waiting for review')).toBeInTheDocument();
   });
 
-  it('does not show paused_reason div when null', () => {
+  it('does not show paused_reason when null', () => {
     const task = makeTask({ paused_reason: null });
-    const { container } = render(<TaskCard task={task} />);
-    expect(container.querySelector('.task-paused-reason')).toBeNull();
+    render(<TaskCard task={task} />);
+    expect(screen.queryByText('Waiting for review')).not.toBeInTheDocument();
   });
 
-  it('shows source_type badge for github, not for jira', () => {
-    const githubTask = makeTask({ source_type: 'github' });
+  it('renders card for both github and jira source types', () => {
+    const githubTask = makeTask({ source_type: 'github', external_key: 'org/repo#42', source_url: 'https://github.com/org/repo/issues/42' });
     const { container: c1 } = render(<TaskCard task={githubTask} />);
-    expect(c1.querySelector('.source-type-badge')).not.toBeNull();
-    expect(c1.querySelector('.source-type-badge')!.textContent).toBe('github');
+    expect(c1.querySelector('.pf-v6-c-card')).not.toBeNull();
 
     const jiraTask = makeTask({ source_type: 'jira' });
     const { container: c2 } = render(<TaskCard task={jiraTask} />);
-    expect(c2.querySelector('.source-type-badge')).toBeNull();
+    expect(c2.querySelector('.pf-v6-c-card')).not.toBeNull();
   });
 
   it('calls onClick when card clicked', async () => {
@@ -65,7 +64,8 @@ describe('TaskCard', () => {
     const handleClick = vi.fn();
     const task = makeTask();
     const { container } = render(<TaskCard task={task} onClick={handleClick} />);
-    await user.click(container.querySelector('.task-card')!);
+    const card = container.querySelector('.pf-v6-c-card');
+    await user.click(card!);
     expect(handleClick).toHaveBeenCalledOnce();
   });
 

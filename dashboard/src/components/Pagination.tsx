@@ -1,3 +1,5 @@
+import { Pagination as PFPagination } from '@patternfly/react-core';
+
 interface Props {
   total: number;
   limit: number;
@@ -6,28 +8,18 @@ interface Props {
 }
 
 export default function Pagination({ total, limit, offset, onChange }: Props) {
-  const totalPages = Math.ceil(total / limit);
+  if (total <= limit) return null;
+
   const currentPage = Math.floor(offset / limit) + 1;
 
-  if (totalPages <= 1) return null;
-
   return (
-    <div className="pagination">
-      <button
-        disabled={currentPage <= 1}
-        onClick={() => onChange(offset - limit)}
-      >
-        Prev
-      </button>
-      <span className="pagination-info">
-        Page {currentPage} of {totalPages} ({total} total)
-      </span>
-      <button
-        disabled={currentPage >= totalPages}
-        onClick={() => onChange(offset + limit)}
-      >
-        Next
-      </button>
-    </div>
+    <PFPagination
+      itemCount={total}
+      perPage={limit}
+      page={currentPage}
+      onSetPage={(_e, page) => onChange((page - 1) * limit)}
+      isCompact
+      style={{ marginTop: '16px' }}
+    />
   );
 }

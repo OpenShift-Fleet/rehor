@@ -5,6 +5,7 @@ import { useWS } from '../hooks/useWebSocket';
 import TaskCard from '../components/TaskCard';
 import DetailPanel from '../components/DetailPanel';
 import Pagination from '../components/Pagination';
+import { Label, Content } from '@patternfly/react-core';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 const LIMIT = 20;
@@ -57,11 +58,15 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
   return (
     <div className="split-layout">
       <div className="split-main">
-        <div className="controls">
-          <span className="archived-count">{total} archived task{total !== 1 ? 's' : ''}</span>
+        <div style={{ marginBottom: '16px' }}>
+          <Label variant="outline">{total} archived task{total !== 1 ? 's' : ''}</Label>
         </div>
         <div className="card-grid">
-          {tasks.length === 0 && <div className="empty-state">No archived tasks</div>}
+          {tasks.length === 0 && (
+            <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle, var(--text-dim))' }}>
+              No archived tasks
+            </Content>
+          )}
           {tasks.map((t) => (
             <TaskCard
               key={t.id}

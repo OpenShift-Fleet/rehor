@@ -5,6 +5,13 @@ import { useWS } from '../hooks/useWebSocket';
 import TaskCard from '../components/TaskCard';
 import DetailPanel from '../components/DetailPanel';
 import Pagination from '../components/Pagination';
+import {
+  MenuToggle,
+  MenuToggleElement,
+  Select,
+  SelectList,
+  SelectOption
+} from '@patternfly/react-core';
 import ConfirmDialog from '../components/ConfirmDialog';
 
 const STATUS_OPTIONS = [
@@ -30,6 +37,7 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
   const [status, setStatus] = useState('');
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Task | null>(null);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -121,15 +129,29 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
     }
   };
 
+  const currentLabel = STATUS_OPTIONS.find((o) => o.value === status)?.label || 'All';
+
   return (
     <div className="split-layout">
       <div className="split-main">
         <div className="controls">
-          <select value={status} onChange={(e) => { setStatus(e.target.value); setOffset(0); }}>
-            {STATUS_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
+          <Select
+            isOpen={isFilterOpen}
+            selected={status}
+            onSelect={(_e, val) => { setStatus(val as string); setOffset(0); setIsFilterOpen(false); }}
+            onOpenChange={setIsFilterOpen}
+            toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
+              <MenuToggle ref={toggleRef} onClick={() => setIsFilterOpen(!isFilterOpen)} isExpanded={isFilterOpen}>
+                {currentLabel}
+              </MenuToggle>
+            )}
+          >
+            <SelectList>
+              {STATUS_OPTIONS.map((o) => (
+                <SelectOption key={o.value} value={o.value}>{o.label}</SelectOption>
+              ))}
+            </SelectList>
+          </Select>
         </div>
         <div className="card-grid">
           {tasks.length === 0 && <div className="empty-state">No tasks found</div>}

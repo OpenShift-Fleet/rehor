@@ -10,6 +10,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@patternfly/patternfly": "^6.6.0",
+    "@patternfly/react-core": "^6.6.0",
+    "@patternfly/react-icons": "^6.6.0",
+    "@patternfly/react-styles": "^6.6.0",
+    "@patternfly/react-table": "^6.6.0",
+    "@patternfly/react-tokens": "^6.6.0",
     "jszip": "^3.10.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -29,6 +35,7 @@
     "jsdom": "^29.1.1",
     "typescript": "^7.0.0",
     "vite": "^8.0.10",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "ws": "^8.21.0"
   }
 }

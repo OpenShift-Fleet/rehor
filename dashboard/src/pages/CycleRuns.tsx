@@ -6,6 +6,27 @@ import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from '.
 import { useWS } from '../hooks/useWebSocket';
 import CycleRunCard from '../components/CycleRunCard';
 import { timeAgo, formatDuration, formatTokens, sourceUrl, displayKey } from '../utils';
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardBody,
+  Flex,
+  FlexItem,
+  Label,
+  LabelGroup,
+  Button,
+  Content,
+  Divider,
+  DescriptionList,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  DescriptionListDescription,
+  SearchInput,
+  ToggleGroup,
+  ToggleGroupItem
+} from '@patternfly/react-core';
+import { DownloadIcon, ExpandIcon, CompressIcon, TimesIcon } from '@patternfly/react-icons';
 
 import JSZip from 'jszip';
 
@@ -160,13 +181,11 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
 
   if (transcript === null && !loading && !error) {
     return (
-      <div className="transcript-load">
-        <button className="btn-load-transcript" onClick={load}>Load Transcript</button>
-      </div>
+      <Button variant="secondary" onClick={load}>Load Transcript</Button>
     );
   }
-  if (loading) return <div className="transcript-loading">Loading transcript...</div>;
-  if (error) return <div className="transcript-error">{error}</div>;
+  if (loading) return <Content component="p">Loading transcript...</Content>;
+  if (error) return <Content component="p" style={{ color: 'var(--pf-t--global--color--status--danger--default)' }}>{error}</Content>;
   if (!transcript) return null;
 
   const entries = parseTranscript(transcript);
@@ -189,38 +208,31 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
 
   return (
     <div className="transcript-viewer">
-      <div className="transcript-controls">
-        <span className="transcript-count">{visible.length} entries</span>
-        <input
-          className="transcript-search"
-          type="text"
-          placeholder="Search transcript..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onFocus={() => onRequestFullscreen?.()}
-        />
-        <div className="transcript-buttons">
-          <button
-            className="btn-download-cycle"
-            onClick={() => downloadText(transcript, `cycle-${runId}.jsonl`)}
-            title="Download transcript"
-          >
-            &#11015;
-          </button>
-          <button
-            className={`btn-toggle-raw ${showThinking ? 'active' : ''}`}
-            onClick={() => setShowThinking(!showThinking)}
-          >
-            Thinking
-          </button>
-          <button
-            className={`btn-toggle-raw ${rawMode ? 'active' : ''}`}
-            onClick={() => setRawMode(!rawMode)}
-          >
-            Raw
-          </button>
-        </div>
-      </div>
+      <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} style={{ marginBottom: '8px' }}>
+        <FlexItem>
+          <Label variant="outline">{visible.length} entries</Label>
+        </FlexItem>
+        <FlexItem style={{ flex: 1 }}>
+          <SearchInput
+            placeholder="Search transcript..."
+            value={search}
+            onChange={(_e, val) => setSearch(val)}
+            onClear={() => setSearch('')}
+            onFocus={() => onRequestFullscreen?.()}
+          />
+        </FlexItem>
+        <FlexItem>
+          <Button variant="plain" size="sm" onClick={() => downloadText(transcript, `cycle-${runId}.jsonl`)} title="Download transcript">
+            <DownloadIcon />
+          </Button>
+        </FlexItem>
+        <FlexItem style={{ flexShrink: 0 }}>
+          <ToggleGroup aria-label="View options">
+            <ToggleGroupItem text="Thinking" isSelected={showThinking} onChange={() => setShowThinking(!showThinking)} />
+            <ToggleGroupItem text="Raw" isSelected={rawMode} onChange={() => setRawMode(!rawMode)} />
+          </ToggleGroup>
+        </FlexItem>
+      </Flex>
       {rawMode ? (
         <pre className="transcript-raw">{transcript}</pre>
       ) : (
@@ -284,98 +296,135 @@ function CycleRunDetail({
       : null;
 
   return (
-    <div className={`detail-panel${fullscreen ? ' detail-fullscreen' : ''}`}>
-      <div className="detail-header">
-        <h3>Cycle #{run.id}</h3>
-        <div className="detail-header-actions">
-          <button className="detail-expand" onClick={onToggleFullscreen} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-            {fullscreen ? '⊟' : '⊞'}
-          </button>
-          <button className="detail-close" onClick={onClose}>X</button>
-        </div>
-      </div>
-      <div className="detail-body">
-        <div className="detail-meta-grid">
-          <div className="detail-meta-item">
-            <span className="detail-label">Type</span>
-            <span className={`cycle-type-badge ${run.cycle_type}`}>
-              {run.cycle_type.replace(/_/g, ' ')}
-            </span>
-          </div>
+    <Card isGlass className={fullscreen ? 'detail-fullscreen' : ''}>
+      <CardHeader
+        actions={{ actions: (
+          <Flex gap={{ default: 'gapSm' }}>
+            <FlexItem>
+              <Button variant="plain" onClick={onToggleFullscreen} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+                {fullscreen ? <CompressIcon /> : <ExpandIcon />}
+              </Button>
+            </FlexItem>
+            <FlexItem>
+              <Button variant="plain" onClick={onClose}><TimesIcon /></Button>
+            </FlexItem>
+          </Flex>
+        ) }}
+      >
+        <CardTitle>Cycle #{run.id}</CardTitle>
+      </CardHeader>
+      <CardBody>
+        <DescriptionList isHorizontal isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Type</DescriptionListTerm>
+            <DescriptionListDescription>
+              <Label color="blue">{run.cycle_type.replace(/_/g, ' ').toUpperCase()}</Label>
+            </DescriptionListDescription>
+          </DescriptionListGroup>
           {run.instance_id && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Instance</span>
-              <span>{run.instance_id}</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Instance</DescriptionListTerm>
+              <DescriptionListDescription>{run.instance_id}</DescriptionListDescription>
+            </DescriptionListGroup>
           )}
-          <div className="detail-meta-item">
-            <span className="detail-label">Started</span>
-            <span title={run.started_at}>{timeAgo(run.started_at)}</span>
-          </div>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Started</DescriptionListTerm>
+            <DescriptionListDescription title={run.started_at}>{timeAgo(run.started_at)}</DescriptionListDescription>
+          </DescriptionListGroup>
           {duration != null && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Duration</span>
-              <span>{formatDuration(duration)}</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Duration</DescriptionListTerm>
+              <DescriptionListDescription>{formatDuration(duration)}</DescriptionListDescription>
+            </DescriptionListGroup>
           )}
           {run.tool_calls != null && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Tool Calls</span>
-              <span>{run.tool_calls}</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Tool Calls</DescriptionListTerm>
+              <DescriptionListDescription>{run.tool_calls}</DescriptionListDescription>
+            </DescriptionListGroup>
           )}
           {run.tokens_used != null && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Tokens</span>
-              <span>{formatTokens(run.tokens_used)}</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Tokens</DescriptionListTerm>
+              <DescriptionListDescription>{formatTokens(run.tokens_used)}</DescriptionListDescription>
+            </DescriptionListGroup>
           )}
-        </div>
+        </DescriptionList>
 
         {Object.keys(progress).length > 0 && (
-          <div className="detail-section">
-            <span className="detail-label">Progress</span>
-            <div className="progress-info">
-              {progress.last_step && <div><strong>Last step:</strong> {progress.last_step}</div>}
-              {progress.next_step && <div><strong>Next step:</strong> {progress.next_step}</div>}
-              {progress.external_key && <div><strong>Source:</strong> {progress.external_key}</div>}
-              {progress.summary && <div><strong>Summary:</strong> {progress.summary}</div>}
-              {progress.files_changed && (
-                <div>
-                  <strong>Files:</strong>
-                  <ul>
-                    {(progress.files_changed as string[]).map((f: string, i: number) => (
-                      <li key={i}><code>{f}</code></li>
-                    ))}
-                  </ul>
-                </div>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Progress</Content>
+            <DescriptionList isCompact>
+              {progress.last_step && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Last step</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.last_step}</DescriptionListDescription>
+                </DescriptionListGroup>
               )}
-              {progress.key_decisions && <div><strong>Decisions:</strong> {progress.key_decisions}</div>}
-              {progress.blockers && <div><strong>Blockers:</strong> {progress.blockers}</div>}
-            </div>
-          </div>
+              {progress.next_step && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Next step</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.next_step}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {progress.external_key && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Source</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.external_key}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {progress.summary && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Summary</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.summary}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {progress.files_changed && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Files</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    {(progress.files_changed as string[]).map((f: string, i: number) => (
+                      <div key={i}><code>{f}</code></div>
+                    ))}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {progress.key_decisions && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Decisions</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.key_decisions}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {progress.blockers && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Blockers</DescriptionListTerm>
+                  <DescriptionListDescription>{progress.blockers}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+            </DescriptionList>
+          </>
         )}
 
         {run.input_prompt && (
-          <div className="detail-section">
-            <span className="detail-label">Input Prompt</span>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Input Prompt</Content>
             <pre className="input-prompt-content">{run.input_prompt}</pre>
-          </div>
+          </>
         )}
 
+        <Divider style={{ margin: '16px 0' }} />
+        <Content component="h4">Transcript</Content>
         {run.has_transcript ? (
-          <div className="detail-section">
-            <span className="detail-label">Transcript</span>
-            <TranscriptViewer runId={run.id} onRequestFullscreen={() => { if (!fullscreen) onToggleFullscreen(); }} />
-          </div>
+          <TranscriptViewer runId={run.id} onRequestFullscreen={() => { if (!fullscreen) onToggleFullscreen(); }} />
         ) : (
-          <div className="detail-section">
-            <span className="detail-label">Transcript</span>
-            <span className="transcript-unavailable">No transcript available for this cycle run.</span>
-          </div>
+          <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle, var(--text-dim))' }}>
+            No transcript available for this cycle run.
+          </Content>
         )}
-      </div>
-    </div>
+      </CardBody>
+    </Card>
   );
 }
 
@@ -406,47 +455,66 @@ function TaskGroupCard({
   };
 
   return (
-    <div className={`task-group-card${expanded ? ' expanded' : ''}`} onClick={onClick}>
-      <div className="task-group-header">
-        <div className="task-group-title">
-          {key ? (
-            <a
-              href={url || '#'}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {key}
-            </a>
-          ) : (
-            <span>{label}</span>
+    <Card isCompact isGlass isSelected={expanded} onClick={onClick} style={{ cursor: 'pointer', marginBottom: '8px' }}>
+      <CardHeader
+        actions={{ actions: (
+          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+            {group.transcript_count > 0 && (
+              <FlexItem>
+                <Button
+                  variant="plain"
+                  size="sm"
+                  onClick={handleDownload}
+                  isDisabled={downloading}
+                  title="Download all transcripts as ZIP"
+                >
+                  {downloading ? '...' : <DownloadIcon />}
+                </Button>
+              </FlexItem>
+            )}
+            <FlexItem>
+              <Label variant="outline">{group.cycle_count} cycles</Label>
+            </FlexItem>
+          </Flex>
+        ) }}
+      >
+        <CardTitle>
+          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+            <FlexItem>
+              {key ? (
+                <a href={url || '#'} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+                  {key}
+                </a>
+              ) : (
+                <span>{label}</span>
+              )}
+            </FlexItem>
+            {group.task_status && (
+              <FlexItem>
+                <Label color="blue">{group.task_status}</Label>
+              </FlexItem>
+            )}
+          </Flex>
+        </CardTitle>
+      </CardHeader>
+      <CardBody>
+        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+          {group.title && (
+            <FlexItem>
+              <Content component="p" style={{ margin: 0 }}>{group.title}</Content>
+            </FlexItem>
           )}
-          {group.task_status && (
-            <span className={`status-badge ${group.task_status}`}>{group.task_status}</span>
-          )}
-        </div>
-        <div className="task-group-actions">
-          {group.transcript_count > 0 && (
-            <button
-              className="btn-download-zip"
-              onClick={handleDownload}
-              disabled={downloading}
-              title="Download all transcripts as ZIP"
-            >
-              {downloading ? '...' : 'ZIP'}
-            </button>
-          )}
-          <span className="task-group-count">{group.cycle_count} cycles</span>
-        </div>
-      </div>
-      {group.title && <div className="task-group-subtitle">{group.title}</div>}
-      <div className="task-group-meta">
-        {group.repo && <span>{group.repo}</span>}
-        {group.total_tokens != null && <span>{formatTokens(group.total_tokens)} tokens</span>}
-        {group.transcript_count > 0 && <span>{group.transcript_count} transcripts</span>}
-        {group.last_cycle && <span title={group.last_cycle}>last {timeAgo(group.last_cycle)}</span>}
-      </div>
-    </div>
+          <FlexItem>
+            <LabelGroup>
+              {group.repo && <Label variant="outline">{group.repo}</Label>}
+              {group.total_tokens != null && <Label variant="outline">{formatTokens(group.total_tokens)} tokens</Label>}
+              {group.transcript_count > 0 && <Label variant="outline">{group.transcript_count} transcripts</Label>}
+              {group.last_cycle && <Label variant="outline">last {timeAgo(group.last_cycle)}</Label>}
+            </LabelGroup>
+          </FlexItem>
+        </Flex>
+      </CardBody>
+    </Card>
   );
 }
 

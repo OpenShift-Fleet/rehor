@@ -1,5 +1,26 @@
 import type { Task, Memory } from '../types';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardBody,
+  CardFooter,
+  Button,
+  Label,
+  LabelGroup,
+  Flex,
+  FlexItem,
+  Content,
+  DescriptionList,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  DescriptionListDescription,
+  Divider,
+  CodeBlock,
+  CodeBlockCode
+} from '@patternfly/react-core';
+import { TimesIcon } from '@patternfly/react-icons';
 
 interface MemoryDetailProps {
   type: 'memory';
@@ -20,10 +41,28 @@ interface TaskDetailProps {
 
 type Props = MemoryDetailProps | TaskDetailProps;
 
-const categoryColors: Record<string, string> = {
+const categoryColors: Record<string, 'green' | 'orange' | 'blue' | 'grey'> = {
   learning: 'green',
-  review_feedback: 'yellow',
+  review_feedback: 'orange',
   codebase_pattern: 'blue',
+};
+
+const statusColors: Record<string, 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'grey'> = {
+  in_progress: 'blue',
+  pr_open: 'green',
+  pr_changes: 'orange',
+  done: 'grey',
+  paused: 'purple',
+  archived: 'grey',
+};
+
+const statusLabels: Record<string, string> = {
+  in_progress: 'In Progress',
+  pr_open: 'PR Open',
+  pr_changes: 'Changes Requested',
+  done: 'Done',
+  paused: 'Paused',
+  archived: 'Archived',
 };
 
 export default function DetailPanel(props: Props) {
@@ -34,74 +73,91 @@ export default function DetailPanel(props: Props) {
 }
 
 function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'type'>) {
-  const badgeClass = categoryColors[memory.category] || 'green';
+  const badgeColor = categoryColors[memory.category] || 'green';
   const prUrl = memory.metadata?.pr_url;
 
   return (
-    <div className="detail-panel">
-      <div className="detail-header">
-        <h3>{memory.title}</h3>
-        <button className="detail-close" onClick={onClose}>X</button>
-      </div>
-      <div className="detail-body">
-        <pre className="detail-content">{memory.content}</pre>
+    <Card isGlass>
+      <CardHeader
+        actions={{ actions: <Button variant="plain" onClick={onClose}><TimesIcon /></Button> }}
+      >
+        <CardTitle>{memory.title}</CardTitle>
+      </CardHeader>
+      <CardBody>
+        <CodeBlock>
+          <CodeBlockCode>{memory.content}</CodeBlockCode>
+        </CodeBlock>
 
-        <div className="detail-meta-grid">
-          <div className="detail-meta-item">
-            <span className="detail-label">Category</span>
-            <span className={`category-badge ${badgeClass}`}>
-              {memory.category.replace(/_/g, ' ')}
-            </span>
-          </div>
+        <Divider style={{ margin: '16px 0' }} />
+
+        <DescriptionList isHorizontal isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Category</DescriptionListTerm>
+            <DescriptionListDescription>
+              <Label color={badgeColor}>{memory.category.replace(/_/g, ' ')}</Label>
+            </DescriptionListDescription>
+          </DescriptionListGroup>
           {memory.repo && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Repo</span>
-              <span>{memory.repo}</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Repo</DescriptionListTerm>
+              <DescriptionListDescription>{memory.repo}</DescriptionListDescription>
+            </DescriptionListGroup>
           )}
           {displayKey(memory) && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Source</span>
-              <a href={sourceUrl(memory) || '#'} target="_blank" rel="noopener noreferrer">
-                {displayKey(memory)}
-              </a>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Source</DescriptionListTerm>
+              <DescriptionListDescription>
+                <a href={sourceUrl(memory) || '#'} target="_blank" rel="noopener noreferrer">
+                  {displayKey(memory)}
+                </a>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
           )}
           {prUrl && (
-            <div className="detail-meta-item">
-              <span className="detail-label">PR</span>
-              <a href={prUrl} target="_blank" rel="noopener noreferrer">{prUrl}</a>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>PR</DescriptionListTerm>
+              <DescriptionListDescription>
+                <a href={prUrl} target="_blank" rel="noopener noreferrer">{prUrl}</a>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
           )}
           {memory.similarity != null && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Similarity</span>
-              <span className="similarity-score">{(memory.similarity * 100).toFixed(1)}%</span>
-            </div>
+            <DescriptionListGroup>
+              <DescriptionListTerm>Similarity</DescriptionListTerm>
+              <DescriptionListDescription>
+                <Label color="blue">{(memory.similarity * 100).toFixed(1)}%</Label>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
           )}
-          <div className="detail-meta-item">
-            <span className="detail-label">Created</span>
-            <span title={memory.created_at}>{timeAgo(memory.created_at)}</span>
-          </div>
-          <div className="detail-meta-item">
-            <span className="detail-label">ID</span>
-            <span>{memory.id}</span>
-          </div>
-        </div>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Created</DescriptionListTerm>
+            <DescriptionListDescription title={memory.created_at}>
+              {timeAgo(memory.created_at)}
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>ID</DescriptionListTerm>
+            <DescriptionListDescription>{memory.id}</DescriptionListDescription>
+          </DescriptionListGroup>
+        </DescriptionList>
 
         {memory.tags.length > 0 && (
-          <div className="detail-tags">
-            {memory.tags.map((t) => (
-              <span key={t} className="tag">{t}</span>
-            ))}
-          </div>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <LabelGroup categoryName="Tags">
+              {memory.tags.map((t) => (
+                <Label key={t} variant="outline">{t}</Label>
+              ))}
+            </LabelGroup>
+          </>
         )}
-
-        <button className="btn-delete" onClick={() => onDelete(memory.id)}>
+      </CardBody>
+      <CardFooter>
+        <Button variant="danger" onClick={() => onDelete(memory.id)}>
           Delete Memory
-        </button>
-      </div>
-    </div>
+        </Button>
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -125,63 +181,65 @@ function TaskDetail({
     task.status === 'pr_open' ||
     task.status === 'pr_changes';
 
-  const statusLabels: Record<string, string> = {
-    in_progress: 'In Progress',
-    pr_open: 'PR Open',
-    pr_changes: 'Changes Requested',
-    done: 'Done',
-    paused: 'Paused',
-    archived: 'Archived',
-  };
-
   return (
-    <div className="detail-panel">
-      <div className="detail-header">
-        <h3>
-          {url ? (
-            <a href={url} target="_blank" rel="noopener noreferrer">{key}</a>
-          ) : (
-            <span>{key}</span>
-          )}
-          {task.title && <> &mdash; {task.title}</>}
-        </h3>
-        <button className="detail-close" onClick={onClose}>X</button>
-      </div>
-      <div className="detail-body">
-        <div className="detail-meta-grid">
-          <div className="detail-meta-item">
-            <span className="detail-label">Status</span>
-            <span className={`status-badge ${task.status}`}>
-              {statusLabels[task.status] || task.status}
-            </span>
-          </div>
-          <div className="detail-meta-item">
-            <span className="detail-label">Repo(s)</span>
-            <span>{repos.join(', ')}</span>
-          </div>
-          <div className="detail-meta-item">
-            <span className="detail-label">Branch</span>
-            <code className="mono">{task.branch}</code>
-          </div>
+    <Card isGlass>
+      <CardHeader
+        actions={{ actions: <Button variant="plain" onClick={onClose}><TimesIcon /></Button> }}
+      >
+        <CardTitle>
+          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+            <FlexItem>
+              {url ? (
+                <a href={url} target="_blank" rel="noopener noreferrer">{key}</a>
+              ) : (
+                <span>{key}</span>
+              )}
+            </FlexItem>
+            {task.title && (
+              <FlexItem>
+                <span> &mdash; {task.title}</span>
+              </FlexItem>
+            )}
+          </Flex>
+        </CardTitle>
+      </CardHeader>
+      <CardBody>
+        <DescriptionList isHorizontal isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Status</DescriptionListTerm>
+            <DescriptionListDescription>
+              <Label color={statusColors[task.status] || 'grey'}>
+                {statusLabels[task.status] || task.status}
+              </Label>
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Repo(s)</DescriptionListTerm>
+            <DescriptionListDescription>{repos.join(', ')}</DescriptionListDescription>
+          </DescriptionListGroup>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Branch</DescriptionListTerm>
+            <DescriptionListDescription><code>{task.branch}</code></DescriptionListDescription>
+          </DescriptionListGroup>
 
-          {artifacts.length > 0 ? (
-            <div className="detail-meta-item">
-              <span className="detail-label">Artifacts</span>
-              <div>
+          {artifacts.length > 0 && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Artifacts</DescriptionListTerm>
+              <DescriptionListDescription>
                 {artifacts.map((a, i) => (
                   <div key={i}>
-                    <a href={a.url} target="_blank" rel="noopener noreferrer">
-                      {a.name}
-                    </a>
-                    {a.type && <span className="artifact-type"> ({a.type})</span>}
+                    <a href={a.url} target="_blank" rel="noopener noreferrer">{a.name}</a>
+                    {a.type && <span> ({a.type})</span>}
                   </div>
                 ))}
-              </div>
-            </div>
-          ) : prs.length > 0 ? (
-            <div className="detail-meta-item">
-              <span className="detail-label">PRs</span>
-              <div>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
+
+          {!artifacts.length && prs.length > 0 && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>PRs</DescriptionListTerm>
+              <DescriptionListDescription>
                 {prs.map((pr, i) => (
                   <div key={i}>
                     <a href={pr.url} target="_blank" rel="noopener noreferrer">
@@ -189,92 +247,127 @@ function TaskDetail({
                     </a>
                   </div>
                 ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="detail-meta-item">
-            <span className="detail-label">Created</span>
-            <span title={task.created_at}>{timeAgo(task.created_at)}</span>
-          </div>
-          {task.last_addressed && (
-            <div className="detail-meta-item">
-              <span className="detail-label">Last Active</span>
-              <span title={task.last_addressed}>{timeAgo(task.last_addressed)}</span>
-            </div>
+              </DescriptionListDescription>
+            </DescriptionListGroup>
           )}
-        </div>
+
+          <DescriptionListGroup>
+            <DescriptionListTerm>Created</DescriptionListTerm>
+            <DescriptionListDescription title={task.created_at}>
+              {timeAgo(task.created_at)}
+            </DescriptionListDescription>
+          </DescriptionListGroup>
+          {task.last_addressed && (
+            <DescriptionListGroup>
+              <DescriptionListTerm>Last Active</DescriptionListTerm>
+              <DescriptionListDescription title={task.last_addressed}>
+                {timeAgo(task.last_addressed)}
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          )}
+        </DescriptionList>
 
         {task.summary && (
-          <div className="detail-section">
-            <span className="detail-label">Summary</span>
-            <p>{task.summary}</p>
-          </div>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Summary</Content>
+            <Content component="p">{task.summary}</Content>
+          </>
         )}
 
         {task.paused_reason && (
-          <div className="detail-section paused-section">
-            <span className="detail-label">Paused Reason</span>
-            <p>{task.paused_reason}</p>
-          </div>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Paused Reason</Content>
+            <Content component="p">{task.paused_reason}</Content>
+          </>
         )}
 
         {meta.last_step && (
-          <div className="detail-section">
-            <span className="detail-label">Progress</span>
-            <div className="progress-info">
-              {meta.last_step && <div><strong>Last step:</strong> {meta.last_step}</div>}
-              {meta.next_step && <div><strong>Next step:</strong> {meta.next_step}</div>}
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Progress</Content>
+            <DescriptionList isCompact>
+              {meta.last_step && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Last step</DescriptionListTerm>
+                  <DescriptionListDescription>{meta.last_step}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {meta.next_step && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Next step</DescriptionListTerm>
+                  <DescriptionListDescription>{meta.next_step}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
               {meta.files_changed && (
-                <div>
-                  <strong>Files changed:</strong>
-                  <ul>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Files changed</DescriptionListTerm>
+                  <DescriptionListDescription>
                     {meta.files_changed.map((f: string, i: number) => (
-                      <li key={i}><code>{f}</code></li>
+                      <div key={i}><code>{f}</code></div>
                     ))}
-                  </ul>
-                </div>
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
               )}
               {meta.commits && (
-                <div>
-                  <strong>Commits:</strong> {meta.commits.length}
-                </div>
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Commits</DescriptionListTerm>
+                  <DescriptionListDescription>{meta.commits.length}</DescriptionListDescription>
+                </DescriptionListGroup>
               )}
-              {meta.notes && <div><strong>Notes:</strong> {meta.notes}</div>}
-            </div>
-          </div>
+              {meta.notes && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Notes</DescriptionListTerm>
+                  <DescriptionListDescription>{meta.notes}</DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+            </DescriptionList>
+          </>
         )}
 
         {!meta.last_step && Object.keys(meta).length > 0 && (
-          <div className="detail-section">
-            <span className="detail-label">Metadata</span>
-            <pre className="detail-json">{JSON.stringify(meta, null, 2)}</pre>
-          </div>
+          <>
+            <Divider style={{ margin: '16px 0' }} />
+            <Content component="h4">Metadata</Content>
+            <CodeBlock>
+              <CodeBlockCode>{JSON.stringify(meta, null, 2)}</CodeBlockCode>
+            </CodeBlock>
+          </>
         )}
-
-        <div className="detail-actions">
+      </CardBody>
+      <CardFooter>
+        <Flex gap={{ default: 'gapSm' }}>
           {onUnpause && task.status === 'paused' && (
-            <button className="btn-unpause" onClick={() => onUnpause(key)}>
-              Unpause Task
-            </button>
+            <FlexItem>
+              <Button variant="primary" onClick={() => onUnpause(key)}>
+                Unpause Task
+              </Button>
+            </FlexItem>
           )}
           {onPause && isActive && (
-            <button className="btn-pause" onClick={() => onPause(key)}>
-              Pause Task
-            </button>
+            <FlexItem>
+              <Button variant="secondary" onClick={() => onPause(key)}>
+                Pause Task
+              </Button>
+            </FlexItem>
           )}
           {onUnarchive && (
-            <button className="btn-unarchive" onClick={() => onUnarchive(key)}>
-              Restore Task
-            </button>
+            <FlexItem>
+              <Button variant="secondary" onClick={() => onUnarchive(key)}>
+                Restore Task
+              </Button>
+            </FlexItem>
           )}
           {onDelete && task.status !== 'archived' && (
-            <button className="btn-delete" onClick={() => onDelete(key)}>
-              Archive Task
-            </button>
+            <FlexItem>
+              <Button variant="danger" onClick={() => onDelete(key)}>
+                Archive Task
+              </Button>
+            </FlexItem>
           )}
-        </div>
-      </div>
-    </div>
+        </Flex>
+      </CardFooter>
+    </Card>
   );
 }
