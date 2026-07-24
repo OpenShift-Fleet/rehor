@@ -214,7 +214,7 @@ export default function Costs() {
       fetchCosts(days, 500, from, to),
       fetchAnalytics(days, from, to),
     ]);
-    setData({ cycles: costsRes.items || [], daily: costsRes.daily || [] });
+    setData({ cycles: costsRes?.items || [], daily: costsRes?.daily || [] });
     setAnalytics(analyticsRes);
   }, [days, dateMode, dateFrom, dateTo]);
 
@@ -229,7 +229,25 @@ export default function Costs() {
   if (!data || !analytics) return <div className="empty-state">Loading...</div>;
 
   const { cycles, daily } = data;
-  const { summary, work_types, repos, tickets, feedback } = analytics;
+  const {
+    summary = {
+      total_cycles: 0,
+      work_cycles: 0,
+      idle_cycles: 0,
+      error_cycles: 0,
+      unique_tickets: 0,
+      total_cost: 0,
+      avg_cost_per_work_cycle: 0,
+      avg_turns: 0,
+      avg_duration_ms: 0,
+      repos_touched: 0,
+      tickets_resolved: 0,
+    },
+    work_types = [],
+    repos = [],
+    tickets = [],
+    feedback = { avg_review_rounds: 0, zero_review: 0, multi_review: 0 },
+  } = analytics;
 
   const totalDuration = cycles.reduce((s, c) => s + c.duration_ms, 0);
   const totalOutput = cycles.reduce((s, c) => s + c.output_tokens, 0);
