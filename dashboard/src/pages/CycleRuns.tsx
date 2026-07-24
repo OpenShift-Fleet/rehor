@@ -547,7 +547,7 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
 
   const loadGroups = useCallback(async () => {
     const data = await fetchCycleRunsByTask({ instance_id: instanceId });
-    setGroups(data || []);
+    setGroups(data?.items || []);
   }, [instanceId]);
 
   const loadCyclesForTask = useCallback(async (taskId: number | null, orphan = false, showLoading = true) => {
