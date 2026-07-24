@@ -42,6 +42,7 @@ Example:
 ```python
 from fixtures import task, TASKS
 
+
 def test_my_feature():
     custom_task = task(99, "CUSTOM-1", "Custom task", "in_progress")
     assert custom_task["id"] == 99

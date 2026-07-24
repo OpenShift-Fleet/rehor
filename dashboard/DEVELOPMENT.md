@@ -66,10 +66,11 @@ rehor/
 ```python
 from fixtures import TASKS, task, memory
 
+
 def test_something():
     # Use default dataset
     assert len(TASKS) == 6
-    
+
     # Or create custom payload
     custom = task(99, "TEST-1", "Summary", "in_progress")
     assert custom["id"] == 99
