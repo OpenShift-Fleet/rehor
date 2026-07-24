@@ -17,6 +17,7 @@ dependencies = [
     "starlette>=0.40",
     "websockets>=13.0",
     "zstandard>=0.23",
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]

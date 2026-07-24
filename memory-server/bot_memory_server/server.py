@@ -1,18 +1,21 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
 from fastmcp import FastMCP
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse
-from starlette.routing import Mount, WebSocketRoute
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
+from .metrics import PrometheusMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -152,12 +155,26 @@ if __name__ == "__main__":
             async with mcp_app.lifespan(app):
                 yield
 
+    async def metrics_endpoint(request: Request) -> Response:
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    metrics_app = Starlette(routes=[Route("/metrics", metrics_endpoint)])
+
     # Wrap in an outer Starlette app so we can add WebSocket + lifespan
+    from starlette.middleware import Middleware
+
     app = Starlette(
         lifespan=combined_lifespan,
+        middleware=[Middleware(PrometheusMiddleware)],
         routes=[
             WebSocketRoute("/ws", ws_events),
             Mount("/", app=mcp_app),
         ],
     )
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+
+    async def serve():
+        main_server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8080))
+        metrics_server = uvicorn.Server(uvicorn.Config(metrics_app, host="0.0.0.0", port=9091))
+        await asyncio.gather(main_server.serve(), metrics_server.serve())
+
+    asyncio.run(serve())
