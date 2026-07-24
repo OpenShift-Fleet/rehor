@@ -54,6 +54,21 @@ def register_slack_tools(mcp: FastMCP):
         notify_mode = os.environ.get("SLACK_NOTIFY_MODE", "immediate")
 
         if notify_mode == "daily_digest":
+            existing = await pool.fetchrow(
+                """
+                SELECT id FROM slack_digest_queue
+                WHERE jira_key = $1 AND event_type = $2 AND sent = FALSE
+                """,
+                external_key,
+                event_type,
+            )
+            if existing:
+                return {
+                    "sent": False,
+                    "queued": False,
+                    "reason": f"Already queued: {event_type} for {external_key}",
+                }
+
             await pool.execute(
                 """
                 INSERT INTO slack_digest_queue
@@ -135,8 +150,10 @@ def register_slack_tools(mcp: FastMCP):
         """Send a daily digest of queued Slack notifications.
 
         Groups events by jira_key, formats a single summary message, and sends
-        to the webhook. Skips weekends (Sat/Sun — events accumulate to Monday).
-        Skips silently when the queue is empty.
+        to the webhook. Skips silently when the queue is empty.
+
+        Timing, weekend checks, and deduplication are handled by the caller
+        (bot runner). This tool just sends whatever is in the queue.
 
         instance_id: Filter queued items by bot instance (optional).
         webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var.
@@ -144,10 +161,6 @@ def register_slack_tools(mcp: FastMCP):
         Returns {"sent": true/false, "count": N, "reason": "..."}."""
         if not webhook_url:
             return {"sent": False, "count": 0, "reason": "SLACK_WEBHOOK_URL not configured"}
-
-        now = datetime.now(timezone.utc)
-        if now.weekday() >= 5:
-            return {"sent": False, "count": 0, "reason": "Weekend — digest skipped"}
 
         pool = get_pool()
 
@@ -172,6 +185,7 @@ def register_slack_tools(mcp: FastMCP):
         if not rows:
             return {"sent": False, "count": 0, "reason": "No items to digest"}
 
+        now = datetime.now(timezone.utc)
         digest_message = _format_digest(instance_id, rows, now)
 
         try:

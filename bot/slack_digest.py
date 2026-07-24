@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Slack notification management -- digest and status updates.
+"""Slack daily digest — runner-triggered, zero LLM tokens.
+
+Called by bot/run.py after each cycle. Checks conditions locally
+(hour, weekend, webhook) before calling the memory server MCP tool.
 
 Usage:
-    python3 .claude/skills/slack-digest/slack_cmd.py digest
-    python3 .claude/skills/slack-digest/slack_cmd.py status <JIRA_KEY>
-    python3 .claude/skills/slack-digest/slack_cmd.py <JIRA_KEY>   (shorthand for status)
+    python3 bot/slack_digest.py digest
+    python3 bot/slack_digest.py status <JIRA_KEY>
 """
 
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".claude" / "skills"))
 from memory_mcp import memory_call, memory_cleanup
 
 
@@ -20,6 +23,17 @@ def cmd_digest():
     webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
     if not webhook_url:
         print(json.dumps({"sent": False, "reason": "SLACK_WEBHOOK_URL not set"}))
+        return
+
+    now = datetime.now(timezone.utc)
+
+    if now.weekday() >= 5:
+        print(json.dumps({"sent": False, "reason": "Weekend — digest skipped"}))
+        return
+
+    digest_hour = int(os.environ.get("SLACK_DIGEST_HOUR", "9"))
+    if now.hour != digest_hour:
+        print(json.dumps({"sent": False, "reason": f"Not digest hour (current: {now.hour}, target: {digest_hour})"}))
         return
 
     instance_id = os.environ.get("BOT_INSTANCE_ID") or None

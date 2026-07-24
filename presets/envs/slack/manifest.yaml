@@ -5,7 +5,6 @@ description: Slack notifications via webhook (immediate or daily digest)
 provides:
   skills:
     - slack-notify
-    - slack-digest
 
 requires:
   env_vars:

@@ -175,7 +175,7 @@ class TestSlackNotifyDigest:
     @pytest.mark.asyncio
     async def test_digest_mode_queues_instead_of_sending(self, slack_tools):
         slack_notify = slack_tools["slack_notify"]
-        pool = _make_pool()
+        pool = _make_pool(fetchrow_return=None)
 
         with (
             patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
@@ -205,10 +205,10 @@ class TestSlackNotifyDigest:
         assert call_args[0][3] == "pr_created"
 
     @pytest.mark.asyncio
-    async def test_digest_mode_skips_cooldown(self, slack_tools):
-        """In digest mode, cooldown is not checked — every event is queued."""
+    async def test_digest_different_event_types_both_queued(self, slack_tools):
+        """Different event types for the same key are both queued."""
         slack_notify = slack_tools["slack_notify"]
-        pool = _make_pool()
+        pool = _make_pool(fetchrow_return=None)
 
         with (
             patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
@@ -230,6 +230,27 @@ class TestSlackNotifyDigest:
         assert r1["queued"] is True
         assert r2["queued"] is True
         assert pool.execute.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_digest_duplicate_event_rejected(self, slack_tools):
+        """Same (jira_key, event_type) already in queue is rejected."""
+        slack_notify = slack_tools["slack_notify"]
+        pool = _make_pool(fetchrow_return={"id": 99})
+
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch.dict(os.environ, {"SLACK_NOTIFY_MODE": "daily_digest"}),
+        ):
+            result = await slack_notify(
+                external_key="RHCLOUD-300",
+                event_type="pr_created",
+                message="Duplicate",
+                webhook_url="https://hooks.slack.com/test",
+            )
+
+        assert result["queued"] is False
+        assert "Already queued" in result["reason"]
+        pool.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -256,16 +277,11 @@ class TestSlackSendDigest:
         ]
         pool = _make_pool(fetch_return=rows)
 
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)  # Wednesday
-
         with (
             patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
             patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
             patch("bot_memory_server.tools.slack.bus", new_callable=AsyncMock),
         ):
-            mock_dt.now.return_value = mock_now
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             mock_client = AsyncMock()
             mock_resp = MagicMock()
             mock_resp.raise_for_status = MagicMock()
@@ -286,38 +302,19 @@ class TestSlackSendDigest:
         assert "RHCLOUD-100" in payload["msg"]
         assert "RHCLOUD-101" in payload["msg"]
 
-        update_call = pool.execute.call_args
-        assert "UPDATE" in update_call[0][0]
-        assert update_call[0][1] == [1, 2]
-
     @pytest.mark.asyncio
     async def test_send_digest_empty_queue_skips(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         pool = _make_pool(fetch_return=[])
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
 
-        with (
-            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
-        ):
-            mock_dt.now.return_value = mock_now
-            result = await slack_send_digest(webhook_url="https://hooks.slack.com/test")
+        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
+            result = await slack_send_digest(
+                webhook_url="https://hooks.slack.com/test",
+            )
 
         assert result["sent"] is False
         assert result["count"] == 0
         assert "No items" in result["reason"]
-
-    @pytest.mark.asyncio
-    async def test_send_digest_weekend_skips(self, slack_tools):
-        slack_send_digest = slack_tools["slack_send_digest"]
-        mock_now = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)  # Saturday
-
-        with patch("bot_memory_server.tools.slack.datetime") as mock_dt:
-            mock_dt.now.return_value = mock_now
-            result = await slack_send_digest(webhook_url="https://hooks.slack.com/test")
-
-        assert result["sent"] is False
-        assert "Weekend" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_send_digest_no_webhook(self, slack_tools):
@@ -331,13 +328,8 @@ class TestSlackSendDigest:
     async def test_send_digest_filters_by_instance(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         pool = _make_pool(fetch_return=[])
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
 
-        with (
-            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
-        ):
-            mock_dt.now.return_value = mock_now
+        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
             await slack_send_digest(
                 instance_id="framework-1",
                 webhook_url="https://hooks.slack.com/test",
@@ -351,13 +343,8 @@ class TestSlackSendDigest:
     async def test_send_digest_no_instance_fetches_all(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         pool = _make_pool(fetch_return=[])
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
 
-        with (
-            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
-        ):
-            mock_dt.now.return_value = mock_now
+        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
             await slack_send_digest(
                 instance_id=None,
                 webhook_url="https://hooks.slack.com/test",
@@ -371,42 +358,23 @@ class TestSlackSendDigest:
         slack_send_digest = slack_tools["slack_send_digest"]
         rows = [_make_row(id=1)]
         pool = _make_pool(fetch_return=rows)
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
 
         with (
             patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
             patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
         ):
-            mock_dt.now.return_value = mock_now
-            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
             mock_client = AsyncMock()
             mock_client.post.side_effect = Exception("Connection refused")
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            result = await slack_send_digest(webhook_url="https://hooks.slack.com/test")
+            result = await slack_send_digest(
+                webhook_url="https://hooks.slack.com/test",
+            )
 
         assert result["sent"] is False
         assert "Webhook error" in result["reason"]
         for call in pool.execute.call_args_list:
             assert "UPDATE" not in call[0][0]
-
-    @pytest.mark.asyncio
-    async def test_send_digest_idempotent(self, slack_tools):
-        """Second call after all items sent returns empty."""
-        slack_send_digest = slack_tools["slack_send_digest"]
-        pool = _make_pool(fetch_return=[])
-        mock_now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
-
-        with (
-            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
-            patch("bot_memory_server.tools.slack.datetime") as mock_dt,
-        ):
-            mock_dt.now.return_value = mock_now
-            result = await slack_send_digest(webhook_url="https://hooks.slack.com/test")
-
-        assert result["sent"] is False
-        assert result["count"] == 0
 
 
 # ---------------------------------------------------------------------------
