@@ -43,7 +43,7 @@ export default function MemoryCard({ memory, selected, showSimilarity, onClick }
         <CardTitle>{memory.title}</CardTitle>
       </CardHeader>
       <CardBody>
-        <Content component="p" style={{ color: 'var(--pf-v6-global--Color--200)', margin: 0 }}>
+        <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle)', margin: 0 }}>
           {preview}
         </Content>
       </CardBody>

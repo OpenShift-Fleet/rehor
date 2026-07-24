@@ -9,21 +9,12 @@ import {
   CardHeader,
   CardTitle,
   CardBody,
-  CardExpandableContent,
-  Level,
+  CardFooter,
   LabelGroup,
   Label,
-  LabelColor,
-  Grid,
   Flex,
   FlexItem,
   Button,
-  Dropdown,
-  DropdownList,
-  DropdownItem,
-  MenuToggle,
-  MenuToggleElement,
-  CardFooter,
   Content,
   Divider,
   Icon
@@ -119,7 +110,7 @@ export default function Instances() {
             </CardHeader>
             <CardBody>
               <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
-                <Content component="p" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--pf-v6-global--Color--200)' }}>
+                <Content component="p" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--pf-t--global--text--color--subtle)' }}>
                   {inst.message}
                 </Content>
                 <LabelGroup>
@@ -150,7 +141,7 @@ export default function Instances() {
                       variant="plain"
                       size="sm"
                       isDisabled={wakingIds.has(inst.instance_id)}
-                      onClick={(e) => handleWake(e as unknown as React.MouseEvent, inst.instance_id)}
+                      onClick={(e: React.MouseEvent) => handleWake(e, inst.instance_id)}
                       title="Wake bot — start next cycle immediately"
                     >
                       {wakingIds.has(inst.instance_id) ? 'Waking…' : '▶'}

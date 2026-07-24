@@ -50,6 +50,14 @@ export default function ThemeSelector() {
     applyThemeClasses(theme, colorScheme, contrastMode);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (colorScheme !== 'system') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => applyThemeClasses(theme, 'system', contrastMode);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [colorScheme, theme, contrastMode, applyThemeClasses]);
+
   const handleThemeChange = (t: 'default' | 'felt') => {
     setTheme(t);
     localStorage.setItem('pf-theme', t);

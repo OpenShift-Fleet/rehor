@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useWS } from '../hooks/useWebSocket';
 import { timeAgo } from '../utils';
 import {
@@ -31,15 +31,9 @@ let toastIdCounter = 0;
 export default function Toasts() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const { onEvent } = useWS();
-  const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const removeToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
-    const timer = timersRef.current.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      timersRef.current.delete(id);
-    }
   }, []);
 
   useEffect(() => {
@@ -64,17 +58,10 @@ export default function Toasts() {
       };
 
       setToasts((prev) => [toast, ...prev].slice(0, 10));
-
-      const timer = setTimeout(() => removeToast(id), 8000);
-      timersRef.current.set(id, timer);
     });
 
-    return () => {
-      unsub();
-      timersRef.current.forEach((timer) => clearTimeout(timer));
-      timersRef.current.clear();
-    };
-  }, [onEvent, removeToast]);
+    return unsub;
+  }, [onEvent]);
 
   if (toasts.length === 0) return null;
 

@@ -114,7 +114,7 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
           )}
           {progress.summary && (
             <FlexItem>
-              <Content component="p" style={{ margin: 0, color: 'var(--pf-v6-global--Color--200)' }}>
+              <Content component="p" style={{ margin: 0, color: 'var(--pf-t--global--text--color--subtle)' }}>
                 {String(progress.summary).slice(0, 120)}
               </Content>
             </FlexItem>
