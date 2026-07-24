@@ -152,9 +152,10 @@ export default function EmbeddingMap() {
     resizeObserver.observe(container);
 
     // Load data
-    fetchEmbeddings().then((points: EmbeddingPoint[]) => {
+    fetchEmbeddings().then((data) => {
       if (disposed) return;
 
+      const points: EmbeddingPoint[] = data?.items || [];
       const geo = new THREE.SphereGeometry(0.04, 12, 12);
 
       points.forEach((pt) => {

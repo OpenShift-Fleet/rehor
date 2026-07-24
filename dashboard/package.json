@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "tsc --noEmit",
     "test:ct": "npx playwright test",
     "test:ct:ui": "npx playwright test --ui",
     "generate-fixtures": "python3 tests/fixtures/generate_json.py"
