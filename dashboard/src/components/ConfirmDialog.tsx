@@ -1,4 +1,14 @@
-import { useRef, useEffect, useState } from 'react';
+import { useState } from 'react';
+import {
+  Modal,
+  ModalVariant,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  Content,
+  TextInput
+} from '@patternfly/react-core';
 
 interface Props {
   open: boolean;
@@ -25,60 +35,51 @@ export default function ConfirmDialog({
   onConfirm,
   onCancel,
 }: Props) {
-  const ref = useRef<HTMLDialogElement>(null);
   const [inputValue, setInputValue] = useState('');
-
-  useEffect(() => {
-    const dialog = ref.current;
-    if (!dialog) return;
-    if (open && !dialog.open) {
-      setInputValue('');
-      dialog.showModal();
-    } else if (!open && dialog.open) {
-      dialog.close();
-    }
-  }, [open]);
 
   const handleConfirm = () => {
     onConfirm(inputLabel ? inputValue : undefined);
+    setInputValue('');
+  };
+
+  const handleCancel = () => {
+    setInputValue('');
+    onCancel();
   };
 
   return (
-    <dialog
-      ref={ref}
-      className="confirm-dialog"
-      onClose={onCancel}
-      onClick={(e) => {
-        if (e.target === ref.current) onCancel();
-      }}
+    <Modal
+      variant={ModalVariant.small}
+      isOpen={open}
+      onClose={handleCancel}
+      aria-label={title}
     >
-      <div className="confirm-dialog-content">
-        <h3>{title}</h3>
-        <p>{message}</p>
+      <ModalHeader title={title} />
+      <ModalBody>
+        <Content component="p">{message}</Content>
         {inputLabel && (
-          <div className="confirm-dialog-input">
-            <label>{inputLabel}</label>
-            <input
-              type="text"
+          <div style={{ marginTop: '16px' }}>
+            <TextInput
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(_e, val) => setInputValue(val)}
+              aria-label={inputLabel}
               placeholder={inputPlaceholder}
               autoFocus
             />
           </div>
         )}
-        <div className="confirm-dialog-actions">
-          <button className="btn-cancel" onClick={onCancel}>
-            {cancelLabel}
-          </button>
-          <button
-            className={variant === 'danger' ? 'btn-delete' : 'btn-confirm'}
-            onClick={handleConfirm}
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
-    </dialog>
+      </ModalBody>
+      <ModalFooter>
+        <Button
+          variant={variant === 'danger' ? 'danger' : 'primary'}
+          onClick={handleConfirm}
+        >
+          {confirmLabel}
+        </Button>
+        <Button variant="secondary" onClick={handleCancel}>
+          {cancelLabel}
+        </Button>
+      </ModalFooter>
+    </Modal>
   );
 }

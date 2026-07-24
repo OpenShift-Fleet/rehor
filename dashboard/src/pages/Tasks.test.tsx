@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Tasks from './Tasks';
@@ -24,8 +24,6 @@ const mockDeleteTask = vi.mocked(deleteTask);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  HTMLDialogElement.prototype.showModal = vi.fn();
-  HTMLDialogElement.prototype.close = vi.fn();
   mockFetchTasks.mockResolvedValue({ items: [], total: 0 });
 });
 
@@ -39,7 +37,7 @@ function errorResponse(status: number, body: Record<string, string>) {
 
 async function selectTask(taskName: string) {
   const user = userEvent.setup();
-  const card = screen.getByText(taskName).closest('.task-card');
+  const card = screen.getByText(taskName).closest('.pf-v6-c-card');
   await user.click(card!);
 }
 
@@ -91,9 +89,9 @@ describe('Tasks page — dialog flows', () => {
     await selectTask('RHCLOUD-300');
 
     await user.click(screen.getByText('Archive Task'));
-    const archiveBtn = screen.getByText('Archive');
-    expect(archiveBtn.className).toBe('btn-delete');
-    await user.click(archiveBtn);
+    const archiveBtn = screen.getByText('Archive').closest('button');
+    expect(archiveBtn).toHaveClass('pf-m-danger');
+    await user.click(archiveBtn!);
 
     expect(mockDeleteTask).toHaveBeenCalledWith('RHCLOUD-300');
   });

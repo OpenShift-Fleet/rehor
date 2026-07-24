@@ -1,0 +1,53 @@
+---
+description: Pending Jira task to create after MCP is available
+alwaysApply: true
+---
+
+# Pending Jira Task
+
+After restart, when the Jira/Atlassian MCP is available, create this task:
+
+## Task Details
+
+- **Epic:** CCXDEV-16574
+- **Title:** Migrate dashboard components to PatternFly 6
+- **Story Points:** 8
+- **Assignee:** current user (jdrobena)
+- **Description:**
+
+Migrated the Řehoř dashboard UI from custom HTML/CSS components to PatternFly 6.
+
+### Changes Made
+
+**Layout & Navigation**
+- Replaced custom header with PF Masthead + Toolbar
+- Converted tab navigation to PF Nav (horizontal variant)
+- Converted InstanceSelector from plain select to PF Select
+
+**Theme Support**
+- Added full theme switcher dropdown (Theme: Default/Project Felt, Color Scheme: System/Light/Dark, Contrast Mode: System/Default/High Contrast/Glass)
+- Theme state persisted in localStorage
+- Custom CSS variables mapped to PF design tokens for automatic theme adaptation
+- Glass mode support with isGlass prop on Cards
+
+**Components Converted**
+- Instances page — PF Card with CardHeader/CardBody/CardFooter, Icon, Label, LabelGroup, Divider
+- TaskCard — PF Card with status-colored left border, Label for status/repo/artifacts
+- MemoryCard — PF Card with LabelGroup for category/tags
+- BotBanner — PF Card with Flex layout, Label, Icon, Button
+- DetailPanel (Task & Memory) — PF Card, DescriptionList, CodeBlock, Button, Label
+- CycleRunCard — PF Card with Label for type/metrics
+- CycleRunDetail — PF Card, DescriptionList, Divider, SearchInput, ToggleGroup
+- TaskGroupCard — PF Card with download Button, Label, LabelGroup
+- Pagination — PF Pagination component
+- Toasts — PF AlertGroup with Alert (isToast, auto-timeout)
+- Search page — PF SearchInput
+- Memories page — PF Select dropdowns for filters
+- Tasks page — PF Select for status filter
+- Costs page — PF Card wrappers, ToggleGroup for metrics/date mode, Select for days
+
+**Icons**
+- Replaced custom text/emoji icons with PF icons (TimesIcon, ExpandIcon, CompressIcon, DownloadIcon, CircleIcon, SunIcon, MoonIcon, AdjustIcon, ExclamationTriangleIcon)
+
+**Mock Data**
+- Added 4 archived tasks to mock-server for testing the Archive page

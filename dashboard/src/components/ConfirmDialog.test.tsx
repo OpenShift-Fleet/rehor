@@ -1,12 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import ConfirmDialog from './ConfirmDialog';
-
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = vi.fn();
-  HTMLDialogElement.prototype.close = vi.fn();
-});
 
 describe('ConfirmDialog', () => {
   const baseProps = {
@@ -56,15 +51,15 @@ describe('ConfirmDialog', () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it('confirm button has btn-delete class when variant is danger', () => {
+  it('confirm button uses danger variant when variant is danger', () => {
     render(<ConfirmDialog {...baseProps} variant="danger" confirmLabel="Delete" />);
-    const btn = screen.getByText('Delete');
-    expect(btn.className).toBe('btn-delete');
+    const btn = screen.getByText('Delete').closest('button');
+    expect(btn).toHaveClass('pf-m-danger');
   });
 
-  it('confirm button has btn-confirm class when variant is default', () => {
+  it('confirm button uses primary variant when variant is default', () => {
     render(<ConfirmDialog {...baseProps} variant="default" confirmLabel="OK" />);
-    const btn = screen.getByText('OK');
-    expect(btn.className).toBe('btn-confirm');
+    const btn = screen.getByText('OK').closest('button');
+    expect(btn).toHaveClass('pf-m-primary');
   });
 });

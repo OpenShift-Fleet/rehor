@@ -1,0 +1,62 @@
+---
+description: Context for the PatternFly 6 migration of the Řehoř dashboard
+alwaysApply: true
+---
+
+# PF6 Migration Context
+
+## What Was Done
+
+The Řehoř bot dashboard (`dashboard/`) was migrated from custom HTML/CSS to PatternFly 6 components.
+
+## Components Converted
+
+| Component | PF6 Components Used |
+|-----------|-------------------|
+| `App.tsx` header | Masthead, MastheadMain, Toolbar, ToolbarContent, ToolbarItem, ToolbarGroup |
+| `App.tsx` nav | Nav (horizontal variant), NavList, NavItem |
+| `App.tsx` instance selector | Select, MenuToggle, SelectList, SelectOption |
+| `App.tsx` theme switcher | Dropdown, ToggleGroup, ToggleGroupItem, SunIcon, MoonIcon, AdjustIcon |
+| `BotBanner.tsx` | Card (isCompact, isGlass), CardBody, Flex, Label, Icon, Button |
+| `Instances.tsx` cards | Card (isCompact, isGlass), CardHeader, CardTitle, CardBody, CardFooter, Icon, CircleIcon, Label, LabelGroup, Content, Divider, Flex, FlexItem |
+| `TaskCard.tsx` | Card (isCompact, isGlass), CardHeader, CardBody, Label, LabelGroup, Content, Flex |
+| `MemoryCard.tsx` | Card (isCompact, isGlass), CardHeader, CardTitle, CardBody, CardFooter, Label, LabelGroup, Content |
+| `DetailPanel.tsx` | Card (isGlass), CardHeader, CardTitle, CardBody, CardFooter, Button, Label, LabelGroup, DescriptionList, CodeBlock, Divider, TimesIcon |
+| `CycleRunCard.tsx` | Card (isCompact, isGlass), CardHeader, CardTitle, CardBody, Label, LabelGroup, Button, Content, DownloadIcon |
+| `CycleRuns.tsx` TaskGroupCard | Card (isCompact, isGlass), same pattern |
+| `CycleRuns.tsx` CycleRunDetail | Card (isGlass), DescriptionList, Divider, Content, Button, ExpandIcon, CompressIcon, TimesIcon |
+| `CycleRuns.tsx` TranscriptViewer | SearchInput, ToggleGroup, ToggleGroupItem, Button, Label, DownloadIcon |
+| `Pagination.tsx` | PF Pagination (isCompact) |
+| `Toasts.tsx` | AlertGroup (isToast), Alert, AlertActionCloseButton |
+| `Tasks.tsx` filter | Select, MenuToggle, SelectList, SelectOption |
+| `Memories.tsx` filters | Select (x3 for category, repo, tag) |
+| `Search.tsx` | SearchInput |
+| `Costs.tsx` | Card (isCompact, isGlass) for chart wrappers, ToggleGroup for metrics/date mode, Select for days |
+| `ArchivedTasks.tsx` | Label, Content |
+
+## Theme System
+
+- Theme classes applied to `document.documentElement`: `pf-v6-theme-dark`, `pf-v6-theme-felt`, `pf-v6-theme-glass`, `pf-v6-theme-high-contrast`
+- State persisted in localStorage keys: `pf-theme`, `pf-color-scheme`, `pf-contrast-mode`
+- Custom CSS variables in App.css mapped to PF tokens with fallbacks
+- Glass mode: Cards use `isGlass` prop; body uses `background-image` from PF token
+
+## Still Using Custom CSS
+
+- `.transcript-viewer` internals (message rendering, role colors)
+- `.cycle-list` / `.cycle-row` table in Costs page
+- `.split-layout` / `.split-main` / `.split-detail` page layout
+- Recharts (data visualization — PF has no chart components)
+- `EmbeddingMap.tsx` (canvas visualization)
+
+## Mock Server
+
+- Runs on port 8080 (`node dashboard/mock-server.mjs`)
+- Vite proxies `/api` → `http://localhost:8080` and `/ws` → `ws://localhost:8080`
+- Added 4 archived tasks (id 101-104) for testing Archive page
+- Restart mock server after editing mock-server.mjs
+
+## Jira Epic
+
+- Epic: CCXDEV-16574
+- Task to create: "Migrate dashboard components to PatternFly 6" (8 SP)

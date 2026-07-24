@@ -20,14 +20,12 @@ const mockUnarchiveTask = vi.mocked(unarchiveTask);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  HTMLDialogElement.prototype.showModal = vi.fn();
-  HTMLDialogElement.prototype.close = vi.fn();
   mockFetchTasks.mockResolvedValue({ items: [], total: 0 });
 });
 
 async function selectTask(taskName: string) {
   const user = userEvent.setup();
-  const card = screen.getByText(taskName).closest('.task-card');
+  const card = screen.getByText(taskName).closest('.pf-v6-c-card');
   await user.click(card!);
 }
 

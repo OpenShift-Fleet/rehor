@@ -1,12 +1,32 @@
 import type { CycleRun } from '../types';
 import { timeAgo, formatDuration, formatTokens, sourceUrl } from '../utils';
 import { fetchCycleRunTranscript } from '../api';
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardBody,
+  Flex,
+  FlexItem,
+  Label,
+  LabelGroup,
+  Button,
+  Content
+} from '@patternfly/react-core';
+import { DownloadIcon } from '@patternfly/react-icons';
 
 interface Props {
   run: CycleRun;
   selected?: boolean;
   onClick?: () => void;
 }
+
+const typeColors: Record<string, 'blue' | 'green' | 'orange' | 'grey' | 'red'> = {
+  task_work: 'blue',
+  triage_only: 'green',
+  idle: 'grey',
+  error: 'red',
+};
 
 const typeLabels: Record<string, string> = {
   task_work: 'Work',
@@ -42,59 +62,75 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
   };
 
   return (
-    <div
-      className={`cycle-run-card cycle-type-${run.cycle_type}${selected ? ' selected' : ''}`}
+    <Card
+      isCompact
+      isGlass
+      isSelected={selected}
       onClick={onClick}
+      style={{ cursor: 'pointer' }}
     >
-      <div className="cycle-run-header">
-        <span className={`cycle-type-badge ${run.cycle_type}`}>
-          {typeLabels[run.cycle_type] || run.cycle_type}
-        </span>
-        <span className="cycle-run-id">#{run.id}</span>
-        <span className="cycle-run-time" title={run.started_at}>
-          {timeAgo(run.started_at)}
-        </span>
-        {run.has_transcript && (
-          <button
-            className="btn-download-cycle"
-            onClick={handleDownload}
-            title="Download transcript"
-          >
-            &#11015;
-          </button>
-        )}
-      </div>
-      <div className="cycle-run-meta">
-        {duration != null && (
-          <span className="cycle-run-duration">{formatDuration(duration)}</span>
-        )}
-        {run.tool_calls != null && (
-          <span className="cycle-run-tools">{run.tool_calls} tools</span>
-        )}
-        {run.tokens_used != null && (
-          <span className="cycle-run-tokens">{formatTokens(run.tokens_used)} tokens</span>
-        )}
-      </div>
-      {extKey && (
-        <a
-          href={extUrl || '#'}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="cycle-run-jira"
-          onClick={(e) => e.stopPropagation()}
-        >
-          {extKey}
-        </a>
-      )}
-      {progress.summary && (
-        <div className="cycle-run-summary">{String(progress.summary).slice(0, 120)}</div>
-      )}
-      {progress.last_step && (
-        <div className="cycle-run-step">Step: {progress.last_step}</div>
-      )}
-      {run.instance_id && (
-        <span className="cycle-run-instance">{run.instance_id}</span>
-      )}
-    </div>
+      <CardHeader
+        actions={{ actions: run.has_transcript ? (
+          <Button variant="plain" size="sm" onClick={handleDownload} title="Download transcript">
+            <DownloadIcon />
+          </Button>
+        ) : undefined }}
+      >
+        <CardTitle>
+          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+            <FlexItem>
+              <Label color={typeColors[run.cycle_type] || 'grey'}>
+                {typeLabels[run.cycle_type] || run.cycle_type}
+              </Label>
+            </FlexItem>
+            <FlexItem>
+              <Content component="small" style={{ margin: 0 }}>#{run.id}</Content>
+            </FlexItem>
+            <FlexItem>
+              <Content component="small" style={{ margin: 0 }} title={run.started_at}>
+                {timeAgo(run.started_at)}
+              </Content>
+            </FlexItem>
+          </Flex>
+        </CardTitle>
+      </CardHeader>
+      <CardBody>
+        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+          <FlexItem>
+            <LabelGroup>
+              {duration != null && <Label variant="outline">{formatDuration(duration)}</Label>}
+              {run.tool_calls != null && <Label variant="outline">{run.tool_calls} tools</Label>}
+              {run.tokens_used != null && <Label variant="outline">{formatTokens(run.tokens_used)} tokens</Label>}
+            </LabelGroup>
+          </FlexItem>
+          {extKey && (
+            <FlexItem>
+              <span onClick={(e) => e.stopPropagation()}>
+                <Label color="blue" href={extUrl || '#'}>
+                  {extKey}
+                </Label>
+              </span>
+            </FlexItem>
+          )}
+          {progress.summary && (
+            <FlexItem>
+              <Content component="p" style={{ margin: 0, color: 'var(--pf-v6-global--Color--200)' }}>
+                {String(progress.summary).slice(0, 120)}
+              </Content>
+            </FlexItem>
+          )}
+          {progress.last_step && (
+            <FlexItem>
+              <Content component="small" style={{ margin: 0 }}>Step: {progress.last_step}</Content>
+            </FlexItem>
+          )}
+          {run.instance_id && (
+            <FlexItem>
+              <Label variant="outline" color="grey">{run.instance_id}</Label>
+            </FlexItem>
+          )}
+        </Flex>
+      </CardBody>
+    </Card>
   );
 }

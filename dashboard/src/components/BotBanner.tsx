@@ -3,6 +3,16 @@ import type { BotStatus } from '../types';
 import { wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
+import {
+  Card,
+  CardBody,
+  Flex,
+  FlexItem,
+  Label,
+  Button,
+  Icon
+} from '@patternfly/react-core';
+import { CircleIcon } from '@patternfly/react-icons';
 
 interface Props {
   status: BotStatus;
@@ -10,7 +20,6 @@ interface Props {
 
 export default function BotBanner({ status }: Props) {
   const [elapsed, setElapsed] = useState('');
-  const [expanded, setExpanded] = useState(false);
   const [waking, setWaking] = useState(false);
   const { onEvent } = useWS();
 
@@ -61,60 +70,71 @@ export default function BotBanner({ status }: Props) {
     return () => clearInterval(id);
   }, [status.state, status.cycle_start]);
 
+  const borderColor = status.state === 'working' ? 'var(--yellow)' : status.state === 'error' ? 'var(--red)' : 'var(--green)';
+
   return (
-    <div className={`bot-banner state-${status.state}${expanded ? ' expanded' : ''}`}>
-      <div className="banner-left">
-        <span className={`indicator-dot ${status.state}`}>
-          <span className="ping-ring" />
-        </span>
-        <span className={`state-badge ${status.state}`}>
-          {status.state.toUpperCase()}
-        </span>
-        <span className="banner-message" key={status.message}>
-          {status.message}
-        </span>
-      </div>
-      <div className="banner-meta">
-        {displayKey(status) && (
-          <a
-            href={sourceUrl(status) || '#'}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="banner-jira"
-          >
-            {displayKey(status)}
-          </a>
-        )}
-        {status.repo && <span className="banner-repo">{status.repo}</span>}
-        {status.instance_id && <span className="banner-instance">{status.instance_id}</span>}
-        {elapsed && <span className="banner-elapsed">{elapsed}</span>}
-        <span className="banner-updated" title={status.updated_at}>
-          {timeAgo(status.updated_at)}
-        </span>
-        {status.state === 'idle' && status.instance_id && (
-          <button
-            className={`wake-btn${waking ? ' waking' : ''}`}
-            disabled={waking}
-            onClick={handleWake}
-            title="Wake bot \u2014 start next cycle immediately"
-          >
-            {waking ? (
-              'Waking\u2026'
-            ) : (
-              <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
-                <path d="M0 0 L12 7 L0 14 Z" />
-              </svg>
-            )}
-          </button>
-        )}
-        <button
-          className="banner-toggle"
-          onClick={() => setExpanded(!expanded)}
-          title={expanded ? 'Collapse' : 'Expand'}
-        >
-          {expanded ? '\u25B2' : '\u25BC'}
-        </button>
-      </div>
-    </div>
+    <Card isCompact isGlass style={{ borderLeft: `3px solid ${borderColor}`, marginBottom: '12px' }}>
+      <CardBody>
+      <Flex alignItems={{ default: 'alignItemsCenter' }} justifyContent={{ default: 'justifyContentSpaceBetween' }} flexWrap={{ default: 'nowrap' }}>
+        <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flex: 1, minWidth: 0 }}>
+          <FlexItem>
+            <Icon status={status.state === 'working' ? 'warning' : status.state === 'error' ? 'danger' : 'success'}>
+              <CircleIcon />
+            </Icon>
+          </FlexItem>
+          <FlexItem>
+            <Label color={status.state === 'working' ? 'orange' : status.state === 'error' ? 'red' : 'green'}>
+              {status.state.toUpperCase()}
+            </Label>
+          </FlexItem>
+          <FlexItem style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{status.message}</span>
+          </FlexItem>
+        </Flex>
+        <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flexShrink: 0 }}>
+          {displayKey(status) && (
+            <FlexItem>
+              <Label color="blue" href={sourceUrl(status) || '#'}>
+                {displayKey(status)}
+              </Label>
+            </FlexItem>
+          )}
+          {status.repo && (
+            <FlexItem>
+              <Label variant="outline" style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{status.repo}</Label>
+            </FlexItem>
+          )}
+          {status.instance_id && (
+            <FlexItem>
+              <Label variant="outline" style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{status.instance_id}</Label>
+            </FlexItem>
+          )}
+          {elapsed && (
+            <FlexItem>
+              <Label variant="outline">{elapsed}</Label>
+            </FlexItem>
+          )}
+          <FlexItem>
+            <span style={{ color: 'var(--text-dim)', fontSize: '12px' }} title={status.updated_at}>
+              {timeAgo(status.updated_at)}
+            </span>
+          </FlexItem>
+          {status.state === 'idle' && status.instance_id && (
+            <FlexItem>
+              <Button
+                variant="plain"
+                size="sm"
+                isDisabled={waking}
+                onClick={handleWake}
+                title="Wake bot \u2014 start next cycle immediately"
+              >
+                {waking ? 'Waking\u2026' : '\u25B6'}
+              </Button>
+            </FlexItem>
+          )}
+        </Flex>
+      </Flex>
+      </CardBody>
+    </Card>
   );
 }

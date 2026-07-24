@@ -4,6 +4,31 @@ import type { BotInstance } from '../types';
 import { fetchInstances, wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey } from '../utils';
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardBody,
+  CardExpandableContent,
+  Level,
+  LabelGroup,
+  Label,
+  LabelColor,
+  Grid,
+  Flex,
+  FlexItem,
+  Button,
+  Dropdown,
+  DropdownList,
+  DropdownItem,
+  MenuToggle,
+  MenuToggleElement,
+  CardFooter,
+  Content,
+  Divider,
+  Icon
+} from '@patternfly/react-core';
+import { CircleIcon } from '@patternfly/react-icons';
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
@@ -74,68 +99,70 @@ export default function Instances() {
       )}
       <div className="instance-grid">
         {instances.map((inst) => (
-          <div
-            key={inst.instance_id}
-            className={`instance-card state-${inst.state}`}
-            onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}
-          >
-            <div className="instance-card-header">
-              <div className="instance-name-row">
-                <span className={`indicator-dot ${inst.state}`}>
-                  <span className="ping-ring" />
-                </span>
-                <span className="instance-name">{inst.instance_id}</span>
-              </div>
-              <span className={`state-badge ${inst.state}`}>
-                {inst.state.toUpperCase()}
-              </span>
-            </div>
-
-            <div className="instance-message" key={inst.message}>
-              {inst.message}
-            </div>
-
-            <div className="instance-card-meta">
-              {displayKey(inst) && (
-                <a
-                  href={sourceUrl(inst) || '#'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="banner-jira"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {displayKey(inst)}
-                </a>
-              )}
-              {inst.repo && <span className="banner-repo">{inst.repo}</span>}
-            </div>
-
-            <div className="instance-card-footer">
-              <span className="instance-tasks">
-                {inst.active_tasks}/{inst.max_tasks} tasks
-              </span>
-              <span className="instance-footer-right">
-                {inst.state === 'idle' && (
-                  <button
-                    className={`wake-btn${wakingIds.has(inst.instance_id) ? ' waking' : ''}`}
-                    disabled={wakingIds.has(inst.instance_id)}
-                    onClick={(e) => handleWake(e, inst.instance_id)}
-                    title="Wake bot — start next cycle immediately"
-                  >
-                    {wakingIds.has(inst.instance_id) ? (
-                      'Waking…'
-                    ) : (
-                      <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor">
-                        <path d="M0 0 L12 7 L0 14 Z" />
-                      </svg>
-                    )}
-                  </button>
-                )}
-                <span className="instance-updated" title={inst.updated_at}>
-                  {timeAgo(inst.updated_at)}
-                </span>
-              </span>
-            </div>
+          <div>
+            <Card isCompact isGlass key={inst.instance_id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}>
+            <CardHeader
+              actions={{ actions: <Label color={inst.state === 'working' ? 'orange' : inst.state === 'error' ? 'red' : 'green'}>{inst.state.toUpperCase()}</Label> }}
+            >
+              <CardTitle>
+                <Flex alignItems={{ default: 'alignItemsFlexStart' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ minWidth: 0 }}>
+                  <FlexItem style={{ flexShrink: 0 }}>
+                    <Icon status={inst.state === 'working' ? 'warning' : inst.state === 'error' ? 'danger' : 'success'}>
+                      <CircleIcon />
+                    </Icon>
+                  </FlexItem>
+                  <FlexItem style={{ minWidth: 0, overflowWrap: 'break-word', wordBreak: 'break-word' }}>
+                    {inst.instance_id.length > 65 ? `${inst.instance_id.slice(0, 65)}…` : inst.instance_id}
+                  </FlexItem>
+                </Flex>
+              </CardTitle>
+            </CardHeader>
+            <CardBody>
+              <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+                <Content component="p" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--pf-v6-global--Color--200)' }}>
+                  {inst.message}
+                </Content>
+                <LabelGroup>
+                  {displayKey(inst) && (
+                    <Label
+                      color="blue"
+                      href={sourceUrl(inst) || '#'}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {displayKey(inst)}
+                    </Label>
+                  )}
+                  {inst.repo && (
+                    <Label color="grey" variant="outline">
+                      {inst.repo}
+                    </Label>
+                  )}
+                </LabelGroup>
+              </Flex>
+            </CardBody>
+            <Divider />
+            <CardFooter>
+              <Flex justifyContent={{ default: 'justifyContentSpaceBetween' }} alignItems={{ default: 'alignItemsCenter' }}>
+                <Label variant="outline">{inst.active_tasks}/{inst.max_tasks} tasks</Label>
+                <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+                  {inst.state === 'idle' && (
+                    <Button
+                      variant="plain"
+                      size="sm"
+                      isDisabled={wakingIds.has(inst.instance_id)}
+                      onClick={(e) => handleWake(e as unknown as React.MouseEvent, inst.instance_id)}
+                      title="Wake bot — start next cycle immediately"
+                    >
+                      {wakingIds.has(inst.instance_id) ? 'Waking…' : '▶'}
+                    </Button>
+                  )}
+                  <Content>
+                    <small title={inst.updated_at}>{timeAgo(inst.updated_at)}</small>
+                  </Content>
+                </Flex>
+              </Flex>
+            </CardFooter>
+          </Card>
           </div>
         ))}
       </div>
