@@ -12,14 +12,11 @@ Output:
     impact-data/tickets-with-prs.csv
 """
 
-import json
-import glob
-import re
 import csv
-import subprocess
-import sys
+import glob
+import json
 import os
-import time
+import re
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -99,7 +96,8 @@ def main():
             data = json.load(f)
             comment_links.update(data)
     print(
-        f"Loaded comment links for {len(comment_links)} tickets from {len(glob.glob(os.path.join(SCRIPT_DIR, 'comments-links-page*.json')))} files"
+        f"Loaded comment links for {len(comment_links)} tickets from"
+        f" {len(glob.glob(os.path.join(SCRIPT_DIR, 'comments-links-page*.json')))} files"
     )
 
     # Build CSV

@@ -26,6 +26,10 @@ TURN_CRITICAL_THRESHOLD = 0.90  # urgent at 90%
 
 DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status")
 
+# Track consecutive status push failures for warning after N misses
+_status_fail_count = 0
+_STATUS_FAIL_WARNING_THRESHOLD = 5
+
 
 @dataclass
 class CycleContext:
@@ -46,19 +50,27 @@ async def _push_status(
     repo: str | None = None,
 ) -> None:
     """Push a status update to the dashboard banner via HTTP."""
+    global _status_fail_count
     try:
         await client.post(
             DASHBOARD_URL,
             json={
                 "state": state,
                 "message": message,
-                "jira_key": jira_key,
+                "external_key": jira_key,
                 "repo": repo,
             },
             timeout=2.0,
         )
-    except Exception:
-        pass  # Dashboard may be down — don't break the bot
+        _status_fail_count = 0
+    except Exception as e:
+        _status_fail_count += 1
+        logger.debug("Dashboard push failed: %s", e)
+        if _status_fail_count == _STATUS_FAIL_WARNING_THRESHOLD:
+            logger.warning(
+                "Dashboard unreachable (%d consecutive failures, silencing)",
+                _STATUS_FAIL_WARNING_THRESHOLD,
+            )
 
 
 def _describe_tool_use(block) -> str:

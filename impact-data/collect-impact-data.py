@@ -16,26 +16,27 @@ Environment variables (optional):
   JIRA_EMAIL     — Jira email for Basic auth; if set, uses Basic auth
                    (email:token). If unset, uses Bearer token auth.
   JIRA_FILTER_ID — Jira saved filter ID   (default: 107017)
-  GH_BOT_USER    — GitHub bot username     (default: platex-rehor-bot)
-  OUTPUT_FILE    — Output CSV path         (default: tickets-with-prs.csv)
+  GH_BOT_USER       — GitHub bot username          (default: platex-rehor-bot)
+  BOT_LABEL_PREFIX  — Label prefix for bot labels  (default: hcc-ai-)
+  OUTPUT_FILE       — Output CSV path              (default: tickets-with-prs.csv)
 
 Usage:
   export JIRA_TOKEN="..."
   python3 collect-impact-data.py
 """
 
-import os
-import sys
-import json
 import csv
+import json
+import os
 import re
-import time
 import subprocess
-import urllib.request
-import urllib.parse
+import sys
+import time
 import urllib.error
+import urllib.parse
+import urllib.request
 from base64 import b64encode
-from datetime import datetime, date
+from datetime import date, datetime
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -47,6 +48,7 @@ JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
 JIRA_FILTER_ID = os.environ.get("JIRA_FILTER_ID", "107017")
 
 GH_BOT_USER = os.environ.get("GH_BOT_USER", "platex-rehor-bot")
+BOT_LABEL_PREFIX = os.environ.get("BOT_LABEL_PREFIX", "hcc-ai-")
 
 OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "tickets-with-prs.csv")
 
@@ -386,13 +388,13 @@ def match_prs_to_tickets(prs):
 
 
 def get_repo_labels(labels):
-    return [l[5:] for l in labels if l.startswith("repo:")]
+    return [label[5:] for label in labels if label.startswith("repo:")]
 
 
 def get_bot_label(labels):
-    for l in labels:
-        if l.startswith("hcc-ai-"):
-            return l
+    for label in labels:
+        if label.startswith(BOT_LABEL_PREFIX):
+            return label
     return ""
 
 
@@ -623,7 +625,7 @@ def compute_stats(tickets, pr_map, comment_links, gh_prs, with_prs, with_mrs):
     ticket_types = sorted(type_counts.items(), key=lambda x: -x[1])
 
     # --- Bot labels ---
-    bot_labels = sorted({l for t in tickets for l in t["labels"] if l.startswith("hcc-ai-")})
+    bot_labels = sorted({lb for t in tickets for lb in t["labels"] if lb.startswith(BOT_LABEL_PREFIX)})
 
     # --- Timeline ---
     first_pr_date = None

@@ -1,11 +1,8 @@
 """Tests for preflight shared modules (presets/shared/preflight/)."""
 
-import json
 import sys
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
@@ -19,7 +16,6 @@ from common import (  # noqa: E402
 from gh_pr_status import classify_gh, has_new_feedback  # noqa: E402
 from gl_mr_status import classify_gl  # noqa: E402
 from gl_mr_status import has_new_feedback as gl_has_new_feedback  # noqa: E402
-
 
 # --- upstream_repo ---
 

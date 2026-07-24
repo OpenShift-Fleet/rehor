@@ -3,7 +3,6 @@
 import json
 import stat
 
-
 from bot.merge import (
     PROTECTED_HOOKS,
     MergeReport,

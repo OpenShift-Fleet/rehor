@@ -103,8 +103,12 @@ def setup_git(script_dir: Path) -> None:
 
 
 def setup_logging() -> None:
-    """Configure logging to stdout and data/bot.log."""
+    """Configure logging to stdout and data/bot.log.
+
+    Set DEBUG=true env var to enable DEBUG-level logging.
+    """
     DATA_DIR.mkdir(exist_ok=True)
+    level = logging.DEBUG if os.environ.get("DEBUG") == "true" else logging.INFO
     fmt = "[%(asctime)s] %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"
 
@@ -114,7 +118,7 @@ def setup_logging() -> None:
     ]
 
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format=fmt,
         datefmt=datefmt,
         handlers=handlers,
@@ -368,6 +372,17 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         pass
 
 
+def handle_cycle_timeout(timeout_seconds: int) -> tuple[None, None]:
+    """Log timeout and warn about lost cost data. Returns (None, None) for result, ctx."""
+    logger = logging.getLogger(__name__)
+    logger.error(
+        "Cycle timed out after %ds — skipping to next cycle",
+        timeout_seconds,
+    )
+    logger.warning("Cost data for timed-out cycle lost (SDK does not expose partial usage)")
+    return None, None
+
+
 def main() -> None:
     # Load .env before anything else so MCP servers get the credentials
     load_dotenv(SCRIPT_DIR / ".env")
@@ -519,11 +534,7 @@ def main() -> None:
                     )
                 )
             except asyncio.TimeoutError:
-                logger.error(
-                    "Cycle timed out after %ds — skipping to next cycle",
-                    config.cycle_timeout,
-                )
-                result, ctx = None, None
+                result, ctx = handle_cycle_timeout(config.cycle_timeout)
 
             if result is not None:
                 record_cost(

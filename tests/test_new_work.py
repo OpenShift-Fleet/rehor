@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".claude" / "ski
 
 from new_work import build_repo_lookup, match_repo_labels
 
-
 SAMPLE_REPOS = {
     "insights-chrome": {
         "url": "https://github.com/platex-rehor-bot/insights-chrome.git",

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
-
 # Mock claude_agent_sdk before importing bot modules
 _mock_sdk = ModuleType("claude_agent_sdk")
 for name in [
@@ -30,7 +29,6 @@ from bot.transcripts import (  # noqa: E402
     _resolve_cycle_type,
     record_transcript,
 )
-
 
 # --- _get_cycle_runs_url ---
 
