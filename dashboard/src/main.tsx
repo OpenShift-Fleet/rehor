@@ -4,9 +4,9 @@ import '@patternfly/patternfly/patternfly.css';
 import '@patternfly/patternfly/patternfly-addons.css';
 import App from './App';
 import './App.css';
+import { applyStoredTheme } from './utils/applyStoredTheme';
 
-document.documentElement.classList.add('pf-v6-theme-dark');
-document.documentElement.setAttribute('data-theme', 'dark');
+applyStoredTheme();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

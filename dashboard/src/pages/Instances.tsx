@@ -99,8 +99,8 @@ export default function Instances() {
       )}
       <div className="instance-grid">
         {instances.map((inst) => (
-          <div>
-            <Card isCompact isGlass key={inst.instance_id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}>
+          <div key={inst.instance_id}>
+            <Card isCompact isGlass style={{ cursor: 'pointer' }} onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}>
             <CardHeader
               actions={{ actions: <Label color={inst.state === 'working' ? 'orange' : inst.state === 'error' ? 'red' : 'green'}>{inst.state.toUpperCase()}</Label> }}
             >
