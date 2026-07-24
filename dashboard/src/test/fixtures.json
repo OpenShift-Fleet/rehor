@@ -1,0 +1,657 @@
+{
+  "tasks": {
+    "RHCLOUD-001": {
+      "id": 1,
+      "external_key": "RHCLOUD-001",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-001",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/frontend/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/frontend/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "in_progress",
+      "repo": "frontend",
+      "branch": "main",
+      "title": "Fix login bug",
+      "summary": "Fix login bug",
+      "created_at": "2026-07-01T10:00:00Z",
+      "last_addressed": "2026-07-01T15:30:00Z",
+      "paused_reason": null,
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": {
+        "event_type": "task_started",
+        "message": "Started work on RHCLOUD-001",
+        "sent_at": "2026-07-01T10:05:00Z"
+      }
+    },
+    "RHCLOUD-002": {
+      "id": 2,
+      "external_key": "RHCLOUD-002",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-002",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/ui-lib/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/ui-lib/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "pr_open",
+      "repo": "ui-lib",
+      "branch": "main",
+      "title": "Add dark mode",
+      "summary": "Add dark mode",
+      "created_at": "2026-07-02T10:00:00Z",
+      "last_addressed": "2026-07-02T15:30:00Z",
+      "paused_reason": null,
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": null
+    },
+    "RHCLOUD-003": {
+      "id": 3,
+      "external_key": "RHCLOUD-003",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-003",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/backend/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/backend/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "paused",
+      "repo": "backend",
+      "branch": "main",
+      "title": "Refactor auth middleware",
+      "summary": "Refactor auth middleware",
+      "created_at": "2026-07-03T10:00:00Z",
+      "last_addressed": null,
+      "paused_reason": "Waiting for design review",
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": null
+    },
+    "RHCLOUD-004": {
+      "id": 4,
+      "external_key": "RHCLOUD-004",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-004",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/frontend/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/frontend/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "in_progress",
+      "repo": "frontend",
+      "branch": "main",
+      "title": "Update dependencies",
+      "summary": "Update dependencies",
+      "created_at": "2026-07-04T10:00:00Z",
+      "last_addressed": "2026-07-04T15:30:00Z",
+      "paused_reason": null,
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": {
+        "event_type": "task_started",
+        "message": "Started work on RHCLOUD-004",
+        "sent_at": "2026-07-04T10:05:00Z"
+      }
+    },
+    "RHCLOUD-005": {
+      "id": 5,
+      "external_key": "RHCLOUD-005",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-005",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/backend/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/backend/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "done",
+      "repo": "backend",
+      "branch": "main",
+      "title": "Optimize database queries",
+      "summary": "Optimize database queries",
+      "created_at": "2026-07-05T10:00:00Z",
+      "last_addressed": null,
+      "paused_reason": null,
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": null
+    },
+    "RHCLOUD-006": {
+      "id": 6,
+      "external_key": "RHCLOUD-006",
+      "source_type": "jira",
+      "source_url": "https://issues.redhat.com/browse/RHCLOUD-006",
+      "artifacts": [
+        {
+          "name": "PR #123",
+          "url": "https://github.com/example/worker/pull/123",
+          "type": "pr"
+        },
+        {
+          "name": "Branch",
+          "url": "https://github.com/example/worker/tree/main",
+          "type": "branch"
+        }
+      ],
+      "status": "archived",
+      "repo": "worker",
+      "branch": "main",
+      "title": "Fix memory leak",
+      "summary": "Fix memory leak",
+      "created_at": "2026-07-06T10:00:00Z",
+      "last_addressed": null,
+      "paused_reason": null,
+      "instance_id": "dev-bot",
+      "metadata": {
+        "priority": "high",
+        "labels": [
+          "bug",
+          "p1"
+        ]
+      },
+      "slack_notification": null
+    }
+  },
+  "memories": [
+    {
+      "id": 1,
+      "category": "bug",
+      "repo": "frontend",
+      "external_key": "RHCLOUD-001",
+      "source_type": "jira",
+      "title": "Login timeout issue",
+      "content": "Users experiencing timeout after 5min idle",
+      "tags": [
+        "auth",
+        "timeout"
+      ],
+      "created_at": "2026-07-01T10:00:00Z",
+      "metadata": {
+        "importance": "high"
+      }
+    },
+    {
+      "id": 2,
+      "category": "architecture",
+      "repo": "backend",
+      "external_key": null,
+      "source_type": null,
+      "title": "Auth flow design",
+      "content": "New OAuth2 flow with PKCE extension",
+      "tags": [
+        "security",
+        "oauth"
+      ],
+      "created_at": "2026-07-02T10:00:00Z",
+      "metadata": {
+        "importance": "high"
+      }
+    },
+    {
+      "id": 3,
+      "category": "decision",
+      "repo": "frontend",
+      "external_key": null,
+      "source_type": null,
+      "title": "Framework choice",
+      "content": "Chose React over Vue for better TypeScript support",
+      "tags": [
+        "react",
+        "typescript"
+      ],
+      "created_at": "2026-07-03T10:00:00Z",
+      "metadata": {
+        "importance": "high"
+      }
+    },
+    {
+      "id": 4,
+      "category": "workaround",
+      "repo": "backend",
+      "external_key": null,
+      "source_type": null,
+      "title": "Database connection pooling",
+      "content": "Increased pool size to 50 to handle load spikes",
+      "tags": [
+        "database",
+        "performance"
+      ],
+      "created_at": "2026-07-04T10:00:00Z",
+      "metadata": {
+        "importance": "high"
+      }
+    }
+  ],
+  "cycleRuns": [
+    {
+      "id": 1,
+      "task_id": 1,
+      "cycle_type": "implementation",
+      "instance_id": "dev-bot",
+      "started_at": "2026-07-01T10:00:00Z",
+      "finished_at": "2026-07-01T10:05:00Z",
+      "tool_calls": 12,
+      "tokens_used": 15000,
+      "progress": {
+        "phase": "implementation",
+        "completed_steps": 3,
+        "total_steps": 5
+      },
+      "input_prompt": "Implement the login bug fix for RHCLOUD-001",
+      "created_at": "2026-07-01T10:00:00Z",
+      "has_transcript": true
+    },
+    {
+      "id": 2,
+      "task_id": 1,
+      "cycle_type": "review",
+      "instance_id": "dev-bot",
+      "started_at": "2026-07-01T10:00:00Z",
+      "finished_at": "2026-07-01T10:03:00Z",
+      "tool_calls": 12,
+      "tokens_used": 15000,
+      "progress": {
+        "phase": "implementation",
+        "completed_steps": 3,
+        "total_steps": 5
+      },
+      "input_prompt": "Implement the login bug fix for RHCLOUD-001",
+      "created_at": "2026-07-01T10:00:00Z",
+      "has_transcript": true
+    },
+    {
+      "id": 3,
+      "task_id": 2,
+      "cycle_type": "implementation",
+      "instance_id": "dev-bot",
+      "started_at": "2026-07-02T10:00:00Z",
+      "finished_at": "2026-07-02T10:08:00Z",
+      "tool_calls": 12,
+      "tokens_used": 15000,
+      "progress": {
+        "phase": "implementation",
+        "completed_steps": 3,
+        "total_steps": 5
+      },
+      "input_prompt": "Implement the login bug fix for RHCLOUD-001",
+      "created_at": "2026-07-02T10:00:00Z",
+      "has_transcript": true
+    },
+    {
+      "id": 4,
+      "task_id": null,
+      "cycle_type": "idle_check",
+      "instance_id": "dev-bot",
+      "started_at": "2026-07-03T10:00:00Z",
+      "finished_at": "2026-07-03T10:01:00Z",
+      "tool_calls": 12,
+      "tokens_used": 15000,
+      "progress": {
+        "phase": "implementation",
+        "completed_steps": 3,
+        "total_steps": 5
+      },
+      "input_prompt": "Implement the login bug fix for RHCLOUD-001",
+      "created_at": "2026-07-03T10:00:00Z",
+      "has_transcript": false
+    }
+  ],
+  "costs": [
+    {
+      "id": 1,
+      "timestamp": "2026-07-01T10:00:00Z",
+      "label": "impl-RHCLOUD-001",
+      "session_id": "session-1",
+      "num_turns": 8,
+      "duration_ms": 300000,
+      "cost_usd": 0.12,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read_tokens": 2000,
+      "cache_write_tokens": 1000,
+      "model": "claude-sonnet-4",
+      "is_error": false,
+      "no_work": false,
+      "external_key": "RHCLOUD-001",
+      "source_type": "jira",
+      "repo": "frontend",
+      "work_type": "implementation",
+      "summary": "Completed work on RHCLOUD-001"
+    },
+    {
+      "id": 2,
+      "timestamp": "2026-07-01T10:00:00Z",
+      "label": "review-RHCLOUD-001",
+      "session_id": "session-2",
+      "num_turns": 8,
+      "duration_ms": 300000,
+      "cost_usd": 0.08,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read_tokens": 2000,
+      "cache_write_tokens": 1000,
+      "model": "claude-sonnet-4",
+      "is_error": false,
+      "no_work": false,
+      "external_key": "RHCLOUD-001",
+      "source_type": "jira",
+      "repo": "frontend",
+      "work_type": "implementation",
+      "summary": "Completed work on RHCLOUD-001"
+    },
+    {
+      "id": 3,
+      "timestamp": "2026-07-02T10:00:00Z",
+      "label": "impl-RHCLOUD-002",
+      "session_id": "session-3",
+      "num_turns": 8,
+      "duration_ms": 300000,
+      "cost_usd": 0.15,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read_tokens": 2000,
+      "cache_write_tokens": 1000,
+      "model": "claude-sonnet-4",
+      "is_error": false,
+      "no_work": false,
+      "external_key": "RHCLOUD-002",
+      "source_type": "jira",
+      "repo": "ui-lib",
+      "work_type": "implementation",
+      "summary": "Completed work on RHCLOUD-002"
+    },
+    {
+      "id": 4,
+      "timestamp": "2026-07-03T10:00:00Z",
+      "label": "idle",
+      "session_id": "session-4",
+      "num_turns": 8,
+      "duration_ms": 300000,
+      "cost_usd": 0.01,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read_tokens": 2000,
+      "cache_write_tokens": 1000,
+      "model": "claude-sonnet-4",
+      "is_error": false,
+      "no_work": true,
+      "external_key": null,
+      "source_type": null,
+      "repo": null,
+      "work_type": null,
+      "summary": "Idle cycle"
+    },
+    {
+      "id": 5,
+      "timestamp": "2026-07-04T10:00:00Z",
+      "label": "impl-RHCLOUD-004",
+      "session_id": "session-5",
+      "num_turns": 8,
+      "duration_ms": 300000,
+      "cost_usd": 0.1,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read_tokens": 2000,
+      "cache_write_tokens": 1000,
+      "model": "claude-sonnet-4",
+      "is_error": false,
+      "no_work": false,
+      "external_key": "RHCLOUD-004",
+      "source_type": "jira",
+      "repo": "frontend",
+      "work_type": "implementation",
+      "summary": "Completed work on RHCLOUD-004"
+    }
+  ],
+  "embeddings": [
+    {
+      "id": 1,
+      "title": "Login timeout issue",
+      "content": "Users timeout after idle",
+      "category": "bug",
+      "repo": "frontend",
+      "tags": [
+        "auth"
+      ],
+      "x": 0.1,
+      "y": 0.2,
+      "z": 0.3
+    },
+    {
+      "id": 2,
+      "title": "Auth flow design",
+      "content": "OAuth2 with PKCE",
+      "category": "architecture",
+      "repo": "backend",
+      "tags": [
+        "security"
+      ],
+      "x": 0.4,
+      "y": 0.5,
+      "z": 0.2
+    },
+    {
+      "id": 3,
+      "title": "Framework choice",
+      "content": "React over Vue",
+      "category": "decision",
+      "repo": "frontend",
+      "tags": [
+        "react"
+      ],
+      "x": 0.7,
+      "y": 0.1,
+      "z": 0.4
+    }
+  ],
+  "tags": [
+    "auth",
+    "timeout",
+    "security",
+    "oauth",
+    "react",
+    "typescript",
+    "database",
+    "performance"
+  ],
+  "analytics": {
+    "summary": {
+      "total_cycles": 25,
+      "work_cycles": 20,
+      "idle_cycles": 3,
+      "error_cycles": 2,
+      "unique_tickets": 5,
+      "total_cost": 3.5,
+      "avg_cost_per_work_cycle": 0.175,
+      "avg_turns": 8.5,
+      "avg_duration_ms": 350000,
+      "repos_touched": 3,
+      "tickets_resolved": 2
+    },
+    "work_types": [
+      {
+        "category": "implementation",
+        "cycles": 12,
+        "total_cost": 1.8,
+        "avg_cost": 0.15,
+        "avg_turns": 9,
+        "avg_duration_ms": 400000
+      },
+      {
+        "category": "review",
+        "cycles": 5,
+        "total_cost": 0.7,
+        "avg_cost": 0.14,
+        "avg_turns": 7,
+        "avg_duration_ms": 250000
+      },
+      {
+        "category": "debugging",
+        "cycles": 3,
+        "total_cost": 1.0,
+        "avg_cost": 0.33,
+        "avg_turns": 12,
+        "avg_duration_ms": 600000
+      }
+    ],
+    "repos": [
+      {
+        "repo": "frontend",
+        "tickets": 3,
+        "cycles": 10,
+        "total_cost": 1.5,
+        "avg_turns": 8
+      },
+      {
+        "repo": "backend",
+        "tickets": 2,
+        "cycles": 8,
+        "total_cost": 1.2,
+        "avg_turns": 9
+      },
+      {
+        "repo": "ui-lib",
+        "tickets": 1,
+        "cycles": 2,
+        "total_cost": 0.8,
+        "avg_turns": 7
+      }
+    ],
+    "tickets": [
+      {
+        "external_key": "RHCLOUD-001",
+        "title": "Fix login bug",
+        "status": "in_progress",
+        "repo": "frontend",
+        "total_cycles": 5,
+        "impl_cycles": 3,
+        "review_cycles": 2,
+        "total_cost": 0.6,
+        "hours_span": 8.5
+      },
+      {
+        "external_key": "RHCLOUD-002",
+        "title": "Add dark mode",
+        "status": "pr_open",
+        "repo": "ui-lib",
+        "total_cycles": 3,
+        "impl_cycles": 2,
+        "review_cycles": 1,
+        "total_cost": 0.45,
+        "hours_span": 5.2
+      }
+    ],
+    "feedback": {
+      "avg_review_rounds": 1.8,
+      "zero_review": 2,
+      "one_review": 8,
+      "multi_review": 10
+    }
+  },
+  "botStatus": {
+    "state": "working",
+    "message": "Processing RHCLOUD-001...",
+    "external_key": "RHCLOUD-001",
+    "source_type": "jira",
+    "source_url": null,
+    "repo": "test-repo",
+    "instance_id": "dev-bot",
+    "updated_at": "2026-07-22T10:00:00Z",
+    "cycle_start": "2026-07-22T09:55:00Z"
+  },
+  "taskCycleGroups": [
+    {
+      "task_id": 1,
+      "external_key": "RHCLOUD-001",
+      "title": "Fix login bug",
+      "task_status": "in_progress",
+      "repo": "frontend",
+      "cycle_count": 5,
+      "transcript_count": 5,
+      "total_tool_calls": 60,
+      "total_tokens": 75000,
+      "first_cycle": "2026-07-01T10:00:00Z",
+      "last_cycle": "2026-07-01T15:30:00Z"
+    },
+    {
+      "task_id": 2,
+      "external_key": "RHCLOUD-002",
+      "title": "Add dark mode",
+      "task_status": "pr_open",
+      "repo": "ui-lib",
+      "cycle_count": 3,
+      "transcript_count": 3,
+      "total_tool_calls": 36,
+      "total_tokens": 45000,
+      "first_cycle": "2026-07-02T10:00:00Z",
+      "last_cycle": "2026-07-02T18:00:00Z"
+    }
+  ]
+}

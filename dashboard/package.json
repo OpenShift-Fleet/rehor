@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "generate-fixtures": "python3 tests/fixtures/generate_json.py"
   },
   "dependencies": {
     "@patternfly/patternfly": "^6.6.0",
