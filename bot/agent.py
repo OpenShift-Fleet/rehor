@@ -360,8 +360,8 @@ def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> N
         data = json.loads(text)
         if not isinstance(data, dict):
             return
-        # Task objects: {id: int, jira_key: ...}
-        if isinstance(data.get("id"), int) and "jira_key" in data:
+        # Task objects: {id: int, external_key: ...}
+        if isinstance(data.get("id"), int) and ("external_key" in data or "jira_key" in data):
             ctx.task_id = data["id"]
         # Cycle run objects from progress_store: {task_id: int, cycle_type: ...}
         elif isinstance(data.get("task_id"), int) and data["task_id"] > 0:
