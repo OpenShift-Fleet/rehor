@@ -14,6 +14,22 @@ import (
 	"time"
 )
 
+const (
+	// Auth type constants
+	AuthTypeBearer = "bearer"
+	AuthTypeBasic  = "basic"
+
+	// Error messages
+	errPathTraversal = "forbidden: path traversal detected"
+	errNoHost        = "bad request: no host in path"
+	errUnknownHost   = "forbidden: unknown host"
+	errMissingToken  = "service unavailable: missing token"
+
+	// DisableFlush disables periodic flushing for streaming responses.
+	// Used for proxying large git pack files without buffering.
+	DisableFlush = -1
+)
+
 type GitHost struct {
 	Scheme   string
 	Host     string
@@ -27,14 +43,14 @@ func defaultHostRegistry() map[string]*GitHost {
 		"github.com": {
 			Scheme:   "https",
 			Host:     "github.com",
-			AuthType: "bearer",
+			AuthType: AuthTypeBearer,
 			Token:    func() string { return os.Getenv("GH_TOKEN") },
 			Username: nil,
 		},
 		"gitlab.cee.redhat.com": {
 			Scheme:   "https",
 			Host:     "gitlab.cee.redhat.com",
-			AuthType: "basic",
+			AuthType: AuthTypeBasic,
 			Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
 			Username: func() string { return os.Getenv("GL_USERNAME") },
 		},
@@ -81,9 +97,9 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 			r.Out.URL.RawQuery = r.In.URL.RawQuery
 			r.Out.Host = hostConfig.Host
 
-			if hostConfig.AuthType == "bearer" {
+			if hostConfig.AuthType == AuthTypeBearer {
 				r.Out.Header.Set("Authorization", "Bearer "+token)
-			} else if hostConfig.AuthType == "basic" {
+			} else if hostConfig.AuthType == AuthTypeBasic {
 				if hostConfig.Username == nil {
 					return
 				}
@@ -92,7 +108,14 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 				r.Out.Header.Set("Authorization", basicAuth)
 			}
 		},
-		FlushInterval: -1,
+		FlushInterval: DisableFlush,
+	}
+
+	// Helper to log requests with consistent format
+	logRequest := func(r *http.Request, status int, start time.Time, host string) {
+		log.Printf("gitauth: method=%s host=%s path=%s status=%d dur=%s",
+			r.Method, host, r.URL.Path, status,
+			time.Since(start).Round(time.Millisecond))
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,24 +125,21 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 			return
 		}
 		start := time.Now()
-
 		inPath := r.URL.Path
 		cleanPath := path.Clean(inPath)
 
 		if cleanPath != inPath {
-			http.Error(w, "forbidden: path traversal detected", http.StatusForbidden)
-			log.Printf("gitauth: method=%s path=%s status=%d dur=%s",
-				r.Method, inPath, http.StatusForbidden,
-				time.Since(start).Round(time.Millisecond))
+			status := http.StatusForbidden
+			http.Error(w, errPathTraversal, status)
+			logRequest(r, status, start, "")
 			return
 		}
 
 		parts := strings.SplitN(strings.TrimPrefix(cleanPath, "/"), "/", 2)
 		if len(parts) < 2 || parts[1] == "" {
-			http.Error(w, "bad request: no host in path", http.StatusBadRequest)
-			log.Printf("gitauth: method=%s path=%s status=%d dur=%s",
-				r.Method, inPath, http.StatusBadRequest,
-				time.Since(start).Round(time.Millisecond))
+			status := http.StatusBadRequest
+			http.Error(w, errNoHost, status)
+			logRequest(r, status, start, "")
 			return
 		}
 
@@ -129,25 +149,22 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		hostConfig, ok := hostRegistry[host]
 		if !ok {
 			if !strings.Contains(host, ".") {
-				http.Error(w, "bad request: no host in path", http.StatusBadRequest)
-				log.Printf("gitauth: method=%s path=%s status=%d dur=%s",
-					r.Method, inPath, http.StatusBadRequest,
-					time.Since(start).Round(time.Millisecond))
+				status := http.StatusBadRequest
+				http.Error(w, errNoHost, status)
+				logRequest(r, status, start, "")
 				return
 			}
-			http.Error(w, "forbidden: unknown host", http.StatusForbidden)
-			log.Printf("gitauth: method=%s host=%s path=%s status=%d dur=%s",
-				r.Method, host, inPath, http.StatusForbidden,
-				time.Since(start).Round(time.Millisecond))
+			status := http.StatusForbidden
+			http.Error(w, errUnknownHost, status)
+			logRequest(r, status, start, host)
 			return
 		}
 
 		token := hostConfig.Token()
 		if token == "" {
-			http.Error(w, "service unavailable: missing token", http.StatusServiceUnavailable)
-			log.Printf("gitauth: method=%s host=%s path=%s status=%d dur=%s",
-				r.Method, host, inPath, http.StatusServiceUnavailable,
-				time.Since(start).Round(time.Millisecond))
+			status := http.StatusServiceUnavailable
+			http.Error(w, errMissingToken, status)
+			logRequest(r, status, start, host)
 			return
 		}
 
@@ -158,9 +175,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 
 		rec := &statusRecorder{ResponseWriter: w}
 		proxy.ServeHTTP(rec, r)
-		log.Printf("gitauth: method=%s host=%s path=%s status=%d dur=%s",
-			r.Method, host, inPath, rec.status,
-			time.Since(start).Round(time.Millisecond))
+		logRequest(r, rec.status, start, host)
 	})
 }
 

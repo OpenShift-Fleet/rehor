@@ -19,6 +19,14 @@ from pathlib import Path
 
 import pytest
 
+# Test configuration constants
+HEALTHCHECK_TIMEOUT_SECONDS = 30
+HEALTHCHECK_RETRY_INTERVAL = 1.0
+DOCKER_EXEC_TIMEOUT = 5
+GIT_OPERATION_TIMEOUT = 30
+GIT_CLONE_TIMEOUT = 60
+PROXY_LOG_WINDOW = "2m"
+
 
 @pytest.fixture(scope="module")
 def docker_compose_services():
@@ -28,17 +36,17 @@ def docker_compose_services():
     but verifies services are healthy before proceeding.
     """
     # Check if proxy service is reachable
-    max_retries = 30
+    max_retries = int(HEALTHCHECK_TIMEOUT_SECONDS / HEALTHCHECK_RETRY_INTERVAL)
     for i in range(max_retries):
         result = subprocess.run(
             ["docker", "compose", "exec", "-T", "proxy", "curl", "-s", "http://localhost:8447/healthz"],
             capture_output=True,
-            timeout=5,
+            timeout=DOCKER_EXEC_TIMEOUT,
         )
         if result.returncode == 0 and b"ok" in result.stdout:
             break
         if i < max_retries - 1:
-            time.sleep(1)
+            time.sleep(HEALTHCHECK_RETRY_INTERVAL)
     else:
         pytest.skip("Proxy service not healthy - is docker-compose running?")
 
@@ -46,7 +54,7 @@ def docker_compose_services():
     result = subprocess.run(
         ["docker", "compose", "exec", "-T", "bot", "echo", "healthy"],
         capture_output=True,
-        timeout=5,
+        timeout=DOCKER_EXEC_TIMEOUT,
     )
     if result.returncode != 0:
         pytest.skip("Bot service not healthy - is docker-compose running?")
@@ -57,7 +65,7 @@ def docker_compose_services():
 @pytest.fixture
 def bot_exec():
     """Helper to execute commands in bot container."""
-    def run_cmd(cmd: list[str], check: bool = True, timeout: int = 30) -> subprocess.CompletedProcess:
+    def run_cmd(cmd: list[str], check: bool = True, timeout: int = GIT_OPERATION_TIMEOUT) -> subprocess.CompletedProcess:
         """Execute command in bot container.
 
         Args:
@@ -81,7 +89,7 @@ def bot_exec():
 @pytest.fixture
 def proxy_logs():
     """Helper to get proxy container logs."""
-    def get_logs(since: str = "1m") -> str:
+    def get_logs(since: str = PROXY_LOG_WINDOW) -> str:
         """Get recent proxy logs.
 
         Args:
@@ -127,7 +135,7 @@ class TestGitProxyEndToEnd:
             "git", "clone", "--depth", "1",
             "https://github.com/RedHatInsights/insights-chrome",
             "/tmp/test-clone"
-        ], timeout=60)
+        ], timeout=GIT_CLONE_TIMEOUT)
 
         assert result.returncode == 0, f"Git clone failed: {result.stderr}"
         assert "Cloning into" in result.stderr or "Cloning into" in result.stdout, \
@@ -138,7 +146,7 @@ class TestGitProxyEndToEnd:
         assert ls_result.returncode == 0, "Cloned repo missing .git directory"
 
         # Verify proxy was used (check logs for git-auth traffic)
-        logs = proxy_logs(since="2m")
+        logs = proxy_logs()
         assert "gitauth:" in logs, "Proxy logs don't show git-auth traffic"
         assert "github.com" in logs, "Proxy logs don't show GitHub host"
         assert "status=200" in logs or "status=301" in logs, \
@@ -158,7 +166,7 @@ class TestGitProxyEndToEnd:
         result = bot_exec([
             "sh", "-c",
             "cd /tmp/test-clone && git fetch origin"
-        ], timeout=30)
+        ], timeout=GIT_OPERATION_TIMEOUT)
 
         assert result.returncode == 0, f"Git fetch failed: {result.stderr}"
 
