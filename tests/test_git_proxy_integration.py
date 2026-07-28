@@ -65,7 +65,10 @@ def docker_compose_services():
 @pytest.fixture
 def bot_exec():
     """Helper to execute commands in bot container."""
-    def run_cmd(cmd: list[str], check: bool = True, timeout: int = GIT_OPERATION_TIMEOUT) -> subprocess.CompletedProcess:
+
+    def run_cmd(
+        cmd: list[str], check: bool = True, timeout: int = GIT_OPERATION_TIMEOUT
+    ) -> subprocess.CompletedProcess:
         """Execute command in bot container.
 
         Args:
@@ -83,12 +86,14 @@ def bot_exec():
             check=check,
             timeout=timeout,
         )
+
     return run_cmd
 
 
 @pytest.fixture
 def proxy_logs():
     """Helper to get proxy container logs."""
+
     def get_logs(since: str = PROXY_LOG_WINDOW) -> str:
         """Get recent proxy logs.
 
@@ -104,6 +109,7 @@ def proxy_logs():
             text=True,
         )
         return result.stdout
+
     return get_logs
 
 
@@ -131,15 +137,15 @@ class TestGitProxyEndToEnd:
 
         # Clone a small, stable public repo
         # Using a Red Hat repo to ensure it exists
-        result = bot_exec([
-            "git", "clone", "--depth", "1",
-            "https://github.com/RedHatInsights/insights-chrome",
-            "/tmp/test-clone"
-        ], timeout=GIT_CLONE_TIMEOUT)
+        result = bot_exec(
+            ["git", "clone", "--depth", "1", "https://github.com/RedHatInsights/insights-chrome", "/tmp/test-clone"],
+            timeout=GIT_CLONE_TIMEOUT,
+        )
 
         assert result.returncode == 0, f"Git clone failed: {result.stderr}"
-        assert "Cloning into" in result.stderr or "Cloning into" in result.stdout, \
+        assert "Cloning into" in result.stderr or "Cloning into" in result.stdout, (
             f"Unexpected git output: {result.stderr}"
+        )
 
         # Verify the clone worked
         ls_result = bot_exec(["ls", "-la", "/tmp/test-clone/.git"])
@@ -149,8 +155,7 @@ class TestGitProxyEndToEnd:
         logs = proxy_logs()
         assert "gitauth:" in logs, "Proxy logs don't show git-auth traffic"
         assert "github.com" in logs, "Proxy logs don't show GitHub host"
-        assert "status=200" in logs or "status=301" in logs, \
-            "Proxy logs don't show successful request"
+        assert "status=200" in logs or "status=301" in logs, "Proxy logs don't show successful request"
 
     def test_git_fetch_through_proxy(self, docker_compose_services, bot_exec):
         """Test git fetch operation through proxy.
@@ -163,10 +168,7 @@ class TestGitProxyEndToEnd:
             pytest.skip("No existing clone found - run test_git_clone_public_repo_through_proxy first")
 
         # Fetch updates
-        result = bot_exec([
-            "sh", "-c",
-            "cd /tmp/test-clone && git fetch origin"
-        ], timeout=GIT_OPERATION_TIMEOUT)
+        result = bot_exec(["sh", "-c", "cd /tmp/test-clone && git fetch origin"], timeout=GIT_OPERATION_TIMEOUT)
 
         assert result.returncode == 0, f"Git fetch failed: {result.stderr}"
 
@@ -185,8 +187,7 @@ class TestGitProxyConfigMigration:
         # This might not be set yet (Phase 1 implementation only)
         # So we just verify the mechanism works
         if proxy_host:
-            assert proxy_host == "proxy", \
-                f"Expected GIT_AUTH_PROXY_HOST=proxy, got: {proxy_host}"
+            assert proxy_host == "proxy", f"Expected GIT_AUTH_PROXY_HOST=proxy, got: {proxy_host}"
 
     def test_gitconfig_has_insteadof_when_proxy_available(self, docker_compose_services, bot_exec):
         """When GIT_AUTH_PROXY_HOST is set, .gitconfig should have insteadOf rewrites.
@@ -206,13 +207,13 @@ class TestGitProxyConfigMigration:
         has_credential_helper = "credential" in gitconfig and "helper" in gitconfig
 
         # At least one should be configured
-        assert has_insteadof or has_credential_helper, \
+        assert has_insteadof or has_credential_helper, (
             "Neither proxy mode nor credential helper configured in .gitconfig"
+        )
 
         # If proxy mode is enabled, verify the rewrites are correct
         if has_insteadof:
-            assert "http://proxy:8447/github.com" in gitconfig, \
-                "insteadOf rewrite for GitHub missing or incorrect"
+            assert "http://proxy:8447/github.com" in gitconfig, "insteadOf rewrite for GitHub missing or incorrect"
             # GitLab might not be configured in all environments
             # So we only check GitHub which should always be present
 
@@ -222,29 +223,23 @@ class TestGitProxyErrorHandling:
 
     def test_proxy_returns_400_for_bare_path(self, docker_compose_services, bot_exec):
         """Proxy should return 400 for requests without host in path."""
-        result = bot_exec(
-            ["curl", "-s", "-w", "\\n%{http_code}", "http://proxy:8447/info/refs"],
-            check=False
-        )
+        result = bot_exec(["curl", "-s", "-w", "\\n%{http_code}", "http://proxy:8447/info/refs"], check=False)
 
-        output_lines = result.stdout.strip().split('\n')
+        output_lines = result.stdout.strip().split("\n")
         http_code = output_lines[-1] if output_lines else ""
 
-        assert http_code == "400", \
-            f"Expected 400 for bare path, got: {http_code}"
+        assert http_code == "400", f"Expected 400 for bare path, got: {http_code}"
 
     def test_proxy_returns_403_for_unknown_host(self, docker_compose_services, bot_exec):
         """Proxy should return 403 for unknown hosts."""
         result = bot_exec(
-            ["curl", "-s", "-w", "\\n%{http_code}", "http://proxy:8447/evil.com/repo.git/info/refs"],
-            check=False
+            ["curl", "-s", "-w", "\\n%{http_code}", "http://proxy:8447/evil.com/repo.git/info/refs"], check=False
         )
 
-        output_lines = result.stdout.strip().split('\n')
+        output_lines = result.stdout.strip().split("\n")
         http_code = output_lines[-1] if output_lines else ""
 
-        assert http_code == "403", \
-            f"Expected 403 for unknown host, got: {http_code}"
+        assert http_code == "403", f"Expected 403 for unknown host, got: {http_code}"
 
     def test_proxy_returns_503_when_token_missing(self, docker_compose_services, bot_exec):
         """Proxy should return 503 when authentication token is not configured.
@@ -274,8 +269,9 @@ class TestGitProxyValidation:
             text=True,
         )
 
-        assert "Up" in result.stdout or "running" in result.stdout, \
+        assert "Up" in result.stdout or "running" in result.stdout, (
             "Proxy container not running - config validation may have failed"
+        )
 
 
 # Helper to check if this is running in CI vs local dev
@@ -286,6 +282,5 @@ def is_ci_environment() -> bool:
 
 # Mark all tests as requiring docker-compose
 pytestmark = pytest.mark.skipif(
-    not Path("docker-compose.yml").exists(),
-    reason="docker-compose.yml not found - run from repo root"
+    not Path("docker-compose.yml").exists(), reason="docker-compose.yml not found - run from repo root"
 )
