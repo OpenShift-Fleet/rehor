@@ -575,23 +575,71 @@ async def api_instances(request: Request) -> JSONResponse:
     )
     counts_map = {r["instance_id"]: r["active"] for r in task_counts}
 
-    result = []
-    for r in instance_rows:
-        result.append(
-            {
-                "instance_id": r["instance_id"],
-                "state": r["state"],
-                "message": r["message"],
-                "external_key": r.get("external_key"),
-                "source_type": r.get("source_type"),
-                "repo": r["repo"],
-                "cycle_start": r["cycle_start"].isoformat() if r["cycle_start"] else None,
-                "updated_at": r["updated_at"].isoformat(),
-                "active_tasks": counts_map.get(r["instance_id"], 0),
-                "max_tasks": 10,
-            }
-        )
+    result = [_instance_row(r, counts_map.get(r["instance_id"], 0)) for r in instance_rows]
     return JSONResponse(result)
+
+
+def _instance_row(r, active_tasks: int = 0) -> dict:
+    return {
+        "instance_id": r["instance_id"],
+        "state": r["state"],
+        "message": r["message"],
+        "external_key": r.get("external_key"),
+        "source_type": r.get("source_type"),
+        "repo": r["repo"],
+        "cycle_start": r["cycle_start"].isoformat() if r["cycle_start"] else None,
+        "updated_at": r["updated_at"].isoformat(),
+        "active_tasks": active_tasks,
+        "max_tasks": 10,
+        "idle_consecutive_cycles": r.get("idle_consecutive_cycles") or 0,
+        "last_idle_reminder_sent_at": (
+            r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
+        ),
+    }
+
+
+async def api_instance_get(request: Request) -> JSONResponse:
+    """GET /api/instances/{instance_id} — fetch a single instance."""
+    pool = get_pool()
+    instance_id = request.path_params["instance_id"]
+    row = await pool.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", instance_id)
+    if row is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(_instance_row(row))
+
+
+async def api_instance_idle_update(request: Request) -> JSONResponse:
+    """PATCH /api/instances/{instance_id}/idle — update idle tracking fields."""
+    pool = get_pool()
+    instance_id = request.path_params["instance_id"]
+    body = await request.json()
+    cycles = body.get("idle_consecutive_cycles")
+    last_sent_raw = body.get("last_idle_reminder_sent_at")
+    last_sent: datetime | None = None
+    if last_sent_raw is not None:
+        try:
+            if isinstance(last_sent_raw, str):
+                last_sent = datetime.fromisoformat(last_sent_raw)
+            elif isinstance(last_sent_raw, datetime):
+                last_sent = last_sent_raw
+            else:
+                return JSONResponse({"error": "invalid last_idle_reminder_sent_at"}, status_code=400)
+        except ValueError:
+            return JSONResponse({"error": "invalid last_idle_reminder_sent_at"}, status_code=400)
+    row = await pool.fetchrow(
+        """
+        INSERT INTO bot_instances (instance_id, idle_consecutive_cycles, last_idle_reminder_sent_at)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (instance_id) DO UPDATE SET
+            idle_consecutive_cycles    = $2,
+            last_idle_reminder_sent_at = $3
+        RETURNING *
+        """,
+        instance_id,
+        int(cycles) if cycles is not None else 0,
+        last_sent,
+    )
+    return JSONResponse(_instance_row(row))
 
 
 async def api_costs(request: Request) -> JSONResponse:

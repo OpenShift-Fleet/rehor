@@ -26,11 +26,11 @@ def _write_config(tmp_path, polling_extra=None):
 def test_load_config_idle_reminder_cooldown_default(tmp_path):
     _write_config(tmp_path)
     cfg = load_config(tmp_path)
-    assert cfg.idle_reminder_cooldown_cycles == 5
+    assert cfg.idle_reminder_cooldown_seconds == 172800
     assert cfg.idle_interval == 3600
 
 
 def test_load_config_idle_reminder_cooldown_override(tmp_path):
-    _write_config(tmp_path, {"idleReminderCooldownCycles": 3})
+    _write_config(tmp_path, {"idleReminderCooldownSeconds": 3600})
     cfg = load_config(tmp_path)
-    assert cfg.idle_reminder_cooldown_cycles == 3
+    assert cfg.idle_reminder_cooldown_seconds == 3600

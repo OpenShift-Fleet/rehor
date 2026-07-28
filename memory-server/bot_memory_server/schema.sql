@@ -151,15 +151,21 @@ CREATE TABLE IF NOT EXISTS org_members (
 
 -- Multi-instance bot status tracking
 CREATE TABLE IF NOT EXISTS bot_instances (
-    instance_id     TEXT PRIMARY KEY,
-    state           TEXT NOT NULL DEFAULT 'idle',
-    message         TEXT NOT NULL DEFAULT '',
-    external_key    TEXT,
-    source_type     TEXT,
-    repo            TEXT,
-    cycle_start     TIMESTAMPTZ,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    instance_id                 TEXT PRIMARY KEY,
+    state                       TEXT NOT NULL DEFAULT 'idle',
+    message                     TEXT NOT NULL DEFAULT '',
+    external_key                TEXT,
+    source_type                 TEXT,
+    repo                        TEXT,
+    cycle_start                 TIMESTAMPTZ,
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    idle_consecutive_cycles     INTEGER NOT NULL DEFAULT 0,
+    last_idle_reminder_sent_at  TIMESTAMPTZ
 );
+
+-- Idempotent column additions for existing databases
+ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS idle_consecutive_cycles    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS last_idle_reminder_sent_at TIMESTAMPTZ;
 
 -- Migrate existing bot_status row into bot_instances (if instance_id is set)
 DO $$ BEGIN

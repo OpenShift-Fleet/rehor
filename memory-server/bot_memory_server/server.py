@@ -89,6 +89,8 @@ from .api import (  # noqa: E402
     api_cycle_run_transcript,
     api_cycle_runs,
     api_cycle_runs_by_task,
+    api_instance_get,
+    api_instance_idle_update,
     api_instance_wake_check,
     api_instance_wake_trigger,
     api_instances,
@@ -120,6 +122,8 @@ mcp.custom_route("/api/memories/{id}", methods=["GET"])(api_memory_get)
 mcp.custom_route("/api/memories/{id}", methods=["DELETE"])(api_memory_delete)
 mcp.custom_route("/api/bot-status", methods=["GET", "POST"])(api_bot_status)
 mcp.custom_route("/api/instances", methods=["GET"])(api_instances)
+mcp.custom_route("/api/instances/{instance_id}", methods=["GET"])(api_instance_get)
+mcp.custom_route("/api/instances/{instance_id}/idle", methods=["PATCH"])(api_instance_idle_update)
 mcp.custom_route("/api/instances/{instance_id}/wake", methods=["POST"])(api_instance_wake_trigger)
 mcp.custom_route("/api/instances/{instance_id}/wake", methods=["GET"])(api_instance_wake_check)
 mcp.custom_route("/api/costs", methods=["GET", "POST"])(api_costs)

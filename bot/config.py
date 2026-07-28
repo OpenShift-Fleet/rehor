@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from .constants import _DEFAULT_COOLDOWN_SECONDS
+
 
 @dataclass
 class Config:
@@ -21,7 +23,7 @@ class Config:
     idle_interval: int
     cycle_timeout: int
     board_key: str
-    idle_reminder_cooldown_cycles: int = 5
+    idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
 
 
 @dataclass
@@ -147,7 +149,7 @@ def load_config(script_dir: Path) -> Config:
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
         cycle_timeout=raw["claude"].get("cycleTimeoutSeconds", 1800),
         board_key=raw["jira"]["boardKey"],
-        idle_reminder_cooldown_cycles=raw["polling"].get("idleReminderCooldownCycles", 5),
+        idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
     )
 
 
