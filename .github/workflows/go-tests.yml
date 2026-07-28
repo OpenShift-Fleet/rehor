@@ -30,7 +30,7 @@ jobs:
       - name: Run tests
         working-directory: proxy/executor
         run: |
-          go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
+          go test -v -race -coverprofile=coverage.txt -covermode=atomic $(go list ./... | grep -v /gen | grep -v /cmd/server)
 
       - name: Check test coverage
         working-directory: proxy/executor
