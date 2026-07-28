@@ -18,6 +18,7 @@ from urllib.request import urlopen
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 
+from . import idle_reminder
 from .agent import run_cycle
 from .config import (
     ALLOWED_TOOLS,
@@ -506,13 +507,20 @@ def main() -> None:
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
-                    _write_sleep_signal(300, "preflight_skip")
+                    idle_reminder.on_preflight_skip(
+                        DATA_DIR,
+                        idle_cycle_limit=instance_config.idle_cycle_limit,
+                        cooldown_cycles=config.idle_reminder_cooldown_cycles,
+                        instance_id=instance_id or args.label,
+                    )
+                    _write_sleep_signal(config.idle_interval, "preflight_skip")
                     _read_sleep_signal(config, instance_id)
                     cleanup_between_cycles(SCRIPT_DIR)
                     continue
 
                 # action == "start"
                 consecutive_preflight_errors = 0
+                idle_reminder.on_preflight_start(DATA_DIR)
                 preflight_prompt = preflight_result.prompt
                 logger.info("Preflight start — launching session with pre-fetched data")
 

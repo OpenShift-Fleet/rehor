@@ -61,6 +61,12 @@ class TestInstanceConfigFromYaml:
         assert ic.source == "jira"
         assert ic.envs is None
         assert ic.claude_md_strategy == "ignore"
+        assert ic.idle_cycle_limit == 0
+
+    def test_idle_cycle_limit(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "idle_cycle_limit": 10}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.idle_cycle_limit == 10
 
     def test_empty_envs(self, agent_dir):
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "envs": []}))

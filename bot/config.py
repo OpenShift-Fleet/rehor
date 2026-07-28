@@ -21,6 +21,7 @@ class Config:
     idle_interval: int
     cycle_timeout: int
     board_key: str
+    idle_reminder_cooldown_cycles: int = 5
 
 
 @dataclass
@@ -31,6 +32,7 @@ class InstanceConfig:
     source: str = "jira"
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
+    idle_cycle_limit: int = 0  # 0 = feature disabled
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -43,6 +45,7 @@ class InstanceConfig:
             source=data.get("source", "jira"),
             envs=data.get("envs"),
             claude_md_strategy=strategy,
+            idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
         )
 
     @classmethod
@@ -144,6 +147,7 @@ def load_config(script_dir: Path) -> Config:
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
         cycle_timeout=raw["claude"].get("cycleTimeoutSeconds", 1800),
         board_key=raw["jira"]["boardKey"],
+        idle_reminder_cooldown_cycles=raw["polling"].get("idleReminderCooldownCycles", 5),
     )
 
 
