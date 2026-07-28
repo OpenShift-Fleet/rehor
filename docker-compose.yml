@@ -107,6 +107,8 @@ services:
       - JIRA_MCP_URL=http://proxy:8444/mcp
       # GH release upload — proxied through proxy container (port 8446)
       - GH_RELEASE_UPLOAD_URL=http://proxy:8446/upload
+      # Git auth — proxied through proxy container (port 8447)
+      - GIT_AUTH_PROXY_HOST=proxy
       # Route all HTTP/HTTPS through the Squid proxy
       - HTTP_PROXY=http://proxy:3128
       - HTTPS_PROXY=http://proxy:3128
