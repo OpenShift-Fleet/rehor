@@ -217,7 +217,7 @@ The arbiter needs read access to:
 
 Arbiter data is privileged — transcripts contain reasoning, tool arguments, and potentially sensitive context from target repos. Not all agents should see this.
 
-**Network-level enforcement (NetworkPolicy).** Fleet-wide data (transcripts, cycle records, cost data, cross-instance memories) is served on dedicated ports. OpenShift NetworkPolicy restricts those ports to pods with the `name=arbiter` label. Regular agent pods physically cannot reach fleet-wide endpoints — blocked at the kernel, no application code involved.
+**Network-level enforcement (NetworkPolicy).** Fleet-wide data (transcripts, cycle records, cost data, cross-instance memories) is served on dedicated ports. OpenShift NetworkPolicy restricts those ports to pods with the `app.kubernetes.io/name=arbiter` label. Regular agent pods physically cannot reach fleet-wide endpoints — blocked at the kernel, no application code involved.
 
 ```yaml
 # Example: memory server fleet-read port restricted to arbiter
@@ -228,12 +228,12 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      name: memory-server
+      app.kubernetes.io/name: memory-server
   ingress:
     - from:
         - podSelector:
             matchLabels:
-              name: arbiter
+              app.kubernetes.io/name: arbiter
       ports:
         - port: 5433    # fleet-wide read
           protocol: TCP
@@ -347,19 +347,78 @@ Each rotating capability gets a full day's token budget. Preflight queries only 
 
 ---
 
-## First Slice
+## First Slice: Langfuse as Triage Layer
 
-Start narrow, expand based on findings:
+Use Langfuse LLM-as-a-Judge evaluators as a cheap, fast gatekeeper before the full arbiter agent runs. Validated in a proof-of-concept with tasks 138 and 425.
 
-1. **Idle cycle auditor only.** Query dashboard for cycles where preflight passed but outcome was idle/error. Flag instances with >3 consecutive idle cycles. Output: dashboard alert + Jira ticket.
-2. **State tracking.** Watermark per instance, stored as arbiter tasks. Don't re-analyze processed cycles.
-3. **Cadence: daily.** Run once per day on a schedule, not continuously.
-4. **Access: dashboard API only.** No transcript reading in first slice — just cycle metadata and cost records.
+### Why Langfuse First
 
-**Expand to transcripts and PR analysis after:**
+The full arbiter needs access to code repos, Jira, GitHub PRs, memory server, and agent config — expensive context for every task. Most archived tasks are clean cycles that don't need deep analysis. Langfuse filters the noise cheaply so the arbiter only investigates flagged tasks.
+
+### Pipeline
+
+```
+Archived tasks (memory server API)
+  → Manual ingestion (OTEL format via ingest-task.ts)
+  → Langfuse trace (one root observation per task, all cycles merged)
+  → LLM-as-a-Judge evaluator (Gemini Flash, ~$0.001/eval)
+  → Score + reasoning per task
+  → Flagged tasks → new Rehor investigation tasks for arbiter deep-dive
+```
+
+### What Langfuse Evaluates
+
+Single evaluator with these categories (one per task, most significant):
+
+- **PREFLIGHT_MISMATCH** — preflight reported work but agent concluded nothing actionable
+- **SKILL_FAILURE** — tool/skill failed, missing, or produced wrong results
+- **CONFLICTING_INSTRUCTIONS** — contradictory guidance from system prompts or task description
+- **MISSING_CAPABILITY** — can't complete due to missing env setup, tools, or credentials
+- **TASK_UNDERSPECIFIED** — Jira ticket lacked detail, agent guessed or asked for clarification
+- **EXCESSIVE_REVIEW_LOOP** — many revision cycles, unclear acceptance criteria or agent not learning
+- **WASTED_CYCLE** — no meaningful progress, idle cycles, redundant tool calls, circular reasoning
+- **CLEAN_CYCLE** — task executed well
+
+### What Langfuse Cannot Do
+
+- No access to code repos, PRs, or Jira — only sees transcript text and Jira description provided at ingestion
+- No cross-instance analysis — evaluates one task at a time
+- Cannot suggest specific config changes (CLAUDE.md patches, skill definitions) — lacks repo context
+- Cannot correlate patterns across tasks or instances
+- Runs on external infrastructure — transcript data leaves the internal network during ingestion. Alternative channels (e.g., Slack webhook payloads, dashboard API) may be needed if VPN constraints block direct OTEL export
+
+### Ingestion Constraints
+
+- Transcripts must be converted from JSONL to OTEL format before ingestion (handled by `ingest-task.ts` in mock-app)
+- Ingestion is manual — triggered per task via CLI (`npm run ingest-task -- <task-id>`)
+- VPN required to reach memory server API for transcript download; Langfuse instance runs locally (docker-compose) or on external cloud
+- All cycles for a task are merged into a single root observation to stay within OTEL export limits — nested per-cycle/per-turn observations overwhelm the span processor at scale (51+ cycles)
+
+### Arbiter Deep-Dive (Stage 2)
+
+Non-CLEAN_CYCLE scores trigger investigation tasks for the arbiter agent, which has full context:
+
+- Code repo access (git clone via proxy)
+- Jira ticket details (Jira MCP)
+- PR/MR review comments (GitHub/GitLab API)
+- Agent config and instructions (instance config repos)
+- Memory server history (fleet-scoped read)
+- Cross-instance pattern data
+
+The arbiter produces actionable output: CLAUDE.md patches, new skills, Jira tickets, instruction fixes. Langfuse just tells it where to look.
+
+### First Slice Steps
+
+1. **Langfuse triage only.** Run evaluator on archived tasks from 2-3 instances. Manual ingestion, manual review of scores.
+2. **State tracking.** Track which tasks have been evaluated (task watermarks in arbiter tasks, or Langfuse session IDs).
+3. **Cadence: on-demand.** Batch-ingest completed tasks periodically, review scores.
+4. **Access: memory server API + Langfuse only.** No transcript reading by the arbiter in first slice — Langfuse handles transcript analysis.
+
+**Expand to full arbiter after:**
+- Langfuse triage proves useful (catches real issues, low false-positive rate)
 - Run identity exists (can correlate cycle → transcript → PR)
-- Dashboard API supports the required queries
-- First slice proves the arbiter cadence and state tracking work reliably
+- VPN/network path for automated ingestion is solved
+- Arbiter agent can consume Langfuse scores API and create investigation tasks automatically
 
 ---
 
@@ -379,4 +438,5 @@ Start narrow, expand based on findings:
 
 | Date | Change |
 |---|---|
+| 2026-08-04 | Added Langfuse triage layer as first slice — validated with tasks 138 and 425. Replaces dashboard-only first slice with cheaper LLM-as-a-Judge gatekeeper before full arbiter (Martin Marosi) |
 | 2026-07-28 | Initial design (Martin Marosi) |
