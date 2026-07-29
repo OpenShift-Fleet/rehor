@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:ct": "npx playwright test",
+    "test:ct:ui": "npx playwright test --ui",
     "generate-fixtures": "python3 tests/fixtures/generate_json.py"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
     "three": "^0.185.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.0",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
