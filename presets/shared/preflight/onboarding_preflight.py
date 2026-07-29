@@ -65,7 +65,7 @@ def _get_candidates():
         return []
 
     jql = (
-        f'labels = "{BOT_LABEL}" AND status in ("New", "Backlog", "To Do", "Open") '
+        f'project = REHOR AND labels = "{BOT_LABEL}" AND status in ("New", "Backlog", "To Do", "Open") '
         f"AND assignee is EMPTY "
         f"ORDER BY priority DESC, created ASC"
     )

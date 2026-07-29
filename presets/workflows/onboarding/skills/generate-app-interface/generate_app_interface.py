@@ -229,20 +229,10 @@ def _create_separate_saas(cfg, repo_path):
     app_ref = cfg.get("app_ref", APP_REF)
     namespace_ref = cfg.get("namespace_ref")
     if not namespace_ref:
-        shared_saas = Path(repo_path) / SHARED_SAAS_PATH
-        if shared_saas.exists():
-            namespace_ref = _discover_namespace_ref(shared_saas.read_text())
-            if namespace_ref:
-                print(
-                    f"WARNING: namespace_ref not provided for separate pattern — "
-                    f"falling back to shared deploy.yml discovery ({namespace_ref}). "
-                    f"This may be wrong if the team has their own namespace.",
-                    file=sys.stderr,
-                )
-        if not namespace_ref:
-            raise ValueError(
-                "namespace_ref is required for separate pattern when it cannot be discovered from the shared deploy.yml"
-            )
+        raise ValueError(
+            "namespace_ref is required for separate pattern — "
+            "the team must provide their namespace $ref (do not fall back to shared deploy.yml)"
+        )
     pipelines_ref = cfg.get("pipelines_ref", PIPELINES_REF)
     auth_ref = cfg.get("auth_ref", AUTH_REF)
 

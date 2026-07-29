@@ -65,11 +65,11 @@ Bot applies exactly one `onboarding:*` label. Preflight reads labels for state.
 | `onboarding:verification` | 3 | verified | close epic |
 | `onboarding:complete` | — | — | — |
 
-**Advance**: replace `onboarding:*` label via `jira_update_issue`. Phase boundaries → transition completed phase sub-ticket to Done.
+**Advance**: replace `onboarding:*` label via `jira_update_issue`. Phase boundaries → transition completed phase sub-ticket to Done. Transition the *next* phase sub-ticket to In Progress only when the team has action items (MR to merge, repo to create), not when the bot is still gathering info.
 
 ### P2: New Onboarding Tickets
 
-All active clean → capacity → pick candidate.
+All active clean → capacity → pick candidate from **REHOR** Jira project only.
 
 **Claim**: `/claim-onboarding` `{"epic_key", "project_key", "team_name", "summary"}` — assigns, transitions, creates 3 phase sub-tickets, applies `onboarding:intake`, creates memory task.
 
@@ -120,7 +120,7 @@ Reply with repo URL once done.
 ```
 Use `platex-rehor-bot` for shared infra, or the team's own fork account for dedicated infra.
 
-Apply `onboarding:repo-requested`.
+Apply `onboarding:repo-requested`. Transition the Phase 1 sub-ticket to "In Progress" (the team now has action items).
 
 ### `onboarding:repo-requested`
 
@@ -142,7 +142,7 @@ Post scaffolding PR link. Apply `onboarding:scaffolding-pr`.
 ### `onboarding:scaffolding-pr`
 
 When PR merged:
-1. Phase 1 sub-ticket → Done, Phase 2 → In Progress
+1. Phase 1 sub-ticket → Done
 2. `/auto-fork` target repos from project-repos.json
 3. `/post-konflux-questions` `{"epic_key", "team_name"}`
 
@@ -154,7 +154,7 @@ Parse Konflux responses. Clone `konflux-release-data` fork → `/generate-konflu
 
 (Note: `/generate-konflux` = pure-Python `add-namespace.sh`. Prefer upstream when `yq`/`kubectl`/`kustomize` available.)
 
-Post MR link. Apply `onboarding:konflux-mr`. Store Konflux info in metadata.
+Post MR link. Apply `onboarding:konflux-mr`. Transition Phase 2 sub-ticket to "In Progress" (team needs to merge MR). Store Konflux info in metadata.
 
 ### `onboarding:konflux-mr`
 
@@ -168,7 +168,7 @@ When MR merged: `/post-konflux-instructions` `{"epic_key", "instance_name", "qua
 
 Wait for: pipelines merged, build ran, Quay image exists.
 
-1. Phase 2 sub-ticket → Done, Phase 3 → In Progress
+1. Phase 2 sub-ticket → Done
 2. Gather deployment details:
    - **Shared infra**: post a comment indicating the MR will use shared infrastructure values (GCP project, namespace, etc.) discovered from the existing deploy.yml. Do NOT post the actual values — they may contain sensitive infrastructure details.
    - **Dedicated infra (separate pattern)**: before gathering deployment fields, confirm the team has completed the prerequisite service tree setup with app-sre. Post a checkpoint comment:
@@ -187,7 +187,7 @@ Wait for: pipelines merged, build ran, Quay image exists.
 
 The MR itself is the confirmation — the team reviews the diff and can request changes. No separate confirmation comment needed.
 
-Post MR link. Apply `onboarding:app-interface-mr`. Update metadata: `phase: 3`.
+Post MR link. Apply `onboarding:app-interface-mr`. Transition Phase 3 sub-ticket to "In Progress" (team needs to merge MR). Update metadata: `phase: 3`.
 
 ### `onboarding:app-interface-mr`
 
@@ -209,7 +209,7 @@ Post completion msg. Phase 3 sub-ticket → Done. Epic → Done/Release Pending.
 
 ### Shared vs Dedicated Infrastructure
 
-Determine early (Phase 1 intake) whether the team uses shared Rehor infrastructure or needs dedicated setup. Key question: does the team need separate Jira/GitHub/GitLab credentials, or can they use the shared fork accounts?
+Determine early (Phase 1 intake) whether the team uses shared Rehor infrastructure or needs dedicated setup. Key questions: does the team need a separate GCP project (billing separation), or separate Jira/GitHub/GitLab credentials?
 
 > **Terminology**: "fork account" = the GitHub/GitLab service account the bot uses to fork repos and open PRs/MRs (e.g., `platex-rehor-bot`). Team-facing text (intake, plan) calls these "bot accounts" since that's the team's mental model.
 
@@ -221,10 +221,11 @@ Uses the shared proxy, memory server, GitHub/GitLab fork accounts, namespace, an
 - Proxy: shared `devbot-proxy` in same namespace
 - Fork accounts: `platex-rehor-bot` (GitHub), `platform-experience-services-bot` (GitLab)
 
-**Dedicated** (teams needing separate credentials):
+**Dedicated** (teams needing separate GCP billing or credentials):
+- Memory server: stays shared by default — only separate if the agent handles sensitive data
 - SaaS pattern: `separate` — new service tree in app-interface (not under `insights/platform-frontend-ai-dev`). Requires `service_tree` (e.g., `<platform>/<team>`) — ask the team where their service lives in app-interface. The onboarding bot can generate the SaaS deploy file once the service tree exists, but cannot yet bootstrap the full app-interface service structure (app.yml, namespace, pipeline provider). The team must work with the app-interface / app-sre team to set that up first.
 - Konflux tenant: almost always new
-- GCP project: team must provide their own (surface this early in Phase 1)
+- GCP project: team must provide their own (surface this early in Phase 1) — most common reason for dedicated infra (billing separation)
 - Proxy: dedicated proxy required — instruct team to create a ticket in the **REHOR** Jira project so the Rehor team can collaborate on setup
 - Fork accounts: required, no default — team must provide their own GitHub/GitLab fork accounts
 - Cost center: required, no default
@@ -237,7 +238,7 @@ Surface GCP project, dedicated proxy, and fork account requirements in Phase 1 i
 
 ### SaaS pattern
 
-`shared` (Pattern A) — new `<instance>-deploy.yml` in the `platform-frontend-ai-dev` service tree. Prefer this over appending to the main `deploy.yml`, which is reserved for platform instances, memory-server, and proxy (fallback only). | `separate` (Pattern B) — entirely new service tree outside `platform-frontend-ai-dev`. Own memory server, proxy deploy, and bot instance deploy. Independent of shared/dedicated infra choice. Check app-interface or ask the team.
+`shared` (Pattern A) — new `<instance>-deploy.yml` in the `platform-frontend-ai-dev` service tree. Prefer this over appending to the main `deploy.yml`, which is reserved for platform instances, memory-server, and proxy (fallback only). | `separate` (Pattern B) — entirely new service tree outside `platform-frontend-ai-dev`. Own proxy deploy and bot instance deploy; memory server stays shared unless the agent handles sensitive data. Independent of shared/dedicated infra choice. Check app-interface or ask the team.
 
 ### Konflux tenant
 

@@ -377,12 +377,15 @@ def _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name)
         f"/tenants-config/cluster/{cluster}/tenants/{tenant}/ @konflux-ci/konflux-release-tenant-admins",
     ]
 
+    entries_to_add = []
     for entry in new_entries:
         path_prefix = entry.split()[0]
         if not any(line.startswith(path_prefix) for line in existing_lines):
-            existing_lines.append(entry)
+            entries_to_add.append(entry)
 
-    existing_lines.sort()
+    if entries_to_add:
+        entries_to_add.sort()
+        existing_lines.extend(entries_to_add)
     codeowners_path.write_text("\n".join(existing_lines) + "\n")
 
 

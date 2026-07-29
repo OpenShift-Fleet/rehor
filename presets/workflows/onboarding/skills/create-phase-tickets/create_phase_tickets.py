@@ -27,7 +27,33 @@ PHASES = [
 INITIAL_LABEL = "onboarding:intake"
 
 
+def _detect_parent_type(issue_key):
+    """Return the issue type name of the parent ticket (e.g. 'Epic', 'Story')."""
+    result = jira_call(
+        "jira_get_issue",
+        {"issue_key": issue_key, "fields": "issuetype"},
+    )
+    if not result:
+        return None
+    issuetype = result.get("issuetype") or result.get("fields", {}).get("issuetype")
+    if isinstance(issuetype, dict):
+        return issuetype.get("name")
+    return None
+
+
 def create_tickets(epic_key, project_key, team_name):
+    parent_type = _detect_parent_type(epic_key)
+    if parent_type and parent_type.lower() == "epic":
+        child_type = "Story"
+        link_field = {"epicKey": epic_key}
+    else:
+        child_type = "Sub-task"
+        link_field = {"parent": epic_key}
+    print(
+        f"Parent {epic_key} is {parent_type or 'unknown'}, using {child_type}",
+        file=sys.stderr,
+    )
+
     phase_tickets = {}
 
     for phase in PHASES:
@@ -37,8 +63,8 @@ def create_tickets(epic_key, project_key, team_name):
             {
                 "project_key": project_key,
                 "summary": summary,
-                "issue_type": "Task",
-                "additional_fields": json.dumps({"parent": epic_key}),
+                "issue_type": child_type,
+                "additional_fields": json.dumps(link_field),
             },
         )
         if not result:

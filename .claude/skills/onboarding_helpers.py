@@ -5,6 +5,23 @@ import sys
 
 from jira_mcp import jira_call
 
+WORKFLOW_REQUIRED_FIELDS = {
+    "jira-sprint": {
+        "required": ["board_name"],
+        "optional": ["sprint_prefix"],
+    },
+    "jira-kanban": {
+        "required": ["board_name"],
+        "optional": ["board_id"],
+    },
+}
+
+
+def get_missing_workflow_fields(workflow, requirements):
+    """Return list of required fields missing for the given workflow."""
+    spec = WORKFLOW_REQUIRED_FIELDS.get(workflow, {})
+    return [f for f in spec.get("required", []) if not requirements.get(f)]
+
 
 def post_comment(epic_key, body):
     result = jira_call("jira_add_comment", {"issue_key": epic_key, "body": body})

@@ -29,6 +29,7 @@ SEPARATE_CONFIG = {
     "pattern": "separate",
     "team_name": "testteam",
     "service_tree": "testplatform/testteam",
+    "namespace_ref": "/services/testplatform/testteam/namespaces/stage.testns01.yml",
 }
 
 KANBAN_CONFIG = {
@@ -272,23 +273,16 @@ class TestSeparatePattern:
         content = saas_path.read_text()
         assert "ScaledObject.keda.sh" in content
 
-    def test_discovers_namespace_from_shared_deploy(self, app_interface_repo):
+    def test_uses_explicit_namespace_ref(self, app_interface_repo):
         result = generate(SEPARATE_CONFIG, str(app_interface_repo))
         saas_path = app_interface_repo / result["file"]
         content = saas_path.read_text()
-        assert "stage.testns01.yml" in content
+        assert "/services/testplatform/testteam/namespaces/stage.testns01.yml" in content
 
-    def test_explicit_namespace_ref_overrides_discovery(self, app_interface_repo):
-        cfg = {**SEPARATE_CONFIG, "namespace_ref": "/services/custom/namespaces/custom.yml"}
-        result = generate(cfg, str(app_interface_repo))
-        saas_path = app_interface_repo / result["file"]
-        content = saas_path.read_text()
-        assert "/services/custom/namespaces/custom.yml" in content
-        assert "stage.testns01.yml" not in content
-
-    def test_fallback_namespace_warns(self, app_interface_repo, capsys):
-        generate(SEPARATE_CONFIG, str(app_interface_repo))
-        assert "WARNING" in capsys.readouterr().err
+    def test_requires_namespace_ref(self, app_interface_repo):
+        cfg = {k: v for k, v in SEPARATE_CONFIG.items() if k != "namespace_ref"}
+        with pytest.raises(ValueError, match="namespace_ref is required"):
+            generate(cfg, str(app_interface_repo))
 
     def test_requires_service_tree(self, app_interface_repo):
         cfg = {**SEPARATE_CONFIG}

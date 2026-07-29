@@ -21,6 +21,8 @@ skill_dirs = [
     repo_root / "presets" / "shared" / "skills" / "push-and-pr",
     repo_root / "presets" / "workflows" / "jira-sprint" / "skills" / "claim-ticket",
     repo_root / "presets" / "workflows" / "jira-kanban" / "skills" / "claim-ticket",
+    repo_root / "presets" / "workflows" / "onboarding" / "skills" / "claim-onboarding",
+    repo_root / "presets" / "workflows" / "onboarding" / "skills" / "create-phase-tickets",
     repo_root / "presets" / "workflows" / "onboarding" / "skills" / "generate-instance",
     repo_root / "presets" / "workflows" / "onboarding" / "skills" / "generate-konflux",
     repo_root / "presets" / "workflows" / "onboarding" / "skills" / "generate-app-interface",

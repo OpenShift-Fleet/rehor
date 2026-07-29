@@ -35,8 +35,10 @@ def _transition_in_progress(epic_key):
     transitions = jira_call("jira_get_transitions", {"issue_key": epic_key})
     if not transitions:
         return False
+    if isinstance(transitions, dict):
+        transitions = transitions.get("transitions", [])
     target = None
-    for t in transitions.get("transitions", []):
+    for t in transitions:
         name = t.get("name", "").lower()
         if name in ("in progress", "in_progress", "start progress"):
             target = t.get("id")

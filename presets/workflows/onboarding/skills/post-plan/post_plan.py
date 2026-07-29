@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from jira_mcp import jira_cleanup
-from onboarding_helpers import apply_label, post_comment
+from onboarding_helpers import apply_label, get_missing_workflow_fields, post_comment
 
 LABEL = "onboarding:plan-posted"
 
@@ -55,6 +55,17 @@ def _build_comment(config):
 
     repo_list = "\n".join(_fmt_repo(r) for r in repos) if repos else "  (none)"
 
+    requirements = config.get("requirements", config)
+    missing = get_missing_workflow_fields(workflow, requirements)
+    missing_warning = ""
+    if missing:
+        fields = ", ".join(f"`{f}`" for f in missing)
+        missing_warning = (
+            f"\n> **Action needed**: Your `{workflow}` workflow requires "
+            f"{fields} — please provide "
+            f"{'it' if len(missing) == 1 else 'them'} before approving.\n\n"
+        )
+
     return f"""\
 ## [Phase 1/3] Instance Setup — Onboarding Plan
 
@@ -89,14 +100,15 @@ Based on our conversation, here's the plan:
 {
         '''
 ### Dedicated infrastructure — additional requirements
+- **GCP project** — you'll need your own GCP project with Vertex AI API enabled (for billing separation)
 - **Dedicated proxy** — create a ticket in the **REHOR** Jira project so the Rehor team can collaborate on setup
 - **Bot accounts** — your team must provide GitHub/GitLab bot accounts (shared defaults will not be used)
-- **GCP project** — you'll need your own GCP project with Vertex AI API enabled
+- **Memory server** — stays shared by default (no action needed unless your agent handles sensitive data)
 - **App-interface service tree** — work with app-sre to set up your service tree before Phase 3
 '''
         if dedicated_proxy
         else ""
-    }
+    }{missing_warning}\
 **Does this look good?** Reply "approved" or let me know what to change.
 """
 

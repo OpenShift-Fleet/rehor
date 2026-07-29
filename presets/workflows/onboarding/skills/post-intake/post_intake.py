@@ -35,22 +35,25 @@ To get started, I need some details about your instance:
 - **Target repo URL(s)** — the repo(s) your bot will work on (GitHub and/or GitLab)
 - **Jira project key** — the project your bot will pick up tickets from
 - **Infrastructure: shared or dedicated?** — most teams use the shared Rehor infrastructure: \
-shared proxy, memory server, GitHub/GitLab bot accounts, namespace, and GCP project. This \
+shared proxy, bot accounts, namespace, GCP project, and memory server. This \
 works across orgs (e.g., `RedHatInsights`, `project-kessel`). You only need **dedicated \
-infrastructure** if your team requires separate Jira/GitHub/GitLab credentials — that means \
-your own proxy, memory server, and bot accounts. Let us know so we can plan \
-accordingly. (Default: shared)
+infrastructure** if your team needs a separate GCP project (typically for billing separation) \
+or separate Jira/GitHub/GitLab credentials. Dedicated means your own GCP project, proxy, \
+and bot accounts — but the memory server stays shared unless your agent handles sensitive \
+data. Let us know so we can plan accordingly. (Default: shared)
 
 ### Optional (defaults applied if not specified)
 - Workflow type — default: `jira-sprint` (also available: `jira-kanban`)
 - Default branch — default: `main` (let us know if your org uses `master` or another branch)
 - KEDA schedule — default: weekdays 9am–6pm ET
-- Board name / sprint prefix — only if using sprint workflow
-- Board ID / Jira project key — only if using kanban workflow
 - Fork accounts — default: `platex-rehor-bot` (GitHub), \
 `platform-experience-services-bot` (GitLab). Dedicated infrastructure teams must provide \
 their own bot accounts.
 - Slack notifications — provide a Slack webhook URL if you want the bot to post status updates to a channel
+
+### Workflow-specific (required based on your workflow choice)
+- **If using `jira-sprint`** (default): Board name and sprint prefix (e.g., `My Board`, `SPRINT-`)
+- **If using `jira-kanban`**: Board ID and Jira project key for the kanban board
 
 ### Heads up for Phase 2 & 3
 These aren't needed yet, but good to start thinking about:
