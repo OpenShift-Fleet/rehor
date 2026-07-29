@@ -9,7 +9,7 @@ A meta-agent that audits, analyzes, and improves all Rehor agent instances. It r
 Rehor runs 13+ agent instances across 9 teams. Each instance generates rich signal — cycle runs, transcripts, PRs/MRs, cost records, review feedback, memories. Today nobody systematically mines this data:
 
 - **Token waste goes unnoticed.** An instance burning tokens on idle cycles (preflight passes but no real work exists) runs for days before a human spots it. Could be a stale schedule, a preflight bug, or a misconfigured board filter.
-- **Repetitive patterns stay manual.** Agents perform the same multi-step tool call sequences across instances. These could be extracted into reusable skills but nobody reviews transcripts looking for them.
+- **Repetitive patterns stay manual.** Agents perform the same multi-step tool call sequences across instances. These could be extracted into reusable skills, prompt improvements (CLAUDE.md/AGENTS.md), or deterministic rules/workflows — but nobody reviews transcripts looking for them.
 - **Review feedback doesn't propagate.** When a reviewer corrects an agent's PR, that correction lives in one instance's `review_feedback` memory. If 5 reviewers across 3 instances say "don't use deprecated API X," nobody aggregates that into a platform-level instruction fix.
 - **Repo setup gaps are invisible.** Missing CLAUDE.md sections, absent test commands, stale agent config — these cause agent confusion that shows up as wasted cycles and bad PRs, but the root cause isn't surfaced.
 - **No cross-instance learning.** A fix discovered for one instance (a skill, an instruction, a preflight check) could benefit others on similar repos but there's no mechanism to propagate it.
@@ -20,7 +20,7 @@ Rehor runs 13+ agent instances across 9 teams. Each instance generates rich sign
 
 1. **Reduce cost** — detect and eliminate token waste from idle cycles, bad preflight, model mismatches, and stale instances
 2. **Improve quality** — surface instruction gaps, repo setup issues, and recurring review corrections before they cost more cycles
-3. **Extract skills** — mine transcripts for repetitive tool call patterns and generate reusable skills
+3. **Extract improvements** — mine transcripts for repetitive patterns and generate reusable skills, prompt improvements (CLAUDE.md/AGENTS.md updates), and deterministic rules/workflows
 4. **Propagate learning** — spread improvements discovered in one instance across the fleet where applicable
 5. **Maintain accountability** — all arbiter actions are tracked, auditable, and require human approval for changes
 
@@ -50,7 +50,7 @@ Detect instances burning tokens without producing useful output.
 
 Analyze agent transcripts to find repetitive tool call sequences that should become skills.
 
-**Inputs:** Session transcripts across all instances (tool calls, arguments, sequences).
+**Inputs:** Session transcripts across all instances (tool calls, arguments, sequences, model used).
 
 **Detects:**
 - Repeated multi-step tool call sequences (≥3 steps appearing in ≥3 transcripts)
@@ -217,7 +217,7 @@ The arbiter needs read access to:
 
 Arbiter data is privileged — transcripts contain reasoning, tool arguments, and potentially sensitive context from target repos. Not all agents should see this.
 
-**Network-level enforcement (NetworkPolicy).** Fleet-wide data (transcripts, cycle records, cost data, cross-instance memories) is served on dedicated ports. OpenShift NetworkPolicy restricts those ports to pods with the `app=arbiter` label. Regular agent pods physically cannot reach fleet-wide endpoints — blocked at the kernel, no application code involved.
+**Network-level enforcement (NetworkPolicy).** Fleet-wide data (transcripts, cycle records, cost data, cross-instance memories) is served on dedicated ports. OpenShift NetworkPolicy restricts those ports to pods with the `name=arbiter` label. Regular agent pods physically cannot reach fleet-wide endpoints — blocked at the kernel, no application code involved.
 
 ```yaml
 # Example: memory server fleet-read port restricted to arbiter
@@ -228,12 +228,12 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app: memory-server
+      name: memory-server
   ingress:
     - from:
         - podSelector:
             matchLabels:
-              app: arbiter
+              name: arbiter
       ports:
         - port: 5433    # fleet-wide read
           protocol: TCP
@@ -268,7 +268,7 @@ The arbiter must not re-analyze the same data repeatedly. It tracks progress usi
 |---|---|
 | Cycle runs | Last processed `cycle_id` per instance |
 | Transcripts | Last processed `transcript_id` per instance |
-| PRs/MRs | Last processed PR number per repo |
+| PRs/MRs | Last processed `updated_at` timestamp per repo (not PR number — older PRs receive new comments) |
 | Cost records | Last processed timestamp per instance |
 | Config repos | Last analyzed commit SHA per repo |
 
@@ -330,7 +330,7 @@ Each rotating capability gets a full day's token budget. Preflight queries only 
 | Dependency | Why | Status |
 |---|---|---|
 | REHOR-53 — Instance metadata in dashboard | Arbiter needs to know which instances exist, their config repos, workflows, and sources | New |
-| Run Identity (roadmap §9) | Stable `run_id` to correlate cycles, costs, transcripts, PRs | Planned |
+| Run Identity (REHOR-40) | Stable `run_id` generated before preflight and propagated to preflight results, cycle runs, costs, and transcripts. Provides correlation across all telemetry for a single run. | Planned |
 | Logging & Observability (roadmap §8) | Structured logs with cycle correlation for meaningful analysis | Planned |
 | Dashboard API auth | Set up SA identity checks on dashboard endpoints — separate fleet-scoped from instance-scoped | Not started |
 | Prometheus integration | Metrics endpoint for critical alerts (idle cycle burn, cost spikes) that fire independently of arbiter schedule | In progress |
