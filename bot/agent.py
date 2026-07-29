@@ -18,13 +18,14 @@ from claude_agent_sdk import (
 )
 
 from .config import Config
+from .constants import MEMORY_API_BASE
 
 logger = logging.getLogger(__name__)
 
 TURN_WARNING_THRESHOLD = 0.75  # warn at 75% of max_turns
 TURN_CRITICAL_THRESHOLD = 0.90  # urgent at 90%
 
-DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status")
+DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", f"{MEMORY_API_BASE}/bot-status")
 
 # Track consecutive status push failures for warning after N misses
 _status_fail_count = 0

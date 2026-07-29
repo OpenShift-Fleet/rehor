@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from .constants import MEMORY_API_BASE
+
 if TYPE_CHECKING:
     from .agent import CycleContext
 
 logger = logging.getLogger(__name__)
 
-COSTS_API = os.environ.get("COSTS_API_URL", "http://localhost:8080/api/costs")
+COSTS_API = os.environ.get("COSTS_API_URL", f"{MEMORY_API_BASE}/costs")
 
 
 _NO_WORK_PATTERNS = [

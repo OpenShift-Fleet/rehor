@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 
 from bot.idle_reminder import (
     _format_task_line,
-    _get_memory_api_base,
     fetch_idle_state,
     fetch_open_tasks,
     on_preflight_skip,
@@ -173,17 +172,30 @@ def test_format_task_minimal():
     assert "Untitled" in line
 
 
-# --- _get_memory_api_base ---
+# --- MEMORY_API_BASE ---
 
 
-def test_get_memory_api_base_from_costs_url():
-    with patch.dict("os.environ", {"COSTS_API_URL": "http://memory:8080/api/costs"}, clear=True):
-        assert _get_memory_api_base() == "http://memory:8080/api"
+def test_memory_api_base_from_env(monkeypatch):
+    import importlib
+
+    import bot.constants as constants_mod
+
+    monkeypatch.setenv("MEMORY_API_URL", "http://memory:9090/api")
+    importlib.reload(constants_mod)
+    assert constants_mod.MEMORY_API_BASE == "http://memory:9090/api"
+    monkeypatch.delenv("MEMORY_API_URL")
+    importlib.reload(constants_mod)
 
 
-def test_get_memory_api_base_default():
-    with patch.dict("os.environ", {}, clear=True):
-        assert _get_memory_api_base() == "http://localhost:8080/api"
+def test_memory_api_base_default(monkeypatch):
+    import importlib
+
+    import bot.constants as constants_mod
+
+    monkeypatch.delenv("MEMORY_API_URL", raising=False)
+    importlib.reload(constants_mod)
+    assert constants_mod.MEMORY_API_BASE == "http://localhost:8080/api"
+    importlib.reload(constants_mod)
 
 
 # --- fetch_open_tasks ---

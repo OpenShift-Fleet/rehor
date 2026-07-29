@@ -33,6 +33,7 @@ from .config import (
     validate_instance_config,
     validate_manifest,
 )
+from .constants import MEMORY_API_BASE
 from .costs import record_cost
 from .merge import apply_merged_config, install_skills
 from .preflight import run_preflight
@@ -197,9 +198,7 @@ SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
 LOW_DISK_THRESHOLD_MB = 512
 WAKE_POLL_INTERVAL = 5
 
-DASHBOARD_BASE_URL = os.environ.get("BOT_DASHBOARD_URL", "http://localhost:8080/api/bot-status").rsplit(
-    "/bot-status", 1
-)[0]
+DASHBOARD_BASE_URL = os.environ.get("MEMORY_API_URL", MEMORY_API_BASE)
 
 
 def _check_wake_signal(instance_id: str) -> bool:

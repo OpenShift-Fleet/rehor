@@ -11,21 +11,14 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from .constants import MEMORY_API_BASE
+
 if TYPE_CHECKING:
     from .agent import CycleContext
 
 logger = logging.getLogger(__name__)
 
-
-def _get_cycle_runs_url() -> str:
-    explicit = os.environ.get("CYCLE_RUNS_API_URL")
-    if explicit:
-        return explicit
-    costs_url = os.environ.get("COSTS_API_URL", "http://localhost:8080/api/costs")
-    return costs_url.rsplit("/", 1)[0] + "/cycle-runs"
-
-
-CYCLE_RUNS_API = _get_cycle_runs_url()
+CYCLE_RUNS_API = os.environ.get("CYCLE_RUNS_API_URL", f"{MEMORY_API_BASE}/cycle-runs")
 
 _WORK_TYPE_TO_CYCLE_TYPE = {
     "new_ticket": "task_work",

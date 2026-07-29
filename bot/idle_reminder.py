@@ -13,14 +13,9 @@ from datetime import datetime, timezone
 
 import httpx
 
-from .constants import _DEFAULT_COOLDOWN_SECONDS
+from .constants import _DEFAULT_COOLDOWN_SECONDS, MEMORY_API_BASE
 
 logger = logging.getLogger(__name__)
-
-
-def _get_memory_api_base() -> str:
-    costs_url = os.environ.get("COSTS_API_URL", "http://localhost:8080/api/costs")
-    return costs_url.rsplit("/", 1)[0]
 
 
 def fetch_idle_state(
@@ -33,7 +28,7 @@ def fetch_idle_state(
     can avoid overwriting existing DB state after a transient error.
     A 404 (unknown instance) is treated as fresh state (0, None).
     """
-    base = memory_api_base or _get_memory_api_base()
+    base = memory_api_base or MEMORY_API_BASE
     try:
         resp = httpx.get(f"{base}/instances/{instance_id}", timeout=5.0)
         if resp.status_code == 404:
@@ -60,7 +55,7 @@ def update_idle_state(
     memory_api_base: str | None = None,
 ) -> None:
     """Persist idle state to bot_instances via memory server API."""
-    base = memory_api_base or _get_memory_api_base()
+    base = memory_api_base or MEMORY_API_BASE
     payload: dict = {"idle_consecutive_cycles": consecutive_cycles}
     if last_reminder_sent_at is not None:
         payload["last_idle_reminder_sent_at"] = last_reminder_sent_at.isoformat()
@@ -94,7 +89,7 @@ def fetch_open_tasks(
     instance_id: str | None = None,
 ) -> list[dict]:
     """Fetch tasks with pr_open status from the memory server REST API."""
-    base = memory_api_base or _get_memory_api_base()
+    base = memory_api_base or MEMORY_API_BASE
     params: dict[str, str] = {"status": "pr_open"}
     if instance_id:
         params["instance_id"] = instance_id
