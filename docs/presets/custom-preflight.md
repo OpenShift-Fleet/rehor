@@ -316,8 +316,7 @@ def main():
 
     if not has_issues:
         json.dump(
-            {"status": "skip",
-             "content": f"All {len(healthy)} items healthy. Skipping."},
+            {"status": "skip", "content": f"All {len(healthy)} items healthy. Skipping."},
             sys.stdout,
         )
         return

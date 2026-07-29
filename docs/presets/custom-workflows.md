@@ -303,11 +303,13 @@ def main():
             continue
         prs = get_task_prs(task)
         if prs:
-            review_needed.append({
-                "key": task.get("external_key", "?"),
-                "repo": task.get("repo", "?"),
-                "prs": prs,
-            })
+            review_needed.append(
+                {
+                    "key": task.get("external_key", "?"),
+                    "repo": task.get("repo", "?"),
+                    "prs": prs,
+                }
+            )
 
     if not review_needed:
         output_result("skip", f"{len(tasks)} tasks, none with PRs needing review.")
