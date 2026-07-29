@@ -191,20 +191,24 @@ In `setup_git()`, replace credential helper entries with `insteadOf` rewrites wh
 git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")  # e.g. "devbot-proxy"
 if git_proxy_host:
     # URL rewrite — token stays in proxy, never reaches bot pod
-    lines.extend([
-        f'[url "http://{git_proxy_host}:8447/github.com/"]',
-        '\tinsteadOf = https://github.com/',
-        f'[url "http://{git_proxy_host}:8447/gitlab.cee.redhat.com/"]',
-        '\tinsteadOf = https://gitlab.cee.redhat.com/',
-    ])
+    lines.extend(
+        [
+            f'[url "http://{git_proxy_host}:8447/github.com/"]',
+            "\tinsteadOf = https://github.com/",
+            f'[url "http://{git_proxy_host}:8447/gitlab.cee.redhat.com/"]',
+            "\tinsteadOf = https://gitlab.cee.redhat.com/",
+        ]
+    )
 else:
     # Fallback: credential helper (local dev, proxy not available)
-    lines.extend([
-        '[credential "https://github.com"]',
-        '\thelper = !/usr/local/bin/gh auth git-credential',
-        '[credential "https://gitlab.cee.redhat.com"]',
-        '\thelper = !/usr/local/bin/glab credential-helper',
-    ])
+    lines.extend(
+        [
+            '[credential "https://github.com"]',
+            "\thelper = !/usr/local/bin/gh auth git-credential",
+            '[credential "https://gitlab.cee.redhat.com"]',
+            "\thelper = !/usr/local/bin/glab credential-helper",
+        ]
+    )
 ```
 
 The env var is injected by the deployment template from `${PROXY_NAME}`. No code change needed when the proxy Service name changes.
