@@ -186,9 +186,7 @@ class TestUpdateTaskMetadata:
     def test_replaces_non_dict_values(self, mock_client_cls):
         mock_client = mock_client_cls.return_value.__enter__.return_value
         mock_client.get.return_value.status_code = 200
-        mock_client.get.return_value.json.return_value = {
-            "metadata": {"phase": 1, "prs": []}
-        }
+        mock_client.get.return_value.json.return_value = {"metadata": {"phase": 1, "prs": []}}
         mock_client.patch.return_value.status_code = 200
 
         update_task_metadata("http://memory", "task-1", {"phase": 2, "prs": [{"repo": "r", "number": 1}]})

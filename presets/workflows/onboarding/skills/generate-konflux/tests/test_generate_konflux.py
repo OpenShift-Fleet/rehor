@@ -352,6 +352,23 @@ class TestCodeownersAdminUsernames:
         assert lines == sorted(lines)
 
 
+class TestServiceNameDefault:
+    def test_defaults_to_tenant_without_suffix(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG}
+        del cfg["service_name"]
+        generate(cfg, str(konflux_repo))
+        rpa_dir = konflux_repo / "config" / "test-cluster.abcd.p1" / "service" / "ReleasePlanAdmission" / "test"
+        assert rpa_dir.exists()
+        assert (rpa_dir / "test-agent-dev.yaml").exists()
+
+    def test_explicit_service_name_overrides(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "service_name": "custom-svc"}
+        generate(cfg, str(konflux_repo))
+        rpa_dir = konflux_repo / "config" / "test-cluster.abcd.p1" / "service" / "ReleasePlanAdmission" / "custom-svc"
+        assert rpa_dir.exists()
+        assert (rpa_dir / "test-agent-dev.yaml").exists()
+
+
 class TestExistingTenant:
     def test_existing_tenant_returns_false(self, konflux_repo):
         generate(NEW_TENANT_CONFIG, str(konflux_repo))

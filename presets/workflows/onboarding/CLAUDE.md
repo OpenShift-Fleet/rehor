@@ -159,9 +159,20 @@ Update metadata: `phase: 2`, `step: "konflux-info"`.
 
 ### `onboarding:konflux-info`
 
-Parse Konflux responses. Clone `konflux-release-data` fork → `/generate-konflux` → commit → push → open MR.
+Parse Konflux responses. Clone `konflux-release-data` fork → `/generate-konflux` → run `build-single.sh` → commit → push → open MR.
 
-(Note: `/generate-konflux` = pure-Python `add-namespace.sh`. Prefer upstream when `yq`/`kubectl`/`kustomize` available.)
+After `/generate-konflux`, run `build-single.sh` to regenerate the `auto-generated/` directory:
+```bash
+cd <konflux_repo>/tenants-config
+./build-single.sh <tenant>
+```
+The script accepts the tenant name with or without the `-tenant` suffix. This runs `kustomize build` on the tenant directory and produces the `auto-generated/` files that CI requires.
+
+Before committing, verify that `auto-generated/` changes are scoped to the target tenant only:
+```bash
+git diff --name-only -- tenants-config/auto-generated/ | grep -v "tenants/<tenant>"
+```
+If any auto-generated files for other tenants appear, discard them with `git checkout` before committing. Commit both the source files (tenant YAML, RPA, constraints, CODEOWNERS) and the scoped `auto-generated/` output.
 
 Post MR link. Link MR to Jira: `jira_create_remote_issue_link` on both the parent ticket and the Phase 2 sub-ticket. Apply `onboarding:konflux-mr`. Transition Phase 2 sub-ticket to "In Progress" (team needs to merge MR). Store Konflux info in metadata.
 

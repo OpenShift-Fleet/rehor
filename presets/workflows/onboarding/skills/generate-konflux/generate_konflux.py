@@ -459,7 +459,7 @@ def generate(cfg, repo_path):
     cost_center = cfg.get("cost_center", "")
     quota_tier = cfg.get("quota_tier", "1.small")
     quay_org = cfg["quay_org"]
-    service_name = cfg.get("service_name", instance_name)
+    service_name = cfg.get("service_name", tenant.removesuffix("-tenant"))
 
     for name, field in [(quay_org, "quay_org"), (service_name, "service_name")]:
         _validate_name(name, field)
