@@ -22,3 +22,10 @@ npx playwright install chromium
 
 # chrome-devtools MCP server
 npm install -g chrome-devtools-mcp@latest
+ln -sf "$(npm root -g)/chrome-devtools-mcp/bin/chrome-devtools-mcp.js" /usr/local/bin/chrome-devtools-mcp 2>/dev/null \
+    || ln -sf "$(dirname "$(which node)")/chrome-devtools-mcp" /usr/local/bin/chrome-devtools-mcp
+
+# Persist PLAYWRIGHT_BROWSERS_PATH for runtime (entrypoint needs it to find Chromium)
+cat > /etc/profile.d/playwright.sh << 'PROFILE'
+export PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+PROFILE

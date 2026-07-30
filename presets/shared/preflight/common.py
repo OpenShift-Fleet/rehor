@@ -103,6 +103,12 @@ def upstream_repo(repo_name):
         return repo_name, host
     repos = load_project_repos()
     entry = repos.get(repo_name, {})
+    if not entry:
+        suffix = f"/{repo_name}"
+        for key, cfg in repos.items():
+            if key.endswith(suffix):
+                entry = cfg
+                break
     up = entry.get("upstream", "")
     if not up:
         return "", entry.get("host", "github")
