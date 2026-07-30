@@ -3,9 +3,15 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "new-work"))
+import pytest
 
-from new_work import build_repo_lookup, match_repo_labels
+_skill_dir = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "new-work"
+if not (_skill_dir / "new_work.py").exists():
+    pytest.skip("new_work.py only available in running instances", allow_module_level=True)
+
+sys.path.insert(0, str(_skill_dir))
+
+from new_work import build_repo_lookup, match_repo_labels  # noqa: E402
 
 SAMPLE_REPOS = {
     "insights-chrome": {
