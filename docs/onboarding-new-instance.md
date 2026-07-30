@@ -2,7 +2,7 @@
 
 How to add a new bot runner instance to the shared OpenShift cluster. Each instance gets its own Jira label, repo set, and personas, but shares the memory server, database, and Vault secrets deployed by the primary instance (platform-frontend-ai-dev). Instances share the proxy by default, but can optionally deploy their own proxy for custom Jira credentials.
 
-For the system architecture, see [ARCHITECTURE.md](../ARCHITECTURE.md).
+For the system architecture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 

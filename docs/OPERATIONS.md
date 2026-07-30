@@ -217,13 +217,7 @@ The bot investigated the icon rendering pipeline across three repos and identifi
 
 ### Step 1: Groom the ticket
 
-Use the interactive grooming prompt:
-
-```bash
-claude --prompt-file prompts/groom.md
-```
-
-Or manually ensure the ticket has:
+Ensure the ticket has:
 - Clear problem statement (current vs expected behavior)
 - Specific files/components if known
 - Acceptance criteria as a checklist
@@ -300,7 +294,7 @@ Check:
 Check the bot logs for which server failed:
 - `bot-memory` — is the memory server running? (`make memory-server`)
 - `mcp-atlassian` — are Jira credentials set in `.env`?
-- `chrome-devtools` — is Chromium running? (only in Docker; on host, run `./start-chromium.sh`)
+- `chrome-devtools` — is Chromium running? (managed by the `browser` env preset)
 
 ### Bot is stuck on a ticket
 
