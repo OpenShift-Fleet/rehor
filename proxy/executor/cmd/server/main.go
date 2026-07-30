@@ -39,6 +39,10 @@ var (
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
 
+	glitchtipListen = flag.String("glitchtip-listen", ":8447", "glitchtip auth proxy listen address")
+	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
+	glitchtipToken  = flag.String("glitchtip-token", "", "GlitchTip API token")
+
 	metricsListen = flag.String("metrics-listen", ":9091", "address for Prometheus /metrics endpoint (env: METRICS_LISTEN)")
 )
 
@@ -230,6 +234,15 @@ func main() {
 	if v := os.Getenv("SCREENSHOT_LISTEN"); v != "" {
 		*screenshotListen = v
 	}
+	if v := os.Getenv("GLITCHTIP_LISTEN"); v != "" {
+		*glitchtipListen = v
+	}
+	if v := os.Getenv("GLITCHTIP_URL"); v != "" {
+		*glitchtipURL = v
+	}
+	if v := os.Getenv("GLITCHTIP_TOKEN"); v != "" {
+		*glitchtipToken = v
+	}
 	if v := os.Getenv("METRICS_LISTEN"); v != "" {
 		*metricsListen = v
 	}
@@ -307,6 +320,21 @@ func main() {
 		}()
 	}
 
+	var glitchtipSrv *http.Server
+	if *glitchtipURL != "" {
+		if err := executor.ValidateGlitchTipConfig(*glitchtipURL, *glitchtipToken); err != nil {
+			log.Fatalf("glitchtip config: %v", err)
+		}
+		handler := executor.InstrumentHTTPHandler("glitchtip", executor.NewGlitchTipProxy(*glitchtipURL, *glitchtipToken))
+		glitchtipSrv = &http.Server{Addr: *glitchtipListen, Handler: handler}
+		go func() {
+			log.Printf("glitchtip-auth-proxy listening on %s (upstream=%s)", *glitchtipListen, *glitchtipURL)
+			if err := glitchtipSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("glitchtip proxy: %v", err)
+			}
+		}()
+	}
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -323,6 +351,9 @@ func main() {
 		}
 		if screenshotSrv != nil {
 			screenshotSrv.Shutdown(ctx)
+		}
+		if glitchtipSrv != nil {
+			glitchtipSrv.Shutdown(ctx)
 		}
 		if err := metricsSrv.Shutdown(ctx); err != nil {
 			log.Printf("metrics server shutdown error: %v", err)
