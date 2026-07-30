@@ -25,28 +25,9 @@ sys.modules["claude_agent_sdk"] = _mock_sdk
 from bot.agent import CycleContext, _extract_task_id_from_result  # noqa: E402
 from bot.transcripts import (  # noqa: E402
     _find_transcript,
-    _get_cycle_runs_url,
     _resolve_cycle_type,
     record_transcript,
 )
-
-# --- _get_cycle_runs_url ---
-
-
-class TestGetCycleRunsUrl:
-    def test_explicit_env_var(self, monkeypatch):
-        monkeypatch.setenv("CYCLE_RUNS_API_URL", "http://custom:9090/api/cycle-runs")
-        assert _get_cycle_runs_url() == "http://custom:9090/api/cycle-runs"
-
-    def test_derives_from_costs_url(self, monkeypatch):
-        monkeypatch.delenv("CYCLE_RUNS_API_URL", raising=False)
-        monkeypatch.setenv("COSTS_API_URL", "http://memory-server:8080/api/costs")
-        assert _get_cycle_runs_url() == "http://memory-server:8080/api/cycle-runs"
-
-    def test_defaults_to_localhost(self, monkeypatch):
-        monkeypatch.delenv("CYCLE_RUNS_API_URL", raising=False)
-        monkeypatch.delenv("COSTS_API_URL", raising=False)
-        assert _get_cycle_runs_url() == "http://localhost:8080/api/cycle-runs"
 
 
 # --- _extract_task_id_from_result ---
