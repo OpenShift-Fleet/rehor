@@ -46,7 +46,7 @@ This ensures:
 ### Structure
 
 ```
-rehor/
+dev-bot/
   mock_api.py              # Mock API server (imports fixtures)
   dashboard/
     tests/

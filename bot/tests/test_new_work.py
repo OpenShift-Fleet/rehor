@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".claude" / "skills" / "new-work"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / ".claude" / "skills" / "new-work"))
 
 from new_work import build_repo_lookup, match_repo_labels
 
