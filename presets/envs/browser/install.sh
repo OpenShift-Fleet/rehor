@@ -21,3 +21,10 @@ npx playwright install chromium
 
 # chrome-devtools MCP server
 npm install -g chrome-devtools-mcp@latest
+
+# Persist env vars for runtime (NVM bin isn't in default PATH; Playwright path needed for Chromium)
+NPM_GLOBAL_BIN="$(npm bin -g 2>/dev/null || dirname "$(which node)")"
+cat > /etc/profile.d/browser-env.sh << PROFILE
+export PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+export PATH="${NPM_GLOBAL_BIN}:\$PATH"
+PROFILE

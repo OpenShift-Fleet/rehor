@@ -177,6 +177,10 @@ if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
     wait_for_http "memory-server" "$BOT_MEMORY_HEALTH_URL" "${BOT_MEMORY_HEALTH_TIMEOUT:-120}"
 fi
 
+
+# Source env preset profile scripts (persist env vars from install time)
+for pf in /etc/profile.d/*.sh; do [ -f "$pf" ] && . "$pf"; done
+
 # Run env preset entrypoint scripts — only for installed envs
 INSTALLED_ENVS=""
 for cfg in instance/*/agent/instance.yaml; do
