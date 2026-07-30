@@ -178,25 +178,25 @@ if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
 fi
 
 
-# Start headless Chromium in background (Playwright-installed binary)
-CHROME_BIN=$(find "$PLAYWRIGHT_BROWSERS_PATH" -name chrome -type f | head -1)
-"$CHROME_BIN" \
-    --headless --no-sandbox --disable-gpu \
-    --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
-    --remote-allow-origins=* \
-    --ignore-certificate-errors \
-    --host-resolver-rules='MAP consent.trustarc.com 127.0.0.1' \
-    --proxy-server="${HTTPS_PROXY:-http://proxy:3128}" \
-    --proxy-bypass-list='*.foo.redhat.com;localhost;127.0.0.1' \
-    --no-first-run --disable-sync --disable-extensions --disable-popup-blocking &
+# Source env preset profile scripts (persist env vars from install time)
+for pf in /etc/profile.d/*.sh; do [ -f "$pf" ] && . "$pf"; done
 
-# Wait for Chromium to be ready
-until curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; do sleep 1; done
-
-# Run env preset entrypoint scripts (no-op until presets are extracted)
+# Run env preset entrypoint scripts — only for installed envs
+INSTALLED_ENVS=""
+for cfg in instance/*/agent/instance.yaml; do
+    [ -f "$cfg" ] || continue
+    INSTALLED_ENVS="$INSTALLED_ENVS $(sed -n '/^envs:/,/^[^ ]/{ s/^  - //p }' "$cfg")"
+done
+INSTALLED_ENVS=$(echo "$INSTALLED_ENVS" | tr ' ' '\n' | sort -u | xargs)
 shopt -s nullglob
-for script in presets/envs/*/entrypoint.d/*.sh; do bash "$script"; done
+if [ -z "$INSTALLED_ENVS" ]; then
+    for script in presets/envs/*/entrypoint.d/*.sh; do bash "$script"; done
+else
+    for env in $INSTALLED_ENVS; do
+        for script in presets/envs/$env/entrypoint.d/*.sh; do bash "$script"; done
+    done
+fi
 shopt -u nullglob
 
-echo "Credentials configured. Chromium started. Starting bot with label: ${BOT_LABEL}"
+echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
 exec uv run dev-bot --label "$BOT_LABEL"
