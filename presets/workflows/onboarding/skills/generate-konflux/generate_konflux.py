@@ -16,6 +16,31 @@ from pathlib import Path
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
+def _discover_cluster_for_tenant(tenant, repo_path):
+    """Find which cluster an existing tenant lives on.
+
+    Returns the cluster name if exactly one match.
+    Raises ValueError if the tenant spans multiple clusters.
+    Returns None if the tenant is not found.
+    """
+    tc_dir = Path(repo_path) / "tenants-config" / "cluster"
+    if not tc_dir.is_dir():
+        return None
+    matches = []
+    for cluster_dir in sorted(tc_dir.iterdir()):
+        if not cluster_dir.is_dir():
+            continue
+        tenant_dir = cluster_dir / "tenants" / tenant
+        if tenant_dir.is_dir():
+            matches.append(cluster_dir.name)
+    if len(matches) == 1:
+        print(f"Discovered tenant '{tenant}' on cluster '{matches[0]}'", file=sys.stderr)
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"Tenant '{tenant}' found on multiple clusters: {matches}. Ask the team which cluster to use.")
+    return None
+
+
 def _discover_cluster_suffix(cluster, repo_path):
     config_dir = Path(repo_path) / "config"
     if not config_dir.is_dir():
@@ -397,7 +422,12 @@ def _validate_name(value, field):
 def generate(cfg, repo_path):
     root = Path(repo_path)
     tenant = cfg["tenant"]
-    cluster = cfg.get("cluster", "kflux-prd-rh02")
+    new_tenant = cfg.get("new_tenant", True)
+    cluster = cfg.get("cluster")
+    if not cluster and not new_tenant:
+        cluster = _discover_cluster_for_tenant(tenant, repo_path)
+    if not cluster:
+        cluster = "kflux-prd-rh02"
     cluster_suffix = _discover_cluster_suffix(cluster, repo_path)
     service_account = _discover_service_account(repo_path, cluster_suffix)
     instance_name = cfg["instance_name"]
@@ -417,7 +447,6 @@ def generate(cfg, repo_path):
     quota_tier = cfg.get("quota_tier", "1.small")
     quay_org = cfg["quay_org"]
     service_name = cfg.get("service_name", instance_name)
-    new_tenant = cfg.get("new_tenant", True)
 
     for name, field in [(quay_org, "quay_org"), (service_name, "service_name")]:
         _validate_name(name, field)

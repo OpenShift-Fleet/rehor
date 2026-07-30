@@ -53,8 +53,8 @@ The full cluster FQDN suffix (e.g., `kflux-prd-rh02.<hash>`) is discovered at ru
 ## Cluster Selection Rules
 
 - Default for new public onboarding: `kflux-prd-rh02`
-- `kflux-prd-rh03` is RESERVED for Hummingbird project
-- `kflux-ocp-p01` for OCP/ART teams (internal)
+- `kflux-prd-rh03` is RESERVED — do not use without checking with the Rehor team
+- `kflux-ocp-p01` for internal teams — confirm with the team before using
 - `stone-prd-rh01` is full — do not create new tenants, but existing tenants can add new components
 - Check `verify-onboarding-allowed.sh` for disabled clusters
 

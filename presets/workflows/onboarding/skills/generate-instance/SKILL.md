@@ -125,7 +125,7 @@ Override any value via the `resources` object in the requirements JSON.
 
 ## Prerequisites
 
-- A bot account must have write access to the runner repo before the scaffolding PR can be opened. Defaults: `platex-rehor-bot` (GitHub), `platform-experience-services-bot` (GitLab). Teams using custom fork accounts should specify them in the config. The workflow posts instructions asking the team to add the bot as a collaborator.
+- A bot account must be able to fork the runner repo before the scaffolding PR can be opened. For public repos, Read access is sufficient. For private repos, the bot account needs at least Read access as a collaborator. Defaults: `platex-rehor-bot` (GitHub), `platform-experience-services-bot` (GitLab). Teams using custom fork accounts should specify them in the config. The workflow posts instructions asking the team to add the bot as a collaborator.
 - The scaffolding PR is opened from a fork of the runner repo (via `/auto-fork`), not pushed directly.
 
 ## Critical Gotchas

@@ -82,3 +82,14 @@ class TestBuildComment:
     def test_phase_header(self):
         comment = _build_comment(BASE_CONFIG)
         assert "## [Phase 1/3]" in comment
+
+    def test_missing_workflow_fields_warning(self):
+        cfg = {**BASE_CONFIG, "requirements": {}}
+        comment = _build_comment(cfg)
+        assert "Action needed" in comment
+        assert "`board_name`" in comment
+
+    def test_no_warning_when_fields_present(self):
+        cfg = {**BASE_CONFIG, "requirements": {"board_name": "My Board"}}
+        comment = _build_comment(cfg)
+        assert "Action needed" not in comment

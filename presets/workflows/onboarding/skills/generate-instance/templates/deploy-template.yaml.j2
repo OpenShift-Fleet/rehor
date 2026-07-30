@@ -24,7 +24,7 @@ parameters:
 - name: BOT_INCLUDE_BACKLOG
   value: "false"
 <% elif workflow == "jira-kanban" %>
-- name: BOT_BOARD_ID
+- name: BOT_BOARD_NAME
   value: ""
 - name: BOT_JIRA_PROJECT
   value: ""
@@ -150,8 +150,8 @@ objects:
           - name: BOT_INCLUDE_BACKLOG
             value: ${BOT_INCLUDE_BACKLOG}
 <% elif workflow == "jira-kanban" %>
-          - name: BOT_BOARD_ID
-            value: ${BOT_BOARD_ID}
+          - name: BOT_BOARD_NAME
+            value: ${BOT_BOARD_NAME}
           - name: BOT_JIRA_PROJECT
             value: ${BOT_JIRA_PROJECT}
 <% endif %>

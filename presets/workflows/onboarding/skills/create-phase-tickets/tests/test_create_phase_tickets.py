@@ -124,3 +124,16 @@ class TestCreateTickets:
         assert "[Phase 1] Instance Setup" in summaries[0]
         assert "[Phase 2] Konflux CI/CD" in summaries[1]
         assert "[Phase 3] Deployment" in summaries[2]
+
+    @patch("create_phase_tickets.jira_call")
+    def test_descriptions_are_set(self, mock_jira):
+        """Each phase ticket gets a non-empty description."""
+        mock_jira.side_effect = _mock_story_parent
+        create_tickets("RHCLOUD-100", "RHCLOUD", "Test Team")
+
+        create_calls = [c for c in mock_jira.call_args_list if c[0][0] == "jira_create_issue"]
+        assert len(create_calls) == 3
+        for call in create_calls:
+            desc = call[0][1].get("description", "")
+            assert desc, "Phase ticket should have a description"
+            assert "Done when:" in desc

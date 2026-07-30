@@ -45,11 +45,15 @@ testpaths = [
     "presets/workflows/onboarding/skills/generate-instance/tests",
     "presets/workflows/onboarding/skills/generate-konflux/tests",
     "presets/workflows/onboarding/skills/generate-app-interface/tests",
+    "presets/workflows/onboarding/skills/detect-tech-stack/tests",
     "presets/workflows/onboarding/skills/post-plan/tests",
     "presets/workflows/onboarding/skills/post-manual-steps/tests",
     "presets/workflows/onboarding/skills/post-konflux-questions/tests",
     "presets/workflows/onboarding/skills/post-konflux-instructions/tests",
     "presets/workflows/onboarding/skills/post-intake/tests",
+    "presets/workflows/onboarding/skills/claim-onboarding/tests",
+    "presets/workflows/onboarding/skills/create-phase-tickets/tests",
+    ".claude/skills/tests",
 ]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

@@ -72,6 +72,10 @@ def _create_task(epic_key, summary, phase_tickets):
             "phase_tickets": phase_tickets,
             "requirements": {},
             "konflux": {},
+            "deployment": {},
+            "prs": [],
+            "mrs": [],
+            "last_addressed": "",
         },
     }
     try:

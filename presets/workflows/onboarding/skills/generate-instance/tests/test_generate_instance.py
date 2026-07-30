@@ -199,14 +199,13 @@ class TestTemplateRendering:
         content = (tmp_path / "deploy" / "template.yaml").read_text()
         assert "BOT_BOARD_NAME" in content
         assert "BOT_SPRINT_PREFIX" in content
-        assert "BOT_BOARD_ID" not in content
 
     def test_kanban_has_board_params(self, tmp_path):
         generate(KANBAN_CONFIG, str(tmp_path))
         content = (tmp_path / "deploy" / "template.yaml").read_text()
-        assert "BOT_BOARD_ID" in content
+        assert "BOT_BOARD_NAME" in content
         assert "BOT_JIRA_PROJECT" in content
-        assert "BOT_BOARD_NAME" not in content
+        assert "BOT_SPRINT_PREFIX" not in content
 
     def test_browser_has_sso_env_vars(self, tmp_path):
         generate(BROWSER_CONFIG, str(tmp_path))
@@ -320,7 +319,7 @@ class TestOnboardingWorkflow:
     def test_deploy_has_no_kanban_params(self, tmp_path):
         generate(ONBOARDING_CONFIG, str(tmp_path))
         content = (tmp_path / "deploy" / "template.yaml").read_text()
-        assert "BOT_BOARD_ID" not in content
+        assert "BOT_BOARD_NAME" not in content
         assert "BOT_JIRA_PROJECT" not in content
 
     def test_deploy_yaml_is_valid(self, tmp_path):

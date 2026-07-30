@@ -6,9 +6,9 @@ class TestIntakeComment:
         assert "## [Phase 1/3]" in COMMENT
 
     def test_required_fields(self):
-        assert "Instance name" in COMMENT
+        assert "Repo name" in COMMENT
         assert "Team name" in COMMENT
-        assert "GitHub org" in COMMENT
+        assert "Bot identity" in COMMENT
         assert "Target repo URL" in COMMENT
         assert "Jira project key" in COMMENT
 

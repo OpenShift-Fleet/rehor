@@ -75,12 +75,22 @@ def _get_candidates():
     return result.get("issues", [])
 
 
+BLOCKED_LABEL = "onboarding:blocked"
+
+
+def _is_blocked(issue):
+    if not issue:
+        return False
+    labels = issue.get("labels", [])
+    return BLOCKED_LABEL in labels
+
+
 def _get_onboarding_label(issue):
     if not issue:
         return None
     labels = issue.get("labels", [])
     for lbl in labels:
-        if lbl.startswith("onboarding:"):
+        if lbl.startswith("onboarding:") and lbl != BLOCKED_LABEL:
             return lbl
     return None
 
@@ -116,6 +126,12 @@ def main():
         meta = task.get("metadata") or {}
 
         issue = _jira_issue(key)
+
+        if _is_blocked(issue):
+            task_lines.append("  *** BLOCKED — requires Rehor team intervention, skipping ***")
+            lines.append("\n".join(task_lines))
+            continue
+
         onboarding_label = _get_onboarding_label(issue) if issue else None
         step_from_label = onboarding_label.split(":", 1)[1] if onboarding_label else meta.get("step", "unknown")
         task_lines.append(f"  onboarding_step: {step_from_label} (label: {onboarding_label or 'none'})")

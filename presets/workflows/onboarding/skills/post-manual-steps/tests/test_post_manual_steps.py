@@ -3,6 +3,7 @@ from post_manual_steps import _build_comment
 BASE_CONFIG = {
     "epic_key": "RHCLOUD-123",
     "bot_label": "rehor-ai-test",
+    "bot_name": "devbot-test",
     "instance_name": "test-agent-dev",
     "dedicated_proxy": False,
     "workflow": "jira-sprint",
@@ -10,9 +11,9 @@ BASE_CONFIG = {
 
 
 class TestBuildComment:
-    def test_includes_instance_name(self):
+    def test_includes_bot_name(self):
         comment = _build_comment(BASE_CONFIG)
-        assert "test-agent-dev" in comment
+        assert "devbot-test" in comment
 
     def test_includes_bot_label(self):
         comment = _build_comment(BASE_CONFIG)
@@ -50,3 +51,4 @@ class TestBuildComment:
         comment = _build_comment({"epic_key": "X-1"})
         assert "Phase 3/3" in comment
         assert "<bot_label>" in comment
+        assert "<bot_name>" in comment

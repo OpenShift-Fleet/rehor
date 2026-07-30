@@ -1,9 +1,13 @@
 import subprocess
 
 import pytest
+import yaml
 from generate_app_interface import (
+    SAAS_SELF_SERVICE_REF,
+    _add_self_service_datafile,
     _discover_gcp_project,
     _discover_namespace_ref,
+    _yaml_quote,
     generate,
 )
 
@@ -11,7 +15,7 @@ SHARED_CONFIG = {
     "instance_name": "test-agent-dev",
     "bot_name": "devbot-test",
     "bot_label": "rehor-ai-test",
-    "instance_id": "test-agent-dev",
+    "instance_id": "Test Bot",
     "repo_url": "https://github.com/TestOrg/test-agent-dev",
     "quay_org": "test-tenant",
     "config_name": "test-config",
@@ -35,7 +39,7 @@ SEPARATE_CONFIG = {
 KANBAN_CONFIG = {
     **SHARED_CONFIG,
     "workflow": "jira-kanban",
-    "board_id": "123",
+    "board_name": "123",
     "jira_project": "TEST",
 }
 
@@ -76,6 +80,34 @@ codeComponents:
   url: https://github.com/ExistingOrg/existing-agent
 """
 
+ROLE_FILE_CONTENT = """\
+---
+labels:
+  team: test-team
+self_service:
+- change_type:
+    $ref: /app-interface/changetype/saas-file-self-service.yml
+  datafiles:
+  - $ref: /services/insights/platform-frontend-ai-dev/existing-deploy.yml
+"""
+
+ROLE_FILE_NO_SS_CONTENT = """\
+---
+labels:
+  team: test-team
+"""
+
+ROLE_FILE_OTHER_CT_CONTENT = """\
+---
+labels:
+  team: test-team
+self_service:
+- change_type:
+    $ref: /app-interface/changetype/other-change-type.yml
+  datafiles:
+  - $ref: /some/other/file.yml
+"""
+
 
 @pytest.fixture()
 def app_interface_repo(tmp_path):
@@ -114,6 +146,10 @@ def app_interface_repo(tmp_path):
     quay_dir = tmp_path / "data" / "dependencies" / "quay"
     quay_dir.mkdir(parents=True)
     (quay_dir / "redhat-services-prod.yml").write_text("---\n")
+
+    role_dir = tmp_path / "data" / "teams" / "insights" / "roles"
+    role_dir.mkdir(parents=True)
+    (role_dir / "test-role.yml").write_text(ROLE_FILE_CONTENT)
 
     return tmp_path
 
@@ -225,6 +261,45 @@ class TestSharedPattern:
         content = self._read_shared_deploy(app_interface_repo)
         assert "/services/insights/platform-frontend-ai-dev/app.yml" in content
 
+    def test_instance_id_sets_bot_instance_id(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_INSTANCE_ID: Test Bot" in content
+
+    def test_instance_id_defaults_to_instance_name(self, app_interface_repo):
+        cfg = {k: v for k, v in SHARED_CONFIG.items() if k != "instance_id"}
+        generate(cfg, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_INSTANCE_ID: test-agent-dev" in content
+
+    def test_bot_name_set(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_NAME: devbot-test" in content
+
+    def test_bot_label_set(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_LABEL: rehor-ai-test" in content
+
+    def test_bot_config_path_set(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_CONFIG_PATH: instance/test-config" in content
+
+    def test_bot_image_uses_quay_org_and_instance_name(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_IMAGE: quay.io/redhat-services-prod/test-tenant/test-agent-dev" in content
+
+    def test_naming_defaults_from_config_name(self, app_interface_repo):
+        """bot_name and bot_label derive from config_name slug, not instance_name."""
+        cfg = {k: v for k, v in SHARED_CONFIG.items() if k not in ("bot_name", "bot_label")}
+        generate(cfg, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "BOT_NAME: devbot-test" in content
+        assert "BOT_LABEL: rehor-ai-test" in content
+
     def test_no_takeover(self, app_interface_repo):
         generate(SHARED_CONFIG, str(app_interface_repo))
         content = self._read_shared_deploy(app_interface_repo)
@@ -298,7 +373,7 @@ class TestSeparatePattern:
 
 
 class TestKanbanWorkflow:
-    def test_has_board_id(self, app_interface_repo):
+    def test_has_board_name(self, app_interface_repo):
         generate(KANBAN_CONFIG, str(app_interface_repo))
         content = (
             app_interface_repo
@@ -308,7 +383,7 @@ class TestKanbanWorkflow:
             / "platform-frontend-ai-dev"
             / "test-agent-dev-deploy.yml"
         ).read_text()
-        assert "BOT_BOARD_ID: '123'" in content
+        assert "BOT_BOARD_NAME: 123" in content
 
     def test_no_sprint_params(self, app_interface_repo):
         generate(KANBAN_CONFIG, str(app_interface_repo))
@@ -320,7 +395,6 @@ class TestKanbanWorkflow:
             / "platform-frontend-ai-dev"
             / "test-agent-dev-deploy.yml"
         ).read_text()
-        assert "BOT_BOARD_NAME" not in content
         assert "BOT_SPRINT_PREFIX" not in content
 
 
@@ -366,3 +440,137 @@ class TestCodeComponent:
         result = generate(SHARED_CONFIG, str(app_interface_repo))
         assert "app_file" not in result
         assert result["action"] == "created"
+
+
+class TestSelfServiceDatafile:
+    ROLE_REF = "teams/insights/roles/test-role"
+
+    def _role_path(self, app_interface_repo):
+        return app_interface_repo / "data" / "teams" / "insights" / "roles" / "test-role.yml"
+
+    def _read_role(self, app_interface_repo):
+        return yaml.safe_load(self._role_path(app_interface_repo).read_text())
+
+    def test_adds_datafile_entry(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+        data = self._read_role(app_interface_repo)
+        ss = [e for e in data["self_service"] if e.get("change_type", {}).get("$ref") == SAAS_SELF_SERVICE_REF]
+        assert len(ss) == 1
+        refs = [d["$ref"] for d in ss[0]["datafiles"]]
+        assert "/services/insights/platform-frontend-ai-dev/test-agent-dev-deploy.yml" in refs
+        assert "/services/insights/platform-frontend-ai-dev/existing-deploy.yml" in refs
+
+    def test_idempotent(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        _add_self_service_datafile(cfg, str(app_interface_repo))
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is None
+        data = self._read_role(app_interface_repo)
+        ss = [e for e in data["self_service"] if e.get("change_type", {}).get("$ref") == SAAS_SELF_SERVICE_REF]
+        refs = [d["$ref"] for d in ss[0]["datafiles"]]
+        assert refs.count("/services/insights/platform-frontend-ai-dev/test-agent-dev-deploy.yml") == 1
+
+    def test_creates_self_service_section(self, app_interface_repo):
+        self._role_path(app_interface_repo).write_text(ROLE_FILE_NO_SS_CONTENT)
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+        data = self._read_role(app_interface_repo)
+        assert "self_service" in data
+        assert len(data["self_service"]) == 1
+        assert data["self_service"][0]["change_type"]["$ref"] == SAAS_SELF_SERVICE_REF
+
+    def test_adds_change_type_entry(self, app_interface_repo):
+        self._role_path(app_interface_repo).write_text(ROLE_FILE_OTHER_CT_CONTENT)
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+        data = self._read_role(app_interface_repo)
+        assert len(data["self_service"]) == 2
+        ct_refs = [e["change_type"]["$ref"] for e in data["self_service"]]
+        assert SAAS_SELF_SERVICE_REF in ct_refs
+        assert "/app-interface/changetype/other-change-type.yml" in ct_refs
+
+    def test_missing_role_file(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": "teams/insights/roles/nonexistent"}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is None
+
+    def test_not_set(self, app_interface_repo):
+        result = _add_self_service_datafile(SHARED_CONFIG, str(app_interface_repo))
+        assert result is None
+
+    def test_result_includes_role_file(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        result = generate(cfg, str(app_interface_repo))
+        assert "role_file" in result
+        assert result["role_file"] == "data/teams/insights/roles/test-role.yml"
+
+    def test_separate_pattern_deploy_ref(self, app_interface_repo):
+        cfg = {**SEPARATE_CONFIG, "team_role_ref": self.ROLE_REF}
+        _add_self_service_datafile(cfg, str(app_interface_repo))
+        data = self._read_role(app_interface_repo)
+        ss = [e for e in data["self_service"] if e.get("change_type", {}).get("$ref") == SAAS_SELF_SERVICE_REF]
+        refs = [d["$ref"] for d in ss[0]["datafiles"]]
+        assert "/services/testplatform/testteam/test-agent-dev.yml" in refs
+
+    def test_appends_yml_extension(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": "teams/insights/roles/test-role.yml"}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+
+    def test_preserves_yaml_header(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        _add_self_service_datafile(cfg, str(app_interface_repo))
+        content = self._role_path(app_interface_repo).read_text()
+        assert content.startswith("---\n")
+
+
+class TestYamlQuoting:
+    def test_plain_string_unquoted(self):
+        assert _yaml_quote("My Board") == "My Board"
+
+    def test_colon_gets_quoted(self):
+        assert _yaml_quote("Acme: Frontend") == "'Acme: Frontend'"
+
+    def test_hash_gets_quoted(self):
+        assert _yaml_quote("Board #1") == "'Board #1'"
+
+    def test_no_special_chars_unquoted(self):
+        assert _yaml_quote("Team's Board") == "Team's Board"
+
+    def test_single_quote_in_special_escaped(self):
+        assert _yaml_quote("Team's Board: #1") == "'Team''s Board: #1'"
+
+    def test_newline_gets_quoted(self):
+        assert _yaml_quote("line1\nline2") == "'line1\nline2'"
+
+    def test_team_name_with_colon_produces_valid_yaml(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_name": "Acme: Frontend Team"}
+        result = generate(cfg, str(app_interface_repo))
+        assert result["action"] == "created"
+        deploy_path = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        )
+        parsed = yaml.safe_load(deploy_path.read_text())
+        assert parsed["description"] == "Rehor bot instance for Acme: Frontend Team"
+
+    def test_board_name_with_colon(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "board_name": "Sprint: Planning"}
+        generate(cfg, str(app_interface_repo))
+        content = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+        assert "BOT_BOARD_NAME: 'Sprint: Planning'" in content

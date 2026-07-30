@@ -19,6 +19,7 @@ LABEL = "onboarding:tekton-setup"
 def _build_comment(config):
     instance_name = config.get("instance_name", "<instance_name>")
     quay_org = config.get("quay_org", "<quay_org>")
+    tenant = config.get("tenant", "<tenant>")
 
     return f"""\
 ## [Phase 2/3] Konflux CI/CD — Action Required: Generate Tekton Pipelines
@@ -29,7 +30,8 @@ The Konflux Component is registered. Now generate the CI pipeline files:
 [red-hat-konflux](https://github.com/apps/red-hat-konflux) — configure it to have access \
 to your repo. A GitHub **org admin** may need to approve or install this. \
 Required before Tekton pipelines can trigger.
-- [ ] **Navigate to your component** (`{instance_name}`) in the Konflux UI
+- [ ] **Navigate to your component** in the Konflux UI: \
+go to your cluster's Konflux console → `ns/{tenant}/applications/{instance_name}/components`
 - [ ] **Trigger pipeline generation** — use "Send PR" to create a PR on your instance repo \
 with `.tekton/` pipeline files. If "Send PR" fails, common causes: the Konflux GitHub app \
 isn't installed on the repo (see step above), or commit signing requirements. \

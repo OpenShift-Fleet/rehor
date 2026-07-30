@@ -27,7 +27,7 @@ Creates a SaaS deploy file in the `<app_interface_repo_path>` (a clone of app-in
   "instance_name": "my-team-agent-dev",
   "bot_name": "devbot-myteam",
   "bot_label": "rehor-ai-myteam",
-  "instance_id": "my-team-agent-dev",
+  "instance_id": "Phoenix",
   "repo_url": "https://github.com/MyOrg/my-team-agent-dev",
   "quay_org": "my-team-tenant",
   "config_name": "my-config",
@@ -76,7 +76,8 @@ Creates a SaaS deploy file in the `<app_interface_repo_path>` (a clone of app-in
 | `team_name` | no | `instance_name` | Used in SaaS file description |
 | `instance_id` | no | `instance_name` | `BOT_INSTANCE_ID` param value |
 | `include_backlog` | no | `false` | Sprint workflow: include backlog tickets |
-| `board_id` | no | — | Kanban workflow: Jira board ID |
+| `board_name` | no | — | Kanban workflow: Jira board name or ID |
+| `team_role_ref` | no | — | Team's app-interface role file path for self-service deploy access (e.g., `teams/insights/roles/my-team`) |
 | `jira_project` | no | — | Kanban workflow: Jira project key |
 | `app_ref` | no | shared app.yml | `$ref` to app.yml — override for separate pattern |
 | `namespace_ref` | no | discovered | `$ref` to namespace YAML — discovered from shared deploy.yml if not set |

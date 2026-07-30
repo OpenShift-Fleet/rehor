@@ -18,7 +18,7 @@ LABEL = "onboarding:manual-steps"
 
 def _build_comment(config):
     bot_label = config.get("bot_label", "<bot_label>")
-    instance_name = config.get("instance_name", "<instance_name>")
+    bot_name = config.get("bot_name", "<bot_name>")
     workflow = config.get("workflow", "jira-sprint")
     dedicated_proxy = config.get("dedicated_proxy", False)
 
@@ -51,7 +51,7 @@ def _build_comment(config):
 
 The deployment MR is merged. Almost there! A few manual steps remain:
 
-- [ ] **Verify deployment** — confirm the `{instance_name}` deployment shows up on the target cluster in the namespace\
+- [ ] **Verify deployment** — confirm the `{bot_name}` deployment shows up on the target cluster in the namespace\
 {credentials_step}
 {test_step}
 

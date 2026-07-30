@@ -19,9 +19,42 @@ from jira_mcp import jira_call, jira_cleanup
 from onboarding_helpers import apply_label
 
 PHASES = [
-    {"key": "phase1", "summary": "[Phase 1] Instance Setup"},
-    {"key": "phase2", "summary": "[Phase 2] Konflux CI/CD"},
-    {"key": "phase3", "summary": "[Phase 3] Deployment"},
+    {
+        "key": "phase1",
+        "summary": "[Phase 1] Instance Setup",
+        "description": (
+            "Configure and scaffold the bot instance repo.\n\n"
+            "**What happens:**\n"
+            "- Bot gathers instance requirements (name, repos, workflow, infra)\n"
+            "- Team reviews and approves the onboarding plan\n"
+            "- Bot creates the instance config repo and opens a scaffolding PR\n\n"
+            "**Done when:** Scaffolding PR is merged by the team."
+        ),
+    },
+    {
+        "key": "phase2",
+        "summary": "[Phase 2] Konflux CI/CD",
+        "description": (
+            "Register with Konflux and set up the CI/CD pipeline.\n\n"
+            "**What happens:**\n"
+            "- Bot gathers Konflux details (tenant, admins, cost center)\n"
+            "- Bot opens an MR in konflux-release-data\n"
+            "- Team configures Tekton pipelines and verifies Quay image builds\n\n"
+            "**Done when:** Container image is building and pushing to Quay."
+        ),
+    },
+    {
+        "key": "phase3",
+        "summary": "[Phase 3] Deployment",
+        "description": (
+            "Deploy the bot via app-interface and verify it's running.\n\n"
+            "**What happens:**\n"
+            "- Bot gathers deployment details (namespace, GCP project)\n"
+            "- Bot opens an MR in app-interface\n"
+            "- Team merges and verifies the bot is live\n\n"
+            "**Done when:** Bot is deployed, claiming tickets, and verified healthy."
+        ),
+    },
 ]
 
 INITIAL_LABEL = "onboarding:intake"
@@ -58,12 +91,14 @@ def create_tickets(epic_key, project_key, team_name):
 
     for phase in PHASES:
         summary = f"{phase['summary']} — {team_name}"
+        description = f"{phase['description']}\n\nSee [{epic_key}] for the full onboarding plan and details."
         result = jira_call(
             "jira_create_issue",
             {
                 "project_key": project_key,
                 "summary": summary,
                 "issue_type": child_type,
+                "description": description,
                 "additional_fields": json.dumps(link_field),
             },
         )

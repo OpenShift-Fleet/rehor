@@ -37,3 +37,4 @@ requires:
   optional_env_vars:
     - BOT_CONFIG_REPO
     - SLACK_WEBHOOK_URL
+    - SLACK_NOTIFY_MODE

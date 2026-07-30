@@ -13,10 +13,22 @@ from pathlib import Path
 import yaml
 
 SHARED_SAAS_PATH = "data/services/insights/platform-frontend-ai-dev/deploy.yml"
+SHARED_SERVICE_TREE = "services/insights/platform-frontend-ai-dev"
 QUAY_ORG_REF = "/dependencies/quay/redhat-services-prod.yml"
 AUTH_REF = "/services/app-sre/saas-file-auth/global.yml"
 APP_REF = "/services/insights/platform-frontend-ai-dev/app.yml"
 PIPELINES_REF = "/services/insights/platform-frontend-ai-dev/pipelines/saas-openshift.yaml"
+SAAS_SELF_SERVICE_REF = "/app-interface/changetype/saas-file-self-service.yml"
+
+_YAML_SPECIAL = re.compile(r"[:#\[\]{},&*?|>\n]")
+
+
+def _yaml_quote(val):
+    """Wrap a value in single quotes if it contains YAML-special characters."""
+    s = str(val)
+    if _YAML_SPECIAL.search(s):
+        return "'" + s.replace("'", "''") + "'"
+    return s
 
 
 def _discover_namespace_ref(saas_content):
@@ -68,22 +80,22 @@ def _build_resource_template(cfg, namespace_ref):
         sprint_prefix = cfg.get("sprint_prefix", "")
         include_backlog = cfg.get("include_backlog", "false")
         if board_name:
-            params.append(f"      BOT_BOARD_NAME: {board_name}")
+            params.append(f"      BOT_BOARD_NAME: {_yaml_quote(board_name)}")
         if sprint_prefix:
-            params.append(f"      BOT_SPRINT_PREFIX: {sprint_prefix}")
+            params.append(f"      BOT_SPRINT_PREFIX: {_yaml_quote(sprint_prefix)}")
         params.append(f"      BOT_INCLUDE_BACKLOG: '{include_backlog}'")
     elif workflow == "jira-kanban":
-        board_id = cfg.get("board_id", "")
+        board_name = cfg.get("board_name", "")
         jira_project = cfg.get("jira_project", "")
-        if board_id:
-            params.append(f"      BOT_BOARD_ID: '{board_id}'")
+        if board_name:
+            params.append(f"      BOT_BOARD_NAME: {_yaml_quote(board_name)}")
         if jira_project:
             params.append(f"      BOT_JIRA_PROJECT: {jira_project}")
 
-    params.append(f"      BOT_INSTANCE_ID: {instance_id}")
+    params.append(f"      BOT_INSTANCE_ID: {_yaml_quote(instance_id)}")
 
     if slack_webhook_url:
-        params.append(f"      SLACK_WEBHOOK_URL: {slack_webhook_url}")
+        params.append(f"      SLACK_WEBHOOK_URL: {_yaml_quote(slack_webhook_url)}")
     slack_notify_mode = cfg.get("slack_notify_mode", "")
     if slack_notify_mode:
         params.append(f"      SLACK_NOTIFY_MODE: {slack_notify_mode}")
@@ -135,7 +147,7 @@ labels:
 
 name: {instance_name}
 displayName: {instance_name}
-description: Rehor bot instance for {cfg.get("team_name", instance_name)}
+description: {_yaml_quote("Rehor bot instance for " + cfg.get("team_name", instance_name))}
 
 app:
   $ref: {app_ref}
@@ -270,6 +282,55 @@ def _add_code_component(cfg, repo_path):
     return str(app_path.relative_to(repo_path))
 
 
+def _add_self_service_datafile(cfg, repo_path):
+    """Add a saas-file-self-service entry to the team's role file for the new deploy file."""
+    team_role_ref = cfg.get("team_role_ref")
+    if not team_role_ref:
+        return None
+
+    role_ref = team_role_ref if team_role_ref.endswith(".yml") else f"{team_role_ref}.yml"
+    role_path = Path(repo_path) / "data" / role_ref
+    if not role_path.exists():
+        return None
+
+    instance_name = cfg["instance_name"]
+    pattern = cfg.get("pattern", "shared")
+    if pattern == "shared":
+        deploy_ref = f"/{SHARED_SERVICE_TREE}/{instance_name}-deploy.yml"
+    else:
+        service_tree = cfg.get("service_tree", "")
+        deploy_ref = f"/services/{service_tree}/{instance_name}.yml"
+
+    content = role_path.read_text()
+    if deploy_ref in content:
+        return None
+
+    data = yaml.safe_load(content)
+    if not isinstance(data, dict):
+        return None
+
+    if "self_service" not in data or not isinstance(data["self_service"], list):
+        data["self_service"] = []
+
+    ss_entry = None
+    for entry in data["self_service"]:
+        ct = entry.get("change_type", {})
+        if isinstance(ct, dict) and ct.get("$ref") == SAAS_SELF_SERVICE_REF:
+            ss_entry = entry
+            break
+
+    if ss_entry is None:
+        ss_entry = {"change_type": {"$ref": SAAS_SELF_SERVICE_REF}, "datafiles": []}
+        data["self_service"].append(ss_entry)
+
+    if "datafiles" not in ss_entry or not isinstance(ss_entry["datafiles"], list):
+        ss_entry["datafiles"] = []
+
+    ss_entry["datafiles"].append({"$ref": deploy_ref})
+    role_path.write_text("---\n" + yaml.dump(data, default_flow_style=False, sort_keys=False))
+    return str(role_path.relative_to(repo_path))
+
+
 def generate(cfg, repo_path):
     pattern = cfg.get("pattern", "shared")
 
@@ -282,6 +343,10 @@ def generate(cfg, repo_path):
         app_file = _add_code_component(cfg, repo_path)
         if app_file:
             result["app_file"] = app_file
+
+        role_file = _add_self_service_datafile(cfg, repo_path)
+        if role_file:
+            result["role_file"] = role_file
 
     return result
 
