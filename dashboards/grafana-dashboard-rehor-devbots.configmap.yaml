@@ -259,7 +259,40 @@ data:
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "thresholds"
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "Restarts per hour",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "barWidthFactor": 0.6,
+                "drawStyle": "bars",
+                "fillOpacity": 0,
+                "gradientMode": "none",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
               },
               "mappings": [],
               "thresholds": {
@@ -289,22 +322,19 @@ data:
             "y": 10
           },
           "id": 5,
+          "interval": "1h",
           "options": {
-            "colorMode": "background",
-            "graphMode": "none",
-            "justifyMode": "auto",
-            "orientation": "auto",
-            "percentChangeColorMode": "standard",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
             },
-            "showPercentChange": false,
-            "textMode": "auto",
-            "wideLayout": true
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "single",
+              "sort": "none"
+            }
           },
           "pluginVersion": "11.6.11",
           "targets": [
@@ -313,15 +343,16 @@ data:
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "sum(kube_pod_container_status_restarts_total{namespace=\"platform-frontend-ai-dev-stage\"}) by (pod)",
-              "instant": true,
-              "legendFormat": "{{pod}}",
-              "range": false,
+              "editorMode": "code",
+              "expr": "round(sum by (deployment) (label_replace(increase(kube_pod_container_status_restarts_total{namespace=\"platform-frontend-ai-dev-stage\"}[1h]), \"deployment\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]{8,10}-[a-z0-9]{5}$\")))",
+              "instant": false,
+              "legendFormat": "{{deployment}}",
+              "range": true,
               "refId": "A"
             }
           ],
-          "title": "Pod Restarts",
-          "type": "stat"
+          "title": "Hourly restarts by deployment",
+          "type": "timeseries"
         },
         {
           "datasource": {
@@ -354,20 +385,7 @@ data:
                 ]
               }
             },
-            "overrides": [
-              {
-                "matcher": {
-                  "id": "byName",
-                  "options": "Last restart"
-                },
-                "properties": [
-                  {
-                    "id": "unit",
-                    "value": "dateTimeAsIso"
-                  }
-                ]
-              }
-            ]
+            "overrides": []
           },
           "gridPos": {
             "h": 6,
@@ -397,7 +415,7 @@ data:
               },
               "editorMode": "code",
               "exemplar": false,
-              "expr": "sum by (namespace, deployment, reason) (\n  label_replace(\n    (\n      (\n        (1000 * kube_pod_container_status_last_terminated_timestamp{\n          namespace=\"platform-frontend-ai-dev-stage\"\n        })\n        * on (namespace, pod, container, uid) group_left(reason)\n          (\n            kube_pod_container_status_last_terminated_reason{\n              namespace=\"platform-frontend-ai-dev-stage\"\n            } == 1\n          )\n      )\n      * on (namespace, pod, uid) group_left(replicaset)\n        label_replace(\n          kube_pod_owner{\n            namespace=\"platform-frontend-ai-dev-stage\",\n            owner_kind=\"ReplicaSet\"\n          },\n          \"replicaset\", \"$1\", \"owner_name\", \"(.+)\"\n        )\n    )\n    * on (namespace, replicaset) group_left(owner_name)\n      kube_replicaset_owner{\n        namespace=\"platform-frontend-ai-dev-stage\",\n        owner_kind=\"Deployment\"\n      },\n    \"deployment\", \"$1\", \"owner_name\", \"(.+)\"\n  )\n)",
+              "expr": "sum by (namespace, deployment, reason) ( label_replace( ( ( ( (round(increase(kube_pod_container_status_restarts_total{namespace=\"platform-frontend-ai-dev-stage\"}[$__range]))) * on (namespace, pod, container, uid) group_left(reason) (kube_pod_container_status_last_terminated_reason{namespace=\"platform-frontend-ai-dev-stage\"} == 1) ) * on (namespace, pod, uid) group_left(replicaset) label_replace(kube_pod_owner{namespace=\"platform-frontend-ai-dev-stage\", owner_kind=\"ReplicaSet\"}, \"replicaset\", \"$1\", \"owner_name\", \"(.+)\") ) * on (namespace, replicaset) group_left(owner_name) kube_replicaset_owner{namespace=\"platform-frontend-ai-dev-stage\", owner_kind=\"Deployment\"} ), \"deployment\", \"$1\", \"owner_name\", \"(.+)\" ) )",
               "format": "table",
               "hide": false,
               "instant": true,
@@ -406,7 +424,7 @@ data:
               "refId": "B"
             }
           ],
-          "title": "Pod restarts with reason",
+          "title": "Pod restarts with reason (last 12h)",
           "transformations": [
             {
               "id": "labelsToFields",
@@ -422,7 +440,7 @@ data:
                 "includeByName": {},
                 "indexByName": {},
                 "renameByName": {
-                  "Value": "Last restart"
+                  "Value": "Restarts in range"
                 }
               }
             }
@@ -439,7 +457,31 @@ data:
               "color": {
                 "mode": "thresholds"
               },
-              "mappings": [],
+              "custom": {
+                "axisPlacement": "auto",
+                "fillOpacity": 70,
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineWidth": 0,
+                "spanNulls": false
+              },
+              "mappings": [
+                {
+                  "options": {
+                    "1": {
+                      "index": 0,
+                      "text": "Not ready"
+                    }
+                  },
+                  "type": "value"
+                }
+              ],
+              "max": 1,
+              "min": 0,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -454,31 +496,46 @@ data:
               },
               "unit": "short"
             },
-            "overrides": []
+            "overrides": [
+              {
+                "__systemRef": "hideSeriesFrom",
+                "matcher": {
+                  "id": "byNames",
+                  "options": {
+                    "mode": "exclude",
+                    "names": [
+                      "devbot-access-management-internal-c8487dc95-6zdgj"
+                    ],
+                    "prefix": "All except:",
+                    "readOnly": true
+                  }
+                },
+                "properties": []
+              }
+            ]
           },
           "gridPos": {
-            "h": 4,
+            "h": 8,
             "w": 12,
             "x": 0,
             "y": 16
           },
           "id": 6,
           "options": {
-            "colorMode": "background",
-            "graphMode": "none",
-            "justifyMode": "auto",
-            "orientation": "auto",
-            "percentChangeColorMode": "standard",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
+            "alignValue": "left",
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": false
             },
-            "showPercentChange": false,
-            "textMode": "auto",
-            "wideLayout": true
+            "mergeValues": true,
+            "rowHeight": 0.9,
+            "showValue": "never",
+            "tooltip": {
+              "hideZeros": false,
+              "mode": "single",
+              "sort": "none"
+            }
           },
           "pluginVersion": "11.6.11",
           "targets": [
@@ -487,25 +544,33 @@ data:
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "kube_pod_status_ready{namespace=\"platform-frontend-ai-dev-stage\", condition=\"false\"}",
-              "instant": true,
-              "legendFormat": "{{pod}}",
-              "range": false,
+              "editorMode": "code",
+              "expr": "sum by (namespace, deployment) ( label_replace( kube_pod_status_ready{namespace=\"platform-frontend-ai-dev-stage\", condition=\"false\"} == 1, \"deployment\", \"$1\", \"pod\", \"^(.*)-[a-z0-9]{8,10}-[a-z0-9]{5}$\" ) )",
+              "instant": false,
+              "legendFormat": "{{deployment}}",
+              "range": true,
               "refId": "A"
             }
           ],
-          "title": "Pods Not Ready",
-          "type": "stat"
+          "title": "Pods Not Ready by Deployment",
+          "type": "state-timeline"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${datasource}"
+            "uid": "P9820E1AE8989EB85"
           },
           "fieldConfig": {
             "defaults": {
               "color": {
                 "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "inspect": false
               },
               "mappings": [],
               "thresholds": {
@@ -516,54 +581,75 @@ data:
                   },
                   {
                     "color": "red",
-                    "value": 1
+                    "value": 80
                   }
                 ]
-              },
-              "unit": "short"
+              }
             },
             "overrides": []
           },
           "gridPos": {
-            "h": 4,
+            "h": 8,
             "w": 12,
             "x": 12,
             "y": 16
           },
-          "id": 7,
+          "id": 16,
           "options": {
-            "colorMode": "background",
-            "graphMode": "none",
-            "justifyMode": "auto",
-            "orientation": "auto",
-            "percentChangeColorMode": "standard",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
+            "cellHeight": "sm",
+            "footer": {
+              "countRows": false,
               "fields": "",
-              "values": false
+              "reducer": [
+                "sum"
+              ],
+              "show": false
             },
-            "showPercentChange": false,
-            "textMode": "auto",
-            "wideLayout": true
+            "showHeader": true
           },
           "pluginVersion": "11.6.11",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "${datasource}"
+                "uid": "P9820E1AE8989EB85"
               },
-              "expr": "kube_pod_container_status_last_terminated_reason{namespace=\"platform-frontend-ai-dev-stage\", reason=\"OOMKilled\"}",
+              "editorMode": "code",
+              "exemplar": false,
+              "expr": "label_replace(kube_pod_container_status_waiting_reason{namespace=\"platform-frontend-ai-dev-stage\"}, \"state\", \"Waiting\", \"reason\", \".*\") or label_replace(kube_pod_container_status_last_terminated_reason{namespace=\"platform-frontend-ai-dev-stage\"}, \"state\", \"Terminated\", \"reason\", \".*\")",
+              "format": "table",
               "instant": true,
-              "legendFormat": "{{pod}}",
+              "legendFormat": "__auto",
               "range": false,
               "refId": "A"
             }
           ],
-          "title": "OOMKilled",
-          "type": "stat"
+          "title": "Pod waiting & termination reasons",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "cluster": true,
+                  "endpoint": true,
+                  "environment": true,
+                  "job": true,
+                  "namespace": true,
+                  "prometheus": true,
+                  "service": true,
+                  "uid": true
+                },
+                "includeByName": {},
+                "indexByName": {},
+                "renameByName": {
+                  "Value": "Active"
+                }
+              }
+            }
+          ],
+          "type": "table"
         },
         {
           "datasource": {
@@ -617,7 +703,7 @@ data:
             "h": 11,
             "w": 24,
             "x": 0,
-            "y": 20
+            "y": 24
           },
           "id": 9,
           "options": {
@@ -719,7 +805,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 31
+            "y": 35
           },
           "id": 10,
           "panels": [],
@@ -790,7 +876,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 32
+            "y": 36
           },
           "id": 11,
           "options": {
@@ -887,7 +973,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 32
+            "y": 36
           },
           "id": 12,
           "options": {
@@ -926,7 +1012,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 40
+            "y": 44
           },
           "id": 13,
           "panels": [],
@@ -998,7 +1084,7 @@ data:
             "h": 8,
             "w": 24,
             "x": 0,
-            "y": 41
+            "y": 45
           },
           "id": 14,
           "options": {
@@ -1071,9 +1157,7 @@ data:
           {
             "allValue": ".*",
             "current": {
-              "text": [
-                "All"
-              ],
+              "text": "All",
               "value": [
                 "$__all"
               ]
@@ -1109,8 +1193,6 @@ data:
       "timezone": "",
       "title": "Rehor - devbots",
       "uid": "pf-ai-dev-stage-ns",
-      "version": 29,
+      "version": 44,
       "weekStart": "monday"
     }
-kind: ConfigMap
-  name: grafana-dashboard-rehor-devbots
