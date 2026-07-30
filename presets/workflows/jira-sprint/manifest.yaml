@@ -11,14 +11,14 @@ shared_skills:
   - push-and-pr
   - post-pr
   - auto-fork
+  - claim-ticket
+  - wrap-up
 
 provides:
   claude_md: CLAUDE.md
   skills:
     - triage
     - new-work
-    - claim-ticket
-    - wrap-up
 
 requires:
   mcp_servers:
