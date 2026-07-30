@@ -45,6 +45,7 @@ objects:
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
 #      upload-memory-password — (temporary) shared secret for bulk memory upload
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
+#      glitchtip-token       — GlitchTip API token for error tracking
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
@@ -246,6 +247,9 @@ objects:
           - containerPort: 8446
             name: screenshot
             protocol: TCP
+          - containerPort: 8447
+            name: glitchtip
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -300,6 +304,13 @@ objects:
               secretKeyRef:
                 name: ${JIRA_SECRET_NAME}
                 key: jira-token
+          - name: GLITCHTIP_URL
+            value: https://glitchtip.devshift.net
+          - name: GLITCHTIP_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: glitchtip-token
           livenessProbe:
             tcpSocket:
               port: 3128
@@ -351,6 +362,10 @@ objects:
       targetPort: screenshot
       protocol: TCP
       name: screenshot
+    - port: 8447
+      targetPort: glitchtip
+      protocol: TCP
+      name: glitchtip
     - port: 9091
       targetPort: metrics
       protocol: TCP
@@ -384,6 +399,8 @@ objects:
       - port: 8444
         protocol: TCP
       - port: 8446
+        protocol: TCP
+      - port: 8447
         protocol: TCP
     - from:
       - namespaceSelector:

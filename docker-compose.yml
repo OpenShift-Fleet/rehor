@@ -57,6 +57,8 @@ services:
       - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
       - JIRA_USERNAME
       - JIRA_API_TOKEN
+      - GLITCHTIP_URL=${GLITCHTIP_URL:-https://glitchtip.devshift.net}
+      - GLITCHTIP_TOKEN
     volumes:
       - executor-sock:/var/run/devbot
     healthcheck:
