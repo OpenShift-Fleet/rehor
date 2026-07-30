@@ -188,6 +188,41 @@ class TestDefaultBranch:
         assert result["target_branch"] == "master"
 
 
+class TestSymlinkProtection:
+    def test_symlinked_file_excluded_from_yaml_count(self, tmp_path):
+        real_file = tmp_path / "real.yaml"
+        real_file.write_text("key: value\n")
+        symlink = tmp_path / "link.yaml"
+        symlink.symlink_to(real_file)
+        (tmp_path / "other.txt").write_text("hello\n")
+        result = detect(str(tmp_path))
+        # Symlinked yaml should be excluded from count
+        # Without symlink protection, yaml_count would be 2 out of 3 files (>50%)
+        # With protection, symlink is excluded from both yaml_count and total
+        assert "config" not in result["stack"]
+
+    def test_symlinked_go_mod_not_read(self, tmp_path):
+        real = tmp_path / "real_go_mod"
+        real.write_text("module x\nrequire operator-sdk v1.0.0\n")
+        (tmp_path / "go.mod").symlink_to(real)
+        result = detect(str(tmp_path))
+        # _file_contains should skip symlinked go.mod
+        assert "operator" not in result["stack"]
+
+
+class TestVisibilityValidation:
+    def test_crafted_owner_repo_returns_unknown(self, tmp_path):
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", "https://github.com/../../../api/v3/repos/evil"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        result = detect(str(tmp_path))
+        assert result["visibility"] == "unknown"
+
+
 class TestReturnShape:
     def test_required_keys(self, tmp_path):
         result = detect(str(tmp_path))

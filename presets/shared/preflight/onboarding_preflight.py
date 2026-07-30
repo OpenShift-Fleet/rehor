@@ -9,6 +9,7 @@ Returns start when there's actionable work:
 """
 
 import os
+import re
 
 from common import (
     INSTANCE_ID,
@@ -23,6 +24,8 @@ from common import (
 from jira_mcp import jira_call, jira_cleanup
 
 BOT_LABEL = os.environ.get("BOT_LABEL", "")
+if BOT_LABEL and not re.match(r"^[a-zA-Z0-9:_-]+$", BOT_LABEL):
+    raise ValueError(f"Invalid BOT_LABEL: {BOT_LABEL!r}")
 BOT_JIRA_EMAIL = os.environ.get("BOT_JIRA_EMAIL", "")
 
 

@@ -102,6 +102,11 @@ def remove_blocked_label(epic_key):
     return True
 
 
+def sanitize_for_markdown(val):
+    """Strip newlines that could inject Markdown structure."""
+    return str(val).replace("\n", " ").replace("\r", "")
+
+
 def update_task_metadata(memory_url, task_id, metadata_updates):
     import httpx
 

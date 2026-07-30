@@ -7,6 +7,7 @@ from onboarding_helpers import (
     BLOCKED_LABEL,
     WORKFLOW_REQUIRED_FIELDS,
     get_missing_workflow_fields,
+    sanitize_for_markdown,
     update_task_metadata,
 )
 
@@ -145,6 +146,23 @@ class TestRemoveBlockedLabel:
 
         assert result is True
         assert mock_jira.call_count == 1
+
+
+class TestSanitizeForMarkdown:
+    def test_strips_newlines(self):
+        assert sanitize_for_markdown("line1\nline2") == "line1 line2"
+
+    def test_strips_carriage_returns(self):
+        assert sanitize_for_markdown("line1\r\nline2") == "line1 line2"
+
+    def test_passes_through_clean_string(self):
+        assert sanitize_for_markdown("hello world") == "hello world"
+
+    def test_converts_non_string_to_string(self):
+        assert sanitize_for_markdown(123) == "123"
+
+    def test_strips_multiple_newlines(self):
+        assert sanitize_for_markdown("a\nb\nc") == "a b c"
 
 
 class TestUpdateTaskMetadata:

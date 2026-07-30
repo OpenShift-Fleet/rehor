@@ -227,6 +227,131 @@ class TestNewTenant:
         assert "test-cluster.abcd.p1" in content
 
 
+class TestInputSanitization:
+    def test_rejects_cost_center_with_path_traversal(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "cost_center": "../etc"}
+        with pytest.raises(ValueError, match="cost_center"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_quota_tier_with_dotdot(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "quota_tier": "../../etc"}
+        with pytest.raises(ValueError, match="quota_tier"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_admin_with_newline(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["admin1\ninjected"]}
+        with pytest.raises(ValueError, match="admin username"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_maintainer_with_special_chars(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "maintainers": ["user; rm -rf /"]}
+        with pytest.raises(ValueError, match="maintainer username"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_repo_url_without_https(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "repo_url": "file:///etc/passwd"}
+        with pytest.raises(ValueError, match="repo_url"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_repo_url_with_newline(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "repo_url": "https://evil.com\ninjected: true"}
+        with pytest.raises(ValueError, match="repo_url"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_dockerfile_with_dotdot(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "dockerfile": "../../etc/passwd"}
+        with pytest.raises(ValueError, match="dockerfile"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_dockerfile_with_newline(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "dockerfile": "Dockerfile\nRUN evil"}
+        with pytest.raises(ValueError, match="dockerfile"):
+            generate(cfg, str(konflux_repo))
+
+    def test_rejects_target_branch_with_special_chars(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "target_branch": "main; echo pwned"}
+        with pytest.raises(ValueError, match="target_branch"):
+            generate(cfg, str(konflux_repo))
+
+    def test_valid_admins_accepted(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["user@redhat.com", "kerberos.user"]}
+        result = generate(cfg, str(konflux_repo))
+        assert result["new_tenant"] is True
+
+
+class TestExistingTenantGuards:
+    def test_missing_cluster_errors(self, konflux_repo):
+        cfg = {**EXISTING_TENANT_CONFIG, "cluster": None, "tenant": "nonexistent-tenant"}
+        with pytest.raises(ValueError, match="not found in any cluster"):
+            generate(cfg, str(konflux_repo))
+
+    def test_missing_tenant_dir_errors(self, konflux_repo):
+        cfg = {**EXISTING_TENANT_CONFIG, "tenant": "nonexistent-tenant"}
+        with pytest.raises(ValueError, match="Tenant directory not found"):
+            generate(cfg, str(konflux_repo))
+
+    def test_missing_kustomization_errors(self, konflux_repo):
+        tenant_dir = konflux_repo / "tenants-config" / "cluster" / "test-cluster" / "tenants" / "test-tenant"
+        tenant_dir.mkdir(parents=True, exist_ok=True)
+        cfg = {**EXISTING_TENANT_CONFIG}
+        with pytest.raises(ValueError, match="kustomization.yaml not found"):
+            generate(cfg, str(konflux_repo))
+
+
+class TestCodeownersAdminUsernames:
+    def test_uses_admin_usernames_not_groups(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["alice", "bob"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert "@alice" in content
+        assert "@bob" in content
+        assert "konflux-ci" not in content
+
+    def test_codeowners_for_existing_tenant(self, konflux_repo):
+        generate(NEW_TENANT_CONFIG, str(konflux_repo))
+        cfg = {**EXISTING_TENANT_CONFIG, "admins": ["charlie"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert "ReleasePlanAdmission/second-agent-dev" in content
+        assert "@charlie" in content
+
+    def test_no_admins_skips_codeowners(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": []}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert content.strip() == ""
+
+    def test_new_tenant_includes_tenant_dir_entries(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["alice"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert "/tenants-config/cluster/test-cluster/tenants/test-tenant/" in content
+        assert "/tenants-config/cluster/test-cluster/admin/test-tenant/" in content
+
+    def test_existing_tenant_excludes_tenant_dir_entries(self, konflux_repo):
+        generate(NEW_TENANT_CONFIG, str(konflux_repo))
+        (konflux_repo / "CODEOWNERS").write_text("")
+        cfg = {**EXISTING_TENANT_CONFIG, "admins": ["alice"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert "/tenants-config/cluster/test-cluster/tenants/" not in content
+        assert "ReleasePlanAdmission" in content
+
+    def test_no_auto_generated_entries(self, konflux_repo):
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["alice"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        assert "auto-generated" not in content
+
+    def test_codeowners_globally_sorted(self, konflux_repo):
+        (konflux_repo / "CODEOWNERS").write_text("/zzz/existing/ @someone\n")
+        cfg = {**NEW_TENANT_CONFIG, "admins": ["alice"]}
+        generate(cfg, str(konflux_repo))
+        content = (konflux_repo / "CODEOWNERS").read_text()
+        lines = [line for line in content.splitlines() if line.strip()]
+        assert lines == sorted(lines)
+
+
 class TestExistingTenant:
     def test_existing_tenant_returns_false(self, konflux_repo):
         generate(NEW_TENANT_CONFIG, str(konflux_repo))

@@ -89,6 +89,26 @@ class TestBuildComment:
         assert "Action needed" in comment
         assert "`board_name`" in comment
 
+    def test_newlines_stripped_from_instance_name(self):
+        cfg = {**BASE_CONFIG, "instance_name": "test\ninjected"}
+        comment = _build_comment(cfg)
+        assert "\ninjected" not in comment
+        assert "test injected" in comment
+
+    def test_newlines_stripped_from_repo_name(self):
+        cfg = {
+            **BASE_CONFIG,
+            "repos": [{"name": "my-app\n## Injected", "url": "https://evil.com\nmore"}],
+        }
+        comment = _build_comment(cfg)
+        assert "\n## Injected" not in comment
+        assert "my-app " in comment
+
+    def test_newlines_stripped_from_bot_label(self):
+        cfg = {**BASE_CONFIG, "bot_label": "label\r\ninjected: true"}
+        comment = _build_comment(cfg)
+        assert "\ninjected" not in comment
+
     def test_no_warning_when_fields_present(self):
         cfg = {**BASE_CONFIG, "requirements": {"board_name": "My Board"}}
         comment = _build_comment(cfg)

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+_SAFE_USER = re.compile(r"^[a-zA-Z0-9@._-]+$")
 
 
 def _discover_cluster_for_tenant(tenant, repo_path):
@@ -387,20 +388,27 @@ def _constraints_yaml(service_name, tenant, quay_org, service_account, instance_
     )
 
 
-def _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name):
+def _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name, admins, new_tenant=True):
     codeowners_path = Path(repo_path) / "CODEOWNERS"
     existing_lines = []
     if codeowners_path.exists():
         existing_lines = codeowners_path.read_text().splitlines()
 
+    owners = " ".join(f"@{u}" for u in admins) if admins else ""
+    if not owners:
+        return
+
     new_entries = [
-        f"/auto-generated/cluster/{cluster}/admin/{tenant}/ @konflux-ci/konflux-release-tenant-admins",
-        f"/auto-generated/cluster/{cluster}/tenants/{tenant}/ @konflux-ci/konflux-release-tenant-admins",
-        f"/config/{cluster_suffix}/service/ReleasePlanAdmission/{service_name}/ @konflux-ci/konflux-release-rpa-admins",
-        f"/constraints/service/{service_name}.yaml @konflux-ci/konflux-release-rpa-admins",
-        f"/tenants-config/cluster/{cluster}/admin/{tenant}/ @konflux-ci/konflux-release-tenant-admins",
-        f"/tenants-config/cluster/{cluster}/tenants/{tenant}/ @konflux-ci/konflux-release-tenant-admins",
+        f"/config/{cluster_suffix}/service/ReleasePlanAdmission/{service_name}/*.yaml {owners}",
+        f"/constraints/service/{service_name}.yaml {owners}",
     ]
+    if new_tenant:
+        new_entries.extend(
+            [
+                f"/tenants-config/cluster/{cluster}/admin/{tenant}/ {owners}",
+                f"/tenants-config/cluster/{cluster}/tenants/{tenant}/ {owners}",
+            ]
+        )
 
     entries_to_add = []
     for entry in new_entries:
@@ -409,9 +417,10 @@ def _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name)
             entries_to_add.append(entry)
 
     if entries_to_add:
-        entries_to_add.sort()
         existing_lines.extend(entries_to_add)
-    codeowners_path.write_text("\n".join(existing_lines) + "\n")
+    comment_lines = [line for line in existing_lines if line.startswith("#") or not line.strip()]
+    entry_lines = sorted(line for line in existing_lines if line.strip() and not line.startswith("#"))
+    codeowners_path.write_text("\n".join(comment_lines + entry_lines) + "\n")
 
 
 def _validate_name(value, field):
@@ -426,6 +435,10 @@ def generate(cfg, repo_path):
     cluster = cfg.get("cluster")
     if not cluster and not new_tenant:
         cluster = _discover_cluster_for_tenant(tenant, repo_path)
+        if not cluster:
+            raise ValueError(
+                f"Tenant '{tenant}' not found in any cluster. Provide 'cluster' explicitly or use new_tenant=True."
+            )
     if not cluster:
         cluster = "kflux-prd-rh02"
     cluster_suffix = _discover_cluster_suffix(cluster, repo_path)
@@ -450,6 +463,23 @@ def generate(cfg, repo_path):
 
     for name, field in [(quay_org, "quay_org"), (service_name, "service_name")]:
         _validate_name(name, field)
+
+    _validate_name(target_branch, "target_branch")
+    if cost_center:
+        _validate_name(cost_center, "cost_center")
+    _validate_name(quota_tier, "quota_tier")
+    if ".." in quota_tier:
+        raise ValueError(f"Invalid quota_tier: {quota_tier!r} — must not contain '..'")
+    for u in admins:
+        if not _SAFE_USER.match(u):
+            raise ValueError(f"Invalid admin username: {u!r} — must match [a-zA-Z0-9@._-]")
+    for u in maintainers:
+        if not _SAFE_USER.match(u):
+            raise ValueError(f"Invalid maintainer username: {u!r} — must match [a-zA-Z0-9@._-]")
+    if not repo_url.startswith("https://") or "\n" in repo_url:
+        raise ValueError("Invalid repo_url: must start with https:// and contain no newlines")
+    if "\n" in dockerfile or ".." in dockerfile:
+        raise ValueError(f"Invalid dockerfile: {dockerfile!r} — must not contain newlines or '..'")
 
     files_written = []
 
@@ -495,6 +525,10 @@ def generate(cfg, repo_path):
         )
 
     tenant_dir = root / "tenants-config" / "cluster" / cluster / "tenants" / tenant
+    if not new_tenant and not tenant_dir.is_dir():
+        raise ValueError(
+            f"Tenant directory not found: {tenant_dir.relative_to(root)}. Use new_tenant=True to create a new tenant."
+        )
     tenant_dir.mkdir(parents=True, exist_ok=True)
 
     if new_tenant:
@@ -545,28 +579,33 @@ def generate(cfg, repo_path):
         files_written.extend([str((tenant_dir / f).relative_to(root)) for f in new_files])
 
         kustom_path = tenant_dir / "kustomization.yaml"
-        if kustom_path.exists():
-            kustom_content = kustom_path.read_text()
-            for f in new_files:
-                if f not in kustom_content:
-                    lines = kustom_content.splitlines(keepends=True)
-                    insert_idx = len(lines)
-                    in_resources = False
-                    for i, line in enumerate(lines):
-                        stripped = line.rstrip()
-                        if stripped == "resources:" or stripped.startswith("resources:"):
-                            in_resources = True
-                            continue
-                        if in_resources:
-                            if stripped.startswith("  - ") or stripped == "":
-                                insert_idx = i + 1
-                            else:
-                                insert_idx = i
-                                break
-                    lines.insert(insert_idx, f"  - {f}\n")
-                    kustom_content = "".join(lines)
-            kustom_path.write_text(kustom_content)
-            files_written.append(str(kustom_path.relative_to(root)))
+        if not kustom_path.exists():
+            raise ValueError(
+                f"kustomization.yaml not found in {tenant_dir.relative_to(root)}. "
+                "Cannot add resources to a tenant without a kustomization file. "
+                "Use new_tenant=True to create a new tenant."
+            )
+        kustom_content = kustom_path.read_text()
+        for f in new_files:
+            if f not in kustom_content:
+                lines = kustom_content.splitlines(keepends=True)
+                insert_idx = len(lines)
+                in_resources = False
+                for i, line in enumerate(lines):
+                    stripped = line.rstrip()
+                    if stripped == "resources:" or stripped.startswith("resources:"):
+                        in_resources = True
+                        continue
+                    if in_resources:
+                        if stripped.startswith("  - ") or stripped == "":
+                            insert_idx = i + 1
+                        else:
+                            insert_idx = i
+                            break
+                lines.insert(insert_idx, f"  - {f}\n")
+                kustom_content = "".join(lines)
+        kustom_path.write_text(kustom_content)
+        files_written.append(str(kustom_path.relative_to(root)))
 
     rpa_dir = root / "config" / cluster_suffix / "service" / "ReleasePlanAdmission" / service_name
     rpa_dir.mkdir(parents=True, exist_ok=True)
@@ -583,8 +622,8 @@ def generate(cfg, repo_path):
         )
         files_written.append(str((constraints_dir / f"{service_name}.yaml").relative_to(root)))
 
-    if new_tenant:
-        _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name)
+    if admins:
+        _update_codeowners(repo_path, tenant, cluster, cluster_suffix, service_name, admins, new_tenant)
         files_written.append("CODEOWNERS")
 
     return {"files_written": sorted(files_written), "new_tenant": new_tenant}

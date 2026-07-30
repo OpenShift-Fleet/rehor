@@ -11,16 +11,16 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from jira_mcp import jira_cleanup
-from onboarding_helpers import apply_label, get_missing_workflow_fields, post_comment
+from onboarding_helpers import apply_label, get_missing_workflow_fields, post_comment, sanitize_for_markdown
 
 LABEL = "onboarding:plan-posted"
 
 
 def _build_comment(config):
-    instance_name = config.get("instance_name", "?")
-    config_name = config.get("config_name", "?")
-    bot_name = config.get("bot_name", "?")
-    bot_label = config.get("bot_label", "?")
+    instance_name = sanitize_for_markdown(config.get("instance_name", "?"))
+    config_name = sanitize_for_markdown(config.get("config_name", "?"))
+    bot_name = sanitize_for_markdown(config.get("bot_name", "?"))
+    bot_label = sanitize_for_markdown(config.get("bot_label", "?"))
     workflow = config.get("workflow", "jira-sprint")
     repos = config.get("repos", [])
     envs_and_personas = config.get("envs_and_personas", "auto-detected")
@@ -50,8 +50,10 @@ def _build_comment(config):
 
     def _fmt_repo(r):
         if isinstance(r, dict):
-            return f"  - [{r.get('name', '?')}]({r.get('url', '')})"
-        return f"  - {r}"
+            name = sanitize_for_markdown(r.get("name", "?"))
+            url = sanitize_for_markdown(r.get("url", ""))
+            return f"  - [{name}]({url})"
+        return f"  - {sanitize_for_markdown(r)}"
 
     repo_list = "\n".join(_fmt_repo(r) for r in repos) if repos else "  (none)"
 

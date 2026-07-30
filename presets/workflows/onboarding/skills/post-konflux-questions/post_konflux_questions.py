@@ -45,8 +45,9 @@ Determines your image URL: `quay.io/redhat-services-prod/<quay_org>/{instance_na
 ### New tenant — full setup
 
 **Required**
-- **Admin usernames** — SSO/Kerberos usernames for admin access (e.g., `jdoe`)
-- **Maintainer usernames** — SSO/Kerberos usernames for maintainer access
+- **Admin usernames** — SSO/Kerberos usernames for namespace admin RBAC access (e.g., `jdoe`). \
+Admins will also be set as maintainers and codeowners initially. \
+You can update these roles separately in the MR if needed.
 - **Cost center** — your team's cost center
 
 **Optional** (defaults applied if not specified)

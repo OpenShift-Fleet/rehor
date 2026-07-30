@@ -153,7 +153,7 @@ Post scaffolding PR link. Link PR to Jira: `jira_create_remote_issue_link` on bo
 When PR merged:
 1. Phase 1 sub-ticket → Done
 2. `/auto-fork` target repos from project-repos.json
-3. `/post-konflux-questions` `{"epic_key", "team_name"}`
+3. `/post-konflux-questions` `{"epic_key", "team_name", "instance_name"}`
 
 Update metadata: `phase: 2`, `step: "konflux-info"`.
 

@@ -11,6 +11,7 @@
     },
     "config_name": {
       "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
       "description": "Name of the config directory under instance/"
     },
     "team_name": {
@@ -24,19 +25,22 @@
     },
     "source": {
       "type": "string",
+      "enum": ["jira"],
       "default": "jira"
     },
     "envs": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
       "description": "List of env presets to install (e.g. node, go, browser, slack)"
     },
     "bot_name": {
       "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
       "description": "Deployment name (defaults to devbot-<config_name>)"
     },
     "bot_label": {
       "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:_-]*$",
       "description": "Jira label the bot filters on (defaults to rehor-ai-<config_name>)"
     },
     "repos": {
@@ -47,10 +51,12 @@
         "properties": {
           "name": {
             "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
             "description": "Short name used as key in project-repos.json"
           },
           "url": {
             "type": "string",
+            "pattern": "^https?://",
             "description": "Upstream repo URL (HTTPS)"
           },
           "host": {
@@ -60,10 +66,12 @@
           },
           "fork_account": {
             "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
             "description": "Fork owner (defaults to platex-rehor-bot / platform-experience-services-bot)"
           },
           "fork_name": {
             "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
             "description": "Custom fork repo name if different from upstream"
           },
           "readonly": {
@@ -78,30 +86,33 @@
     "resources": {
       "type": "object",
       "properties": {
-        "cpu_request": { "type": "string" },
-        "cpu_limit": { "type": "string" },
-        "memory_request": { "type": "string" },
-        "memory_limit": { "type": "string" },
-        "ephemeral_request": { "type": "string" },
-        "ephemeral_limit": { "type": "string" }
+        "cpu_request": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" },
+        "cpu_limit": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" },
+        "memory_request": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" },
+        "memory_limit": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" },
+        "ephemeral_request": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" },
+        "ephemeral_limit": { "type": "string", "pattern": "^[0-9]+(m|Mi|Gi|Ki)?$" }
       },
       "additionalProperties": false
     },
     "keda_schedule": {
       "type": "object",
       "properties": {
-        "timezone": { "type": "string" },
-        "start": { "type": "string" },
-        "end": { "type": "string" }
+        "timezone": { "type": "string", "pattern": "^[A-Za-z_/]+$" },
+        "start": { "type": "string", "pattern": "^[0-9*,/ -]+$" },
+        "end": { "type": "string", "pattern": "^[0-9*,/ -]+$" }
       },
+      "required": ["timezone", "start", "end"],
       "additionalProperties": false
     },
     "repo_url": {
       "type": "string",
+      "pattern": "^https?://",
       "description": "Instance repo URL (e.g. https://github.com/MyOrg/my-agent-dev)"
     },
     "github_org": {
       "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
       "description": "GitHub org (used to construct repo_url if repo_url not provided)"
     },
     "claude_md_strategy": {
@@ -115,13 +126,20 @@
         "type": "object",
         "properties": {
           "repo": { "type": "string" },
-          "envs": { "type": "array", "items": { "type": "string" } },
-          "personas": { "type": "array", "items": { "type": "string" } }
+          "envs": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+          },
+          "personas": {
+            "type": "array",
+            "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+          }
         }
       }
     },
     "target_branch": {
       "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]*$",
       "default": "main"
     }
   },

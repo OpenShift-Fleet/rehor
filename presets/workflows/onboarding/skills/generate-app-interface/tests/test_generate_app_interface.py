@@ -7,6 +7,7 @@ from generate_app_interface import (
     _add_self_service_datafile,
     _discover_gcp_project,
     _discover_namespace_ref,
+    _discover_pipelines_ref,
     _yaml_quote,
     generate,
 )
@@ -34,6 +35,7 @@ SEPARATE_CONFIG = {
     "team_name": "testteam",
     "service_tree": "testplatform/testteam",
     "namespace_ref": "/services/testplatform/testteam/namespaces/stage.testns01.yml",
+    "pipelines_ref": "/services/testplatform/testteam/pipelines/tekton-test.yml",
 }
 
 KANBAN_CONFIG = {
@@ -50,6 +52,9 @@ $schema: /app-sre/saas-file-2.yml
 name: platform-frontend-ai-dev
 app:
   $ref: /services/insights/platform-frontend-ai-dev/app.yml
+
+pipelinesProvider:
+  $ref: /services/insights/platform-frontend-ai-dev/pipelines/tekton-test-pipelines.testcluster01.yml
 
 imagePatterns:
 - quay.io/redhat-services-prod/existing-org/existing-agent
@@ -178,6 +183,18 @@ class TestDiscovery:
         deploy.write_text("---\nname: empty\n")
         assert _discover_gcp_project(str(app_interface_repo)) is None
 
+    def test_discovers_pipelines_ref(self, app_interface_repo):
+        ref = _discover_pipelines_ref(str(app_interface_repo))
+        assert ref == "/services/insights/platform-frontend-ai-dev/pipelines/tekton-test-pipelines.testcluster01.yml"
+
+    def test_pipelines_ref_returns_none_when_no_deploy(self, tmp_path):
+        assert _discover_pipelines_ref(str(tmp_path)) is None
+
+    def test_pipelines_ref_returns_none_when_no_provider(self, app_interface_repo):
+        deploy = app_interface_repo / "data" / "services" / "insights" / "platform-frontend-ai-dev" / "deploy.yml"
+        deploy.write_text("---\nname: empty\n")
+        assert _discover_pipelines_ref(str(app_interface_repo)) is None
+
 
 class TestSharedPattern:
     def _read_shared_deploy(self, app_interface_repo):
@@ -201,6 +218,18 @@ class TestSharedPattern:
         assert result["action"] == "created"
         content = self._read_shared_deploy(app_interface_repo)
         assert "GCP_PROJECT_ID: test-shared-gcp-project" in content
+
+    def test_discovers_pipelines_ref(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_shared_deploy(app_interface_repo)
+        assert "tekton-test-pipelines.testcluster01.yml" in content
+
+    def test_pipelines_discovery_error_when_missing(self, app_interface_repo):
+        deploy = app_interface_repo / "data" / "services" / "insights" / "platform-frontend-ai-dev" / "deploy.yml"
+        deploy.write_text("---\nname: no-pipelines\n")
+        cfg = {**SHARED_CONFIG, "gcp_project_id": "explicit"}
+        result = generate(cfg, str(app_interface_repo))
+        assert "error" in result
 
     def test_gcp_discovery_error_when_no_deploy(self, app_interface_repo):
         cfg = {k: v for k, v in SHARED_CONFIG.items() if k != "gcp_project_id"}
@@ -371,6 +400,17 @@ class TestSeparatePattern:
         with pytest.raises(ValueError, match="gcp_project_id is required"):
             generate(cfg, str(app_interface_repo))
 
+    def test_requires_pipelines_ref(self, app_interface_repo):
+        cfg = {k: v for k, v in SEPARATE_CONFIG.items() if k != "pipelines_ref"}
+        with pytest.raises(ValueError, match="pipelines_ref is required"):
+            generate(cfg, str(app_interface_repo))
+
+    def test_uses_explicit_pipelines_ref(self, app_interface_repo):
+        result = generate(SEPARATE_CONFIG, str(app_interface_repo))
+        saas_path = app_interface_repo / result["file"]
+        content = saas_path.read_text()
+        assert "/services/testplatform/testteam/pipelines/tekton-test.yml" in content
+
 
 class TestKanbanWorkflow:
     def test_has_board_name(self, app_interface_repo):
@@ -528,6 +568,111 @@ class TestSelfServiceDatafile:
         assert content.startswith("---\n")
 
 
+class TestSlackRef:
+    def test_uses_redhat_internal(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+        assert "/dependencies/slack/redhat-internal.yml" in content
+        assert "coreos" not in content
+
+
+class TestTeamRoleRefEdgeCases:
+    ROLE_REF = "teams/insights/roles/test-role"
+
+    def _role_path(self, app_interface_repo):
+        return app_interface_repo / "data" / "teams" / "insights" / "roles" / "test-role.yml"
+
+    def test_leading_slash_stripped(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": "/teams/insights/roles/test-role"}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+
+    def test_yaml_extension_preserved(self, app_interface_repo):
+        yaml_role = self._role_path(app_interface_repo).parent / "test-role.yaml"
+        yaml_role.write_text(ROLE_FILE_CONTENT)
+        self._role_path(app_interface_repo).unlink()
+        cfg = {**SHARED_CONFIG, "team_role_ref": "teams/insights/roles/test-role.yaml"}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+
+    def test_yaml_extension_not_doubled(self, app_interface_repo):
+        yaml_role = self._role_path(app_interface_repo).parent / "test-role.yaml"
+        yaml_role.write_text(ROLE_FILE_CONTENT)
+        cfg = {**SHARED_CONFIG, "team_role_ref": "teams/insights/roles/test-role.yaml"}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is not None
+        assert ".yaml.yml" not in result
+
+    def test_malformed_yaml_role_file_returns_none(self, app_interface_repo):
+        self._role_path(app_interface_repo).write_text(": [invalid yaml\n  :\n")
+        cfg = {**SHARED_CONFIG, "team_role_ref": self.ROLE_REF}
+        result = _add_self_service_datafile(cfg, str(app_interface_repo))
+        assert result is None
+
+
+class TestMalformedYaml:
+    def test_malformed_app_yml_returns_none(self, app_interface_repo):
+        from generate_app_interface import _add_code_component
+
+        app_yml = app_interface_repo / "data" / "services" / "insights" / "platform-frontend-ai-dev" / "app.yml"
+        app_yml.write_text(": [bad yaml\n  :\n")
+        result = _add_code_component(SHARED_CONFIG, str(app_interface_repo))
+        assert result is None
+
+
+class TestSeparateIdempotency:
+    def test_second_run_unchanged(self, app_interface_repo):
+        generate(SEPARATE_CONFIG, str(app_interface_repo))
+        result = generate(SEPARATE_CONFIG, str(app_interface_repo))
+        assert result["action"] == "unchanged"
+
+
+class TestPathTraversal:
+    def test_service_tree_traversal_rejected(self, app_interface_repo):
+        cfg = {**SEPARATE_CONFIG, "service_tree": "../../etc/passwd"}
+        with pytest.raises(ValueError, match="Path escapes"):
+            generate(cfg, str(app_interface_repo))
+
+    def test_team_role_ref_traversal_rejected(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "team_role_ref": "../../etc/passwd"}
+        with pytest.raises(ValueError, match="Path escapes"):
+            _add_self_service_datafile(cfg, str(app_interface_repo))
+
+    def test_app_ref_traversal_rejected(self, app_interface_repo):
+        from generate_app_interface import _add_code_component
+
+        cfg = {
+            **SHARED_CONFIG,
+            "app_ref": "/../../etc/passwd",
+        }
+        # _safe_path raises ValueError
+        with pytest.raises(ValueError, match="Path escapes"):
+            _add_code_component(cfg, str(app_interface_repo))
+
+
+class TestInstanceNameValidation:
+    def test_rejects_invalid_instance_name(self, app_interface_repo):
+        import json as json_mod
+        import sys
+
+        from generate_app_interface import main
+
+        sys.argv = [
+            "generate_app_interface.py",
+            json_mod.dumps({**SHARED_CONFIG, "instance_name": "Bad-Name"}),
+            str(app_interface_repo),
+        ]
+        with pytest.raises(SystemExit, match="1"):
+            main()
+
+
 class TestYamlQuoting:
     def test_plain_string_unquoted(self):
         assert _yaml_quote("My Board") == "My Board"
@@ -561,6 +706,44 @@ class TestYamlQuoting:
         )
         parsed = yaml.safe_load(deploy_path.read_text())
         assert parsed["description"] == "Rehor bot instance for Acme: Frontend Team"
+
+    def test_bot_label_with_colon_quoted(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "bot_label": "team:label"}
+        generate(cfg, str(app_interface_repo))
+        content = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+        assert "BOT_LABEL: 'team:label'" in content
+
+    def test_vertex_models_with_commas_quoted(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "vertex_allowed_models": "claude-sonnet-4-6,claude-opus-4-6"}
+        generate(cfg, str(app_interface_repo))
+        content = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+        assert "VERTEX_ALLOWED_MODELS: 'claude-sonnet-4-6,claude-opus-4-6'" in content
+
+    def test_config_repo_url_quoted(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+        assert "BOT_CONFIG_REPO: 'https://github.com/TestOrg/test-agent-dev'" in content
 
     def test_board_name_with_colon(self, app_interface_repo):
         cfg = {**SHARED_CONFIG, "board_name": "Sprint: Planning"}

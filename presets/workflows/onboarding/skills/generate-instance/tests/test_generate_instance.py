@@ -3,6 +3,7 @@
 import json
 import stat
 
+import jsonschema
 import pytest
 import yaml
 from generate_instance import _validate_input, generate, validate_output
@@ -256,6 +257,149 @@ class TestTemplateRendering:
         assert not (agent_dir / "personas" / "default").exists()
         frontend_prompt = (agent_dir / "personas" / "frontend" / "prompt.md").read_text()
         assert "React" in frontend_prompt
+
+
+class TestSchemaSanitization:
+    def test_rejects_config_name_with_traversal(self):
+        with pytest.raises(Exception, match="config_name"):
+            _validate_input({"instance_name": "test-bot", "config_name": "../etc"})
+
+    def test_rejects_bot_name_with_spaces(self):
+        with pytest.raises(Exception, match="bot_name"):
+            _validate_input({"instance_name": "test-bot", "bot_name": "bad name"})
+
+    def test_rejects_bot_label_with_slash(self):
+        with pytest.raises(Exception, match="bot_label"):
+            _validate_input({"instance_name": "test-bot", "bot_label": "bad/label"})
+
+    def test_rejects_repo_url_without_http(self):
+        with pytest.raises(Exception, match="repo_url"):
+            _validate_input({"instance_name": "test-bot", "repo_url": "file:///etc/passwd"})
+
+    def test_rejects_github_org_with_slash(self):
+        with pytest.raises(Exception, match="github_org"):
+            _validate_input({"instance_name": "test-bot", "github_org": "../../etc"})
+
+    def test_rejects_env_with_traversal(self):
+        with pytest.raises(Exception, match="envs"):
+            _validate_input({"instance_name": "test-bot", "envs": ["../bad"]})
+
+    def test_rejects_fork_account_with_slash(self):
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_input(
+                {
+                    "instance_name": "test-bot",
+                    "repos": [{"name": "r", "url": "https://x.com/r", "fork_account": "a/b"}],
+                }
+            )
+
+    def test_rejects_invalid_resource_value(self):
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_input(
+                {
+                    "instance_name": "test-bot",
+                    "resources": {"cpu_request": "1; echo pwned"},
+                }
+            )
+
+    def test_rejects_target_branch_with_space(self):
+        with pytest.raises(Exception, match="target_branch"):
+            _validate_input({"instance_name": "test-bot", "target_branch": "main branch"})
+
+    def test_accepts_valid_target_branch_with_slash(self):
+        _validate_input({"instance_name": "test-bot", "target_branch": "release/1.0"})
+
+    def test_rejects_invalid_source(self):
+        with pytest.raises(Exception, match="source"):
+            _validate_input({"instance_name": "test-bot", "source": "github"})
+
+
+class TestPathContainment:
+    def test_config_name_traversal_rejected(self, tmp_path):
+        cfg = {**SPRINT_CONFIG, "config_name": "../../etc"}
+        with pytest.raises(ValueError, match="config_name escapes"):
+            generate(cfg, str(tmp_path))
+
+    def test_persona_schema_rejects_traversal(self):
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_input(
+                {
+                    "instance_name": "test-bot",
+                    "tech_stacks": [{"repo": "x", "personas": ["../../etc"]}],
+                }
+            )
+
+    def test_deep_persona_traversal_rejected(self, tmp_path):
+        cfg = {
+            **SPRINT_CONFIG,
+            "tech_stacks": [{"repo": "x", "personas": ["../../../../../../tmp"]}],
+        }
+        with pytest.raises(ValueError, match="persona escapes"):
+            generate(cfg, str(tmp_path))
+
+
+class TestReadonlyGitlabHost:
+    def test_readonly_gitlab_preserves_host(self, tmp_path):
+        cfg = {
+            "instance_name": "ro-gitlab-agent-dev",
+            "repos": [
+                {
+                    "name": "gl-readonly",
+                    "url": "https://gitlab.cee.redhat.com/org/gl-readonly.git",
+                    "host": "gitlab",
+                    "readonly": True,
+                }
+            ],
+        }
+        generate(cfg, str(tmp_path))
+        repos = json.loads((tmp_path / "instance" / "ro-gitlab-config" / "agent" / "project-repos.json").read_text())
+        assert repos["gl-readonly"]["host"] == "gitlab"
+        assert repos["gl-readonly"]["readonly"] is True
+
+    def test_readonly_github_no_host_field(self, tmp_path):
+        cfg = {
+            "instance_name": "ro-github-agent-dev",
+            "repos": [
+                {
+                    "name": "gh-readonly",
+                    "url": "https://github.com/org/gh-readonly.git",
+                    "host": "github",
+                    "readonly": True,
+                }
+            ],
+        }
+        generate(cfg, str(tmp_path))
+        repos = json.loads((tmp_path / "instance" / "ro-github-config" / "agent" / "project-repos.json").read_text())
+        assert "host" not in repos["gh-readonly"]
+
+
+class TestKedaScheduleValidation:
+    def test_rejects_partial_keda_schedule(self):
+        with pytest.raises(Exception, match="required"):
+            _validate_input({"instance_name": "test-bot", "keda_schedule": {"timezone": "UTC"}})
+
+    def test_accepts_full_keda_schedule(self):
+        _validate_input(
+            {
+                "instance_name": "test-bot",
+                "keda_schedule": {"timezone": "America/New_York", "start": "0 9 * * 1-5", "end": "0 18 * * 1-5"},
+            }
+        )
+
+
+class TestForkManifest:
+    def test_no_repo_url_or_org_skips_manifest(self, tmp_path):
+        cfg = {"instance_name": "no-url-agent-dev"}
+        result = generate(cfg, str(tmp_path))
+        assert "fork_manifest" not in result
+        assert not (tmp_path / "fork-manifest.json").exists()
+
+    def test_with_repo_url_creates_manifest(self, tmp_path):
+        cfg = {"instance_name": "url-agent-dev", "repo_url": "https://github.com/org/url-agent-dev"}
+        result = generate(cfg, str(tmp_path))
+        assert "fork_manifest" in result
+        manifest = json.loads((tmp_path / "fork-manifest.json").read_text())
+        assert manifest["repos"][0]["upstream"] == "https://github.com/org/url-agent-dev"
 
 
 class TestOutputValidation:

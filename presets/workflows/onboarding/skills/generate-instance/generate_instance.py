@@ -121,6 +121,8 @@ def _build_project_repos(repos):
         if readonly:
             entry["url"] = url
             entry["readonly"] = True
+            if host != "github":
+                entry["host"] = host
         elif host == "github":
             repo_basename = fork_repo_name or _parse_repo_basename(url, "github.com")
             entry["url"] = f"https://github.com/{fork_account}/{repo_basename}.git"
@@ -271,6 +273,8 @@ def generate(req, output_dir):
     )
     team_name = req.get("team_name", instance_name)
     agent_dir = root / "instance" / config_name / "agent"
+    if not agent_dir.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"config_name escapes base directory: {config_name!r}")
     deploy_dir = root / "deploy"
 
     for d in (agent_dir, deploy_dir):
@@ -314,6 +318,8 @@ def generate(req, output_dir):
             if persona not in personas_seen:
                 personas_seen.add(persona)
                 persona_dir = agent_dir / "personas" / persona
+                if not persona_dir.resolve().is_relative_to(root.resolve()):
+                    raise ValueError(f"persona escapes base directory: {persona!r}")
                 persona_dir.mkdir(parents=True, exist_ok=True)
                 template = PERSONA_TEMPLATES.get(persona, f"{persona} persona.\n")
                 (persona_dir / "prompt.md").write_text(template)
@@ -335,22 +341,28 @@ def generate(req, output_dir):
     if not repo_url:
         github_org = req.get("github_org", "")
         repo_url = f"https://github.com/{github_org}/{instance_name}" if github_org else ""
-    manifest = {
-        "repos": [
-            {
-                "name": instance_name,
-                "upstream": repo_url,
-                "host": "github",
-            }
-        ]
-    }
-    (root / "fork-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    result_extra = {}
+    if repo_url:
+        manifest = {
+            "repos": [
+                {
+                    "name": instance_name,
+                    "upstream": repo_url,
+                    "host": "github",
+                }
+            ]
+        }
+        (root / "fork-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        result_extra["fork_manifest"] = str(root / "fork-manifest.json")
+    else:
+        print("WARNING: No repo_url or github_org provided — skipping fork-manifest.json", file=sys.stderr)
 
     files = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file())
     return {
         "output_dir": str(root),
         "files": files,
-        "fork_manifest": str(root / "fork-manifest.json"),
+        **result_extra,
     }
 
 

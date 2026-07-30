@@ -10,9 +10,12 @@ default branch, Dockerfile presence, and visibility.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+_SAFE_OWNER_REPO = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 
 
 def _read_json(path):
@@ -25,7 +28,10 @@ def _read_json(path):
 
 def _file_contains(path, pattern):
     try:
-        return pattern.lower() in Path(path).read_text(errors="ignore").lower()
+        p = Path(path)
+        if p.is_symlink():
+            return False
+        return pattern.lower() in p.read_text(errors="ignore").lower()
     except OSError:
         return False
 
@@ -66,6 +72,8 @@ def _detect_visibility(repo_path):
 
     if "github.com" in remote_url:
         owner_repo = remote_url.split("github.com")[-1].strip(":/").removesuffix(".git")
+        if not _SAFE_OWNER_REPO.match(owner_repo):
+            return "unknown"
         try:
             check = subprocess.run(
                 ["gh", "api", f"repos/{owner_repo}", "--jq", ".visibility"],
@@ -137,7 +145,7 @@ def detect(repo_path):
     _skip = {".git", "node_modules", "vendor", "__pycache__"}
 
     def _not_skipped(p):
-        return not (_skip & set(p.relative_to(root).parts))
+        return not p.is_symlink() and not (_skip & set(p.relative_to(root).parts))
 
     yaml_count = sum(1 for p in root.glob("**/*.yaml") if _not_skipped(p)) + sum(
         1 for p in root.glob("**/*.yml") if _not_skipped(p)
