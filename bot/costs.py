@@ -83,7 +83,7 @@ def record_cost(costs_file: Path, label: str, result, ctx: CycleContext | None =
     """
     entry = _build_entry(label, result, ctx)
 
-    # Write to local jsonl (backward compat with costs.sh)
+    # Write to local jsonl
     with open(costs_file, "a") as f:
         f.write(json.dumps(entry) + "\n")
 

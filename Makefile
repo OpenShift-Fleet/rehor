@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset
+.PHONY: install run init dashboard stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
@@ -36,17 +36,6 @@ stop: ## Stop a running bot (release lock)
 logs: ## Tail bot log
 	tail -f data/bot.log
 
-costs: ## Show all cost data
-	./costs.sh all
-
-costs-today: ## Show today's costs
-	./costs.sh today
-
-costs-week: ## Show this week's costs
-	./costs.sh week
-
-seed-costs: ## Import costs.jsonl into the database
-	uv run python scripts/seed-costs.py data/costs.jsonl
 
 memory-server: ## Start memory server + postgres
 	$(CONTAINER_RT) compose -f memory-server/docker-compose.yml up --build

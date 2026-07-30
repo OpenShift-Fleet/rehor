@@ -84,10 +84,6 @@ make logs              # Tail bot log
 make memory-server     # Start memory server + postgres (standalone)
 make memory-server-stop # Stop standalone memory server
 make dashboard         # Build the dashboard UI
-make costs             # Show all cost data
-make costs-today       # Show today's costs
-make costs-week        # Show this week's costs
-make seed-costs        # Import costs.jsonl into the database
 make help              # Show all available commands
 ```
 
