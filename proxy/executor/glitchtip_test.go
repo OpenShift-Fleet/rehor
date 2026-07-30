@@ -7,7 +7,7 @@ import (
 )
 
 func TestGlitchTipHealthz(t *testing.T) {
-	handler := NewGlitchTipProxy("https://glitchtip.devshift.net", "tok-123")
+	handler := NewGlitchTipProxy("https://glitchtip.example.com", "tok-123")
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -78,13 +78,13 @@ func TestGlitchTipQueryParamsPreserved(t *testing.T) {
 }
 
 func TestGlitchTipValidateConfig(t *testing.T) {
-	if err := ValidateGlitchTipConfig("https://glitchtip.devshift.net", "token"); err != nil {
+	if err := ValidateGlitchTipConfig("https://glitchtip.example.com", "token"); err != nil {
 		t.Errorf("valid config returned error: %v", err)
 	}
 	if err := ValidateGlitchTipConfig("", "token"); err == nil {
 		t.Error("empty URL should fail")
 	}
-	if err := ValidateGlitchTipConfig("https://glitchtip.devshift.net", ""); err == nil {
+	if err := ValidateGlitchTipConfig("https://glitchtip.example.com", ""); err == nil {
 		t.Error("empty token should fail")
 	}
 }
