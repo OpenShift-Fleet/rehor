@@ -39,3 +39,18 @@ export function sourceUrl(item: SourceLike): string | null {
 export function displayKey(item: SourceLike): string {
   return item.external_key || '';
 }
+
+const SLEEP_THRESHOLD_MS = 60_000; // 60 seconds
+
+export type DisplayState = 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
+
+export function effectiveState(instance: { state: string; last_seen?: string | null; updated_at?: string }): DisplayState {
+  if (instance.state === 'idle') {
+    const ref = instance.last_seen || instance.updated_at;
+    if (ref) {
+      const age = Date.now() - new Date(ref).getTime();
+      if (age > SLEEP_THRESHOLD_MS) return 'sleep';
+    }
+  }
+  return instance.state as DisplayState;
+}

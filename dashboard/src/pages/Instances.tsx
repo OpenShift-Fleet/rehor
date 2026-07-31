@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { BotInstance } from '../types';
 import { fetchInstances, wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, sourceUrl, displayKey } from '../utils';
+import { timeAgo, sourceUrl, displayKey, effectiveState } from '../utils';
 import {
   Card,
   CardHeader,
@@ -20,6 +20,20 @@ import {
   Icon
 } from '@patternfly/react-core';
 import { CircleIcon } from '@patternfly/react-icons';
+
+function labelColor(state: string): 'orange' | 'red' | 'green' | 'grey' {
+  if (state === 'working') return 'orange';
+  if (state === 'error') return 'red';
+  if (state === 'idle') return 'green';
+  return 'grey';
+}
+
+function iconStatus(state: string): 'warning' | 'danger' | 'success' | 'custom' {
+  if (state === 'working') return 'warning';
+  if (state === 'error') return 'danger';
+  if (state === 'idle') return 'success';
+  return 'custom';
+}
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
@@ -89,16 +103,18 @@ export default function Instances() {
         <div className="empty-state">No bot instances found</div>
       )}
       <div className="instance-grid">
-        {instances.map((inst) => (
+        {instances.map((inst) => {
+          const state = effectiveState(inst);
+          return (
           <div key={inst.instance_id}>
             <Card isCompact isGlass style={{ cursor: 'pointer' }} onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}>
             <CardHeader
-              actions={{ actions: <Label color={inst.state === 'working' ? 'orange' : inst.state === 'error' ? 'red' : 'green'}>{inst.state.toUpperCase()}</Label> }}
+              actions={{ actions: <Label color={labelColor(state)}>{state.toUpperCase()}</Label> }}
             >
               <CardTitle>
                 <Flex alignItems={{ default: 'alignItemsFlexStart' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ minWidth: 0 }}>
                   <FlexItem style={{ flexShrink: 0 }}>
-                    <Icon status={inst.state === 'working' ? 'warning' : inst.state === 'error' ? 'danger' : 'success'}>
+                    <Icon status={iconStatus(state)}>
                       <CircleIcon />
                     </Icon>
                   </FlexItem>
@@ -111,7 +127,7 @@ export default function Instances() {
             <CardBody>
               <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
                 <Content component="p" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--pf-t--global--text--color--subtle)' }}>
-                  {inst.message}
+                  {state === 'sleep' ? 'Bot is sleeping — no running pods' : inst.message}
                 </Content>
                 <LabelGroup>
                   {displayKey(inst) && (
@@ -136,7 +152,7 @@ export default function Instances() {
               <Flex justifyContent={{ default: 'justifyContentSpaceBetween' }} alignItems={{ default: 'alignItemsCenter' }}>
                 <Label variant="outline">{inst.active_tasks}/{inst.max_tasks} tasks</Label>
                 <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
-                  {inst.state === 'idle' && (
+                  {state === 'idle' && (
                     <Button
                       variant="plain"
                       size="sm"
@@ -155,7 +171,8 @@ export default function Instances() {
             </CardFooter>
           </Card>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

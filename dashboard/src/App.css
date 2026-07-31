@@ -224,6 +224,20 @@ header {
   color: var(--text-dim);
 }
 
+.bot-banner.state-sleep {
+  border-color: var(--text-dim);
+  background: rgba(139, 148, 158, 0.06);
+}
+
+.indicator-dot.sleep {
+  background: var(--text-dim);
+}
+
+.state-badge.sleep {
+  background: rgba(139, 148, 158, 0.2);
+  color: var(--text-dim);
+}
+
 .banner-message {
   font-size: 14px;
   color: var(--text);
