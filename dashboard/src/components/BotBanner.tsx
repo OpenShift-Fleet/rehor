@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { BotStatus } from '../types';
 import { wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, sourceUrl, displayKey, effectiveState } from '../utils';
+import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus, stateBorderColor } from '../utils';
 import {
   Card,
   CardBody,
@@ -16,27 +16,6 @@ import { CircleIcon } from '@patternfly/react-icons';
 
 interface Props {
   status: BotStatus;
-}
-
-function labelColor(state: string): 'orange' | 'red' | 'green' | 'grey' {
-  if (state === 'working') return 'orange';
-  if (state === 'error') return 'red';
-  if (state === 'idle') return 'green';
-  return 'grey';
-}
-
-function iconStatus(state: string): 'warning' | 'danger' | 'success' | 'custom' {
-  if (state === 'working') return 'warning';
-  if (state === 'error') return 'danger';
-  if (state === 'idle') return 'success';
-  return 'custom';
-}
-
-function borderColor(state: string): string {
-  if (state === 'working') return 'var(--yellow)';
-  if (state === 'error') return 'var(--red)';
-  if (state === 'idle') return 'var(--green)';
-  return 'var(--text-dim)';
 }
 
 export default function BotBanner({ status }: Props) {
@@ -95,17 +74,17 @@ export default function BotBanner({ status }: Props) {
   const message = state === 'sleep' ? 'Bot is sleeping — no running pods' : status.message;
 
   return (
-    <Card isCompact isGlass style={{ borderLeft: `3px solid ${borderColor(state)}`, marginBottom: '12px' }}>
+    <Card isCompact isGlass style={{ borderLeft: `3px solid ${stateBorderColor(state)}`, marginBottom: '12px' }}>
       <CardBody>
       <Flex alignItems={{ default: 'alignItemsCenter' }} justifyContent={{ default: 'justifyContentSpaceBetween' }} flexWrap={{ default: 'nowrap' }}>
         <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flex: 1, minWidth: 0 }}>
           <FlexItem>
-            <Icon status={iconStatus(state)}>
+            <Icon status={stateIconStatus(state)}>
               <CircleIcon />
             </Icon>
           </FlexItem>
           <FlexItem>
-            <Label color={labelColor(state)}>
+            <Label color={stateLabelColor(state)}>
               {state.toUpperCase()}
             </Label>
           </FlexItem>

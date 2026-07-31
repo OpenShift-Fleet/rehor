@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { BotInstance } from '../types';
 import { fetchInstances, wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, sourceUrl, displayKey, effectiveState } from '../utils';
+import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus } from '../utils';
 import {
   Card,
   CardHeader,
@@ -20,20 +20,6 @@ import {
   Icon
 } from '@patternfly/react-core';
 import { CircleIcon } from '@patternfly/react-icons';
-
-function labelColor(state: string): 'orange' | 'red' | 'green' | 'grey' {
-  if (state === 'working') return 'orange';
-  if (state === 'error') return 'red';
-  if (state === 'idle') return 'green';
-  return 'grey';
-}
-
-function iconStatus(state: string): 'warning' | 'danger' | 'success' | 'custom' {
-  if (state === 'working') return 'warning';
-  if (state === 'error') return 'danger';
-  if (state === 'idle') return 'success';
-  return 'custom';
-}
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
@@ -109,12 +95,12 @@ export default function Instances() {
           <div key={inst.instance_id}>
             <Card isCompact isGlass style={{ cursor: 'pointer' }} onClick={() => navigate(`/instances/${encodeURIComponent(inst.instance_id)}/tasks`)}>
             <CardHeader
-              actions={{ actions: <Label color={labelColor(state)}>{state.toUpperCase()}</Label> }}
+              actions={{ actions: <Label color={stateLabelColor(state)}>{state.toUpperCase()}</Label> }}
             >
               <CardTitle>
                 <Flex alignItems={{ default: 'alignItemsFlexStart' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ minWidth: 0 }}>
                   <FlexItem style={{ flexShrink: 0 }}>
-                    <Icon status={iconStatus(state)}>
+                    <Icon status={stateIconStatus(state)}>
                       <CircleIcon />
                     </Icon>
                   </FlexItem>
