@@ -595,6 +595,7 @@ def _instance_row(r, active_tasks: int = 0) -> dict:
         "last_idle_reminder_sent_at": (
             r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
         ),
+        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
     }
 
 
@@ -1276,6 +1277,12 @@ async def api_instance_wake_check(request: Request) -> JSONResponse:
     instance_id = request.path_params.get("instance_id")
     if not instance_id:
         return JSONResponse({"error": "missing instance_id"}, status_code=400)
+
+    pool = get_pool()
+    await pool.execute(
+        "UPDATE bot_instances SET last_seen = NOW() WHERE instance_id = $1",
+        instance_id,
+    )
 
     if instance_id in wake_signals:
         wake_signals.discard(instance_id)
