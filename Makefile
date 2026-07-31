@@ -1,10 +1,33 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+verify: ## Run all checks (same as CI)
+	uv sync --frozen --group dev
+	@echo "=== Python: format ==="
+	uv run ruff format --check .
+	@echo "=== Python: lint ==="
+	uv run ruff check .
+	@echo "=== Python: type check ==="
+	uv run mypy
+	@echo "=== Python: tests ==="
+	uv run pytest
+	@echo "=== Go: vet ==="
+	cd proxy/executor && go vet ./...
+	@echo "=== Go: tests ==="
+	cd proxy/executor && go test -race ./...
+	@echo "=== Dashboard: type check ==="
+	cd dashboard && npm run lint
+	@echo "=== Dashboard: build ==="
+	cd dashboard && npm run build
+	@echo "=== Dashboard: tests ==="
+	cd dashboard && npm test
+	@echo ""
+	@echo "All checks passed."
 
 install: ## Install dependencies with uv
 	uv sync

@@ -21,6 +21,7 @@ dev = [
     "pre-commit",
     "httpx>=0.27.0",
     "mcp>=1.1.0",
+    "mypy>=1.11.0",
     "ruff>=0.8.0",
 ]
 
@@ -75,3 +76,11 @@ select = ["E", "W", "F", "I", "B", "C4"]
 
 [tool.uv.workspace]
 members = ["memory-server"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+files = ["bot/"]
+disable_error_code = ["var-annotated", "no-any-return", "union-attr", "assignment"]

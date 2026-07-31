@@ -1,37 +1,51 @@
-name: Ruff Format Check
+name: Python CI
 
 on:
   pull_request:
     paths:
       - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/workflows/ruff-format.yml'
   push:
     branches:
       - master
     paths:
       - '**.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/workflows/ruff-format.yml'
 
+permissions:
+  contents: read
+
 jobs:
-  ruff-format:
+  python-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: '3.14'
+          python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install ruff
-        run: pip install ruff
-
-      - name: Check Python formatting
+      - name: Install dependencies
         run: |
-          ruff format --check .
-          if [ $? -eq 0 ]; then
-            echo "✓ All Python files are properly formatted"
-          else
-            echo "✗ Formatting errors found. Run 'ruff format .' locally to fix."
-            exit 1
-          fi
+          pip install uv
+          uv sync --frozen --group dev
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Run tests
+        run: uv run pytest
