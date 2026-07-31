@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install uv
-          uv sync --frozen --group dev
+          uv sync --frozen --extra dev
 
       - name: Check formatting
         run: uv run ruff format --check .
