@@ -1,6 +1,21 @@
 #!/bin/bash
 # Start headless Chromium for chrome-devtools MCP
 
+# Load extra hosts from instance config (e.g. instance/<name>/agent/extra-hosts)
+# Standard /etc/hosts format — one entry per line:
+#   127.0.0.1    stage.foo.redhat.com
+#   ::1          stage.foo.redhat.com
+#   10.0.0.5     custom.internal
+for hosts_file in instance/*/agent/extra-hosts; do
+    [ -f "$hosts_file" ] || continue
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%%#*}"
+        [ -z "${line// /}" ] && continue
+        echo "$line" >> /etc/hosts 2>/dev/null || true
+    done < "$hosts_file"
+    echo "Loaded extra hosts from ${hosts_file}"
+done
+
 # Skip if Chromium already running (idempotent during transition period)
 if curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1; then
     echo "Chromium already running, skipping"
