@@ -13,6 +13,7 @@ Run with: pytest tests/test_git_proxy_integration.py -v
 """
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -280,7 +281,7 @@ def is_ci_environment() -> bool:
     return os.getenv("CI") == "true" or os.getenv("GITHUB_ACTIONS") == "true"
 
 
-# Mark all tests as requiring docker-compose
-pytestmark = pytest.mark.skipif(
-    not Path("docker-compose.yml").exists(), reason="docker-compose.yml not found - run from repo root"
-)
+pytestmark = [
+    pytest.mark.skipif(not Path("docker-compose.yml").exists(), reason="docker-compose.yml not found"),
+    pytest.mark.skipif(not shutil.which("docker"), reason="docker not available"),
+]
