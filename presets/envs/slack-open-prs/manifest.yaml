@@ -1,0 +1,16 @@
+name: slack-open-prs
+type: env
+description: Sync emoji reactions on Open PRs Slack thread with GH/GL PR status
+
+default_schedule: "0 9 * * 1-5"
+
+requires:
+  env_vars:
+    - SLACK_USER_TOKEN
+    - SLACK_OPEN_PRS_CHANNEL
+  optional_env_vars:
+    - SLACK_OPEN_PRS_PATTERN
+    - SLACK_OPEN_PRS_POSTER
+    - SLACK_OPEN_PRS_SCHEDULE
+  pip:
+    - croniter
