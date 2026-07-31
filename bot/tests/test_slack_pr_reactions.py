@@ -12,6 +12,10 @@ SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared
 sys.path.insert(0, str(SHARED_DIR))
 
 from slack_pr_reactions import (  # noqa: E402
+    EMOJI_APPROVED,
+    EMOJI_CHANGES,
+    EMOJI_EYES,
+    EMOJI_MERGED,
     check_pr_status,
     check_schedule,
     desired_reaction_from_gh,
@@ -79,19 +83,19 @@ def test_check_schedule_weekend():
 
 
 def test_gh_open_no_decision_eyes():
-    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "REVIEW_REQUIRED"}) == "eyes"
+    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "REVIEW_REQUIRED"}) == EMOJI_EYES
 
 
 def test_gh_approved_lgtm():
-    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "APPROVED"}) == "lgtm-5363"
+    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "APPROVED"}) == EMOJI_APPROVED
 
 
 def test_gh_changes_requested():
-    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED"}) == "changes_requested"
+    assert desired_reaction_from_gh({"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED"}) == EMOJI_CHANGES
 
 
 def test_gh_merged():
-    assert desired_reaction_from_gh({"state": "MERGED"}) == "merged2"
+    assert desired_reaction_from_gh({"state": "MERGED"}) == EMOJI_MERGED
 
 
 def test_gh_closed_clears():
@@ -102,20 +106,20 @@ def test_gh_closed_clears():
 
 
 def test_gl_open_eyes():
-    assert desired_reaction_from_gl({"state": "opened"}) == "eyes"
+    assert desired_reaction_from_gl({"state": "opened"}) == EMOJI_EYES
 
 
 def test_gl_approved_lgtm():
-    assert desired_reaction_from_gl({"state": "opened", "approved": True}) == "lgtm-5363"
+    assert desired_reaction_from_gl({"state": "opened", "approved": True}) == EMOJI_APPROVED
 
 
 def test_gl_blocking_discussions_changes():
     mr = {"state": "opened", "blocking_discussions_resolved": False}
-    assert desired_reaction_from_gl(mr) == "changes_requested"
+    assert desired_reaction_from_gl(mr) == EMOJI_CHANGES
 
 
 def test_gl_merged():
-    assert desired_reaction_from_gl({"state": "merged"}) == "merged2"
+    assert desired_reaction_from_gl({"state": "merged"}) == EMOJI_MERGED
 
 
 def test_gl_closed_clears():
@@ -141,40 +145,40 @@ def mock_conflict():
 
 def test_sync_adds_desired_reaction(mock_reactions, mock_conflict):
     add, remove = mock_reactions
-    sync_reaction("token", "C1", "123.456", "100.000", [], "eyes", "BOT")
-    add.assert_called_once_with("token", "C1", "123.456", "eyes")
+    sync_reaction("token", "C1", "123.456", "100.000", [], EMOJI_EYES, "BOT")
+    add.assert_called_once_with("token", "C1", "123.456", EMOJI_EYES)
     remove.assert_not_called()
     mock_conflict.assert_not_called()
 
 
 def test_sync_removes_old_bot_reaction_before_add(mock_reactions, mock_conflict):
     add, remove = mock_reactions
-    current = [{"name": "eyes", "users": ["BOT"]}]
-    sync_reaction("token", "C1", "123.456", "100.000", current, "lgtm-5363", "BOT")
-    remove.assert_called_once_with("token", "C1", "123.456", "eyes")
-    add.assert_called_once_with("token", "C1", "123.456", "lgtm-5363")
+    current = [{"name": EMOJI_EYES, "users": ["BOT"]}]
+    sync_reaction("token", "C1", "123.456", "100.000", current, EMOJI_APPROVED, "BOT")
+    remove.assert_called_once_with("token", "C1", "123.456", EMOJI_EYES)
+    add.assert_called_once_with("token", "C1", "123.456", EMOJI_APPROVED)
 
 
 def test_sync_closed_removes_bot_status(mock_reactions, mock_conflict):
     add, remove = mock_reactions
-    current = [{"name": "eyes", "users": ["BOT"]}, {"name": "jira-blocker", "users": ["HUMAN"]}]
+    current = [{"name": EMOJI_EYES, "users": ["BOT"]}, {"name": "jira-blocker", "users": ["HUMAN"]}]
     sync_reaction("token", "C1", "123.456", "100.000", current, None, "BOT")
-    remove.assert_called_once_with("token", "C1", "123.456", "eyes")
+    remove.assert_called_once_with("token", "C1", "123.456", EMOJI_EYES)
     add.assert_not_called()
 
 
 def test_sync_human_conflict_posts_comment(mock_reactions, mock_conflict):
     add, remove = mock_reactions
-    current = [{"name": "lgtm-5363", "users": ["HUMAN"]}]
-    sync_reaction("token", "C1", "123.456", "100.000", current, "eyes", "BOT")
+    current = [{"name": EMOJI_APPROVED, "users": ["HUMAN"]}]
+    sync_reaction("token", "C1", "123.456", "100.000", current, EMOJI_EYES, "BOT")
     add.assert_called_once()
-    mock_conflict.assert_called_once_with("token", "C1", "100.000", "123.456", "lgtm-5363", "eyes")
+    mock_conflict.assert_called_once_with("token", "C1", "100.000", "123.456", EMOJI_APPROVED, EMOJI_EYES)
 
 
 def test_sync_skips_jira_blocker(mock_reactions, mock_conflict):
     add, remove = mock_reactions
     current = [{"name": "jira-blocker", "users": ["HUMAN"]}]
-    sync_reaction("token", "C1", "123.456", "100.000", current, "eyes", "BOT")
+    sync_reaction("token", "C1", "123.456", "100.000", current, EMOJI_EYES, "BOT")
     add.assert_called_once()
     remove.assert_not_called()
 
@@ -230,7 +234,7 @@ def test_check_pr_status_github_success():
         run.return_value.stdout = gh_json
         desired, ok = check_pr_status("github", "org/repo", 1)
     assert ok is True
-    assert desired == "lgtm-5363"
+    assert desired == EMOJI_APPROVED
 
 
 def test_check_pr_status_github_error():
@@ -249,7 +253,7 @@ def test_check_pr_status_gitlab_success():
         run.return_value.stdout = gl_json
         desired, ok = check_pr_status("gitlab", "team/proj", 5)
     assert ok is True
-    assert desired == "merged2"
+    assert desired == EMOJI_MERGED
 
 
 def test_check_pr_status_gitlab_error():
@@ -270,7 +274,7 @@ def test_process_thread_syncs_pr_messages():
     ]
     with (
         patch("slack_pr_reactions.get_thread_replies", return_value=replies),
-        patch("slack_pr_reactions.check_pr_status", return_value=("eyes", True)),
+        patch("slack_pr_reactions.check_pr_status", return_value=(EMOJI_EYES, True)),
         patch("slack_pr_reactions.get_reactions", return_value=[]),
         patch("slack_pr_reactions.sync_reaction") as sync,
     ):

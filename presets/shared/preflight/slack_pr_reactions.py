@@ -25,7 +25,12 @@ DEFAULT_PATTERN = "open prs"
 GH_PR_RE = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 GL_MR_RE = re.compile(r"https://gitlab\.cee\.redhat\.com/([\w./-]+)/-/merge_requests/(\d+)")
 
-STATUS_REACTIONS = ["eyes", "lgtm-5363", "changes_requested", "merged2"]
+EMOJI_EYES = os.environ.get("SLACK_EMOJI_EYES", "eyes")
+EMOJI_APPROVED = os.environ.get("SLACK_EMOJI_APPROVED", "white_check_mark")
+EMOJI_CHANGES = os.environ.get("SLACK_EMOJI_CHANGES", "x")
+EMOJI_MERGED = os.environ.get("SLACK_EMOJI_MERGED", "rocket")
+
+STATUS_REACTIONS = [EMOJI_EYES, EMOJI_APPROVED, EMOJI_CHANGES, EMOJI_MERGED]
 MANUAL_ONLY = "jira-blocker"
 REACTION_SLEEP = 1.0
 
@@ -53,33 +58,33 @@ def desired_reaction_from_gh(pr: dict) -> str | None:
     """Map GitHub PR JSON to status reaction name, or None to clear reactions."""
     state = pr.get("state", "")
     if state == "MERGED":
-        return "merged2"
+        return EMOJI_MERGED
     if state == "CLOSED":
         return None
     decision = pr.get("reviewDecision")
     if decision == "CHANGES_REQUESTED":
-        return "changes_requested"
+        return EMOJI_CHANGES
     if decision == "APPROVED":
-        return "lgtm-5363"
-    return "eyes"
+        return EMOJI_APPROVED
+    return EMOJI_EYES
 
 
 def desired_reaction_from_gl(mr: dict) -> str | None:
     """Map GitLab MR JSON to status reaction name, or None to clear reactions."""
     state = mr.get("state", "")
     if state == "merged":
-        return "merged2"
+        return EMOJI_MERGED
     if state == "closed":
         return None
     if not mr.get("blocking_discussions_resolved", True):
-        return "changes_requested"
+        return EMOJI_CHANGES
     if mr.get("approved"):
-        return "lgtm-5363"
+        return EMOJI_APPROVED
     approvals_required = mr.get("approvals_before_merge") or 0
     approved_by = mr.get("approved_by") or []
     if approvals_required and len(approved_by) >= approvals_required:
-        return "lgtm-5363"
-    return "eyes"
+        return EMOJI_APPROVED
+    return EMOJI_EYES
 
 
 def _slack_request(token: str, method: str, params: dict | None = None, post_data: dict | None = None) -> dict | None:

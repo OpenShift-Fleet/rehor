@@ -1,0 +1,204 @@
+[
+  {
+    "user": "U0BM3C62UK0",
+    "type": "message",
+    "ts": "1785505916.361589",
+    "bot_id": "B0BLQTCPXBR",
+    "app_id": "A0BM7SGFZMX",
+    "text": "Open PRs - weekly review",
+    "team": "T03V06S8CAF",
+    "bot_profile": {
+      "id": "B0BLQTCPXBR",
+      "deleted": false,
+      "name": "rehor-test",
+      "updated": 1785504999,
+      "app_id": "A0BM7SGFZMX",
+      "icons": {
+        "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+        "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+        "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+      },
+      "team_id": "T03V06S8CAF"
+    },
+    "thread_ts": "1785505916.361589",
+    "reply_count": 3,
+    "reply_users_count": 1,
+    "latest_reply": "1785505917.453939",
+    "reply_users": [
+      "U0BM3C62UK0"
+    ],
+    "is_locked": false,
+    "subscribed": true,
+    "last_read": "1785505917.453939",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "block_id": "rFqoF",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "text",
+                "text": "Open PRs - weekly review"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "user": "U0BM3C62UK0",
+    "type": "message",
+    "ts": "1785505916.701089",
+    "bot_id": "B0BLQTCPXBR",
+    "app_id": "A0BM7SGFZMX",
+    "text": "[release-4.21] Re-enable Knative Cypress e2e tests\n<https://github.com/openshift/console/pull/16896>",
+    "team": "T03V06S8CAF",
+    "bot_profile": {
+      "id": "B0BLQTCPXBR",
+      "app_id": "A0BM7SGFZMX",
+      "name": "rehor-test",
+      "icons": {
+        "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+        "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+        "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+      },
+      "deleted": false,
+      "updated": 1785504999,
+      "team_id": "T03V06S8CAF"
+    },
+    "thread_ts": "1785505916.361589",
+    "parent_user_id": "U0BM3C62UK0",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "block_id": "xgGHH",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "text",
+                "text": "[release-4.21] Re-enable Knative Cypress e2e tests\n"
+              },
+              {
+                "type": "link",
+                "url": "https://github.com/openshift/console/pull/16896"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "reactions": [
+      {
+        "name": "eyes",
+        "users": [
+          "U0BM3C62UK0"
+        ],
+        "count": 1
+      }
+    ]
+  },
+  {
+    "user": "U0BM3C62UK0",
+    "type": "message",
+    "ts": "1785505917.047089",
+    "bot_id": "B0BLQTCPXBR",
+    "app_id": "A0BM7SGFZMX",
+    "text": "[release-4.21] Fix pod terminal not rendering until resize\n<https://github.com/openshift/console/pull/16894>",
+    "team": "T03V06S8CAF",
+    "bot_profile": {
+      "id": "B0BLQTCPXBR",
+      "app_id": "A0BM7SGFZMX",
+      "name": "rehor-test",
+      "icons": {
+        "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+        "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+        "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+      },
+      "deleted": false,
+      "updated": 1785504999,
+      "team_id": "T03V06S8CAF"
+    },
+    "thread_ts": "1785505916.361589",
+    "parent_user_id": "U0BM3C62UK0",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "block_id": "OsH7p",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "text",
+                "text": "[release-4.21] Fix pod terminal not rendering until resize\n"
+              },
+              {
+                "type": "link",
+                "url": "https://github.com/openshift/console/pull/16894"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "reactions": [
+      {
+        "name": "eyes",
+        "users": [
+          "U0BM3C62UK0"
+        ],
+        "count": 1
+      }
+    ]
+  },
+  {
+    "user": "U0BM3C62UK0",
+    "type": "message",
+    "ts": "1785505917.453939",
+    "bot_id": "B0BLQTCPXBR",
+    "app_id": "A0BM7SGFZMX",
+    "text": "chore(sdk): attribute react-router peer bump\n<https://github.com/openshift/console/pull/16895>",
+    "team": "T03V06S8CAF",
+    "bot_profile": {
+      "id": "B0BLQTCPXBR",
+      "app_id": "A0BM7SGFZMX",
+      "name": "rehor-test",
+      "icons": {
+        "image_36": "https://a.slack-edge.com/80588/img/plugins/app/bot_36.png",
+        "image_48": "https://a.slack-edge.com/80588/img/plugins/app/bot_48.png",
+        "image_72": "https://a.slack-edge.com/80588/img/plugins/app/service_72.png"
+      },
+      "deleted": false,
+      "updated": 1785504999,
+      "team_id": "T03V06S8CAF"
+    },
+    "thread_ts": "1785505916.361589",
+    "parent_user_id": "U0BM3C62UK0",
+    "blocks": [
+      {
+        "type": "rich_text",
+        "block_id": "Iyd5",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              {
+                "type": "text",
+                "text": "chore(sdk): attribute react-router peer bump\n"
+              },
+              {
+                "type": "link",
+                "url": "https://github.com/openshift/console/pull/16895"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
