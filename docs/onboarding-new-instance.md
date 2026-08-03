@@ -516,6 +516,40 @@ After deploying, verify in order:
 
 ---
 
+## Slack Workspace Configuration
+
+Bot instances connect to a specific Slack workspace via their `SLACK_USER_TOKEN`. The token determines which workspace the bot operates in — production or sandbox.
+
+### Production vs Sandbox
+
+| | Production | Sandbox |
+|---|---|---|
+| Workspace | `redhat.enterprise.slack.com` | `redhat-sandbox.enterprise.slack.com` |
+| Token | `xoxp-...` from production Vault | `xoxp-...` from sandbox workspace |
+| Channel IDs | Different per workspace | Different per workspace |
+| Custom emoji | Workspace-specific | Must exist in sandbox too |
+
+The `hcc-framework-agent-dev` instance connects to the **production** Slack grid. To test Slack features against the sandbox workspace, you need either:
+
+- **Option A: Separate dev instance** — deploy a new instance with sandbox-specific Vault secrets (sandbox `SLACK_USER_TOKEN`, sandbox channel IDs, sandbox emoji names). This is the cleanest approach.
+- **Option B: Direct production testing** — skip sandbox entirely and test in the existing dev instance against production Slack (requires Slack app approval for production workspace).
+
+### Slack Environment Variables
+
+When pointing an instance at a different workspace, update all Slack-related parameters:
+
+| Variable | Description |
+|----------|-------------|
+| `SLACK_USER_TOKEN` | `xoxp-...` token for the target workspace |
+| `SLACK_OPEN_PRS_CHANNEL` | Channel ID for the Open PRs thread (workspace-specific) |
+| `SLACK_EMOJI_APPROVED` | Emoji name for approved PRs (e.g. `lgtm-5363`) |
+| `SLACK_EMOJI_MERGED` | Emoji name for merged PRs (e.g. `merged2`) |
+| `SLACK_WEBHOOK_URL` | Webhook URL (also workspace-specific) |
+
+Channel IDs and custom emoji names differ between workspaces — you cannot reuse production values in sandbox.
+
+---
+
 ## Gotchas
 
 ### NetworkPolicy proxy label must be `devbot-proxy`
