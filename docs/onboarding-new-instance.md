@@ -153,7 +153,7 @@ Typically just points to the shared Jira MCP server:
 
 #### Personas
 
-Copy and adapt from `dev-bot/rehor-config/agent/personas/`. Each persona is a `prompt.md` with coding standards, test commands, and conventions for that repo type.
+Copy and adapt from an existing instance (e.g. `hcc-ui-agent-dev`). Each persona is a `prompt.md` with coding standards, test commands, and conventions for that repo type.
 
 ### `README.md`
 

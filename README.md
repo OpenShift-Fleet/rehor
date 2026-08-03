@@ -8,9 +8,9 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](ARCHITECTURE.md) | System design, credential isolation, component overview |
-| [Setup](SETUP.md) | Local development setup and configuration |
-| [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
+| [Architecture](docs/ARCHITECTURE.md) | System design, credential isolation, component overview |
+| [Setup](docs/SETUP.md) | Local development setup and configuration |
+| [Operations](docs/OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
 | [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
 | [Custom Workflows](docs/presets/custom-workflows.md) | Guide to building custom workflows for your instance |
@@ -86,10 +86,6 @@ make logs              # Tail bot log
 make memory-server     # Start memory server + postgres (standalone)
 make memory-server-stop # Stop standalone memory server
 make dashboard         # Build the dashboard UI
-make costs             # Show all cost data
-make costs-today       # Show today's costs
-make costs-week        # Show this week's costs
-make seed-costs        # Import costs.jsonl into the database
 make help              # Show all available commands
 ```
 
@@ -132,16 +128,6 @@ Tickets must be explicitly groomed. The bot never picks random backlog items.
 
 - `needs-investigation` — bot investigates and reports findings instead of implementing
 - `platform-experience-ui` — routes the ticket to the UI sprint (scrum boards only)
-
-### Interactive grooming
-
-There's a prompt that walks you through preparing a ticket:
-
-```bash
-claude --prompt-file prompts/groom.md
-```
-
-It helps identify repos, suggests labels, and produces a ready-to-create ticket with acceptance criteria.
 
 ### What makes a good bot ticket
 
@@ -241,7 +227,7 @@ To update to the latest dev-bot: `git submodule update --remote dev-bot`
 
 ### Option A: OpenShift (recommended)
 
-The production deployment. Bot, proxy, and memory server run as separate pods with full credential isolation and network policies. See `deploy/template.yaml` and `OPERATIONS.md` for details.
+The production deployment. Bot, proxy, and memory server run as separate pods with full credential isolation and network policies. See `deploy/template.yaml` and `docs/OPERATIONS.md` for details.
 
 ### Option B: Bot on host (advanced)
 
@@ -271,13 +257,7 @@ Dashboard at **http://localhost:8080** — tasks, memories, semantic search, 3D 
 
 ### Browser for visual verification
 
-For UI changes, the bot uses chrome-devtools MCP to take screenshots. Start a Chrome/Chromium instance with remote debugging:
-
-```bash
-./start-chromium.sh
-```
-
-This launches Chrome on port 9222 with a separate profile. Edit the script to use `chromium` if that's what you have.
+For UI changes, the bot uses chrome-devtools MCP to take screenshots. Chromium is started automatically via the `browser` env preset — see `presets/envs/browser/`.
 
 ### 3. Configuration
 
@@ -361,8 +341,6 @@ Each cycle records its cost to `costs.jsonl` and the memory server database.
 make costs           # All recorded cycles
 make costs-today     # Today only
 make costs-week      # Last 7 days
-./costs.sh 2026-03-31   # Specific date
-./costs.sh backfill     # Import from bot.log
 ```
 
 The dashboard at http://localhost:8080 shows cost breakdowns, per-cycle metrics, task status, memory search, and a 3D embedding visualization.
@@ -457,8 +435,6 @@ dev-bot/
   docker-compose.yml     # Full stack: bot + proxy + memory server + postgres
   entrypoint.sh          # Container entrypoint (remote config sync + bot start)
   init.sh                # Installs LSP, downloads BrowserMCP, starts memory server
-  costs.sh               # Cost report CLI
-  start-chromium.sh      # Launch Chrome with remote debugging
   .claude/               # Claude Code config
     settings.json        # Permissions + sandbox config
     hooks/               # Bash validation hooks (security)
@@ -488,11 +464,10 @@ dev-bot/
       migrations/        # Database migrations (zero-downtime)
       static/            # Dashboard UI (React + Vite, built assets)
     docker-compose.yml   # PostgreSQL (pgvector) + memory server
-  prompts/               # Interactive prompts (grooming, etc.)
   dashboard/             # Dashboard source (React + Vite + TypeScript)
   deploy/                # OpenShift deployment template
-  tests/                 # Bot unit tests (merge engine, etc.)
-  scripts/               # Utility scripts
+  docs/                  # Architecture, operations, setup, and design docs
+  impact-data/           # Impact assessment report generation
   repos/                 # Cloned target repos (created on demand, gitignored)
 ```
 
