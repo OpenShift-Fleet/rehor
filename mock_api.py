@@ -119,9 +119,24 @@ class Handler(BaseHTTPRequestHandler):
                         "repo": BOT_STATUS["repo"],
                         "cycle_start": BOT_STATUS["cycle_start"],
                         "updated_at": BOT_STATUS["updated_at"],
+                        "last_seen": BOT_STATUS.get("last_seen"),
                         "active_tasks": sum(1 for t in TASKS.values() if t["status"] in ACTIVE_STATUSES),
                         "max_tasks": MAX_ACTIVE,
-                    }
+                    },
+                    {
+                        "instance_id": "staging-bot",
+                        "state": "idle",
+                        "message": "",
+                        "external_key": None,
+                        "source_type": "jira",
+                        "source_url": None,
+                        "repo": None,
+                        "cycle_start": None,
+                        "updated_at": "2026-07-20T08:00:00Z",
+                        "last_seen": "2026-07-20T08:00:00Z",
+                        "active_tasks": 0,
+                        "max_tasks": 5,
+                    },
                 ]
             )
 

@@ -71,7 +71,7 @@ export default function BotBanner({ status }: Props) {
     return () => clearInterval(id);
   }, [status.state, status.cycle_start]);
 
-  const message = state === 'sleep' ? 'Bot is sleeping — no running pods' : status.message;
+  const message = state === 'sleep' ? "Bot hasn't checked in recently" : status.message;
 
   return (
     <Card isCompact isGlass style={{ borderLeft: `3px solid ${stateBorderColor(state)}`, marginBottom: '12px' }}>

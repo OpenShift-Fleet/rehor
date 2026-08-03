@@ -113,7 +113,7 @@ export default function Instances() {
             <CardBody>
               <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
                 <Content component="p" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: 'var(--pf-t--global--text--color--subtle)' }}>
-                  {state === 'sleep' ? 'Bot is sleeping — no running pods' : inst.message}
+                  {state === 'sleep' ? "Bot hasn't checked in recently" : inst.message}
                 </Content>
                 <LabelGroup>
                   {displayKey(inst) && (

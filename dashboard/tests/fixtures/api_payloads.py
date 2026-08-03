@@ -329,6 +329,7 @@ BOT_STATUS = {
     "instance_id": "dev-bot",
     "updated_at": "2026-07-22T10:00:00Z",
     "cycle_start": "2026-07-22T09:55:00Z",
+    "last_seen": "2026-07-22T10:00:00Z",
 }
 
 TASK_CYCLE_GROUPS = [
