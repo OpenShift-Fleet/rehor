@@ -4,6 +4,8 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 
 ## Documentation
 
+**[Browse the full documentation site](https://redhatinsights.github.io/platform-frontend-ai-dev/)**
+
 | Document | Description |
 |----------|-------------|
 | [Architecture](docs/ARCHITECTURE.md) | System design, credential isolation, component overview |

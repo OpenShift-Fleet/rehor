@@ -47,5 +47,8 @@ rehor-impact-assessment-generated.md
 .claude/skills/wrap-up/
 .claude/skills/triage/
 .claude/skills/new-work/
+# MkDocs build output
+site/
+
 # IDEs and Editors
 .vscode/
