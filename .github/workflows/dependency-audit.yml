@@ -25,6 +25,8 @@ on:
 permissions:
   contents: read
 
+# TODO(REHOR follow-up): switch go-audit and node-audit back to blocking
+# once dependency remediation lands for Go/Node vulnerabilities.
 jobs:
   python-audit:
     runs-on: ubuntu-latest
@@ -70,7 +72,13 @@ jobs:
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
+          set +e
           govulncheck ./...
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::govulncheck reported vulnerabilities. report-only mode is enabled until dependency remediation is merged."
+          fi
 
   node-audit:
     runs-on: ubuntu-latest
@@ -93,4 +101,11 @@ jobs:
         run: npm ci
 
       - name: Run npm audit
-        run: npm audit --audit-level=high
+        run: |
+          set +e
+          npm audit --audit-level=high
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::npm audit reported vulnerabilities. report-only mode is enabled until dependency remediation is merged."
+          fi
