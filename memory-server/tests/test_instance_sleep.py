@@ -1,6 +1,6 @@
 """Tests for instance sleep heartbeat (last_seen column and wake-poll update)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from bot_memory_server.api import _instance_row
@@ -39,7 +39,7 @@ async def test_last_seen_column_exists(db):
 async def test_last_seen_updated_on_wake_poll(db):
     await _apply_schema(db)
     await _insert_instance(db, "inst-2")
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     await db.execute(UPDATE_LAST_SEEN_SQL, "inst-2")
     row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-2")
     assert row["last_seen"] is not None
@@ -49,7 +49,7 @@ async def test_last_seen_updated_on_wake_poll(db):
 @pytest.mark.asyncio
 async def test_last_seen_in_instance_row(db):
     await _apply_schema(db)
-    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
     await db.execute(
         """INSERT INTO bot_instances (instance_id, state, message, repo, last_seen)
            VALUES ($1, $2, $3, $4, $5)""",

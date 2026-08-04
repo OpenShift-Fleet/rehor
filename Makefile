@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify precommit-install precommit-run prepush-install prepush-check
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
@@ -40,6 +40,22 @@ prepush-install: ## Install pre-push git hook
 
 prepush-check: ## Run pre-push quality checks manually
 	bash scripts/prepush_check.sh
+
+memory-verify: ## Run memory-server CI-equivalent checks locally
+	cd memory-server && uv sync --frozen --extra test
+	cd memory-server && uv lock --check
+	cd memory-server && uv run pytest -q
+	@echo "=== Memory Server: pip-audit (report-only) ==="
+	@cd memory-server && uv run pip-audit --desc --local --skip-editable; \
+	status=$$?; \
+	if [ "$$status" -eq 0 ]; then \
+		echo "pip-audit found no vulnerabilities."; \
+	elif [ "$$status" -eq 1 ]; then \
+		echo "pip-audit reported vulnerabilities (report-only)"; \
+	else \
+		echo "pip-audit failed to execute correctly (exit $$status)"; \
+		exit "$$status"; \
+	fi
 
 install: ## Install dependencies with uv
 	uv sync
