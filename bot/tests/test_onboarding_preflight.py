@@ -273,7 +273,7 @@ def test_blocked_task_skipped(env_vars, monkeypatch, capsys):
     assert "BLOCKED" in out["content"]
 
 
-def test_auto_advance_label_returns_start(env_vars, monkeypatch, capsys):
+def test_auto_advance_label_merged_returns_start(env_vars, monkeypatch, capsys):
     tasks = _mock_tasks(
         active=[
             {
@@ -293,12 +293,42 @@ def test_auto_advance_label_returns_start(env_vars, monkeypatch, capsys):
     monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
     monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
     monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t: True)
     monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
 
     main()
     out = json.loads(capsys.readouterr().out.strip())
     assert out["status"] == "start"
-    assert "CHECK FOR PHASE ADVANCE" in out["content"]
+    assert "PR/MR MERGED" in out["content"]
+
+
+def test_auto_advance_label_not_merged_returns_skip(env_vars, monkeypatch, capsys):
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-40",
+                "status": "in_progress",
+                "repo": "",
+                "last_addressed": "2026-07-01T12:00:00",
+                "metadata": {"step": "scaffolding-pr"},
+            }
+        ]
+    )
+    issue = {
+        "labels": ["rehor-ai-onboarding-bot", "onboarding:scaffolding-pr"],
+        "comments": [],
+    }
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t: False)
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "waiting for PR/MR merge" in out["content"]
 
 
 def test_missing_instance_id_returns_error(monkeypatch, capsys):

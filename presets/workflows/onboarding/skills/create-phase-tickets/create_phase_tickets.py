@@ -68,7 +68,7 @@ def _detect_parent_type(issue_key):
     )
     if not result:
         return None
-    issuetype = result.get("issuetype") or result.get("fields", {}).get("issuetype")
+    issuetype = result.get("issue_type") or result.get("issuetype") or result.get("fields", {}).get("issuetype")
     if isinstance(issuetype, dict):
         return issuetype.get("name")
     return None
@@ -106,7 +106,7 @@ def create_tickets(epic_key, project_key, team_name):
             print(f"ERROR: Failed to create ticket for {phase['key']}", file=sys.stderr)
             return None
 
-        ticket_key = result.get("key")
+        ticket_key = result.get("key") or (result.get("issue") or {}).get("key")
         if not ticket_key:
             print(f"ERROR: No key returned for {phase['key']}: {result}", file=sys.stderr)
             return None

@@ -14,25 +14,25 @@ from create_phase_tickets import PHASES, create_tickets
 
 def _mock_story_parent(tool_name, arguments):
     if tool_name == "jira_get_issue":
-        return {"fields": {"issuetype": {"name": "Story"}}}
+        return {"issue_type": {"name": "Story"}}
     if tool_name == "jira_create_issue":
         summary = arguments.get("summary", "")
         for i, phase in enumerate(PHASES):
             if phase["summary"] in summary:
-                return {"key": f"RHCLOUD-10{i}"}
-        return {"key": "RHCLOUD-999"}
+                return {"message": "Issue created", "issue": {"key": f"RHCLOUD-10{i}"}}
+        return {"message": "Issue created", "issue": {"key": "RHCLOUD-999"}}
     return None
 
 
 def _mock_epic_parent(tool_name, arguments):
     if tool_name == "jira_get_issue":
-        return {"fields": {"issuetype": {"name": "Epic"}}}
+        return {"issue_type": {"name": "Epic"}}
     if tool_name == "jira_create_issue":
         summary = arguments.get("summary", "")
         for i, phase in enumerate(PHASES):
             if phase["summary"] in summary:
-                return {"key": f"RHCLOUD-10{i}"}
-        return {"key": "RHCLOUD-999"}
+                return {"message": "Issue created", "issue": {"key": f"RHCLOUD-10{i}"}}
+        return {"message": "Issue created", "issue": {"key": "RHCLOUD-999"}}
     return None
 
 
@@ -40,7 +40,7 @@ def _mock_unknown_parent(tool_name, arguments):
     if tool_name == "jira_get_issue":
         return None
     if tool_name == "jira_create_issue":
-        return {"key": "RHCLOUD-100"}
+        return {"message": "Issue created", "issue": {"key": "RHCLOUD-100"}}
     return None
 
 

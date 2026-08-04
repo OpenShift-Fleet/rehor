@@ -8,8 +8,10 @@ Returns start when there's actionable work:
   - Nothing actionable → skip
 """
 
+import json
 import os
 import re
+import subprocess
 
 from common import (
     INSTANCE_ID,
@@ -20,6 +22,7 @@ from common import (
     get_tasks,
     output_result,
     save_state,
+    upstream_repo,
 )
 from jira_mcp import jira_call, jira_cleanup
 
@@ -98,6 +101,50 @@ def _get_onboarding_label(issue):
     return None
 
 
+def _any_pr_mr_merged(task):
+    """Check if any tracked PR/MR on this task has been merged."""
+    prs = get_task_prs(task)
+    for p in prs:
+        host = p.get("host", "github")
+        num = p.get("number")
+        repo = p.get("repo", "")
+        if not num or not repo:
+            continue
+        try:
+            if host == "github":
+                up, _ = upstream_repo(repo)
+                if not up:
+                    continue
+                r = subprocess.run(
+                    ["gh", "pr", "view", str(num), "--repo", up, "--json", "state"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if r.returncode == 0:
+                    data = json.loads(r.stdout)
+                    if data.get("state") == "MERGED":
+                        return True
+            else:
+                up, _ = upstream_repo(repo)
+                if not up:
+                    continue
+                encoded = up.replace("/", "%2F")
+                r = subprocess.run(
+                    ["glab", "api", f"projects/{encoded}/merge_requests/{num}", "--hostname", "gitlab.cee.redhat.com"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if r.returncode == 0:
+                    data = json.loads(r.stdout)
+                    if data.get("state") == "merged":
+                        return True
+        except Exception:
+            continue
+    return False
+
+
 def _fmt_candidate(issue):
     key = issue.get("key", "?")
     fields = issue.get("fields", {})
@@ -163,8 +210,11 @@ def main():
 
         labels_with_auto_advance = ("scaffolding-pr", "konflux-mr", "app-interface-mr")
         if step_from_label in labels_with_auto_advance:
-            task_lines.append(f"  *** CHECK FOR PHASE ADVANCE (current: {step_from_label}) ***")
-            has_work = True
+            if _any_pr_mr_merged(task):
+                task_lines.append(f"  *** PR/MR MERGED — ADVANCE PHASE (current: {step_from_label}) ***")
+                has_work = True
+            else:
+                task_lines.append(f"  waiting for PR/MR merge (current: {step_from_label})")
 
         lines.append("\n".join(task_lines))
 
