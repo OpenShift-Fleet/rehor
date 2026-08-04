@@ -106,6 +106,16 @@ Installs Chromium and the chrome-devtools MCP server for visual verification. Th
 
 **When to use**: Any instance working on UI repos where visual verification matters. The bot starts a dev server, navigates to the relevant page, and takes screenshots.
 
+**Custom DNS (extra-hosts)**: Create `instance/<name>/agent/extra-hosts` to inject hostnames into `/etc/hosts` before Chrome starts. Standard hosts format:
+
+```
+# Dev proxy hostname — resolves to localhost where Caddy listens
+127.0.0.1    stage.foo.redhat.com
+::1          stage.foo.redhat.com
+```
+
+The entrypoint loads this file automatically. Instances without `extra-hosts` are unaffected. Use this when Chrome needs to resolve hostnames that don't exist in public DNS (e.g. dev-proxy targets).
+
 **Requires env var**: `PLAYWRIGHT_BROWSERS_PATH` (set automatically in the container)
 
 **Depends on**: nothing

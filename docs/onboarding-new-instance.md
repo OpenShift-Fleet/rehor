@@ -62,6 +62,7 @@ instance/my-config/
     │   ├── frontend/
     │   │   └── prompt.md
     │   └── ...
+    ├── extra-hosts           # custom /etc/hosts entries for browser preset (optional)
     ├── preflight/            # instance-specific preflight scripts (optional)
     │   └── 01-check-something.py
     └── workflows/            # custom workflows (optional, if not using a built-in)
