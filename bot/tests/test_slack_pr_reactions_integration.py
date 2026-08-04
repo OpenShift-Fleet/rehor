@@ -1,7 +1,6 @@
-"""Integration tests for slack_pr_reactions — run against a real Slack sandbox.
+"""Integration tests for slack_pr_reactions — run against a real Slack workspace.
 
 Usage:
-    # Live mode (hits real Slack API):
     SLACK_USER_TOKEN=xoxp-... SLACK_OPEN_PRS_CHANNEL=C... \
         uv run pytest bot/tests/test_slack_pr_reactions_integration.py -v
 
@@ -9,20 +8,9 @@ Usage:
     SLACK_TEST_PR_URL=https://github.com/org/repo/pull/42 \
         uv run pytest bot/tests/test_slack_pr_reactions_integration.py -v
 
-    # Record fixtures for offline replay:
-    SLACK_RECORD_FIXTURES=1 \
-        uv run pytest bot/tests/test_slack_pr_reactions_integration.py -v
-
-    # Offline mode (uses recorded fixtures, no env vars needed):
-    uv run pytest bot/tests/test_slack_pr_reactions_integration.py -v
-
-Fixtures are stored in bot/tests/fixtures/slack_pr_reactions/.
-When SLACK_RECORD_FIXTURES=1, live responses are saved to that directory.
-When env vars are absent and fixtures exist, tests replay from fixtures.
-When neither env vars nor fixtures exist, tests skip.
+All tests skip when SLACK_USER_TOKEN and SLACK_OPEN_PRS_CHANNEL are not set.
 """
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -50,38 +38,13 @@ from slack_pr_reactions import (  # noqa: E402
     sync_reaction,
 )
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures" / "slack_pr_reactions"
-RECORD = os.environ.get("SLACK_RECORD_FIXTURES", "") == "1"
 TOKEN = os.environ.get("SLACK_USER_TOKEN", "").strip()
 CHANNEL = os.environ.get("SLACK_OPEN_PRS_CHANNEL", "").strip()
 PATTERN = os.environ.get("SLACK_OPEN_PRS_PATTERN", "").strip() or "open prs"
-TEST_PR_URL = os.environ.get("SLACK_TEST_PR_URL", "").strip()
 
 LIVE = bool(TOKEN and CHANNEL)
 
-
-def _fixture_path(name: str) -> Path:
-    return FIXTURES_DIR / f"{name}.json"
-
-
-def _save_fixture(name: str, data):
-    FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    _fixture_path(name).write_text(json.dumps(data, indent=2))
-
-
-def _load_fixture(name: str):
-    path = _fixture_path(name)
-    if path.exists():
-        return json.loads(path.read_text())
-    return None
-
-
-def _require_live_or_fixture(name: str):
-    if LIVE:
-        return
-    if _fixture_path(name).exists():
-        return
-    pytest.skip(f"No live credentials and no fixture '{name}' — run live first to record")
+pytestmark = pytest.mark.skipif(not LIVE, reason="SLACK_USER_TOKEN and SLACK_OPEN_PRS_CHANNEL required")
 
 
 # ---------------------------------------------------------------------------
@@ -91,38 +54,23 @@ def _require_live_or_fixture(name: str):
 
 @pytest.fixture(scope="module")
 def bot_user_id():
-    _require_live_or_fixture("bot_user_id")
-    if LIVE:
-        uid = get_bot_user_id(TOKEN)
-        assert uid, "Failed to resolve bot user ID from token"
-        if RECORD:
-            _save_fixture("bot_user_id", {"user_id": uid})
-        return uid
-    return _load_fixture("bot_user_id")["user_id"]
+    uid = get_bot_user_id(TOKEN)
+    assert uid, "Failed to resolve bot user ID from token"
+    return uid
 
 
 @pytest.fixture(scope="module")
 def thread_ts():
-    _require_live_or_fixture("thread")
-    if LIVE:
-        ts = find_open_prs_thread(TOKEN, CHANNEL, PATTERN)
-        assert ts, f"No thread matching '{PATTERN}' in channel {CHANNEL}"
-        if RECORD:
-            _save_fixture("thread", {"thread_ts": ts, "channel": CHANNEL, "pattern": PATTERN})
-        return ts
-    return _load_fixture("thread")["thread_ts"]
+    ts = find_open_prs_thread(TOKEN, CHANNEL, PATTERN)
+    assert ts, f"No thread matching '{PATTERN}' in channel {CHANNEL}"
+    return ts
 
 
 @pytest.fixture(scope="module")
 def thread_replies(thread_ts):
-    _require_live_or_fixture("replies")
-    if LIVE:
-        replies = get_thread_replies(TOKEN, CHANNEL, thread_ts)
-        assert replies, "Thread has no replies"
-        if RECORD:
-            _save_fixture("replies", replies)
-        return replies
-    return _load_fixture("replies")
+    replies = get_thread_replies(TOKEN, CHANNEL, thread_ts)
+    assert replies, "Thread has no replies"
+    return replies
 
 
 @pytest.fixture(scope="module")
@@ -160,7 +108,7 @@ class TestFindThread:
 
     def test_finds_thread(self, thread_ts):
         assert thread_ts
-        assert "." in thread_ts  # Slack ts format: "1234567890.123456"
+        assert "." in thread_ts
 
     def test_thread_ts_is_valid_slack_ts(self, thread_ts):
         parts = thread_ts.split(".")
@@ -206,34 +154,19 @@ class TestCheckPrStatus:
         host, repo, num = pr_info
         if host != "github":
             pytest.skip("First PR in thread is not GitHub")
-        _require_live_or_fixture("gh_pr_status")
-        if LIVE:
-            pr = check_github_pr(repo, num)
-            assert pr is not None, f"gh pr view failed for {repo}#{num}"
-            assert "state" in pr
-            assert pr["state"] in ("OPEN", "CLOSED", "MERGED")
-            if RECORD:
-                _save_fixture("gh_pr_status", pr)
-        else:
-            pr = _load_fixture("gh_pr_status")
-            assert pr["state"] in ("OPEN", "CLOSED", "MERGED")
+        pr = check_github_pr(repo, num)
+        assert pr is not None, f"gh pr view failed for {repo}#{num}"
+        assert "state" in pr
+        assert pr["state"] in ("OPEN", "CLOSED", "MERGED")
 
 
 class TestReactions:
     """Step 6: Read and manage reactions on a PR message."""
 
     def test_get_reactions(self, pr_message):
-        _require_live_or_fixture("reactions")
         ts = pr_message["ts"]
-        if LIVE:
-            reactions = get_reactions(TOKEN, CHANNEL, ts)
-            if RECORD:
-                _save_fixture("reactions", {"ts": ts, "reactions": reactions})
-            # reactions may be empty list — that's fine
-            assert isinstance(reactions, list)
-        else:
-            data = _load_fixture("reactions")
-            assert isinstance(data["reactions"], list)
+        reactions = get_reactions(TOKEN, CHANNEL, ts)
+        assert isinstance(reactions, list)
 
     def _assert_only_reaction(self, ts, expected, bot_user_id):
         """Assert bot has exactly one status reaction matching expected."""
@@ -246,18 +179,14 @@ class TestReactions:
             assert names == [expected], f"Expected only :{expected}:, found: {names}"
 
     def test_sync_cycle_eyes(self, pr_message, bot_user_id):
-        """Step 1: open PR, no reviews → :eyes:"""
-        if not LIVE:
-            pytest.skip("Reaction write tests require live credentials")
+        """open PR, no reviews -> :eyes:"""
         ts = pr_message["ts"]
         thread_ts_val = pr_message.get("thread_ts", ts)
         sync_reaction(TOKEN, CHANNEL, ts, thread_ts_val, [], EMOJI_EYES, bot_user_id)
         self._assert_only_reaction(ts, EMOJI_EYES, bot_user_id)
 
     def test_sync_cycle_changes(self, pr_message, bot_user_id):
-        """Step 2: changes requested → transitions from :eyes: to :x:"""
-        if not LIVE:
-            pytest.skip("Reaction write tests require live credentials")
+        """changes requested -> transitions from :eyes: to :x:"""
         ts = pr_message["ts"]
         thread_ts_val = pr_message.get("thread_ts", ts)
         current = get_reactions(TOKEN, CHANNEL, ts)
@@ -265,9 +194,7 @@ class TestReactions:
         self._assert_only_reaction(ts, EMOJI_CHANGES, bot_user_id)
 
     def test_sync_cycle_approved(self, pr_message, bot_user_id):
-        """Step 3: approved → transitions to :white_check_mark:"""
-        if not LIVE:
-            pytest.skip("Reaction write tests require live credentials")
+        """approved -> transitions to :white_check_mark:"""
         ts = pr_message["ts"]
         thread_ts_val = pr_message.get("thread_ts", ts)
         current = get_reactions(TOKEN, CHANNEL, ts)
@@ -275,9 +202,7 @@ class TestReactions:
         self._assert_only_reaction(ts, EMOJI_APPROVED, bot_user_id)
 
     def test_sync_cycle_merged(self, pr_message, bot_user_id):
-        """Step 4: merged → transitions to :done:"""
-        if not LIVE:
-            pytest.skip("Reaction write tests require live credentials")
+        """merged -> transitions to :rocket:"""
         ts = pr_message["ts"]
         thread_ts_val = pr_message.get("thread_ts", ts)
         current = get_reactions(TOKEN, CHANNEL, ts)
@@ -285,9 +210,7 @@ class TestReactions:
         self._assert_only_reaction(ts, EMOJI_MERGED, bot_user_id)
 
     def test_sync_cycle_clear(self, pr_message, bot_user_id):
-        """Step 5: closed (not merged) → clear all status reactions."""
-        if not LIVE:
-            pytest.skip("Reaction write tests require live credentials")
+        """closed (not merged) -> clear all status reactions."""
         ts = pr_message["ts"]
         thread_ts_val = pr_message.get("thread_ts", ts)
         current = get_reactions(TOKEN, CHANNEL, ts)
@@ -295,12 +218,7 @@ class TestReactions:
         self._assert_only_reaction(ts, None, bot_user_id)
 
     def test_sync_conflict_human_reaction(self, pr_message, bot_user_id):
-        """Step 6: conflict — needs a second Slack user to add a competing reaction.
-
-        Single-token sandbox can't distinguish human vs bot (same user ID).
-        Conflict logic is covered by unit tests (test_sync_human_conflict_posts_comment).
-        To test live: set SLACK_HUMAN_TOKEN to a different user's token.
-        """
+        """Conflict needs a second Slack user to add a competing reaction."""
         human_token = os.environ.get("SLACK_HUMAN_TOKEN", "").strip()
         if not human_token:
             pytest.skip("Conflict test needs SLACK_HUMAN_TOKEN (a second user's token)")
@@ -325,16 +243,12 @@ class TestFullFlow:
     """Step 7: End-to-end flow — process_thread on real data."""
 
     def test_process_thread(self, thread_ts, bot_user_id):
-        if not LIVE:
-            pytest.skip("Full flow test requires live credentials")
         count = process_thread(TOKEN, CHANNEL, thread_ts, bot_user_id)
         assert count >= 0
         print(f"\n  Processed {count} PR message(s)")
 
     def test_process_thread_idempotent(self, thread_ts, bot_user_id):
         """Running twice should not duplicate reactions or comments."""
-        if not LIVE:
-            pytest.skip("Full flow test requires live credentials")
         count1 = process_thread(TOKEN, CHANNEL, thread_ts, bot_user_id)
         count2 = process_thread(TOKEN, CHANNEL, thread_ts, bot_user_id)
         assert count1 == count2, "Second run should process same messages"
