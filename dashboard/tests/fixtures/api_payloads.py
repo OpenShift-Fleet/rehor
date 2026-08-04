@@ -1,6 +1,6 @@
 """Shared API payload fixtures for mock server and tests."""
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def task(
@@ -8,11 +8,11 @@ def task(
     key: str,
     summary: str,
     status: str,
-    paused_reason: Optional[str] = None,
+    paused_reason: str | None = None,
     day: str = "01",
     repo: str = "test-repo",
     branch: str = "main",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate task payload."""
     return {
         "id": id,
@@ -49,10 +49,10 @@ def memory(
     title: str,
     content: str,
     repo: str = "test-repo",
-    external_key: Optional[str] = None,
-    tags: Optional[List[str]] = None,
+    external_key: str | None = None,
+    tags: list[str] | None = None,
     day: str = "01",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate memory payload."""
     return {
         "id": id,
@@ -70,13 +70,13 @@ def memory(
 
 def cycle_run(
     id: int,
-    task_id: Optional[int],
+    task_id: int | None,
     cycle_type: str,
     instance_id: str = "dev-bot",
     started_day: str = "01",
     duration_min: int = 5,
     has_transcript: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate cycle run payload."""
     start = f"2026-07-{started_day}T10:00:00Z"
     end = f"2026-07-{started_day}T10:{duration_min:02d}:00Z"
@@ -104,9 +104,9 @@ def cycle_entry(
     model: str = "claude-sonnet-4",
     is_error: bool = False,
     no_work: bool = False,
-    external_key: Optional[str] = None,
-    repo: Optional[str] = None,
-) -> Dict[str, Any]:
+    external_key: str | None = None,
+    repo: str | None = None,
+) -> dict[str, Any]:
     """Generate cycle entry (costs) payload."""
     return {
         "id": id,

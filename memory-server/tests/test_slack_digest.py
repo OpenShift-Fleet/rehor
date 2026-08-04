@@ -7,7 +7,7 @@ them out of its internal registry.
 """
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -59,7 +59,7 @@ def _make_row(**kwargs):
         "repo": "org/repo",
         "title": "Fix navigation dropdown",
         "message": "New PR created: #42",
-        "queued_at": datetime.now(timezone.utc),
+        "queued_at": datetime.now(UTC),
         "sent": False,
     }
     defaults.update(kwargs)
@@ -107,7 +107,7 @@ class TestSlackNotifyImmediate:
         recent_row = {
             "id": 1,
             "event_type": "pr_created",
-            "sent_at": datetime.now(timezone.utc) - timedelta(hours=1),
+            "sent_at": datetime.now(UTC) - timedelta(hours=1),
         }
         pool = _make_pool(fetchrow_return=recent_row)
 
@@ -432,7 +432,7 @@ class TestFormatDigest:
                 message="Blocked on missing API",
             ),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
 
         result = _format_digest("framework-1", rows, now)
 
@@ -450,7 +450,7 @@ class TestFormatDigest:
             _make_row(id=1, event_type="pr_created"),
             _make_row(id=2, event_type="review_reminder", jira_key="RHCLOUD-101", title="Add tests"),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
 
         result = _format_digest(None, rows, now)
 
@@ -463,7 +463,7 @@ class TestFormatDigest:
             _make_row(id=1, event_type="needs_help", message="Help needed"),
             _make_row(id=2, event_type="release_pending", jira_key="RHCLOUD-102", message="PR merged"),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
 
         result = _format_digest("bot-1", rows, now)
 

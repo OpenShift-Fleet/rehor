@@ -11,7 +11,7 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills
 sys.path.insert(0, str(SHARED_DIR))
 sys.path.insert(0, str(SKILLS_DIR))
 
-from jira_triage import (  # noqa: E402
+from jira_triage import (
     has_new_jira_feedback,
     main,
 )

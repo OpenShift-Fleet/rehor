@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify precommit-install precommit-run prepush-install prepush-check
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
@@ -28,6 +28,18 @@ verify: ## Run all checks (same as CI)
 	cd dashboard && npm test
 	@echo ""
 	@echo "All checks passed."
+
+precommit-install: ## Install pre-commit hooks
+	pip install pre-commit && pre-commit install
+
+precommit-run: ## Run pre-commit on all files
+	pre-commit run --all-files
+
+prepush-install: ## Install pre-push git hook
+	bash scripts/install_prepush_hook.sh
+
+prepush-check: ## Run pre-push quality checks manually
+	bash scripts/prepush_check.sh
 
 install: ## Install dependencies with uv
 	uv sync

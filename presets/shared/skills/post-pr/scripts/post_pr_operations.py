@@ -22,9 +22,9 @@ import sys
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from jira_mcp import jira_call
@@ -34,7 +34,7 @@ logging.basicConfig(level=logging.INFO, format="[post-pr] %(levelname)s: %(messa
 logger = logging.getLogger(__name__)
 
 
-class OperationStatus(str, Enum):
+class OperationStatus(StrEnum):
     """Operation execution status."""
 
     SUCCESS = "success"
@@ -50,7 +50,7 @@ class OperationResult:
     status: OperationStatus
     message: str
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    details: Dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,10 +61,10 @@ class WorkflowResult:
     pr_url: str
     pr_number: int
     ticket_id: str
-    operations: List[OperationResult]
+    operations: list[OperationResult]
     timestamp: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "success": self.success,
@@ -92,7 +92,7 @@ class PostPROperations:
 
     def __init__(
         self,
-        slack_webhook: str,
+        slack_webhook: str | None,
         memory_store_path: str,
         jira_url: str = "https://redhat.atlassian.net",
         dry_run: bool = False,
@@ -104,7 +104,7 @@ class PostPROperations:
         self.memory_store_path.parent.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
-    def _run_cli(args: List[str], input_data: Optional[str] = None, timeout: int = CLI_TIMEOUT) -> tuple:
+    def _run_cli(args: list[str], input_data: str | None = None, timeout: int = CLI_TIMEOUT) -> tuple:
         """Run a CLI command and return (success, output)."""
         try:
             r = subprocess.run(args, input=input_data, capture_output=True, text=True, timeout=timeout)
@@ -114,7 +114,7 @@ class PostPROperations:
         except Exception as e:
             return False, str(e)
 
-    def _parse_pr_url(self, pr_url: str) -> Dict[str, str]:
+    def _parse_pr_url(self, pr_url: str) -> dict[str, str]:
         """Parse a PR/MR URL into components."""
         parsed = urllib.parse.urlparse(pr_url)
         hostname = parsed.hostname or ""
@@ -145,7 +145,7 @@ class PostPROperations:
         raise ValueError(f"Unsupported PR URL (not GitHub or GitLab): {pr_url}")
 
     def task_update(
-        self, pr_url: str, pr_number: int, ticket_id: str, reviewers: Optional[List[str]] = None
+        self, pr_url: str, pr_number: int, ticket_id: str, reviewers: list[str] | None = None
     ) -> OperationResult:
         """Update PR/MR with labels, JIRA link in description, and request reviewers.
 
@@ -168,7 +168,7 @@ class PostPROperations:
             )
 
     def _update_github_pr(
-        self, info: Dict[str, str], pr_url: str, pr_number: int, ticket_id: str, reviewers: List[str]
+        self, info: dict[str, str], pr_url: str, pr_number: int, ticket_id: str, reviewers: list[str]
     ) -> OperationResult:
         """Update GitHub PR via gh CLI."""
         owner = info["owner"]
@@ -251,7 +251,7 @@ class PostPROperations:
         )
 
     def _update_gitlab_mr(
-        self, info: Dict[str, str], pr_url: str, pr_number: int, ticket_id: str, reviewers: List[str]
+        self, info: dict[str, str], pr_url: str, pr_number: int, ticket_id: str, reviewers: list[str]
     ) -> OperationResult:
         """Update GitLab MR via glab CLI."""
         hostname = info["hostname"]
@@ -559,7 +559,7 @@ class PostPROperations:
                 operation="slack_notify", status=OperationStatus.FAILED, message=f"Slack notification failed: {e}"
             )
 
-    def memory_store(self, pr_url: str, ticket_id: str, learnings: Dict[str, Any]) -> OperationResult:
+    def memory_store(self, pr_url: str, ticket_id: str, learnings: dict[str, Any]) -> OperationResult:
         """Store implementation learnings in memory.
 
         Args:
@@ -584,7 +584,7 @@ class PostPROperations:
                 # Append to JSON file (accumulative)
                 memories = []
                 if self.memory_store_path.exists():
-                    with open(self.memory_store_path, "r") as f:
+                    with open(self.memory_store_path) as f:
                         memories = json.load(f)
                 memories.append(memory_entry)
                 with open(self.memory_store_path, "w") as f:
@@ -644,12 +644,12 @@ def execute_post_pr_workflow(
     pr_number: int,
     ticket_id: str,
     summary: str,
-    jira_url: Optional[str] = None,
-    slack_webhook: Optional[str] = None,
+    jira_url: str | None = None,
+    slack_webhook: str | None = None,
     slack_channel: str = "#hcc-ai-assistant",
-    memory_store_path: Optional[str] = None,
-    reviewers: Optional[List[str]] = None,
-    skip_operations: Optional[List[str]] = None,
+    memory_store_path: str | None = None,
+    reviewers: list[str] | None = None,
+    skip_operations: list[str] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
     """Execute the complete post-PR workflow.
@@ -669,7 +669,7 @@ def execute_post_pr_workflow(
         dry_run=dry_run,
     )
 
-    results: List[OperationResult] = []
+    results: list[OperationResult] = []
 
     # Operation 1: Update GitHub PR (add labels, JIRA link, request reviewers)
     if "github" not in skip_operations and "task" not in skip_operations:

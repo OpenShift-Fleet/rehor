@@ -4,6 +4,7 @@ Fetches active tasks, checks GitHub PRs, classifies into action buckets.
 Outputs JSON protocol: start if actionable items found, skip if all clean.
 """
 
+import contextlib
 import json
 import subprocess
 
@@ -60,10 +61,8 @@ def gh_pr_comments(owner_repo, num):
             )
             if r.returncode == 0 and r.stdout.strip():
                 for line in r.stdout.strip().split("\n"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         comments.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
         except Exception:
             pass
     return comments

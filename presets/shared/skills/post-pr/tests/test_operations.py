@@ -415,7 +415,7 @@ class TestMemoryStore:
 
         memory_file = Path(operations.memory_store_path)
         assert memory_file.exists()
-        with open(memory_file, "r") as f:
+        with open(memory_file) as f:
             memories = json.load(f)
             assert len(memories) == 1
             assert memories[0]["ticket_id"] == "TICKET-123"
@@ -435,7 +435,7 @@ class TestMemoryStore:
             learnings={"patterns": ["Pattern 2"]},
         )
 
-        with open(operations.memory_store_path, "r") as f:
+        with open(operations.memory_store_path) as f:
             memories = json.load(f)
             assert len(memories) == 2
             assert memories[0]["ticket_id"] == "TICKET-123"
@@ -471,7 +471,7 @@ class TestBotStatusUpdate:
 
         status_file = Path("/tmp/bot_status.json")
         assert status_file.exists()
-        with open(status_file, "r") as f:
+        with open(status_file) as f:
             data = json.load(f)
             assert data["status"] == "idle"
 

@@ -11,7 +11,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -20,7 +19,7 @@ class OperationResult:
 
     success: bool
     message: str
-    data: Optional[dict] = None
+    data: dict | None = None
 
 
 @dataclass
@@ -29,10 +28,10 @@ class RepositoryConfig:
 
     repo_type: str  # "github" or "gitlab"
     is_fork: bool
-    upstream: Optional[str] = None  # e.g., "RedHatInsights/hcc-ai-assistant"
-    fork: Optional[str] = None  # e.g., "catastrophe-brandon/hcc-ai-assistant"
-    upstream_url: Optional[str] = None
-    fork_url: Optional[str] = None
+    upstream: str | None = None  # e.g., "RedHatInsights/hcc-ai-assistant"
+    fork: str | None = None  # e.g., "catastrophe-brandon/hcc-ai-assistant"
+    upstream_url: str | None = None
+    fork_url: str | None = None
 
 
 PR_TEMPLATE_PATHS = [
@@ -47,15 +46,15 @@ PR_TEMPLATE_PATHS = [
 class PushAndPROperations:
     """Handles push and PR creation operations."""
 
-    def __init__(self, title: str, body: str, dry_run: bool = False, cwd: Optional[Path] = None):
+    def __init__(self, title: str, body: str, dry_run: bool = False, cwd: Path | None = None):
         self.title = title
         self.body = body
         self.dry_run = dry_run
         self.cwd = cwd
-        self.repo_config: Optional[RepositoryConfig] = None
-        self.current_branch: Optional[str] = None
-        self.pr_url: Optional[str] = None
-        self.pr_number: Optional[str] = None
+        self.repo_config: RepositoryConfig | None = None
+        self.current_branch: str | None = None
+        self.pr_url: str | None = None
+        self.pr_number: str | None = None
 
     def _run_command(
         self, cmd: list[str], capture_output: bool = True, check: bool = True
@@ -96,9 +95,9 @@ class PushAndPROperations:
         except subprocess.CalledProcessError as e:
             return OperationResult(False, f"detect_repository failed: {e.stderr}")
         except Exception as e:
-            return OperationResult(False, f"detect_repository failed: {str(e)}")
+            return OperationResult(False, f"detect_repository failed: {e!s}")
 
-    def _find_project_repos_json(self) -> Optional[Path]:
+    def _find_project_repos_json(self) -> Path | None:
         """Find project-repos.json in current directory or parent."""
         current = Path.cwd()
         for _ in range(3):  # Check current and up to 2 parent directories
@@ -113,7 +112,7 @@ class PushAndPROperations:
     def _detect_from_config(self, config_path: Path) -> OperationResult:
         """Detect repository configuration from project-repos.json."""
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
 
             # Extract repo name from current directory
@@ -136,7 +135,7 @@ class PushAndPROperations:
             )
 
         except Exception as e:
-            return OperationResult(False, f"Failed to parse {config_path}: {str(e)}")
+            return OperationResult(False, f"Failed to parse {config_path}: {e!s}")
 
     def _detect_from_remotes(self) -> OperationResult:
         """Detect repository configuration from git remotes."""
@@ -202,7 +201,7 @@ class PushAndPROperations:
         except subprocess.CalledProcessError as e:
             return OperationResult(False, f"Failed to inspect git remotes: {e.stderr}")
         except Exception as e:
-            return OperationResult(False, f"Failed to detect from remotes: {str(e)}")
+            return OperationResult(False, f"Failed to detect from remotes: {e!s}")
 
     def _extract_owner_repo(self, url: str) -> str:
         """Extract owner/repo from git URL."""
@@ -225,7 +224,7 @@ class PushAndPROperations:
         return url  # Fallback to original URL
 
     @staticmethod
-    def find_pr_template(repo_dir: Optional[Path] = None) -> OperationResult:
+    def find_pr_template(repo_dir: Path | None = None) -> OperationResult:
         """
         Search for a PR template in the repository.
 
@@ -306,7 +305,7 @@ class PushAndPROperations:
         except subprocess.CalledProcessError as e:
             return OperationResult(False, f"sync_fork failed: {e.stderr}")
         except Exception as e:
-            return OperationResult(False, f"sync_fork failed: {str(e)}")
+            return OperationResult(False, f"sync_fork failed: {e!s}")
 
     def push_branch(self) -> OperationResult:
         """
@@ -362,7 +361,7 @@ class PushAndPROperations:
         except subprocess.CalledProcessError as e:
             return OperationResult(False, f"push_branch failed: {e.stderr}")
         except Exception as e:
-            return OperationResult(False, f"push_branch failed: {str(e)}")
+            return OperationResult(False, f"push_branch failed: {e!s}")
 
     def create_pr(self) -> OperationResult:
         """
@@ -391,7 +390,7 @@ class PushAndPROperations:
         except subprocess.CalledProcessError as e:
             return OperationResult(False, f"create_pr failed: {e.stderr}")
         except Exception as e:
-            return OperationResult(False, f"create_pr failed: {str(e)}")
+            return OperationResult(False, f"create_pr failed: {e!s}")
 
     def _create_github_pr(self) -> OperationResult:
         """Create GitHub PR with gh pr create."""
@@ -486,7 +485,7 @@ class PushAndPROperations:
         )
 
 
-def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False, cwd: Optional[Path] = None) -> int:
+def execute_push_and_pr_workflow(title: str, body: str, dry_run: bool = False, cwd: Path | None = None) -> int:
     """
     Execute the complete push and PR workflow.
 

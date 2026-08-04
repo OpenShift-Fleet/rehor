@@ -2,7 +2,7 @@
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,7 +32,7 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
     ``transcript`` (raw bytes) through their own column set, so we
     keep that key as a fallback.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "id": id,
         "task_id": task_id,
@@ -49,7 +49,7 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
 
 
 def _fake_by_task_row(**kwargs):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "task_id": kwargs.get("task_id", 42),
         "external_key": kwargs.get("external_key", "RHCLOUD-100"),

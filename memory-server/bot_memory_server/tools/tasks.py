@@ -1,6 +1,5 @@
 import json
 from datetime import datetime
-from typing import Optional
 
 from fastmcp import FastMCP
 
@@ -45,9 +44,9 @@ def _row_to_task(row) -> dict:
 def register_task_tools(mcp: FastMCP):
     @mcp.tool()
     async def task_list(
-        status: Optional[str] = None,
+        status: str | None = None,
         include_archived: bool = False,
-        instance_id: Optional[str] = None,
+        instance_id: str | None = None,
     ) -> list[dict]:
         """List tasks, optionally filtered by status and instance_id. Archived tasks are excluded by default.
         instance_id: Filter to tasks owned by this bot instance. Omit to see all."""
@@ -97,10 +96,10 @@ def register_task_tools(mcp: FastMCP):
         branch: str,
         status: str = "in_progress",
         source_type: str = "jira",
-        title: Optional[str] = None,
-        summary: Optional[str] = None,
-        metadata: Optional[dict] = None,
-        instance_id: Optional[str] = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict | None = None,
+        instance_id: str | None = None,
     ) -> dict:
         """Add a new task. Fails if >= 10 active tasks exist for this instance.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345', GitHub issue URL, etc.).
@@ -173,12 +172,12 @@ def register_task_tools(mcp: FastMCP):
     async def task_update(
         external_key: str,
         source_type: str = "jira",
-        status: Optional[str] = None,
-        last_addressed: Optional[str] = None,
-        paused_reason: Optional[str] = None,
-        title: Optional[str] = None,
-        summary: Optional[str] = None,
-        metadata: Optional[dict] = None,
+        status: str | None = None,
+        last_addressed: str | None = None,
+        paused_reason: str | None = None,
+        title: str | None = None,
+        summary: str | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         """Update fields on an existing task. Lookup by external_key + source_type.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
@@ -279,7 +278,7 @@ def register_task_tools(mcp: FastMCP):
         return result
 
     @mcp.tool()
-    async def task_check_capacity(instance_id: Optional[str] = None) -> dict:
+    async def task_check_capacity(instance_id: str | None = None) -> dict:
         """Check if the bot can take on new work.
         instance_id: Scope capacity check to this instance."""
         pool = get_pool()
@@ -304,9 +303,9 @@ def register_task_tools(mcp: FastMCP):
     async def bot_status_update(
         state: str,
         message: str,
-        external_key: Optional[str] = None,
-        repo: Optional[str] = None,
-        instance_id: Optional[str] = None,
+        external_key: str | None = None,
+        repo: str | None = None,
+        instance_id: str | None = None,
     ) -> dict:
         """Update the bot's current activity status. Call this at the start and end of each cycle,
         and when switching between tasks.

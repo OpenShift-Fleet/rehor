@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,7 +76,7 @@ def record_transcript(
     cycle_type = _resolve_cycle_type(ctx.work_type if ctx else None, is_error)
 
     duration_ms = getattr(result, "duration_ms", None) or 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     started_at = now
     if duration_ms:
         started_at = now - timedelta(milliseconds=duration_ms)
@@ -135,7 +135,7 @@ def post_orphan_cycle(
     input_prompt: str | None = None,
 ) -> None:
     """Post a cycle run to the dashboard without a Claude session (preflight skip/error)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     body: dict = {
         "task_id": task_id,
         "cycle_type": cycle_type,

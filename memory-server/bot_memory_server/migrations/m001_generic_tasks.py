@@ -94,7 +94,7 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
             continue
 
         result = await conn.execute(
-            f"UPDATE {table} SET external_key = jira_key, source_type = 'jira' "  # noqa: S608
+            f"UPDATE {table} SET external_key = jira_key, source_type = 'jira' "
             f"WHERE external_key IS NULL AND jira_key IS NOT NULL"
         )
         count = int(result.split()[-1]) if result else 0

@@ -11,7 +11,7 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / ".claude" / "skills
 sys.path.insert(0, str(SHARED_DIR))
 sys.path.insert(0, str(SKILLS_DIR))
 
-from onboarding_preflight import (  # noqa: E402
+from onboarding_preflight import (
     _get_onboarding_label,
     _has_new_jira_feedback,
     _is_blocked,

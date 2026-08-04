@@ -9,7 +9,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL_DIR))
 sys.path.insert(0, str(SKILL_DIR.parent))
 
-from create_phase_tickets import PHASES, create_tickets  # noqa: E402
+from create_phase_tickets import PHASES, create_tickets
 
 
 def _mock_story_parent(tool_name, arguments):

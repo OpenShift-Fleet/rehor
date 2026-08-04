@@ -246,9 +246,8 @@ class TestMainFunction:
         mock_workflow.return_value = mock_result
 
         # Test
-        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]):
-            with pytest.raises(SystemExit) as exc_info:
-                post_pr.main()
+        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]), pytest.raises(SystemExit) as exc_info:
+            post_pr.main()
 
         assert exc_info.value.code == 0
 
@@ -257,9 +256,8 @@ class TestMainFunction:
         """Test main exits when task not found."""
         mock_get_task.return_value = None
 
-        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]):
-            with pytest.raises(SystemExit) as exc_info:
-                post_pr.main()
+        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]), pytest.raises(SystemExit) as exc_info:
+            post_pr.main()
 
         assert exc_info.value.code == 1
 
@@ -271,9 +269,8 @@ class TestMainFunction:
             # Missing pr_url and pr_number
         }
 
-        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]):
-            with pytest.raises(SystemExit) as exc_info:
-                post_pr.main()
+        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]), pytest.raises(SystemExit) as exc_info:
+            post_pr.main()
 
         assert exc_info.value.code == 1
 
@@ -293,16 +290,14 @@ class TestMainFunction:
         mock_result.operations = []
         mock_workflow.return_value = mock_result
 
-        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]):
-            with pytest.raises(SystemExit) as exc_info:
-                post_pr.main()
+        with patch.object(sys, "argv", ["post_pr.py", "TEST-123"]), pytest.raises(SystemExit) as exc_info:
+            post_pr.main()
 
         assert exc_info.value.code == 1
 
     def test_main_no_args(self):
         """Test main exits with error when no arguments provided."""
-        with patch.object(sys, "argv", ["post_pr.py"]):
-            with pytest.raises(SystemExit) as exc_info:
-                post_pr.main()
+        with patch.object(sys, "argv", ["post_pr.py"]), pytest.raises(SystemExit) as exc_info:
+            post_pr.main()
 
         assert exc_info.value.code == 1

@@ -1,7 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastmcp import FastMCP
@@ -21,13 +20,13 @@ def register_slack_tools(mcp: FastMCP):
         external_key: str,
         event_type: str = "",
         message: str = "",
-        webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
+        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
         source_type: str = "jira",
-        instance_id: Optional[str] = None,
-        pr_url: Optional[str] = None,
-        pr_number: Optional[int] = None,
-        repo: Optional[str] = None,
-        title: Optional[str] = None,
+        instance_id: str | None = None,
+        pr_url: str | None = None,
+        pr_number: int | None = None,
+        repo: str | None = None,
+        title: str | None = None,
     ) -> dict:
         """Send a Slack notification. Deduplicates by external_key (48h cooldown per ticket, any event type).
 
@@ -86,7 +85,7 @@ def register_slack_tools(mcp: FastMCP):
             )
             return {"sent": False, "queued": True, "reason": "Queued for daily digest"}
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=COOLDOWN_HOURS)
+        cutoff = datetime.now(UTC) - timedelta(hours=COOLDOWN_HOURS)
         recent = await pool.fetchrow(
             """
             SELECT id, event_type, sent_at FROM slack_notifications
@@ -144,9 +143,9 @@ def register_slack_tools(mcp: FastMCP):
 
     @mcp.tool()
     async def slack_send_digest(
-        instance_id: Optional[str] = None,
-        webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
-        digest_key: Optional[str] = None,
+        instance_id: str | None = None,
+        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
+        digest_key: str | None = None,
     ) -> dict:
         """Send a daily digest of queued Slack notifications.
 
@@ -197,7 +196,7 @@ def register_slack_tools(mcp: FastMCP):
         if not rows:
             return {"sent": False, "count": 0, "reason": "No items to digest"}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         digest_message = _format_digest(instance_id, rows, now)
 
         try:

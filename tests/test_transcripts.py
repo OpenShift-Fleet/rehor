@@ -22,8 +22,8 @@ for name in [
     setattr(_mock_sdk, name, MagicMock)
 sys.modules["claude_agent_sdk"] = _mock_sdk
 
-from bot.agent import CycleContext, _extract_task_id_from_result  # noqa: E402
-from bot.transcripts import (  # noqa: E402
+from bot.agent import CycleContext, _extract_task_id_from_result
+from bot.transcripts import (
     _find_transcript,
     _get_cycle_runs_url,
     _resolve_cycle_type,

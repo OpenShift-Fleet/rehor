@@ -7,15 +7,15 @@ from unittest.mock import patch
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
 
-from common import (  # noqa: E402
+from common import (
     build_repo_lookup,
     fmt_comments,
     is_bot_author,
     upstream_repo,
 )
-from gh_pr_status import classify_gh, has_new_feedback  # noqa: E402
-from gl_mr_status import classify_gl  # noqa: E402
-from gl_mr_status import has_new_feedback as gl_has_new_feedback  # noqa: E402
+from gh_pr_status import classify_gh, has_new_feedback
+from gl_mr_status import classify_gl
+from gl_mr_status import has_new_feedback as gl_has_new_feedback
 
 # --- upstream_repo ---
 
@@ -269,9 +269,7 @@ def _classify_bucket(enriched_list):
                 ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif any(i in ("changes_requested",) or i.startswith("review:") for i in issues):
-            feedback.append(e)
-        elif has_new_feedback(e):
+        elif any(i in ("changes_requested",) or i.startswith("review:") for i in issues) or has_new_feedback(e):
             feedback.append(e)
         else:
             clean.append(e)

@@ -48,10 +48,7 @@ class MergeReport:
 
 def _is_protected_path(path: str, protected_paths: list[str]) -> bool:
     """Check if a dot-notation path matches or is nested under a protected path."""
-    for pp in protected_paths:
-        if path == pp or path.startswith(pp + "."):
-            return True
-    return False
+    return any(path == pp or path.startswith(pp + ".") for pp in protected_paths)
 
 
 def _deep_merge(
@@ -164,7 +161,7 @@ def merge_project_repos(builtin: dict, remote: dict, report: MergeReport) -> dic
 
         existing = result[repo_name]
         for field_key, value in remote_cfg.items():
-            if field_key in PROTECTED["project_repos_fields"]:
+            if field_key in PROTECTED["project_repos_fields"]:  # noqa: SIM102
                 if field_key in existing and existing[field_key] != value:
                     report.protected.append(f"repo:{repo_name}.{field_key}")
                     continue

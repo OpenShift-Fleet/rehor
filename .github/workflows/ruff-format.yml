@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 jobs:
-  python-checks:
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -33,7 +33,7 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      - name: Install dependencies
+      - name: Install uv and deps
         run: |
           pip install uv
           uv sync --frozen --extra dev
@@ -41,11 +41,65 @@ jobs:
       - name: Check formatting
         run: uv run ruff format --check .
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install uv and deps
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev
+
       - name: Lint
         run: uv run ruff check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install uv and deps
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev
 
       - name: Type check
         run: uv run mypy
 
-      - name: Run tests
-        run: uv run pytest
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install uv and deps
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov=bot --cov-report=term-missing --cov-fail-under=50

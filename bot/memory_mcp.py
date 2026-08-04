@@ -9,6 +9,7 @@ Usage:
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -58,15 +59,11 @@ async def _call(tool_name, arguments, timeout=30):
 async def _cleanup():
     global _session, _cm_session, _cm_transport
     if _cm_session:
-        try:
+        with contextlib.suppress(Exception):
             await _cm_session.__aexit__(None, None, None)
-        except Exception:
-            pass
     if _cm_transport:
-        try:
+        with contextlib.suppress(Exception):
             await _cm_transport.__aexit__(None, None, None)
-        except Exception:
-            pass
     _session = _cm_session = _cm_transport = None
 
 
@@ -95,7 +92,5 @@ def memory_cleanup():
         loop = asyncio.get_event_loop()
     except RuntimeError:
         return
-    try:
+    with contextlib.suppress(Exception):
         loop.run_until_complete(_cleanup())
-    except Exception:
-        pass

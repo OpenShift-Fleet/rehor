@@ -68,14 +68,31 @@ line-length = 120
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4"]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM", "RUF"]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "SIM108",  # ternary operator (readability preference)
+    "RUF001",  # ambiguous unicode (false positives on docs)
+    "RUF059",  # unused unpacked variable (too noisy for test fixtures)
+]
 
 [tool.ruff.lint.per-file-ignores]
-"*/tests/*" = ["E501"]
+"*/tests/*" = ["E501", "E402"]
+"tests/*" = ["E501", "E402"]
 "memory-server/seed_from_json.py" = ["E501"]
+"memory-server/bot_memory_server/server.py" = ["E402"]
+".claude/skills/*" = ["SIM105"]
 
 [tool.uv.workspace]
 members = ["memory-server"]
+
+[tool.coverage.run]
+source = ["bot"]
+omit = ["bot/tests/*"]
+
+[tool.coverage.report]
+fail_under = 50
+show_missing = true
 
 [tool.mypy]
 python_version = "3.12"
