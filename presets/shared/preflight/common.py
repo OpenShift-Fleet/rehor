@@ -181,6 +181,7 @@ def get_task_prs(task):
     repo = task.get("repo", "")
     meta = task.get("metadata") or {}
     prs_info = list(meta.get("prs", []))
+    prs_info.extend(meta.get("mrs", []))
     if not prs_info:
         for a in task.get("artifacts") or []:
             if a.get("type") == "pull_request" and a.get("url"):
