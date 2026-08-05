@@ -37,7 +37,7 @@ Engineer experience items (§9–§12) pair naturally with platform foundations:
 
 | Item | Status |
 |------|--------|
-| CI Foundation | Planned |
+| CI Foundation | In Progress (REHOR-75, 76, 78 shipped; REHOR-77 in review) |
 | Logging & Observability | Planned |
 | Run Identity | Planned |
 | Shared Memory MCP | Planned |
@@ -284,4 +284,3 @@ Despite this, the system has no infrastructure for error analysis: errors are st
 **First slice:** Normalize deterministic error signatures, count occurrences by repository and workflow, and link each signature to recent examples and an optional human-maintained workaround. Add an error breakdown to the dashboard (replacing the current single error count).
 
 **Guardrail:** Never hide the original error or automatically apply a fix from a fingerprint. Success means repeated incidents are diagnosed faster and the platform team can prioritize the most common failure classes.
-

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Required status checks for master branch protection on OpenShift-Fleet/rehor",
+  "version": "1.0.0",
+  "branch": "master",
+  "checks": {
+    "github_actions": [
+      {
+        "name": "format",
+        "workflow": "ruff-format.yml",
+        "scope": "python code formatting (ruff)",
+        "required": false,
+        "note": "path-filtered to **.py, pyproject.toml, uv.lock. not a hard branch protection requirement."
+      },
+      {
+        "name": "lint",
+        "workflow": "ruff-format.yml",
+        "scope": "python linting (ruff)",
+        "required": false,
+        "note": "path-filtered to **.py, pyproject.toml, uv.lock"
+      },
+      {
+        "name": "typecheck",
+        "workflow": "ruff-format.yml",
+        "scope": "python type checking (mypy)",
+        "required": false,
+        "note": "path-filtered to **.py, pyproject.toml, uv.lock"
+      },
+      {
+        "name": "test",
+        "workflow": "ruff-format.yml",
+        "scope": "python unit tests with coverage gate",
+        "required": false,
+        "note": "path-filtered. job name collides across ruff-format.yml, go-tests.yml, dashboard-tests.yml, and memory-server-ci.yml."
+      },
+      {
+        "name": "python-audit",
+        "workflow": "dependency-audit.yml",
+        "scope": "python dependency vulnerability scan (pip-audit)",
+        "required": false,
+        "note": "path-filtered to pyproject.toml, uv.lock"
+      },
+      {
+        "name": "go-audit",
+        "workflow": "dependency-audit.yml",
+        "scope": "go dependency vulnerability scan (govulncheck)",
+        "required": false,
+        "note": "path-filtered to proxy/executor/go.mod, go.sum. currently report-only for findings."
+      },
+      {
+        "name": "node-audit",
+        "workflow": "dependency-audit.yml",
+        "scope": "node dependency vulnerability scan (npm audit)",
+        "required": false,
+        "note": "path-filtered to dashboard/package-lock.json. currently report-only for findings."
+      },
+      {
+        "name": "security",
+        "workflow": "memory-server-ci.yml",
+        "scope": "memory-server lock drift + pip-audit",
+        "required": false,
+        "note": "path-filtered to memory-server/**"
+      },
+      {
+        "name": "container-scan",
+        "workflow": "memory-server-ci.yml",
+        "scope": "memory-server container image vulnerability scan (trivy)",
+        "required": false,
+        "note": "path-filtered to memory-server/**"
+      }
+    ],
+    "konflux": [
+      {
+        "name": "Red Hat Konflux / platform-frontend-ai-dev-on-pull-request",
+        "scope": "main bot container build and integration pipeline",
+        "required": true,
+        "note": "runs on every PR (no path filter)"
+      },
+      {
+        "name": "Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request",
+        "scope": "memory-server container build pipeline",
+        "required": true,
+        "note": "runs on every PR (no path filter)"
+      },
+      {
+        "name": "Red Hat Konflux / platform-frontend-ai-dev-proxy-on-pull-request",
+        "scope": "proxy/executor container build pipeline",
+        "required": false,
+        "note": "path-filtered to proxy/** changes only; cannot be a hard required check"
+      }
+    ],
+    "konflux_enterprise_contract": [
+      {
+        "name": "Red Hat Konflux / platform-frontend-ai-dev-enterprise-contract / pr group",
+        "scope": "enterprise contract validation group",
+        "required": false,
+        "note": "reports as 'skipping' on most PRs; only runs when EC policy triggers. staged for future required status."
+      }
+    ]
+  },
+  "path_scoping_notes": {
+    "description": "All GitHub Actions workflows use path filters. Only the main bot and memory-server Konflux pipelines run on every PR (no path filter in CEL expression). The proxy Konflux pipeline is path-filtered to proxy/** changes.",
+    "required_in_branch_protection": "Only checks that fire on EVERY PR can be hard-required in branch protection. Currently that is the two non-path-filtered Konflux build checks. Path-filtered checks (all GitHub Actions + proxy Konflux) are trusted to pass when they fire, but not enforced as branch protection gates.",
+    "future": "If a lightweight always-running gate workflow is added (e.g. a status-aggregator that reports success/neutral for path-filtered checks that didn't fire), more checks can be promoted to required."
+  }
+}

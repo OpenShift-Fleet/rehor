@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
@@ -40,6 +40,13 @@ prepush-install: ## Install pre-push git hook
 
 prepush-check: ## Run pre-push quality checks manually
 	bash scripts/prepush_check.sh
+
+verify-required-checks: ## Verify required CI checks on a PR (usage: make verify-required-checks PR=123)
+	@if [ -z "$(PR)" ]; then echo "usage: make verify-required-checks PR=<number>"; exit 1; fi
+	bash scripts/verify_required_checks.sh "$(PR)"
+
+check-branch-protection: ## Check branch protection drift against versioned policy
+	bash scripts/check_branch_protection.sh
 
 memory-verify: ## Run memory-server CI-equivalent checks locally
 	cd memory-server && uv sync --frozen --extra test
