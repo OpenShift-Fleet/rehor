@@ -54,7 +54,7 @@ def gh_pr_comments(owner_repo, num):
     ]:
         try:
             r = subprocess.run(
-                ["gh", "api", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
+                ["gh", "api", "--paginate", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -225,7 +225,7 @@ def main():
             else:
                 closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith(("ci_fail", "konflux_urls", "changes_requested")) for i in issues)
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
             if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
                 clean.append(e)
             else:

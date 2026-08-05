@@ -45,6 +45,7 @@ def gl_mr_notes(project_path, num):
             [
                 "glab",
                 "api",
+                "--paginate",
                 f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
                 "--hostname",
                 "gitlab.cee.redhat.com",
