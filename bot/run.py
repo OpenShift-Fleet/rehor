@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -360,15 +361,13 @@ def cleanup_between_cycles(script_dir: Path) -> None:
     if repos_dir.exists():
         for repo in repos_dir.iterdir():
             if (repo / ".git").is_dir():
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
                     subprocess.run(
                         ["git", "gc", "--auto", "--quiet"],
                         cwd=str(repo),
                         capture_output=True,
                         timeout=60,
                     )
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    pass
 
     try:
         usage = shutil.disk_usage(str(script_dir))
@@ -545,7 +544,7 @@ def main() -> None:
                         timeout=config.cycle_timeout,
                     )
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result, ctx = handle_cycle_timeout(config.cycle_timeout)
 
             if result is not None:

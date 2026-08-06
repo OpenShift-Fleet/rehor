@@ -80,7 +80,7 @@ def bot_exec():
             CompletedProcess with stdout, stderr, returncode
         """
         return subprocess.run(
-            ["docker", "compose", "exec", "-T", "bot"] + cmd,
+            ["docker", "compose", "exec", "-T", "bot", *cmd],
             capture_output=True,
             text=True,
             check=check,

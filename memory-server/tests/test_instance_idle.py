@@ -1,6 +1,6 @@
 """Tests for instance idle tracking (api_instance_get, api_instance_idle_update)."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from conftest import SCHEMA_PATH
@@ -43,7 +43,7 @@ async def test_idle_columns_exist_after_schema(db):
 @pytest.mark.asyncio
 async def test_update_idle_state_upsert_new(db):
     await _apply_schema(db)
-    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
     row = await db.fetchrow(UPSERT_IDLE_SQL, "new-inst", 2, ts)
     assert row["instance_id"] == "new-inst"
     assert row["idle_consecutive_cycles"] == 2
@@ -54,7 +54,7 @@ async def test_update_idle_state_upsert_new(db):
 async def test_update_idle_state_upsert_existing(db):
     await _apply_schema(db)
     await _insert_instance(db, "inst-2", state="working", message="doing stuff", repo="my-repo")
-    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
     row = await db.fetchrow(UPSERT_IDLE_SQL, "inst-2", 3, ts)
     assert row["state"] == "working"
     assert row["message"] == "doing stuff"
@@ -66,7 +66,7 @@ async def test_update_idle_state_upsert_existing(db):
 @pytest.mark.asyncio
 async def test_update_idle_state_reset(db):
     await _apply_schema(db)
-    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
     await db.fetchrow(UPSERT_IDLE_SQL, "inst-3", 5, ts)
     row = await db.fetchrow(UPSERT_IDLE_SQL, "inst-3", 0, None)
     assert row["idle_consecutive_cycles"] == 0
@@ -76,7 +76,7 @@ async def test_update_idle_state_reset(db):
 @pytest.mark.asyncio
 async def test_select_single_instance(db):
     await _apply_schema(db)
-    cycle_start = datetime(2026, 1, 10, 8, 0, 0, tzinfo=timezone.utc)
+    cycle_start = datetime(2026, 1, 10, 8, 0, 0, tzinfo=UTC)
     await db.execute(
         """INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo, cycle_start)
            VALUES ($1, $2, $3, $4, $5, $6, $7)""",

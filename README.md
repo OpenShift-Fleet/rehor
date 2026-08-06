@@ -4,7 +4,7 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 
 ## Documentation
 
-**[Browse the full documentation site](https://redhatinsights.github.io/platform-frontend-ai-dev/)**
+**[Browse the full documentation site](https://openshift-fleet.github.io/rehor/)**
 
 | Document | Description |
 |----------|-------------|

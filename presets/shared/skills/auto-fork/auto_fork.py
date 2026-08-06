@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urlparse
 
 # Import push-and-pr operations for direct integration
@@ -75,7 +75,7 @@ class OperationResult:
     operation: str
     status: OperationStatus
     message: str
-    details: Optional[Dict[str, Any]] = None
+    details: dict[str, Any] | None = None
 
 
 @dataclass
@@ -84,7 +84,7 @@ class RepoInfo:
 
     name: str
     upstream: str
-    current_url: Optional[str]
+    current_url: str | None
     host: str  # "github" or "gitlab"
 
 
@@ -127,8 +127,8 @@ class AutoForkOperations:
         self.project_repos_path = self.agent_dir / "project-repos.json"
 
         # State
-        self.repos_to_fork: List[RepoInfo] = []
-        self.forked_repos: Dict[str, str] = {}  # name -> fork_url
+        self.repos_to_fork: list[RepoInfo] = []
+        self.forked_repos: dict[str, str] = {}  # name -> fork_url
 
     def _validate_inputs(self) -> None:
         """
@@ -254,7 +254,7 @@ class AutoForkOperations:
             details={"repos": [r.name for r in repos_to_fork]},
         )
 
-    def execute_manifest_workflow(self, manifest_path: str) -> List[OperationResult]:
+    def execute_manifest_workflow(self, manifest_path: str) -> list[OperationResult]:
         """
         Fork repos listed in a manifest file. No config updates or PR creation.
 
@@ -522,7 +522,7 @@ class AutoForkOperations:
             return result.stdout.strip().split("/")[-1]
         return DEFAULT_BRANCH_FALLBACK
 
-    def _create_feature_branch(self) -> Tuple[str, Path]:
+    def _create_feature_branch(self) -> tuple[str, Path]:
         """
         Create a new feature branch for the changes.
 
@@ -593,7 +593,7 @@ class AutoForkOperations:
 
         instance_label = self.instance_id or "bot"
         commit_msg = f"chore: auto-fork repos for {instance_label}\n\nForked {len(self.forked_repos)} repos:\n"
-        for name in self.forked_repos.keys():
+        for name in self.forked_repos:
             commit_msg += f"- {name}\n"
 
         subprocess.run(
@@ -673,7 +673,7 @@ class AutoForkOperations:
         instance_label = self.instance_id or "bot"
         title = f"chore: auto-fork repos for {instance_label}"
         body = f"Forked {len(self.forked_repos)} repos:\n\n"
-        for name in self.forked_repos.keys():
+        for name in self.forked_repos:
             body += f"- {name}\n"
 
         logger.info("Pushing branch and creating PR...")
@@ -703,7 +703,7 @@ class AutoForkOperations:
                 message=error_msg,
             )
 
-    def execute_workflow(self) -> List[OperationResult]:
+    def execute_workflow(self) -> list[OperationResult]:
         """
         Execute the auto-fork workflow including PR creation.
 

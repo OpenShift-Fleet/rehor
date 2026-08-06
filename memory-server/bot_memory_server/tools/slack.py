@@ -1,7 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastmcp import FastMCP
@@ -21,18 +20,19 @@ def register_slack_tools(mcp: FastMCP):
         external_key: str,
         event_type: str = "",
         message: str = "",
-        webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
+        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
         source_type: str = "jira",
-        instance_id: Optional[str] = None,
-        pr_url: Optional[str] = None,
-        pr_number: Optional[int] = None,
-        repo: Optional[str] = None,
-        title: Optional[str] = None,
+        instance_id: str | None = None,
+        notify_mode: str = "immediate",
+        pr_url: str | None = None,
+        pr_number: int | None = None,
+        repo: str | None = None,
+        title: str | None = None,
     ) -> dict:
         """Send a Slack notification. Deduplicates by external_key (48h cooldown per ticket, any event type).
 
-        In daily_digest mode (SLACK_NOTIFY_MODE=daily_digest), queues the notification
-        instead of sending immediately. Use slack_send_digest to send the digest.
+        In daily_digest mode, queues the notification instead of sending immediately.
+        Use slack_send_digest to send the digest.
 
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         source_type: Source system — 'jira', 'github', etc.
@@ -40,6 +40,7 @@ def register_slack_tools(mcp: FastMCP):
         message: Human-readable message to post. Keep it concise (1-2 sentences + links).
         webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var on the memory server.
         instance_id: Bot instance identifier (optional, used for digest grouping).
+        notify_mode: 'immediate' (default) or 'daily_digest'. Passed by the caller from its env.
         pr_url: PR URL (optional, used for richer digest formatting).
         pr_number: PR number (optional, used for richer digest formatting).
         repo: Repository name (optional, used for richer digest formatting).
@@ -51,9 +52,7 @@ def register_slack_tools(mcp: FastMCP):
         if not webhook_url:
             return {"sent": False, "reason": "SLACK_WEBHOOK_URL not configured"}
 
-        notify_mode = os.environ.get("SLACK_NOTIFY_MODE", "immediate")
-
-        if notify_mode == "daily_digest" and os.environ.get("SLACK_DIGEST_HOUR"):
+        if notify_mode == "daily_digest":
             existing = await pool.fetchrow(
                 """
                 SELECT id FROM slack_digest_queue
@@ -86,7 +85,7 @@ def register_slack_tools(mcp: FastMCP):
             )
             return {"sent": False, "queued": True, "reason": "Queued for daily digest"}
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=COOLDOWN_HOURS)
+        cutoff = datetime.now(UTC) - timedelta(hours=COOLDOWN_HOURS)
         recent = await pool.fetchrow(
             """
             SELECT id, event_type, sent_at FROM slack_notifications
@@ -144,9 +143,9 @@ def register_slack_tools(mcp: FastMCP):
 
     @mcp.tool()
     async def slack_send_digest(
-        instance_id: Optional[str] = None,
-        webhook_url: Optional[str] = os.environ.get("SLACK_WEBHOOK_URL"),
-        digest_key: Optional[str] = None,
+        instance_id: str | None = None,
+        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
+        digest_key: str | None = None,
     ) -> dict:
         """Send a daily digest of queued Slack notifications.
 
@@ -197,7 +196,7 @@ def register_slack_tools(mcp: FastMCP):
         if not rows:
             return {"sent": False, "count": 0, "reason": "No items to digest"}
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         digest_message = _format_digest(instance_id, rows, now)
 
         try:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,7 +18,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CYCLE_RUNS_API = os.environ.get("CYCLE_RUNS_API_URL", f"{MEMORY_API_BASE}/cycle-runs")
+
+def _get_cycle_runs_url() -> str:
+    explicit = os.environ.get("CYCLE_RUNS_API_URL")
+    if explicit:
+        return explicit
+    costs_url = os.environ.get("COSTS_API_URL", "")
+    if costs_url:
+        return costs_url.rsplit("/costs", 1)[0] + "/cycle-runs"
+    return f"{MEMORY_API_BASE}/cycle-runs"
+
 
 _WORK_TYPE_TO_CYCLE_TYPE = {
     "new_ticket": "task_work",
@@ -76,7 +85,7 @@ def record_transcript(
     cycle_type = _resolve_cycle_type(ctx.work_type if ctx else None, is_error)
 
     duration_ms = getattr(result, "duration_ms", None) or 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     started_at = now
     if duration_ms:
         started_at = now - timedelta(milliseconds=duration_ms)
@@ -121,10 +130,11 @@ def record_transcript(
         logger.debug("Transcript file not found for session %s", session_id)
 
     try:
-        resp = httpx.post(CYCLE_RUNS_API, json=body, timeout=10.0)
+        url = _get_cycle_runs_url()
+        resp = httpx.post(url, json=body, timeout=10.0)
         logger.info("Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code)
     except Exception:
-        logger.warning("Failed to push cycle run to %s", CYCLE_RUNS_API, exc_info=True)
+        logger.warning("Failed to push cycle run to %s", _get_cycle_runs_url(), exc_info=True)
 
 
 def post_orphan_cycle(
@@ -135,7 +145,7 @@ def post_orphan_cycle(
     input_prompt: str | None = None,
 ) -> None:
     """Post a cycle run to the dashboard without a Claude session (preflight skip/error)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     body: dict = {
         "task_id": task_id,
         "cycle_type": cycle_type,
@@ -151,7 +161,8 @@ def post_orphan_cycle(
         },
     }
     try:
-        resp = httpx.post(CYCLE_RUNS_API, json=body, timeout=10.0)
+        url = _get_cycle_runs_url()
+        resp = httpx.post(url, json=body, timeout=10.0)
         logger.info("Orphan cycle posted: id=%s type=%s", resp.json().get("id"), cycle_type)
     except Exception:
-        logger.warning("Failed to post orphan cycle to %s", CYCLE_RUNS_API, exc_info=True)
+        logger.warning("Failed to post orphan cycle to %s", _get_cycle_runs_url(), exc_info=True)

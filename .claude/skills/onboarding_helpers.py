@@ -66,7 +66,7 @@ def apply_blocked_label(epic_key):
     if BLOCKED_LABEL in existing:
         return True
 
-    updated = existing + [BLOCKED_LABEL]
+    updated = [*existing, BLOCKED_LABEL]
     update_result = jira_call(
         "jira_update_issue",
         {"issue_key": epic_key, "fields": json.dumps({"labels": updated})},

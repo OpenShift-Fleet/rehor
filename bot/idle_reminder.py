@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -41,7 +41,7 @@ def fetch_idle_state(
         if ts_str:
             last_sent = datetime.fromisoformat(ts_str)
             if last_sent.tzinfo is None:
-                last_sent = last_sent.replace(tzinfo=timezone.utc)
+                last_sent = last_sent.replace(tzinfo=UTC)
         return cycles, last_sent
     except Exception:
         logger.warning("Could not fetch idle state for %s — skipping update", instance_id, exc_info=True)
@@ -80,7 +80,7 @@ def should_send_reminder(
         return False
     if last_sent_at is None:
         return True
-    _now = now or datetime.now(timezone.utc)
+    _now = now or datetime.now(UTC)
     return (_now - last_sent_at).total_seconds() >= cooldown_seconds
 
 
@@ -158,7 +158,7 @@ def send_reminder(
 
         resp = httpx.post(webhook, json={"text": message}, timeout=5.0)
         resp.raise_for_status()
-        sent_at = datetime.now(timezone.utc)
+        sent_at = datetime.now(UTC)
         logger.info("Idle reminder sent after %d consecutive idle cycles", consecutive_cycles)
         return sent_at
     except Exception:

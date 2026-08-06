@@ -26,7 +26,7 @@ const defaultRun = {
 test.describe('CycleRuns page', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/cycle-runs/by-task*', (route) => {
-      route.fulfill({ json: [] });
+      route.fulfill({ json: { items: [], total: 0 } });
     });
     await page.route('**/api/cycle-runs?*', (route) => {
       route.fulfill({ json: { items: [], total: 0 } });
@@ -41,7 +41,7 @@ test.describe('CycleRuns page', () => {
   test('renders task groups from API', async ({ mount, page }) => {
     const group = { ...defaultGroup, external_key: 'RHCLOUD-100', title: 'Fix login', cycle_count: 5 };
     await page.route('**/api/cycle-runs/by-task*', (route) => {
-      route.fulfill({ json: [group] });
+      route.fulfill({ json: { items: [group], total: 1 } });
     });
 
     await mount('CycleRuns/Default');
@@ -54,7 +54,7 @@ test.describe('CycleRuns page', () => {
     let requestUrl = '';
     await page.route('**/api/cycle-runs/by-task*', (route) => {
       requestUrl = route.request().url();
-      route.fulfill({ json: [] });
+      route.fulfill({ json: { items: [], total: 0 } });
     });
 
     await mount('CycleRuns/WithInstanceId');
@@ -65,7 +65,7 @@ test.describe('CycleRuns page', () => {
 
   test('expands group and loads cycle runs on click', async ({ mount, page }) => {
     await page.route('**/api/cycle-runs/by-task*', (route) => {
-      route.fulfill({ json: [defaultGroup] });
+      route.fulfill({ json: { items: [defaultGroup], total: 1 } });
     });
     await page.route('**/api/cycle-runs?*', (route) => {
       route.fulfill({ json: { items: [defaultRun], total: 1 } });
@@ -81,7 +81,7 @@ test.describe('CycleRuns page', () => {
   test('renders orphan cycles group label', async ({ mount, page }) => {
     const orphanGroup = { ...defaultGroup, task_id: null, external_key: null, title: null, cycle_count: 2 };
     await page.route('**/api/cycle-runs/by-task*', (route) => {
-      route.fulfill({ json: [orphanGroup] });
+      route.fulfill({ json: { items: [orphanGroup], total: 1 } });
     });
 
     await mount('CycleRuns/Default');

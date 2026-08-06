@@ -61,7 +61,7 @@ async def _validate(conn: asyncpg.Connection) -> list[str]:
             continue
 
         orphans = await conn.fetchval(
-            f"SELECT COUNT(*) FROM {table} WHERE jira_key IS NOT NULL AND external_key IS NULL",  # noqa: S608
+            f"SELECT COUNT(*) FROM {table} WHERE jira_key IS NOT NULL AND external_key IS NULL",
         )
         if orphans:
             errors.append(f"{table}: {orphans} rows with jira_key but no external_key")
@@ -93,7 +93,7 @@ async def run_migration(conn: asyncpg.Connection) -> dict:
             table,
         )
         if has_col:
-            await conn.execute(f"ALTER TABLE {table} DROP COLUMN jira_key")  # noqa: S608
+            await conn.execute(f"ALTER TABLE {table} DROP COLUMN jira_key")
             stats[f"{table}.jira_key"] = "dropped"
 
     for col in ("pr_number", "pr_url"):

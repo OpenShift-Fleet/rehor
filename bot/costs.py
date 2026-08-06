@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,7 +50,7 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
         model = next(iter(model_usage.keys()), "")
 
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "label": label,
         "session_id": getattr(result, "session_id", ""),
         "num_turns": getattr(result, "num_turns", 0),

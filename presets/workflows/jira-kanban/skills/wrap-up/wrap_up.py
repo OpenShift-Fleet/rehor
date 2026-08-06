@@ -156,6 +156,7 @@ def slack_notify(jira_key, pr_info):
             "event_type": "release_pending",
             "message": msg,
             "webhook_url": webhook_url,
+            "notify_mode": os.environ.get("SLACK_NOTIFY_MODE", "immediate"),
         },
     )
     if result and result.get("sent"):

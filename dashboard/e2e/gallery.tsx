@@ -78,7 +78,7 @@ const scenarios: Record<string, () => JSX.Element> = {
 
   // ── BotBanner ──
   'BotBanner/Idle': () => (
-    <BotBanner status={makeBotStatus({ state: 'idle', message: 'Waiting for tasks' })} />
+    <BotBanner status={makeBotStatus({ state: 'idle', message: 'Waiting for tasks', updated_at: new Date().toISOString() })} />
   ),
   'BotBanner/Working': () => (
     <BotBanner status={makeBotStatus({
@@ -94,10 +94,13 @@ const scenarios: Record<string, () => JSX.Element> = {
     <BotBanner status={makeBotStatus({ state: 'error', message: 'Cycle failed' })} />
   ),
   'BotBanner/IdleWithWake': () => (
-    <BotBanner status={makeBotStatus({ state: 'idle', instance_id: 'dev-bot' })} />
+    <BotBanner status={makeBotStatus({ state: 'idle', instance_id: 'dev-bot', updated_at: new Date().toISOString() })} />
   ),
   'BotBanner/WorkingNoWake': () => (
     <BotBanner status={makeBotStatus({ state: 'working', instance_id: 'dev-bot' })} />
+  ),
+  'BotBanner/Sleep': () => (
+    <BotBanner status={makeBotStatus({ state: 'idle', message: '', instance_id: 'dev-bot', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' })} />
   ),
   // ── ConfirmDialog ──
   'ConfirmDialog/Default': () => (

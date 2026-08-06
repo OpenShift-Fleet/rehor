@@ -4,6 +4,7 @@ Fetches active tasks, checks GitHub PRs, classifies into action buckets.
 Outputs JSON protocol: start if actionable items found, skip if all clean.
 """
 
+import contextlib
 import json
 import subprocess
 
@@ -53,17 +54,15 @@ def gh_pr_comments(owner_repo, num):
     ]:
         try:
             r = subprocess.run(
-                ["gh", "api", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
+                ["gh", "api", "--paginate", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
             if r.returncode == 0 and r.stdout.strip():
                 for line in r.stdout.strip().split("\n"):
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         comments.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
         except Exception:
             pass
     return comments
@@ -220,7 +219,7 @@ def main():
         elif "closed" in issues:
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith(("ci_fail", "konflux_urls", "changes_requested")) for i in issues)
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
             if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
                 clean.append(e)
             else:

@@ -39,12 +39,12 @@ mcp = FastMCP(
 )
 
 # Register MCP tools
-from .tools.cycles import register_cycle_tools  # noqa: E402
-from .tools.konflux import register_konflux_tools  # noqa: E402
-from .tools.org_members import register_org_member_tools  # noqa: E402
-from .tools.rag import register_rag_tools  # noqa: E402
-from .tools.slack import register_slack_tools  # noqa: E402
-from .tools.tasks import register_task_tools  # noqa: E402
+from .tools.cycles import register_cycle_tools
+from .tools.konflux import register_konflux_tools
+from .tools.org_members import register_org_member_tools
+from .tools.rag import register_rag_tools
+from .tools.slack import register_slack_tools
+from .tools.tasks import register_task_tools
 
 register_task_tools(mcp)
 register_rag_tools(mcp)
@@ -82,7 +82,7 @@ async def asset_files(request: Request) -> FileResponse:
 
 
 # REST API for the dashboard
-from .api import (  # noqa: E402
+from .api import (
     api_analytics,
     api_bot_status,
     api_costs,
@@ -155,9 +155,8 @@ if __name__ == "__main__":
 
     @asynccontextmanager
     async def combined_lifespan(app):
-        async with lifespan(app):
-            async with mcp_app.lifespan(app):
-                yield
+        async with lifespan(app), mcp_app.lifespan(app):
+            yield
 
     async def metrics_endpoint(request: Request) -> Response:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

@@ -4,6 +4,7 @@ import { HashRouter, Routes, Route, NavLink, Navigate, useParams, useNavigate, u
 import { WSProvider, useWS } from './hooks/useWebSocket';
 import type { BotInstance } from './types';
 import { fetchStats, fetchInstances } from './api';
+import { effectiveState } from './utils';
 import {
   Nav,
   NavList,
@@ -71,11 +72,14 @@ function InstanceSelector({ instances, currentId }: { instances: BotInstance[]; 
       <SelectList>
         <SelectOption value="__global__">All instances</SelectOption>
         <SelectOption value="__instances__">Overview</SelectOption>
-        {instances.map((inst) => (
+        {instances.map((inst) => {
+          const state = effectiveState(inst);
+          return (
           <SelectOption key={inst.instance_id} value={inst.instance_id}>
-            {inst.instance_id} — {inst.state.toUpperCase()}
+            {inst.instance_id} — {state.toUpperCase()}
           </SelectOption>
-        ))}
+          );
+        })}
       </SelectList>
     </Select>
   );
@@ -213,6 +217,7 @@ function AppInner() {
           instance_id: currentInstance.instance_id,
           cycle_start: currentInstance.cycle_start,
           updated_at: currentInstance.updated_at,
+          last_seen: currentInstance.last_seen,
         }} />
       )}
 

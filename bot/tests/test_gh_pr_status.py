@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
 
-from gh_pr_status import classify_gh  # noqa: E402
+from gh_pr_status import classify_gh
 
 # --- classify_gh ---
 

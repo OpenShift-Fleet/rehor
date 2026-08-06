@@ -595,6 +595,7 @@ def _instance_row(r, active_tasks: int = 0) -> dict:
         "last_idle_reminder_sent_at": (
             r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
         ),
+        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
     }
 
 
@@ -1066,15 +1067,16 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
     instance_id_val = body.get("instance_id")
     input_prompt = body.get("input_prompt")
 
-    # When uploading a transcript, attach it to the most recent cycle_run
-    # for this specific instance that has no transcript yet (created by
-    # progress_store during the same cycle).
+    # Attach metadata (and optional transcript) to the most recent cycle_run
+    # for this instance that has no transcript yet (created by progress_store
+    # during the same cycle). If no transcript is available, still merge the
+    # metadata so we don't create a duplicate cycle_run.
     row = None
-    if transcript_bytes and instance_id_val:
+    if instance_id_val:
         row = await pool.fetchrow(
             f"""
             UPDATE cycle_runs
-            SET transcript = $1,
+            SET transcript = COALESCE($1, transcript),
                 finished_at = COALESCE($2, finished_at, NOW()),
                 tool_calls = COALESCE($3, tool_calls),
                 tokens_used = COALESCE($4, tokens_used),
@@ -1252,7 +1254,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
                 "last_cycle": r["last_cycle"].isoformat() if r["last_cycle"] else None,
             }
         )
-    return JSONResponse(groups)
+    return JSONResponse({"items": groups, "total": len(groups)})
 
 
 async def api_instance_wake_trigger(request: Request) -> JSONResponse:
@@ -1276,6 +1278,12 @@ async def api_instance_wake_check(request: Request) -> JSONResponse:
     instance_id = request.path_params.get("instance_id")
     if not instance_id:
         return JSONResponse({"error": "missing instance_id"}, status_code=400)
+
+    pool = get_pool()
+    await pool.execute(
+        "UPDATE bot_instances SET last_seen = NOW() WHERE instance_id = $1",
+        instance_id,
+    )
 
     if instance_id in wake_signals:
         wake_signals.discard(instance_id)

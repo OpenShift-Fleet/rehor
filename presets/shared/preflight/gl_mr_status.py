@@ -45,6 +45,7 @@ def gl_mr_notes(project_path, num):
             [
                 "glab",
                 "api",
+                "--paginate",
                 f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
                 "--hostname",
                 "gitlab.cee.redhat.com",
@@ -188,9 +189,7 @@ def main():
             ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif "unresolved_threads" in issues:
-            feedback.append(e)
-        elif has_new_feedback(e):
+        elif "unresolved_threads" in issues or has_new_feedback(e):
             feedback.append(e)
         else:
             clean.append(e)

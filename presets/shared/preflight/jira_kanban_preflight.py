@@ -38,14 +38,17 @@ BOT_KANBAN_JQL_EXTRA = os.environ.get("BOT_KANBAN_JQL_EXTRA", "")
 # Triage helpers (same logic as jira_sprint_preflight)
 # ---------------------------------------------------------------------------
 
+# MCP tool max; returns oldest-first, no pagination: https://github.com/sooperset/mcp-atlassian/issues/1215
+JIRA_COMMENT_LIMIT = 100
+
 
 def _jira_issue(key):
     return jira_call(
         "jira_get_issue",
         {
             "issue_key": key,
-            "fields": "summary,status,assignee,labels,issuelinks,comment",
-            "comment_limit": 10,
+            "fields": "summary,status,assignee,labels,issuelinks,comment,updated",
+            "comment_limit": JIRA_COMMENT_LIMIT,
         },
     )
 
@@ -58,6 +61,22 @@ def _has_new_jira_feedback(jira_comments, last_addressed):
             if not ("### " in body or "| " in body or "PR:" in body):
                 return True
     return False
+
+
+def _comments_may_be_truncated(jira_data, all_comments, last_addressed):
+    """Detect when the MCP tool's oldest-first comment limit hid newer comments.
+
+    The MCP tool returns up to JIRA_COMMENT_LIMIT comments oldest-first
+    with no pagination or ordering support.  When the returned count hits
+    that ceiling AND the issue was updated after last_addressed, newer
+    comments were likely truncated.
+    """
+    if not jira_data or not last_addressed:
+        return False
+    if len(all_comments) < JIRA_COMMENT_LIMIT:
+        return False
+    updated = jira_data.get("updated") or (jira_data.get("fields") or {}).get("updated", "")
+    return updated[:16] > last_addressed[:16] if updated else False
 
 
 def _fmt_jira(task, jira_data, jira_comments):
@@ -276,11 +295,10 @@ def main():
             prs = get_task_prs(t)
 
             jira = _jira_issue(key) if key else None
-            jira_comments = []
+            all_comments = []
             if jira:
-                jira_comments = (
-                    jira.get("comments") or jira.get("fields", {}).get("comment", {}).get("comments") or []
-                )[-10:]
+                all_comments = jira.get("comments") or jira.get("fields", {}).get("comment", {}).get("comments") or []
+            jira_comments = all_comments[-10:]
 
             is_interrupted = (
                 t.get("status") == "in_progress"
@@ -290,7 +308,12 @@ def main():
                 and meta.get("last_step") != "investigation_posted"
             )
 
-            if _has_new_jira_feedback(jira_comments, t.get("last_addressed", "")):
+            last_addr = t.get("last_addressed", "")
+            has_feedback = _has_new_jira_feedback(jira_comments, last_addr)
+            if not has_feedback and _comments_may_be_truncated(jira, all_comments, last_addr):
+                has_feedback = True
+
+            if has_feedback:
                 feedback_tasks.append((t, jira, jira_comments))
             elif is_interrupted:
                 interrupted_tasks.append((t, jira, jira_comments))

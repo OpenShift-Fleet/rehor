@@ -1,7 +1,7 @@
 """Tests for task pause/unpause/unarchive REST API endpoints."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,7 +20,7 @@ app = Starlette(
 
 
 def _fake_task_row(key="RHCLOUD-100", status="in_progress", **kwargs):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "id": kwargs.get("id", 1),
         "external_key": key,

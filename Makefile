@@ -1,10 +1,68 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker 2>/dev/null && echo docker || echo podman)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+verify: ## Run all checks (same as CI)
+	uv sync --frozen --extra dev
+	@echo "=== Python: format ==="
+	uv run ruff format --check .
+	@echo "=== Python: lint ==="
+	uv run ruff check .
+	@echo "=== Python: type check ==="
+	uv run mypy
+	@echo "=== Python: tests ==="
+	uv run pytest
+	@echo "=== Go: vet ==="
+	cd proxy/executor && go vet ./...
+	@echo "=== Go: tests ==="
+	cd proxy/executor && go test -race ./...
+	@echo "=== Dashboard: type check ==="
+	cd dashboard && npm run lint
+	@echo "=== Dashboard: build ==="
+	cd dashboard && npm run build
+	@echo "=== Dashboard: tests ==="
+	cd dashboard && npm test
+	@echo ""
+	@echo "All checks passed."
+
+precommit-install: ## Install pre-commit hooks
+	pip install pre-commit && pre-commit install
+
+precommit-run: ## Run pre-commit on all files
+	pre-commit run --all-files
+
+prepush-install: ## Install pre-push git hook
+	bash scripts/install_prepush_hook.sh
+
+prepush-check: ## Run pre-push quality checks manually
+	bash scripts/prepush_check.sh
+
+verify-required-checks: ## Verify required CI checks on a PR (usage: make verify-required-checks PR=123)
+	@if [ -z "$(PR)" ]; then echo "usage: make verify-required-checks PR=<number>"; exit 1; fi
+	bash scripts/verify_required_checks.sh "$(PR)"
+
+check-branch-protection: ## Check branch protection drift against versioned policy
+	bash scripts/check_branch_protection.sh
+
+memory-verify: ## Run memory-server CI-equivalent checks locally
+	cd memory-server && uv sync --frozen --extra test
+	cd memory-server && uv lock --check
+	cd memory-server && uv run pytest -q
+	@echo "=== Memory Server: pip-audit (report-only) ==="
+	@cd memory-server && uv run pip-audit --desc --local --skip-editable; \
+	status=$$?; \
+	if [ "$$status" -eq 0 ]; then \
+		echo "pip-audit found no vulnerabilities."; \
+	elif [ "$$status" -eq 1 ]; then \
+		echo "pip-audit reported vulnerabilities (report-only)"; \
+	else \
+		echo "pip-audit failed to execute correctly (exit $$status)"; \
+		exit "$$status"; \
+	fi
 
 install: ## Install dependencies with uv
 	uv sync

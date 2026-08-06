@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { timeAgo, formatDuration, formatTokens, sourceUrl, displayKey } from './utils';
+import { timeAgo, formatDuration, formatTokens, sourceUrl, displayKey, effectiveState } from './utils';
 
 describe('timeAgo', () => {
   afterEach(() => {
@@ -90,5 +90,47 @@ describe('displayKey', () => {
 
   it('returns empty string when no external_key', () => {
     expect(displayKey({ external_key: null })).toBe('');
+  });
+});
+
+describe('effectiveState', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns working as-is', () => {
+    expect(effectiveState({ state: 'working', updated_at: '2025-01-01T00:00:00Z' })).toBe('working');
+  });
+
+  it('returns error as-is', () => {
+    expect(effectiveState({ state: 'error', updated_at: '2025-01-01T00:00:00Z' })).toBe('error');
+  });
+
+  it('returns idle when last_seen is recent', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T12:00:30Z'));
+    expect(effectiveState({ state: 'idle', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('idle');
+  });
+
+  it('returns sleep when last_seen is stale and state is idle', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
+    expect(effectiveState({ state: 'idle', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('sleep');
+  });
+
+  it('falls back to updated_at when last_seen is null', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
+    expect(effectiveState({ state: 'idle', last_seen: null, updated_at: '2025-01-01T12:00:00Z' })).toBe('sleep');
+  });
+
+  it('returns idle when no timestamps available', () => {
+    expect(effectiveState({ state: 'idle' })).toBe('idle');
+  });
+
+  it('does not convert working to sleep even if stale', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
+    expect(effectiveState({ state: 'working', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('working');
   });
 });

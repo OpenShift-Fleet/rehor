@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { BotStatus } from '../types';
 import { wakeInstance } from '../api';
 import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, sourceUrl, displayKey } from '../utils';
+import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus, stateBorderColor } from '../utils';
 import {
   Card,
   CardBody,
@@ -22,6 +22,7 @@ export default function BotBanner({ status }: Props) {
   const [elapsed, setElapsed] = useState('');
   const [waking, setWaking] = useState(false);
   const { onEvent } = useWS();
+  const state = effectiveState(status);
 
   const handleWake = useCallback(async () => {
     if (!status.instance_id) return;
@@ -70,25 +71,25 @@ export default function BotBanner({ status }: Props) {
     return () => clearInterval(id);
   }, [status.state, status.cycle_start]);
 
-  const borderColor = status.state === 'working' ? 'var(--yellow)' : status.state === 'error' ? 'var(--red)' : 'var(--green)';
+  const message = state === 'sleep' ? "Bot hasn't checked in recently" : status.message;
 
   return (
-    <Card isCompact isGlass style={{ borderLeft: `3px solid ${borderColor}`, marginBottom: '12px' }}>
+    <Card isCompact isGlass style={{ borderLeft: `3px solid ${stateBorderColor(state)}`, marginBottom: '12px' }}>
       <CardBody>
       <Flex alignItems={{ default: 'alignItemsCenter' }} justifyContent={{ default: 'justifyContentSpaceBetween' }} flexWrap={{ default: 'nowrap' }}>
         <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flex: 1, minWidth: 0 }}>
           <FlexItem>
-            <Icon status={status.state === 'working' ? 'warning' : status.state === 'error' ? 'danger' : 'success'}>
+            <Icon status={stateIconStatus(state)}>
               <CircleIcon />
             </Icon>
           </FlexItem>
           <FlexItem>
-            <Label color={status.state === 'working' ? 'orange' : status.state === 'error' ? 'red' : 'green'}>
-              {status.state.toUpperCase()}
+            <Label color={stateLabelColor(state)}>
+              {state.toUpperCase()}
             </Label>
           </FlexItem>
           <FlexItem style={{ minWidth: 0, flex: 1 }}>
-            <span style={{ color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{status.message}</span>
+            <span style={{ color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{message}</span>
           </FlexItem>
         </Flex>
         <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flexShrink: 0 }}>
@@ -119,7 +120,7 @@ export default function BotBanner({ status }: Props) {
               {timeAgo(status.updated_at)}
             </span>
           </FlexItem>
-          {status.state === 'idle' && status.instance_id && (
+          {state === 'idle' && status.instance_id && (
             <FlexItem>
               <Button
                 variant="plain"
