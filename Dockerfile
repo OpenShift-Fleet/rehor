@@ -54,7 +54,8 @@ RUN ARCH=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
 
 # Headless Chromium via Playwright (avoids EPEL/CentOS RPMs)
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN npx playwright install chromium
+RUN npx playwright install chromium \
+    && rm -rf /root/.npm
 
 # Make python3.12 the default
 RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 \
