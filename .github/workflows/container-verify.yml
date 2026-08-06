@@ -11,6 +11,13 @@ name: Container Verify
 # memory-server + real entrypoint stages) is out of scope here — see
 # docs/operations/rehor-107-container-verification.md for the REHOR-62
 # hand-off notes.
+#
+# The three jobs below are independent (separate images, separate failure
+# domains). If one fails due to transient runner/infra issues (e.g. GitHub's
+# action-download service or a stuck queued runner) rather than an actual
+# build/smoke-check failure, use "Re-run failed jobs" once the whole run has
+# completed — GitHub won't let you re-run individual jobs while others are
+# still in progress.
 
 on:
   pull_request:
