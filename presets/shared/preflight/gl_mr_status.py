@@ -182,15 +182,9 @@ def main():
     for e in enriched:
         issues = e["issues"]
         if "merged" in issues:
-            if e["task"].get("last_addressed") and not has_new_feedback(e):
-                clean.append(e)
-            else:
-                merged.append(e)
+            merged.append(e)
         elif "closed" in issues:
-            if e["task"].get("last_addressed") and not has_new_feedback(e):
-                clean.append(e)
-            else:
-                closed.append(e)
+            closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
             ci_fail.append(e)
         elif "conflict" in issues:
