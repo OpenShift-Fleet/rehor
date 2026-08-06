@@ -67,6 +67,27 @@
         "scope": "memory-server container image vulnerability scan (trivy)",
         "required": false,
         "note": "path-filtered to memory-server/**"
+      },
+      {
+        "name": "verify-bot",
+        "workflow": "container-verify.yml",
+        "scope": "bot container image build + required-tooling presence check (REHOR-107)",
+        "required": false,
+        "note": "path-filtered to bot image inputs (Dockerfile, entrypoint.sh, bot/**, presets/**, etc). does not run the real entrypoint — see docs/operations/rehor-107-container-verification.md"
+      },
+      {
+        "name": "verify-proxy",
+        "workflow": "container-verify.yml",
+        "scope": "proxy container image build + squid/executor-socket smoke check (REHOR-107)",
+        "required": false,
+        "note": "path-filtered to proxy/**"
+      },
+      {
+        "name": "verify-memory-server",
+        "workflow": "container-verify.yml",
+        "scope": "memory-server container image build + /health smoke check against pgvector (REHOR-107)",
+        "required": false,
+        "note": "path-filtered to memory-server/**"
       }
     ],
     "konflux": [
