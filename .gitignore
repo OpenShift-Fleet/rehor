@@ -21,6 +21,7 @@ __pycache__/
 .venv/
 .python-version
 dashboard/node_modules/
+dashboard/tsconfig.tsbuildinfo
 # Dashboard build output (built in Dockerfile, not committed)
 memory-server/bot_memory_server/static/assets/
 memory-server/bot_memory_server/static/index.html
