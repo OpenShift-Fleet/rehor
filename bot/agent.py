@@ -49,18 +49,22 @@ async def _push_status(
     message: str,
     jira_key: str | None = None,
     repo: str | None = None,
+    instance_id: str | None = None,
 ) -> None:
     """Push a status update to the dashboard banner via HTTP."""
     global _status_fail_count
     try:
+        payload: dict = {
+            "state": state,
+            "message": message,
+            "external_key": jira_key,
+            "repo": repo,
+        }
+        if instance_id:
+            payload["instance_id"] = instance_id
         await client.post(
             DASHBOARD_URL,
-            json={
-                "state": state,
-                "message": message,
-                "external_key": jira_key,
-                "repo": repo,
-            },
+            json=payload,
             timeout=2.0,
         )
         _status_fail_count = 0
@@ -215,7 +219,7 @@ async def run_cycle(
 
     async with httpx.AsyncClient() as http:
         # Signal cycle start to dashboard
-        await _push_status(http, "working", "Starting cycle...")
+        await _push_status(http, "working", "Starting cycle...", instance_id=instance_id)
 
         try:
             async for message in query(prompt=prompt, options=options):
@@ -240,7 +244,7 @@ async def run_cycle(
                                 # Log full text (truncated)
                                 logger.info("[agent] %s", text[:300])
                                 # Push to dashboard
-                                await _push_status(http, "working", text[:500])
+                                await _push_status(http, "working", text[:500], instance_id=instance_id)
                         elif isinstance(block, ToolResultBlock):
                             _extract_task_id_from_result(block, ctx)
                         elif hasattr(block, "name"):
@@ -261,18 +265,18 @@ async def run_cycle(
 
         except Exception:
             logger.exception("Agent cycle failed")
-            await _push_status(http, "error", "Cycle failed — check bot.log")
+            await _push_status(http, "error", "Cycle failed — check bot.log", instance_id=instance_id)
 
         # Determine work type from context
         result_text = getattr(result, "result", "") or ""
         if "NO_WORK_FOUND" in result_text:
             ctx.work_type = ctx.work_type or "idle"
-            await _push_status(http, "idle", "No work found. Sleeping...")
+            await _push_status(http, "idle", "No work found. Sleeping...", instance_id=instance_id)
         elif getattr(result, "subtype", "") != "success":
             ctx.work_type = ctx.work_type or "error"
-            await _push_status(http, "idle", "Cycle complete. Sleeping...")
+            await _push_status(http, "idle", "Cycle complete. Sleeping...", instance_id=instance_id)
         else:
-            await _push_status(http, "idle", "Cycle complete. Sleeping...")
+            await _push_status(http, "idle", "Cycle complete. Sleeping...", instance_id=instance_id)
 
         # Extract a short summary from the result text
         if not ctx.summary and result_text:

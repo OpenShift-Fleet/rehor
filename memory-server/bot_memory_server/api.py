@@ -532,6 +532,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    instance_id = body.get("instance_id")
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
@@ -540,6 +541,31 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             updated_at = NOW()
         WHERE id = 1 RETURNING *
         """,
+        state,
+        message,
+        external_key,
+        source_type,
+        repo,
+    )
+    await pool.execute(
+        """
+        INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo,
+                                   cycle_start, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6,
+            CASE WHEN $2 = 'working' THEN NOW() ELSE NULL END,
+            NOW())
+        ON CONFLICT (instance_id) DO UPDATE SET
+            state = $2, message = $3,
+            external_key = COALESCE($4, bot_instances.external_key),
+            source_type = COALESCE($5, bot_instances.source_type),
+            repo = COALESCE($6, bot_instances.repo),
+            cycle_start = CASE
+                WHEN bot_instances.state = 'idle' AND $2 = 'working' THEN NOW()
+                ELSE bot_instances.cycle_start
+            END,
+            updated_at = NOW()
+        """,
+        instance_id,
         state,
         message,
         external_key,
