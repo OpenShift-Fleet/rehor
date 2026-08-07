@@ -54,8 +54,7 @@ RUN ARCH=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
 
 # Headless Chromium via Playwright (avoids EPEL/CentOS RPMs)
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
-RUN npx playwright install chromium \
-    && rm -rf /root/.npm
+RUN npx playwright install chromium
 
 # Make python3.12 the default
 RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 \
@@ -152,6 +151,8 @@ COPY presets/ presets/
 
 # Run env preset install scripts (no-op until presets are extracted)
 RUN bash -c 'shopt -s nullglob; for script in presets/envs/*/install.sh; do bash "$script"; done'
+
+RUN rm -rf /root/.npm
 
 ENV HOME=/home/botuser
 USER botuser
