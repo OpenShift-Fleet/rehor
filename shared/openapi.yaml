@@ -1,0 +1,971 @@
+openapi: 3.0.3
+info:
+  title: Dev Bot Memory Server API
+  version: 0.1.0
+  description: API for the Dev Bot memory server — tasks, memories, costs, cycle runs, and analytics.
+
+servers:
+  - url: /
+
+paths:
+  /api/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks with optional filters
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: exclude_status
+          in: query
+          schema: { type: string }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of tasks
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TaskItem'
+
+  /api/tasks/{key}:
+    delete:
+      operationId: archiveTask
+      summary: Archive (soft-delete) a task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task archived
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [archived, external_key, task]
+                properties:
+                  archived: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+
+  /api/tasks/{key}/pause:
+    post:
+      operationId: pauseTask
+      summary: Pause a task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paused_reason: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Task paused
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paused, external_key, task]
+                properties:
+                  paused: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+
+  /api/tasks/{key}/unpause:
+    post:
+      operationId: unpauseTask
+      summary: Unpause a task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task unpaused
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unpaused, external_key, task]
+                properties:
+                  unpaused: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+        '409':
+          description: Too many active tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tasks/{key}/unarchive:
+    post:
+      operationId: unarchiveTask
+      summary: Restore an archived task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unarchived, external_key, task]
+                properties:
+                  unarchived: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+
+  /api/memories:
+    get:
+      operationId: listMemories
+      summary: List memories with optional filters
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of memories
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MemoryItem'
+
+  /api/memories/{id}:
+    get:
+      operationId: getMemory
+      summary: Get a single memory by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Memory item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryItem'
+    delete:
+      operationId: deleteMemory
+      summary: Delete a memory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Memory deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: integer }
+
+  /api/memories/search:
+    get:
+      operationId: searchMemories
+      summary: Search memories by similarity
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Array of memory items with similarity scores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/MemoryItem'
+                    - type: object
+                      required: [similarity]
+                      properties:
+                        similarity: { type: number }
+
+  /api/memories/upload:
+    post:
+      operationId: uploadMemories
+      summary: Bulk upload memories
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memories]
+              properties:
+                memories:
+                  type: array
+                  items: { type: object }
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploaded, errors]
+                properties:
+                  uploaded: { type: integer }
+                  errors:
+                    type: array
+                    items: { type: string }
+
+  /api/memories/embeddings:
+    get:
+      operationId: getEmbeddings
+      summary: Get PCA-projected 3D embedding coordinates
+      responses:
+        '200':
+          description: Array of embedding points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmbeddingPoint'
+
+  /api/costs:
+    get:
+      operationId: listCosts
+      summary: List cost entries with daily aggregates
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200 }
+        - name: days
+          in: query
+          schema: { type: integer }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Cost entries and daily aggregates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostsResponse'
+    post:
+      operationId: addCostEntry
+      summary: Record a new cost entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CycleEntryItem'
+      responses:
+        '201':
+          description: Created cost entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleEntryItem'
+
+  /api/cycle-runs:
+    get:
+      operationId: listCycleRuns
+      summary: List cycle runs with optional filters
+      parameters:
+        - name: task_id
+          in: query
+          schema: { type: string }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+        - name: cycle_type
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of cycle runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CycleRunItem'
+    post:
+      operationId: addCycleRun
+      summary: Record a new cycle run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created cycle run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleRunItem'
+
+  /api/cycle-runs/by-task:
+    get:
+      operationId: listCycleRunsByTask
+      summary: Cycle runs grouped by task
+      parameters:
+        - name: instance_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task cycle groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskCycleGroup'
+
+  /api/cycle-runs/{id}/transcript:
+    get:
+      operationId: getCycleRunTranscript
+      summary: Get cycle run transcript (binary)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: decompress
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Raw transcript data
+          content:
+            application/zstd:
+              schema:
+                type: string
+                format: binary
+            application/x-ndjson:
+              schema:
+                type: string
+
+  /api/bot-status:
+    get:
+      operationId: getBotStatus
+      summary: Get current bot status
+      responses:
+        '200':
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotStatus'
+    post:
+      operationId: updateBotStatus
+      summary: Update bot status
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state: { type: string }
+                message: { type: string }
+                repo: { type: string }
+                external_key: { type: string }
+                source_type: { type: string }
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+
+  /api/instances:
+    get:
+      operationId: listInstances
+      summary: List bot instances
+      responses:
+        '200':
+          description: Array of bot instances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BotInstance'
+
+  /api/instances/{instance_id}:
+    get:
+      operationId: getInstance
+      summary: Get a single bot instance
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Bot instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotInstance'
+
+  /api/instances/{instance_id}/idle:
+    patch:
+      operationId: updateInstanceIdle
+      summary: Update idle tracking for an instance
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idle_consecutive_cycles: { type: integer }
+                last_idle_reminder_sent_at: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Updated instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotInstance'
+
+  /api/instances/{instance_id}/wake:
+    get:
+      operationId: checkInstanceWake
+      summary: Check if a wake signal is pending (consumed on read)
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Wake status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wake]
+                properties:
+                  wake: { type: boolean }
+    post:
+      operationId: triggerInstanceWake
+      summary: Send a wake signal to an instance
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Wake triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+
+  /api/analytics:
+    get:
+      operationId: getAnalytics
+      summary: Get analytics summary
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsData'
+
+  /api/tags:
+    get:
+      operationId: listTags
+      summary: List all memory tags
+      responses:
+        '200':
+          description: Array of tag strings
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /api/stats:
+    get:
+      operationId: getStats
+      summary: Get summary statistics
+      responses:
+        '200':
+          description: Stats summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: object
+                    additionalProperties: { type: integer }
+                  memories:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      by_category:
+                        type: object
+                        additionalProperties: { type: integer }
+                      by_repo:
+                        type: object
+                        additionalProperties: { type: integer }
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    PaginatedResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array }
+        total: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    TaskItem:
+      type: object
+      required:
+        - id
+        - external_key
+        - jira_key
+        - source_type
+        - artifacts
+        - status
+        - repo
+        - branch
+        - created_at
+        - paused_reason
+        - metadata
+      properties:
+        id: { type: integer }
+        external_key: { type: string }
+        jira_key: { type: string }
+        source_type: { type: string }
+        source_url: { type: string, nullable: true }
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [name, url, type]
+            properties:
+              name: { type: string }
+              url: { type: string }
+              type: { type: string }
+        status: { type: string }
+        repo: { type: string }
+        branch: { type: string }
+        title: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        created_at: { type: string }
+        last_addressed: { type: string, nullable: true }
+        paused_reason: { type: string, nullable: true }
+        instance_id: { type: string, nullable: true }
+        metadata: { type: object }
+        slack_notification:
+          nullable: true
+          type: object
+          properties:
+            event_type: { type: string }
+            message: { type: string }
+            sent_at: { type: string }
+      additionalProperties: false
+
+    MemoryItem:
+      type: object
+      required: [id, category, repo, title, content, tags, created_at, metadata]
+      properties:
+        id: { type: integer }
+        category: { type: string }
+        repo: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        metadata: { type: object }
+      additionalProperties: false
+
+    CycleEntryItem:
+      type: object
+      required:
+        - id
+        - timestamp
+        - label
+        - session_id
+        - num_turns
+        - duration_ms
+        - cost_usd
+        - input_tokens
+        - output_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - model
+        - is_error
+        - no_work
+      properties:
+        id: { type: integer }
+        timestamp: { type: string }
+        label: { type: string }
+        session_id: { type: string }
+        num_turns: { type: integer }
+        duration_ms: { type: integer }
+        cost_usd: { type: number }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read_tokens: { type: integer }
+        cache_write_tokens: { type: integer }
+        model: { type: string }
+        is_error: { type: boolean }
+        no_work: { type: boolean }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        work_type: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+      additionalProperties: false
+
+    CycleRunItem:
+      type: object
+      required:
+        - id
+        - task_id
+        - cycle_type
+        - instance_id
+        - started_at
+        - finished_at
+        - tool_calls
+        - tokens_used
+        - progress
+        - created_at
+        - has_transcript
+      properties:
+        id: { type: integer }
+        task_id: { type: integer, nullable: true }
+        cycle_type: { type: string }
+        instance_id: { type: string }
+        started_at: { type: string, nullable: true }
+        finished_at: { type: string, nullable: true }
+        tool_calls: { type: integer }
+        tokens_used: { type: integer }
+        progress: { type: object }
+        input_prompt: { type: string, nullable: true }
+        created_at: { type: string }
+        has_transcript: { type: boolean }
+      additionalProperties: false
+
+    CostsResponse:
+      type: object
+      required: [items, daily]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CycleEntryItem'
+        daily:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyAggregate'
+      additionalProperties: false
+
+    DailyAggregate:
+      type: object
+      required: [day, cycles, total_cost, input_tokens, output_tokens, cache_read, cache_write, total_duration, total_turns, idle_cycles, error_cycles]
+      properties:
+        day: { type: string }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read: { type: integer }
+        cache_write: { type: integer }
+        total_duration: { type: integer }
+        total_turns: { type: integer }
+        idle_cycles: { type: integer }
+        error_cycles: { type: integer }
+
+    BotStatus:
+      type: object
+      required: [state, message, external_key, source_type, repo, instance_id, updated_at, cycle_start]
+      properties:
+        state: { type: string }
+        message: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        source_url: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        instance_id: { type: string }
+        updated_at: { type: string }
+        cycle_start: { type: string, nullable: true }
+        last_seen: { type: string, nullable: true }
+
+    BotInstance:
+      type: object
+      required: [instance_id, state, message, external_key, source_type, repo, cycle_start, updated_at, active_tasks, max_tasks]
+      properties:
+        instance_id: { type: string }
+        state: { type: string }
+        message: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        source_url: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        cycle_start: { type: string, nullable: true }
+        updated_at: { type: string }
+        last_seen: { type: string, nullable: true }
+        active_tasks: { type: integer }
+        max_tasks: { type: integer }
+        idle_consecutive_cycles: { type: integer }
+        last_idle_reminder_sent_at: { type: string, nullable: true }
+
+    EmbeddingPoint:
+      type: object
+      required: [id, title, content, category, repo, tags, x, y, z]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        content: { type: string }
+        category: { type: string }
+        repo: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        x: { type: number }
+        y: { type: number }
+        z: { type: number }
+
+    TaskCycleGroup:
+      type: object
+      required: [task_id, external_key, title, task_status, repo, cycle_count, transcript_count, total_tool_calls, total_tokens, first_cycle, last_cycle]
+      properties:
+        task_id: { type: integer }
+        external_key: { type: string }
+        title: { type: string }
+        task_status: { type: string }
+        repo: { type: string }
+        cycle_count: { type: integer }
+        transcript_count: { type: integer }
+        total_tool_calls: { type: integer }
+        total_tokens: { type: integer }
+        first_cycle: { type: string }
+        last_cycle: { type: string }
+
+    AnalyticsData:
+      type: object
+      required: [summary, work_types, repos, tickets, feedback]
+      properties:
+        summary:
+          $ref: '#/components/schemas/AnalyticsSummary'
+        work_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkTypeEntry'
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepoEntry'
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TicketEntry'
+        feedback:
+          $ref: '#/components/schemas/FeedbackStats'
+
+    AnalyticsSummary:
+      type: object
+      required: [total_cycles, work_cycles, idle_cycles, error_cycles, unique_tickets, total_cost, avg_cost_per_work_cycle, avg_turns, avg_duration_ms, repos_touched, tickets_resolved]
+      properties:
+        total_cycles: { type: integer }
+        work_cycles: { type: integer }
+        idle_cycles: { type: integer }
+        error_cycles: { type: integer }
+        unique_tickets: { type: integer }
+        total_cost: { type: number }
+        avg_cost_per_work_cycle: { type: number }
+        avg_turns: { type: number }
+        avg_duration_ms: { type: integer }
+        repos_touched: { type: integer }
+        tickets_resolved: { type: integer }
+
+    WorkTypeEntry:
+      type: object
+      required: [category, cycles, total_cost, avg_cost, avg_turns, avg_duration_ms]
+      properties:
+        category: { type: string }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        avg_cost: { type: number }
+        avg_turns: { type: integer }
+        avg_duration_ms: { type: integer }
+
+    RepoEntry:
+      type: object
+      required: [repo, tickets, cycles, total_cost, avg_turns]
+      properties:
+        repo: { type: string }
+        tickets: { type: integer }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        avg_turns: { type: integer }
+
+    TicketEntry:
+      type: object
+      required: [external_key, title, status, repo, total_cycles, impl_cycles, review_cycles, total_cost, hours_span]
+      properties:
+        external_key: { type: string }
+        title: { type: string }
+        status: { type: string }
+        repo: { type: string }
+        total_cycles: { type: integer }
+        impl_cycles: { type: integer }
+        review_cycles: { type: integer }
+        total_cost: { type: number }
+        hours_span: { type: number }
+
+    FeedbackStats:
+      type: object
+      required: [avg_review_rounds, zero_review, one_review, multi_review]
+      properties:
+        avg_review_rounds: { type: number }
+        zero_review: { type: integer }
+        one_review: { type: integer }
+        multi_review: { type: integer }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }

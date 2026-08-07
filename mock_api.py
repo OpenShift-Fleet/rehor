@@ -18,6 +18,7 @@ from fixtures.api_payloads import (
     BOT_STATUS,
     COSTS,
     CYCLE_RUNS,
+    DAILY_COSTS,
     EMBEDDINGS,
     MAX_ACTIVE,
     MEMORIES,
@@ -188,10 +189,10 @@ class Handler(BaseHTTPRequestHandler):
                 memories = [m for m in memories if tag in m["tags"]]
 
             memories = [{**m, "similarity": 0.85} for m in memories[:limit]]
-            self.send_json({"items": memories, "total": len(memories)})
+            self.send_json(memories)
 
         elif path == "/api/memories/embeddings":
-            self.send_json({"items": EMBEDDINGS, "total": len(EMBEDDINGS)})
+            self.send_json(EMBEDDINGS)
 
         elif path == "/api/tags":
             self.send_json(TAGS)
@@ -200,7 +201,7 @@ class Handler(BaseHTTPRequestHandler):
             limit = int(qs.get("limit", ["200"])[0])
 
             costs = COSTS[:limit]
-            self.send_json({"items": costs, "total": len(costs), "limit": limit, "offset": 0})
+            self.send_json({"items": costs, "daily": DAILY_COSTS})
 
         elif path == "/api/cycle-runs":
             task_id = qs.get("task_id", [None])[0]
@@ -228,9 +229,8 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                # In real impl would filter, here just return all
                 pass
-            self.send_json({"items": groups, "total": len(groups)})
+            self.send_json(groups)
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
             run_id = int(path.split("/")[3])

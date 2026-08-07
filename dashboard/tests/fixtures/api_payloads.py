@@ -17,6 +17,7 @@ def task(
     return {
         "id": id,
         "external_key": key,
+        "jira_key": key,
         "source_type": "jira",
         "source_url": f"https://issues.redhat.com/browse/{key}",
         "artifacts": [
@@ -358,6 +359,35 @@ TASK_CYCLE_GROUPS = [
         "total_tokens": 45000,
         "first_cycle": "2026-07-02T10:00:00Z",
         "last_cycle": "2026-07-02T18:00:00Z",
+    },
+]
+
+DAILY_COSTS = [
+    {
+        "day": "2026-07-01",
+        "cycles": 2,
+        "total_cost": 0.20,
+        "input_tokens": 20000,
+        "output_tokens": 10000,
+        "cache_read": 4000,
+        "cache_write": 2000,
+        "total_duration": 600000,
+        "total_turns": 16,
+        "idle_cycles": 0,
+        "error_cycles": 0,
+    },
+    {
+        "day": "2026-07-02",
+        "cycles": 1,
+        "total_cost": 0.15,
+        "input_tokens": 10000,
+        "output_tokens": 5000,
+        "cache_read": 2000,
+        "cache_write": 1000,
+        "total_duration": 300000,
+        "total_turns": 8,
+        "idle_cycles": 0,
+        "error_cycles": 0,
     },
 ]
 
