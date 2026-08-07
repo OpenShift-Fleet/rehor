@@ -75,6 +75,7 @@ func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Execu
 
 	if err := s.policy.Check(tool, args); err != nil {
 		log.Printf("policy-deny: tool=%s subcmd=%s reason=%s", tool, subcmd, err)
+		executor.PolicyDenyTotal.WithLabelValues(tool).Inc()
 		exitCode = 1
 		return &pb.ExecuteResponse{
 			Stderr:   err.Error() + "\n",

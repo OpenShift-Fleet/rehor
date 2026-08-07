@@ -64,16 +64,19 @@ func NewVertexProxy(projectID, region string, ts oauth2.TokenSource, policy *Ver
 		if err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 			log.Printf("vertex: bad-request path=%s err=%s", r.URL.Path, err)
+			VertexModelRequestsTotal.WithLabelValues("unknown", "bad_path").Inc()
 			return
 		}
 		if err := policy.Check(model); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusForbidden)
 			log.Printf("vertex: policy-deny model=%s", model)
+			VertexModelRequestsTotal.WithLabelValues(model, "denied").Inc()
 			return
 		}
 
 		rec := &statusRecorder{ResponseWriter: w}
 		proxy.ServeHTTP(rec, r)
+		VertexModelRequestsTotal.WithLabelValues(model, "ok").Inc()
 
 		log.Printf("vertex: model=%s method=%s status=%d size=%d dur=%s",
 			model, method, rec.status, r.ContentLength,
