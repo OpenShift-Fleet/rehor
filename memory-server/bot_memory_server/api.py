@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 from .db import get_pool
 from .embeddings import embed
 from .events import Event, bus
+from .metrics import record_cycle
 from .tools.tasks import ACTIVE_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -672,7 +673,7 @@ async def api_instance_idle_update(request: Request) -> JSONResponse:
 async def api_costs(request: Request) -> JSONResponse:
     """GET /api/costs — list cycle cost records. POST to add one."""
     if request.method == "POST":
-        return await api_costs_add(request)
+        return await _api_costs_add(request)
     pool = get_pool()
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
@@ -726,7 +727,7 @@ async def api_costs(request: Request) -> JSONResponse:
     return JSONResponse({"items": items, "daily": daily})
 
 
-async def api_costs_add(request: Request) -> JSONResponse:
+async def _api_costs_add(request: Request) -> JSONResponse:
     """POST /api/costs — record a new cycle cost entry."""
     pool = get_pool()
     body = await request.json()
@@ -761,6 +762,25 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("summary"),
     )
     cycle = _cycle(row)
+
+    if cycle["is_error"]:
+        status = "error"
+    elif cycle["no_work"]:
+        status = "idle"
+    else:
+        status = "ok"
+    record_cycle(
+        model=cycle["model"],
+        label=cycle["label"],
+        status=status,
+        cost_usd=cycle["cost_usd"],
+        input_tokens=cycle["input_tokens"],
+        output_tokens=cycle["output_tokens"],
+        cache_read_tokens=cycle["cache_read_tokens"],
+        cache_write_tokens=cycle["cache_write_tokens"],
+        duration_seconds=(cycle["duration_ms"] or 0) / 1000,
+    )
+
     await bus.publish(Event("cycle_recorded", cycle))
     return JSONResponse(cycle, status_code=201)
 

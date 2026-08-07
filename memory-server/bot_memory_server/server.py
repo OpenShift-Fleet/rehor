@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +16,7 @@ from starlette.websockets import WebSocket
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
-from .metrics import PrometheusMiddleware
+from .metrics import PrometheusMiddleware, db_gauge_refresh_loop
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,8 +30,12 @@ async def lifespan(app):
     load_model()
     logger.info("Connecting to database...")
     await init_pool()
+    gauge_task = asyncio.create_task(db_gauge_refresh_loop())
     logger.info("Memory server ready")
     yield
+    gauge_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await gauge_task
     await close_pool()
 
 
