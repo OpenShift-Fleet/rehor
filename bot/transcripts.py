@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from .constants import MEMORY_API_BASE
+from .metrics import TRANSCRIPT_UPLOAD_TOTAL
 
 if TYPE_CHECKING:
     from .agent import CycleContext
@@ -78,6 +79,7 @@ def record_transcript(
     session_id = getattr(result, "session_id", "")
     if not session_id:
         logger.debug("No session_id in result — skipping transcript capture")
+        TRANSCRIPT_UPLOAD_TOTAL.labels(label, "no_session").inc()
         return
 
     usage = getattr(result, "usage", None) or {}
@@ -124,8 +126,10 @@ def record_transcript(
             )
         except ImportError:
             logger.warning("zstandard not installed — storing cycle run without transcript")
+            TRANSCRIPT_UPLOAD_TOTAL.labels(label, "compress_error").inc()
         except Exception:
             logger.warning("Failed to read/compress transcript", exc_info=True)
+            TRANSCRIPT_UPLOAD_TOTAL.labels(label, "compress_error").inc()
     else:
         logger.debug("Transcript file not found for session %s", session_id)
 
@@ -133,8 +137,10 @@ def record_transcript(
         url = _get_cycle_runs_url()
         resp = httpx.post(url, json=body, timeout=10.0)
         logger.info("Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code)
+        TRANSCRIPT_UPLOAD_TOTAL.labels(label, "ok").inc()
     except Exception:
         logger.warning("Failed to push cycle run to %s", _get_cycle_runs_url(), exc_info=True)
+        TRANSCRIPT_UPLOAD_TOTAL.labels(label, "push_error").inc()
 
 
 def post_orphan_cycle(

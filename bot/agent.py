@@ -19,6 +19,7 @@ from claude_agent_sdk import (
 
 from .config import Config
 from .constants import MEMORY_API_BASE
+from .metrics import MCP_SERVER_STATUS_TOTAL, TURN_BUDGET_EVENT_TOTAL, WORK_TYPE_TOTAL
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ def _describe_tool_use(block) -> str:
         return name
 
 
-def _make_turn_budget_hook(max_turns: int):
+def _make_turn_budget_hook(max_turns: int, label: str):
     """Create a PostToolUse hook that injects turn budget warnings."""
     turn_count = {"n": 0, "warned": False, "critical": False}
     warn_at = int(max_turns * TURN_WARNING_THRESHOLD)
@@ -130,6 +131,7 @@ def _make_turn_budget_hook(max_turns: int):
             turn_count["critical"] = True
             remaining = max_turns - n
             logger.warning("Turn budget critical: %d/%d used", n, max_turns)
+            TURN_BUDGET_EVENT_TOTAL.labels(label, "critical").inc()
             return {
                 "systemMessage": (
                     f"TURN BUDGET CRITICAL: ~{n}/{max_turns} tool calls used, "
@@ -143,6 +145,7 @@ def _make_turn_budget_hook(max_turns: int):
             turn_count["warned"] = True
             remaining = max_turns - n
             logger.info("Turn budget warning: %d/%d used", n, max_turns)
+            TURN_BUDGET_EVENT_TOTAL.labels(label, "warning").inc()
             return {
                 "systemMessage": (
                     f"TURN BUDGET WARNING: ~{n}/{max_turns} tool calls used, "
@@ -167,7 +170,7 @@ async def run_cycle(
     preflight_prompt: str | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
-    turn_hook = _make_turn_budget_hook(config.max_turns)
+    turn_hook = _make_turn_budget_hook(config.max_turns, label)
     options = ClaudeAgentOptions(
         model=config.model,
         max_turns=config.max_turns,
@@ -229,6 +232,7 @@ async def run_cycle(
                     for srv in mcp_status:
                         status = srv.get("status", "unknown")
                         name = srv.get("name", "?")
+                        MCP_SERVER_STATUS_TOTAL.labels(name, status).inc()
                         if status != "connected":
                             logger.warning("MCP %s: %s", name, status)
                         else:
@@ -285,6 +289,7 @@ async def run_cycle(
             if lines:
                 ctx.summary = lines[-1][:200]
 
+    WORK_TYPE_TOTAL.labels(label, ctx.work_type or "triage_only").inc()
     return result, ctx
 
 
