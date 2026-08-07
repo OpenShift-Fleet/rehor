@@ -196,7 +196,7 @@ class TestRefreshDbGauges:
             async def fetch(self, query):
                 return await db.fetch(query)
 
-        with patch("bot_memory_server.metrics.get_pool", return_value=FakePool()):
+        with patch("bot_memory_server.db.get_pool", return_value=FakePool()):
             await refresh_db_gauges()
 
         labels = {"model": "claude-opus-4", "label": "test-label"}
