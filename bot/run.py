@@ -475,8 +475,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    start_http_server(9092)
-    logger.info("Metrics server listening on :9092")
+    start_http_server(9091)
+    logger.info("Metrics server listening on :9091")
 
     instance_id = args.instance_id or None
     logger.info(

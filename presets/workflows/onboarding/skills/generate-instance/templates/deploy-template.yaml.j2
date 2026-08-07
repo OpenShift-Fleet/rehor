@@ -85,7 +85,7 @@ objects:
             capabilities:
               drop: ["ALL"]
           ports:
-          - containerPort: 9092
+          - containerPort: 9091
             name: metrics
             protocol: TCP
           env:
@@ -261,7 +261,7 @@ objects:
     selector:
       app.kubernetes.io/name: ${BOT_NAME}
     ports:
-    - port: 9092
+    - port: 9091
       targetPort: metrics
       protocol: TCP
       name: metrics
@@ -285,7 +285,7 @@ objects:
           matchLabels:
             kubernetes.io/metadata.name: openshift-customer-monitoring
       ports:
-      - port: 9092
+      - port: 9091
         protocol: TCP
 
 # --- Cron Scaler ---

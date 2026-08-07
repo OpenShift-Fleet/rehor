@@ -1,4 +1,4 @@
-"""Operational Prometheus metrics for the bot process (served on :9092)."""
+"""Operational Prometheus metrics for the bot process (served on :9091)."""
 
 from prometheus_client import Counter, Gauge
 
