@@ -105,7 +105,7 @@ class TestSyncConfigRepoSharedDiscovery:
             ),
             patch.object(run_mod, "REMOTE_CONFIG_DIR", config_repo),
         ):
-            profile_dir, shared_dir = run_mod.sync_config_repo()
+            profile_dir, shared_dir = run_mod.sync_config_repo("test-label")
 
         assert profile_dir is not None
         assert shared_dir is not None
@@ -124,7 +124,7 @@ class TestSyncConfigRepoSharedDiscovery:
             ),
             patch.object(run_mod, "REMOTE_CONFIG_DIR", single_profile_repo),
         ):
-            profile_dir, shared_dir = run_mod.sync_config_repo()
+            profile_dir, shared_dir = run_mod.sync_config_repo("test-label")
 
         assert profile_dir is not None
         assert shared_dir is None
@@ -133,7 +133,7 @@ class TestSyncConfigRepoSharedDiscovery:
         run_mod = _import_run()
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop("BOT_CONFIG_REPO", None)
-            profile_dir, shared_dir = run_mod.sync_config_repo()
+            profile_dir, shared_dir = run_mod.sync_config_repo("test-label")
 
         assert profile_dir is None
         assert shared_dir is None
@@ -150,7 +150,7 @@ class TestSyncConfigRepoSharedDiscovery:
             ),
             patch.object(run_mod, "REMOTE_CONFIG_DIR", config_repo),
         ):
-            profile_dir, shared_dir = run_mod.sync_config_repo()
+            profile_dir, shared_dir = run_mod.sync_config_repo("test-label")
 
         assert profile_dir is None
         assert shared_dir is None
