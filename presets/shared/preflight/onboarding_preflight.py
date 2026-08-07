@@ -83,6 +83,12 @@ def _get_candidates():
 
 BLOCKED_LABEL = "onboarding:blocked"
 
+STEP_TO_PHASE = {
+    "scaffolding-pr": "phase1",
+    "konflux-mr": "phase2",
+    "app-interface-mr": "phase3",
+}
+
 
 def _is_blocked(issue):
     if not issue:
@@ -101,47 +107,81 @@ def _get_onboarding_label(issue):
     return None
 
 
-def _any_pr_mr_merged(task):
-    """Check if any tracked PR/MR on this task has been merged."""
+def _phase_ticket_done(task, step):
+    """Check if the phase sub-ticket for the given step is already Done."""
+    phase_key = STEP_TO_PHASE.get(step)
+    if not phase_key:
+        return False
+    meta = task.get("metadata") or {}
+    ticket_key = meta.get("phase_tickets", {}).get(phase_key)
+    if not ticket_key:
+        return False
+    issue = _jira_issue(ticket_key)
+    if not issue:
+        return False
+    status = issue.get("status", {})
+    name = (status.get("name", "") if isinstance(status, dict) else str(status)).lower()
+    return name in ("done", "closed", "resolved")
+
+
+def _any_pr_mr_merged(task, step):
+    """Check if the PR/MR for the current phase step has been merged.
+
+    Uses the phase sub-ticket as source of truth: if the sub-ticket is
+    already Done, the merge was handled in a prior cycle.  Only checks
+    the most recent PR/MR matching the step's host to avoid false
+    positives from earlier phases' merged PRs/MRs.
+    """
+    if _phase_ticket_done(task, step):
+        return False
+
     prs = get_task_prs(task)
-    for p in prs:
-        host = p.get("host", "github")
-        num = p.get("number")
-        repo = p.get("repo", "")
-        if not num or not repo:
-            continue
-        try:
-            if host == "github":
-                up, _ = upstream_repo(repo)
-                if not up:
-                    continue
-                r = subprocess.run(
-                    ["gh", "pr", "view", str(num), "--repo", up, "--json", "state"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if r.returncode == 0:
-                    data = json.loads(r.stdout)
-                    if data.get("state") == "MERGED":
-                        return True
-            else:
-                up, _ = upstream_repo(repo)
-                if not up:
-                    continue
-                encoded = up.replace("/", "%2F")
-                r = subprocess.run(
-                    ["glab", "api", f"projects/{encoded}/merge_requests/{num}", "--hostname", "gitlab.cee.redhat.com"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                )
-                if r.returncode == 0:
-                    data = json.loads(r.stdout)
-                    if data.get("state") == "merged":
-                        return True
-        except Exception:
-            continue
+    if not prs:
+        return False
+
+    if step == "scaffolding-pr":
+        candidates = [p for p in prs if p.get("host", "github") == "github"]
+    else:
+        candidates = [p for p in prs if p.get("host") == "gitlab"]
+
+    if not candidates:
+        return False
+
+    target = candidates[-1]
+    host = target.get("host", "github")
+    num = target.get("number")
+    repo = target.get("repo", "")
+    if not num or not repo:
+        return False
+
+    try:
+        if host == "github":
+            up, _ = upstream_repo(repo)
+            if not up:
+                return False
+            r = subprocess.run(
+                ["gh", "pr", "view", str(num), "--repo", up, "--json", "state"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                return json.loads(r.stdout).get("state") == "MERGED"
+        else:
+            up, _ = upstream_repo(repo)
+            if not up:
+                return False
+            encoded = up.replace("/", "%2F")
+            r = subprocess.run(
+                ["glab", "api", f"projects/{encoded}/merge_requests/{num}", "--hostname", "gitlab.cee.redhat.com"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                return json.loads(r.stdout).get("state") == "merged"
+    except Exception:
+        pass
     return False
 
 
@@ -210,7 +250,7 @@ def main():
 
         labels_with_auto_advance = ("scaffolding-pr", "konflux-mr", "app-interface-mr")
         if step_from_label in labels_with_auto_advance:
-            if _any_pr_mr_merged(task):
+            if _any_pr_mr_merged(task, step_from_label):
                 task_lines.append(f"  *** PR/MR MERGED — ADVANCE PHASE (current: {step_from_label}) ***")
                 has_work = True
             else:

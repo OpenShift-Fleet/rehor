@@ -12,9 +12,11 @@ sys.path.insert(0, str(SHARED_DIR))
 sys.path.insert(0, str(SKILLS_DIR))
 
 from onboarding_preflight import (
+    _any_pr_mr_merged,
     _get_onboarding_label,
     _has_new_jira_feedback,
     _is_blocked,
+    _phase_ticket_done,
     main,
 )
 
@@ -293,7 +295,7 @@ def test_auto_advance_label_merged_returns_start(env_vars, monkeypatch, capsys):
     monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
     monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
     monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
-    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t: True)
+    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t, s: True)
     monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
 
     main()
@@ -322,7 +324,7 @@ def test_auto_advance_label_not_merged_returns_skip(env_vars, monkeypatch, capsy
     monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
     monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
     monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
-    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t: False)
+    monkeypatch.setattr("onboarding_preflight._any_pr_mr_merged", lambda t, s: False)
     monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
 
     main()
@@ -361,3 +363,223 @@ def test_jira_unavailable_still_works(env_vars, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out.strip())
     assert out["status"] == "skip"
     assert "jira unavailable" in out["content"]
+
+
+# --- _phase_ticket_done ---
+
+
+def test_phase_ticket_done_returns_true(monkeypatch):
+    task = {"metadata": {"phase_tickets": {"phase1": "REHOR-101"}}}
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "Done"}},
+    )
+    assert _phase_ticket_done(task, "scaffolding-pr") is True
+
+
+def test_phase_ticket_open_returns_false(monkeypatch):
+    task = {"metadata": {"phase_tickets": {"phase2": "REHOR-102"}}}
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "In Progress"}},
+    )
+    assert _phase_ticket_done(task, "konflux-mr") is False
+
+
+def test_phase_ticket_done_unknown_step():
+    task = {"metadata": {"phase_tickets": {"phase1": "REHOR-101"}}}
+    assert _phase_ticket_done(task, "unknown-step") is False
+
+
+def test_phase_ticket_done_no_phase_tickets():
+    task = {"metadata": {}}
+    assert _phase_ticket_done(task, "scaffolding-pr") is False
+
+
+def test_phase_ticket_done_jira_unavailable(monkeypatch):
+    task = {"metadata": {"phase_tickets": {"phase1": "REHOR-101"}}}
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: None)
+    assert _phase_ticket_done(task, "scaffolding-pr") is False
+
+
+# --- _any_pr_mr_merged (phase-aware) ---
+
+
+def test_merged_skipped_when_phase_ticket_done(monkeypatch):
+    """Old merged PR ignored when its phase ticket is already Done."""
+    task = {
+        "metadata": {
+            "phase_tickets": {"phase1": "REHOR-101"},
+            "prs": [{"repo": "org/repo", "number": 1, "host": "github"}],
+        }
+    }
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "Done"}},
+    )
+    assert _any_pr_mr_merged(task, "scaffolding-pr") is False
+
+
+def test_konflux_mr_ignores_old_github_pr(monkeypatch):
+    """At konflux-mr step, only GitLab MRs are checked, not old GitHub PRs."""
+    task = {
+        "metadata": {
+            "phase_tickets": {"phase2": "REHOR-102"},
+            "prs": [{"repo": "org/repo", "number": 1, "host": "github"}],
+            "mrs": [],
+        }
+    }
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "In Progress"}},
+    )
+    assert _any_pr_mr_merged(task, "konflux-mr") is False
+
+
+def test_app_interface_mr_checks_latest_gitlab_mr(monkeypatch):
+    """At app-interface-mr step, only the latest GitLab MR is checked."""
+    task = {
+        "metadata": {
+            "phase_tickets": {"phase3": "REHOR-103"},
+            "prs": [{"repo": "org/scaffolding", "number": 1, "host": "github"}],
+            "mrs": [
+                {"repo": "releng/konflux-release-data", "number": 10, "host": "gitlab"},
+                {"repo": "service/app-interface", "number": 20, "host": "gitlab"},
+            ],
+        }
+    }
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "In Progress"}},
+    )
+    monkeypatch.setattr(
+        "onboarding_preflight.upstream_repo",
+        lambda r: ("service/app-interface", None),
+    )
+    monkeypatch.setattr(
+        "onboarding_preflight.subprocess",
+        type(
+            "FakeSP",
+            (),
+            {"run": staticmethod(lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": '{"state": "merged"}'})())},
+        )(),
+    )
+    assert _any_pr_mr_merged(task, "app-interface-mr") is True
+
+
+def test_app_interface_mr_ignores_old_merged_konflux_mr(monkeypatch):
+    """At app-interface-mr step, old merged Konflux MR doesn't false-positive."""
+    task = {
+        "metadata": {
+            "phase_tickets": {"phase3": "REHOR-103"},
+            "prs": [{"repo": "org/scaffolding", "number": 1, "host": "github"}],
+            "mrs": [
+                {"repo": "releng/konflux-release-data", "number": 10, "host": "gitlab"},
+                {"repo": "service/app-interface", "number": 20, "host": "gitlab"},
+            ],
+        }
+    }
+    monkeypatch.setattr(
+        "onboarding_preflight._jira_issue",
+        lambda key: {"status": {"name": "In Progress"}},
+    )
+    monkeypatch.setattr(
+        "onboarding_preflight.upstream_repo",
+        lambda r: ("service/app-interface", None),
+    )
+    monkeypatch.setattr(
+        "onboarding_preflight.subprocess",
+        type(
+            "FakeSP",
+            (),
+            {"run": staticmethod(lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": '{"state": "opened"}'})())},
+        )(),
+    )
+    # Latest MR (app-interface) is not merged — should return False
+    # even though the older Konflux MR (index 0) is merged
+    assert _any_pr_mr_merged(task, "app-interface-mr") is False
+
+
+def test_tekton_setup_does_not_trigger_merge_check(env_vars, monkeypatch, capsys):
+    """tekton-setup is not in labels_with_auto_advance — no merge check."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-60",
+                "status": "in_progress",
+                "repo": "",
+                "last_addressed": "2026-07-01T12:00:00",
+                "metadata": {
+                    "step": "tekton-setup",
+                    "prs": [{"repo": "org/repo", "number": 1, "host": "github"}],
+                    "mrs": [{"repo": "releng/konflux-release-data", "number": 10, "host": "gitlab"}],
+                },
+            }
+        ]
+    )
+    issue = {
+        "labels": ["rehor-ai-onboarding-bot", "onboarding:tekton-setup"],
+        "comments": [],
+    }
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+    # _any_pr_mr_merged should NOT be called — if it were, this would fail
+    monkeypatch.setattr(
+        "onboarding_preflight._any_pr_mr_merged",
+        lambda t, s: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "PR/MR MERGED" not in out["content"]
+
+
+def test_konflux_mr_merged_with_phase_open_returns_start(env_vars, monkeypatch, capsys):
+    """At konflux-mr step, merged MR with open phase ticket triggers start."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-70",
+                "status": "pr_open",
+                "repo": "",
+                "last_addressed": "2026-07-01T12:00:00",
+                "metadata": {
+                    "step": "konflux-mr",
+                    "phase_tickets": {"phase2": "REHOR-702"},
+                    "mrs": [{"repo": "releng/konflux-release-data", "number": 10, "host": "gitlab"}],
+                },
+            }
+        ]
+    )
+
+    def _fake_jira(key):
+        if key == "REHOR-702":
+            return {"status": {"name": "In Progress"}}
+        return {
+            "labels": ["rehor-ai-onboarding-bot", "onboarding:konflux-mr"],
+            "comments": [],
+        }
+
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", _fake_jira)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+    monkeypatch.setattr("onboarding_preflight.upstream_repo", lambda r: ("releng/konflux-release-data", None))
+    monkeypatch.setattr(
+        "onboarding_preflight.subprocess",
+        type(
+            "FakeSP",
+            (),
+            {"run": staticmethod(lambda *a, **kw: type("R", (), {"returncode": 0, "stdout": '{"state": "merged"}'})())},
+        )(),
+    )
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "PR/MR MERGED" in out["content"]
