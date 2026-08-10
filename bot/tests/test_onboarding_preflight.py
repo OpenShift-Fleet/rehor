@@ -13,6 +13,8 @@ sys.path.insert(0, str(SKILLS_DIR))
 
 from onboarding_preflight import (
     _any_pr_mr_merged,
+    _comments_may_be_truncated,
+    _get_comments,
     _get_onboarding_label,
     _has_new_jira_feedback,
     _is_blocked,
@@ -25,62 +27,89 @@ from onboarding_preflight import (
 
 def test_feedback_detected_with_comments_field():
     """The fix: when MCP returns comments at top-level, feedback is detected."""
-    issue = {
-        "comments": [
-            {
-                "created": "2026-07-01T10:00:00",
-                "body": "Here are the answers to your questions",
-                "author": {"displayName": "Human"},
-            }
-        ]
-    }
-    task = {"last_addressed": "2026-06-30T10:00:00"}
-    assert _has_new_jira_feedback(task, issue) is True
+    comments = [
+        {
+            "created": "2026-07-01T10:00:00",
+            "body": "Here are the answers to your questions",
+            "author": {"displayName": "Human"},
+        }
+    ]
+    assert _has_new_jira_feedback(comments, "2026-06-30T10:00:00") is True
 
 
 def test_feedback_detected_first_comment_no_last_addressed():
     """First human comment on a ticket with no prior addressing."""
-    issue = {
-        "comments": [
-            {
-                "created": "2026-07-01T10:00:00",
-                "body": "Hello",
-                "author": {"displayName": "Human"},
-            }
-        ]
-    }
-    task = {}
-    assert _has_new_jira_feedback(task, issue) is True
+    comments = [
+        {
+            "created": "2026-07-01T10:00:00",
+            "body": "Hello",
+            "author": {"displayName": "Human"},
+        }
+    ]
+    assert _has_new_jira_feedback(comments, "") is True
 
 
 def test_no_feedback_when_comment_is_old():
-    issue = {
-        "comments": [
-            {
-                "created": "2026-06-29T10:00:00",
-                "body": "Old comment",
-                "author": {"displayName": "Human"},
-            }
-        ]
-    }
-    task = {"last_addressed": "2026-06-30T10:00:00"}
-    assert _has_new_jira_feedback(task, issue) is False
+    comments = [
+        {
+            "created": "2026-06-29T10:00:00",
+            "body": "Old comment",
+            "author": {"displayName": "Human"},
+        }
+    ]
+    assert _has_new_jira_feedback(comments, "2026-06-30T10:00:00") is False
 
 
 def test_no_feedback_when_no_comments():
-    issue = {"comments": []}
-    task = {"last_addressed": "2026-06-30T10:00:00"}
-    assert _has_new_jira_feedback(task, issue) is False
+    assert _has_new_jira_feedback([], "2026-06-30T10:00:00") is False
 
 
 def test_no_feedback_when_issue_is_none():
-    assert _has_new_jira_feedback({}, None) is False
+    assert _has_new_jira_feedback([], "") is False
 
 
 def test_no_feedback_when_comments_key_missing():
     issue = {"fields": {"summary": "test"}}
-    task = {"last_addressed": "2026-06-30T10:00:00"}
-    assert _has_new_jira_feedback(task, issue) is False
+    assert _get_comments(issue) == []
+    assert _has_new_jira_feedback([], "2026-06-30T10:00:00") is False
+
+
+# --- _get_comments ---
+
+
+def test_get_comments_top_level():
+    issue = {"comments": [{"body": "a"}]}
+    assert _get_comments(issue) == [{"body": "a"}]
+
+
+def test_get_comments_nested():
+    issue = {"fields": {"comment": {"comments": [{"body": "b"}]}}}
+    assert _get_comments(issue) == [{"body": "b"}]
+
+
+def test_get_comments_none():
+    assert _get_comments(None) == []
+
+
+# --- _comments_may_be_truncated ---
+
+
+def test_truncation_detected():
+    issue = {"updated": "2026-07-02T10:00:00"}
+    comments = [{"body": f"c{i}"} for i in range(100)]
+    assert _comments_may_be_truncated(issue, comments, "2026-07-01T10:00:00") is True
+
+
+def test_no_truncation_under_limit():
+    issue = {"updated": "2026-07-02T10:00:00"}
+    comments = [{"body": "c"}]
+    assert _comments_may_be_truncated(issue, comments, "2026-07-01T10:00:00") is False
+
+
+def test_no_truncation_when_not_updated():
+    issue = {"updated": "2026-06-30T10:00:00"}
+    comments = [{"body": f"c{i}"} for i in range(100)]
+    assert _comments_may_be_truncated(issue, comments, "2026-07-01T10:00:00") is False
 
 
 # --- _is_blocked ---
