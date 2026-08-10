@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ func NewVertexProxy(projectID, region string, ts oauth2.TokenSource, policy *Ver
 
 		rec := &statusRecorder{ResponseWriter: w}
 		proxy.ServeHTTP(rec, r)
-		VertexModelRequestsTotal.WithLabelValues(model, "ok").Inc()
+		VertexModelRequestsTotal.WithLabelValues(model, strconv.Itoa(rec.status)).Inc()
 
 		log.Printf("vertex: model=%s method=%s status=%d size=%d dur=%s",
 			model, method, rec.status, r.ContentLength,

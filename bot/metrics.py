@@ -1,6 +1,6 @@
 """Operational Prometheus metrics for the bot process (served on :9091)."""
 
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 
 PREFLIGHT_OUTCOME_TOTAL = Counter(
     "devbot_preflight_outcome_total",
@@ -46,6 +46,12 @@ WAKE_SIGNAL_TOTAL = Counter(
     "devbot_wake_signal_total",
     "Dashboard wake signals that interrupted a sleep.",
     ["label"],
+)
+CYCLE_DURATION_SECONDS = Histogram(
+    "devbot_cycle_duration_seconds",
+    "Wall-clock duration of a single agent cycle.",
+    ["label", "work_type"],
+    buckets=[30, 60, 120, 300, 600, 900, 1200, 1800],
 )
 DISK_FREE_MB = Gauge(
     "devbot_disk_free_mb",

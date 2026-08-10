@@ -40,6 +40,7 @@ from .costs import record_cost
 from .merge import apply_merged_config, install_skills
 from .metrics import (
     CONFIG_SYNC_TOTAL,
+    CYCLE_DURATION_SECONDS,
     CYCLE_TIMEOUT_TOTAL,
     DISK_FREE_MB,
     PREFLIGHT_CONSECUTIVE_ERRORS,
@@ -562,6 +563,7 @@ def main() -> None:
 
             logger.info("Running agent cycle...")
 
+            cycle_start = time.monotonic()
             try:
                 result, ctx = asyncio.run(
                     asyncio.wait_for(
@@ -579,6 +581,9 @@ def main() -> None:
                 )
             except TimeoutError:
                 result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
+            cycle_duration = time.monotonic() - cycle_start
+            work_type = (ctx.work_type if ctx else None) or "unknown"
+            CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
 
             if result is not None:
                 record_cost(

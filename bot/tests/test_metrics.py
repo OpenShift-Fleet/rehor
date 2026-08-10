@@ -25,6 +25,7 @@ def _clean_registry():
         bot.metrics.TRANSCRIPT_UPLOAD_TOTAL,
         bot.metrics.MCP_SERVER_STATUS_TOTAL,
         bot.metrics.WAKE_SIGNAL_TOTAL,
+        bot.metrics.CYCLE_DURATION_SECONDS,
         bot.metrics.DISK_FREE_MB,
     ]
     for c in collectors:
@@ -37,6 +38,7 @@ def _clean_registry():
 def test_all_metrics_importable():
     from bot.metrics import (
         CONFIG_SYNC_TOTAL,
+        CYCLE_DURATION_SECONDS,
         CYCLE_TIMEOUT_TOTAL,
         DISK_FREE_MB,
         MCP_SERVER_STATUS_TOTAL,
@@ -49,6 +51,7 @@ def test_all_metrics_importable():
     )
 
     assert CONFIG_SYNC_TOTAL is not None
+    assert CYCLE_DURATION_SECONDS is not None
     assert CYCLE_TIMEOUT_TOTAL is not None
     assert DISK_FREE_MB is not None
     assert MCP_SERVER_STATUS_TOTAL is not None
@@ -68,6 +71,12 @@ def test_counter_labels_match():
     WORK_TYPE_TOTAL.labels(label="test", work_type="idle").inc()
 
 
+def test_histogram_observe():
+    from bot.metrics import CYCLE_DURATION_SECONDS
+
+    CYCLE_DURATION_SECONDS.labels(label="test", work_type="triage_only").observe(42.5)
+
+
 def test_gauge_set():
     from bot.metrics import DISK_FREE_MB, PREFLIGHT_CONSECUTIVE_ERRORS
 
@@ -80,6 +89,6 @@ def test_metric_names_have_devbot_prefix():
 
     for attr in dir(metrics):
         obj = getattr(metrics, attr)
-        if isinstance(obj, (prometheus_client.Counter, prometheus_client.Gauge)):
+        if isinstance(obj, (prometheus_client.Counter, prometheus_client.Gauge, prometheus_client.Histogram)):
             desc = obj.describe()[0]
             assert desc.name.startswith("devbot_"), f"{attr} missing devbot_ prefix"
