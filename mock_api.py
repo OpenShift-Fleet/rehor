@@ -199,9 +199,48 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/costs":
             limit = int(qs.get("limit", ["200"])[0])
+            instance_filter = qs.get("instance_id", [None])[0]
 
-            costs = COSTS[:limit]
-            self.send_json({"items": costs, "daily": DAILY_COSTS})
+            costs = COSTS[:]
+            if instance_filter:
+                costs = [c for c in costs if c.get("instance_id") == instance_filter]
+            costs = costs[:limit]
+
+            if instance_filter:
+                daily = {}
+                for c in costs:
+                    day = c["timestamp"][:10]
+                    if day not in daily:
+                        daily[day] = {
+                            "day": day,
+                            "cycles": 0,
+                            "total_cost": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_read": 0,
+                            "cache_write": 0,
+                            "total_duration": 0,
+                            "total_turns": 0,
+                            "idle_cycles": 0,
+                            "error_cycles": 0,
+                        }
+                    daily[day]["cycles"] += 1
+                    daily[day]["total_cost"] += c["cost_usd"]
+                    daily[day]["input_tokens"] += c["input_tokens"]
+                    daily[day]["output_tokens"] += c["output_tokens"]
+                    daily[day]["cache_read"] += c["cache_read_tokens"]
+                    daily[day]["cache_write"] += c["cache_write_tokens"]
+                    daily[day]["total_duration"] += c["duration_ms"]
+                    daily[day]["total_turns"] += c["num_turns"]
+                    if c["no_work"]:
+                        daily[day]["idle_cycles"] += 1
+                    if c["is_error"]:
+                        daily[day]["error_cycles"] += 1
+                daily_result = list(daily.values())
+            else:
+                daily_result = DAILY_COSTS
+
+            self.send_json({"items": costs, "daily": daily_result})
 
         elif path == "/api/cycle-runs":
             task_id = qs.get("task_id", [None])[0]
@@ -246,7 +285,34 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(transcript.encode())
 
         elif path == "/api/analytics":
-            self.send_json(ANALYTICS)
+            instance_filter = qs.get("instance_id", [None])[0]
+            if instance_filter:
+                filtered = [c for c in COSTS if c.get("instance_id") == instance_filter]
+                work = [c for c in filtered if not c["no_work"] and not c["is_error"]]
+                total_cost = sum(c["cost_usd"] for c in filtered)
+                self.send_json(
+                    {
+                        "summary": {
+                            "total_cycles": len(filtered),
+                            "work_cycles": len(work),
+                            "idle_cycles": sum(1 for c in filtered if c["no_work"]),
+                            "error_cycles": sum(1 for c in filtered if c["is_error"]),
+                            "unique_tickets": len({c["external_key"] for c in work if c.get("external_key")}),
+                            "total_cost": round(total_cost, 2),
+                            "avg_cost_per_work_cycle": round(total_cost / len(work), 2) if work else 0,
+                            "avg_turns": round(sum(c["num_turns"] for c in work) / len(work), 1) if work else 0,
+                            "avg_duration_ms": round(sum(c["duration_ms"] for c in work) / len(work)) if work else 0,
+                            "repos_touched": len({c["repo"] for c in work if c.get("repo")}),
+                            "tickets_resolved": 0,
+                        },
+                        "work_types": ANALYTICS["work_types"],
+                        "repos": ANALYTICS["repos"],
+                        "tickets": ANALYTICS["tickets"],
+                        "feedback": ANALYTICS["feedback"],
+                    }
+                )
+            else:
+                self.send_json(ANALYTICS)
 
         else:
             self.send_json({"error": "not found"}, 404)

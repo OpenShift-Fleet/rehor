@@ -75,13 +75,17 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
     return entry
 
 
-def record_cost(costs_file: Path, label: str, result, ctx: CycleContext | None = None) -> bool:
+def record_cost(
+    costs_file: Path, label: str, result, ctx: CycleContext | None = None, instance_id: str | None = None
+) -> bool:
     """Record cost data from a ResultMessage.
 
     Writes to costs.jsonl (local) and pushes to the dashboard API.
     Returns True if the cycle found no work (for sleep interval decision).
     """
     entry = _build_entry(label, result, ctx)
+    if instance_id:
+        entry["instance_id"] = instance_id
 
     # Write to local jsonl (backward compat with costs.sh)
     with open(costs_file, "a") as f:

@@ -553,6 +553,7 @@ def main() -> None:
                     label=args.label,
                     result=result,
                     ctx=ctx,
+                    instance_id=instance_id,
                 )
                 record_transcript(
                     label=args.label,
