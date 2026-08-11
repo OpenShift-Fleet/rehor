@@ -23,7 +23,7 @@ on:
   pull_request:
     paths:
       # bot image inputs
-      - "Dockerfile"
+      - "Dockerfile.runner"
       - "entrypoint.sh"
       - "config.json"
       - ".mcp.json"
@@ -46,7 +46,7 @@ on:
       - master
     paths:
       # bot image inputs
-      - "Dockerfile"
+      - "Dockerfile.runner"
       - "entrypoint.sh"
       - "config.json"
       - ".mcp.json"
@@ -76,16 +76,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build bot image
+      - name: Build bot runner image
         run: |
-          docker build --build-arg GOVERSIONS="1.24.2 1.25.7" -t bot:verify -f Dockerfile .
+          set -euo pipefail
+          BUILD_ROOT="$(mktemp -d)"
+          mkdir -p "$BUILD_ROOT/dev-bot" "$BUILD_ROOT/instance/verify/agent"
+          rsync -a --delete --exclude ".git" ./ "$BUILD_ROOT/dev-bot/"
+          cat > "$BUILD_ROOT/setup.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          EOF
+          chmod +x "$BUILD_ROOT/setup.sh"
+          cat > "$BUILD_ROOT/instance/verify/agent/instance.yaml" <<'EOF'
+          envs:
+            - node
+            - go
+            - browser
+            - container-scan
+          EOF
+          docker build --build-arg GOVERSIONS="1.24.2 1.25.7" -t bot:verify -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
 
       - name: Verify required tooling is present
         # The bot image's real entrypoint (entrypoint.sh) unconditionally waits
         # up to 30s for a Unix socket produced by the proxy sidecar's
         # executor-server and hard-exits if it's not there. That socket only
         # exists in the full multi-container stack, so we bypass the entrypoint
-        # here and verify the Dockerfile actually produced a working image with
+        # here and verify the runner image actually produced a working image with
         # the tooling it installs. gh/glab/gpg are checked for presence only
         # (never invoked) — they're symlinks to the executor thin client, which
         # dials EXECUTOR_ADDR immediately regardless of args and would fail
