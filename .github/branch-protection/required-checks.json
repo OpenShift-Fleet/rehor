@@ -88,6 +88,13 @@
         "scope": "memory-server container image build + /health smoke check against pgvector (REHOR-107)",
         "required": false,
         "note": "path-filtered to memory-server/**"
+      },
+      {
+        "name": "e2e-minimal",
+        "workflow": "container-e2e.yml",
+        "scope": "multi-container runtime startup + entrypoint validation harness (REHOR-62)",
+        "required": false,
+        "note": "path-filtered to runtime/container harness inputs. full-stack fixture currently manual via workflow_dispatch."
       }
     ],
     "konflux": [
