@@ -468,6 +468,8 @@ def main() -> None:
 
     try:
         while True:
+            _try_slack_digest()
+
             remote_agent_dir, shared_agent_dir = sync_config_repo()
             if shared_agent_dir:
                 apply_merged_config(SCRIPT_DIR, shared_agent_dir)
@@ -564,8 +566,6 @@ def main() -> None:
                 )
             else:
                 logger.warning("Cycle produced no result")
-
-            _try_slack_digest()
 
             _read_sleep_signal(config, instance_id)
 
