@@ -45,7 +45,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 require_cmd "$RUNTIME"
-require_cmd rg
 require_cmd mktemp
 
 FIXTURE_ROOT="$SCRIPT_DIR/fixtures/$FIXTURE"

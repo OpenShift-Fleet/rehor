@@ -62,10 +62,10 @@ wait_for_container_log() {
   local elapsed=0
 
   while true; do
-    if "$runtime" logs "$container" 2>&1 | rg -q "$needle"; then
+    if "$runtime" logs "$container" 2>&1 | grep -qE "$needle"; then
       return 0
     fi
-    if ! "$runtime" ps --format '{{.Names}}' | rg -q "^${container}$"; then
+    if ! "$runtime" ps --format '{{.Names}}' | grep -qE "^${container}$"; then
       return 1
     fi
     elapsed=$((elapsed + interval_s))
