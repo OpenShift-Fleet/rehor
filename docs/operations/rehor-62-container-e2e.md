@@ -23,9 +23,9 @@ The harness validates container runtime behavior, not only build-time tooling:
 
 ## CI wiring
 
-- Workflow: `.github/workflows/container-e2e.yml`
-- PR/default coverage: `e2e-minimal` job
-- Manual deep runs via `workflow_dispatch`:
+- PR/default workflow: `.github/workflows/container-e2e.yml`
+  - `e2e-minimal` job
+- Manual workflow: `.github/workflows/container-e2e-manual.yml`
   - `e2e-full-stack` (node + go + container-scan)
   - `e2e-browser` (browser-only)
 
