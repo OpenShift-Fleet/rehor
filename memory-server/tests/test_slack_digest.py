@@ -7,6 +7,7 @@ them out of its internal registry.
 """
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -301,6 +302,39 @@ class TestSlackNotifyImmediate:
         assert "secret-path-should-not-leak" not in result["reason"]
         assert result["reason"] == "Webhook error: HTTP 403"
 
+    @pytest.mark.asyncio
+    async def test_webhook_error_does_not_leak_url_into_server_logs(self, slack_tools, caplog):
+        """httpx.HTTPStatusError.__str__ embeds the request URL — logging it with
+        exc_info=True would put the webhook in server-side logs even though the
+        returned tool response is sanitized. Assert the log record is clean too
+        (REHOR-123)."""
+        slack_notify = slack_tools["slack_notify"]
+        pool = _make_pool(fetchrow_return=None)
+        secret_webhook = "https://hooks.slack.com/test/secret-path-should-not-leak"
+
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
+            caplog.at_level(logging.ERROR),
+        ):
+            request = httpx.Request("POST", secret_webhook)
+            response = httpx.Response(403, request=request)
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.HTTPStatusError("forbidden", request=request, response=response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            await slack_notify(
+                external_key="RHCLOUD-100",
+                event_type="pr_created",
+                message="Test",
+                webhook_url=secret_webhook,
+            )
+
+        log_text = "\n".join(record.getMessage() for record in caplog.records)
+        assert "secret-path-should-not-leak" not in log_text
+        for record in caplog.records:
+            assert record.exc_info is None
+
 
 # ---------------------------------------------------------------------------
 # slack_notify — digest mode
@@ -533,6 +567,32 @@ class TestSlackSendDigest:
         assert "Webhook error" in result["reason"]
         for call in pool.execute.call_args_list:
             assert "UPDATE" not in call[0][0]
+
+    @pytest.mark.asyncio
+    async def test_send_digest_webhook_error_does_not_leak_url_into_server_logs(self, slack_tools, caplog):
+        """Same log-leak concern as slack_notify — see that test (REHOR-123)."""
+        slack_send_digest = slack_tools["slack_send_digest"]
+        rows = [_make_row(id=1)]
+        pool = _make_pool(fetch_return=rows)
+        secret_webhook = "https://hooks.slack.com/test/secret-path-should-not-leak"
+
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
+            caplog.at_level(logging.ERROR),
+        ):
+            request = httpx.Request("POST", secret_webhook)
+            response = httpx.Response(403, request=request)
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.HTTPStatusError("forbidden", request=request, response=response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            await slack_send_digest(webhook_url=secret_webhook)
+
+        log_text = "\n".join(record.getMessage() for record in caplog.records)
+        assert "secret-path-should-not-leak" not in log_text
+        for record in caplog.records:
+            assert record.exc_info is None
 
 
 # ---------------------------------------------------------------------------
