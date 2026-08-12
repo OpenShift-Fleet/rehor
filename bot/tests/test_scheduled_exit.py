@@ -10,6 +10,7 @@ import pytest
 
 from bot.config import InstanceConfig
 from bot.preflight import PreflightResult
+from bot.run import main
 
 
 def _mock_config():
@@ -84,8 +85,6 @@ class TestScheduledExit:
     def test_exits_after_preflight_start(self, main_patches):
         main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])
 
-        from bot.run import main
-
         main()
 
         assert _loop_call_count(main_patches) == 1
@@ -94,8 +93,6 @@ class TestScheduledExit:
         main_patches["run_preflight"].return_value = PreflightResult(
             action="skip", transcript="nothing to do", scripts=[]
         )
-
-        from bot.run import main
 
         main()
 
@@ -106,8 +103,6 @@ class TestScheduledExit:
         main_patches["run_preflight"].return_value = PreflightResult(
             action="error", transcript="something broke", scripts=[]
         )
-
-        from bot.run import main
 
         main()
 
@@ -127,8 +122,6 @@ class TestScheduledExit:
             return PreflightResult(action="skip", transcript="ok now", scripts=[])
 
         main_patches["run_preflight"].side_effect = error_then_skip
-
-        from bot.run import main
 
         main()
 
