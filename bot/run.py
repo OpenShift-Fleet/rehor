@@ -212,10 +212,10 @@ SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
 LOW_DISK_THRESHOLD_MB = 512
 
 
-def _try_slack_digest() -> None:
+def _try_slack_digest(webhook_url: str | None) -> None:
     from .slack_digest import try_slack_digest
 
-    try_slack_digest()
+    try_slack_digest(webhook_url)
 
 
 def _write_sleep_signal(seconds: int, reason: str) -> None:
@@ -418,6 +418,11 @@ def main() -> None:
     validate_manifest(SCRIPT_DIR, instance_config.workflow, mcp_servers, initial_agent_dir)
     validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
 
+    # Capture the Slack webhook before sanitizing — the digest/idle-reminder
+    # checks below run for the lifetime of this process and need it, but it
+    # must not remain in os.environ where the agent's Bash tool could read it.
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+
     # Remove secrets from env so Bash subprocesses can't leak them.
     # MCP servers already have resolved values. gh/glab use config files.
     sanitize_env()
@@ -455,7 +460,7 @@ def main() -> None:
 
     try:
         while True:
-            _try_slack_digest()
+            _try_slack_digest(slack_webhook_url)
 
             remote_agent_dir, shared_agent_dir = sync_config_repo(args.label)
             if shared_agent_dir:
@@ -510,6 +515,7 @@ def main() -> None:
                         instance_id or args.label,
                         idle_cycle_limit=instance_config.idle_cycle_limit,
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
+                        slack_webhook_url=slack_webhook_url,
                     )
                     _write_sleep_signal(config.idle_interval, "preflight_skip")
                     _read_sleep_signal(config)

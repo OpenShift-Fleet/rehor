@@ -172,9 +172,15 @@ def on_preflight_skip(
     idle_cycle_limit: int,
     cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS,
     memory_api_base: str | None = None,
+    slack_webhook_url: str | None = None,
     _now: datetime | None = None,
 ) -> None:
-    """Increment idle counter on preflight skip, send reminder if due, persist to DB."""
+    """Increment idle counter on preflight skip, send reminder if due, persist to DB.
+
+    `slack_webhook_url` is passed explicitly by the long-running bot process,
+    which reads SLACK_WEBHOOK_URL before sanitize_env() strips it from
+    os.environ. Falls back to os.environ inside send_reminder() when omitted.
+    """
     if not instance_id:
         return
 
@@ -186,7 +192,12 @@ def on_preflight_skip(
     consecutive_cycles += 1
 
     if should_send_reminder(consecutive_cycles, last_sent_at, idle_cycle_limit, cooldown_seconds, now=_now):
-        sent_at = send_reminder(consecutive_cycles, instance_id=instance_id, memory_api_base=memory_api_base)
+        sent_at = send_reminder(
+            consecutive_cycles,
+            instance_id=instance_id,
+            memory_api_base=memory_api_base,
+            slack_webhook_url=slack_webhook_url,
+        )
         if sent_at is not None:
             last_sent_at = sent_at
 

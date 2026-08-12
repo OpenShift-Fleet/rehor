@@ -36,7 +36,7 @@ Creates a SaaS deploy file in the `<app_interface_repo_path>` (a clone of app-in
   "workflow": "jira-sprint",
   "board_name": "My Board",
   "sprint_prefix": "MyTeam Sprint",
-  "slack_webhook_url": "",
+  "slack_secret_name": "",
   "slack_notify_mode": "",
   "gcp_project_id": "my-gcp-project",
   "gcp_region": "global",
@@ -72,6 +72,7 @@ Creates a SaaS deploy file in the `<app_interface_repo_path>` (a clone of app-in
 | `service_tree` | separate only | — | Path under `data/services/` (e.g., `my-platform/my-team`) |
 | `config_repo` | no | `repo_url` | Used as-is — no `.git` suffix auto-added |
 | `target_branch` | no | `main` | Branch ref for the deployment target |
+| `slack_secret_name` | no | — | Name of the Vault-backed Kubernetes Secret holding the team's Slack webhook (key `slack-webhook-url`). Only included if set — see [Slack Webhook Secret](#slack-webhook-secret) below. **Never pass a raw webhook URL** — `slack_webhook_url` is rejected. |
 | `slack_notify_mode` | no | — | Only included if set (e.g. `daily_digest`) |
 | `team_name` | no | `instance_name` | Used in SaaS file description |
 | `instance_id` | no | `instance_name` | `BOT_INSTANCE_ID` param value |
@@ -121,3 +122,24 @@ Requires `service_tree` config. The team must work with app-sre to set up the se
 - Namespace `$ref` is discovered from existing entries in the shared `deploy.yml`
 - The `images` block requires org ref: `$ref: /dependencies/quay/redhat-services-prod.yml`
 - `authentication` ref: `$ref: /services/app-sre/saas-file-auth/global.yml`
+- **Never pass a plaintext webhook URL.** `slack_webhook_url` is rejected with a `ValueError` — use `slack_secret_name` instead (REHOR-123).
+
+## Slack Webhook Secret
+
+Slack webhook URLs are secrets and must never be committed to app-interface in plaintext (REHOR-123). If the team wants Slack notifications:
+
+1. Ask the Rehor team (or the team itself, if they have Vault access) to provision a Vault secret containing the webhook URL under key `slack-webhook-url`.
+2. Reference it in app-interface via the standard `vault-secret` namespace resource, e.g.:
+   ```yaml
+   # In the namespace YAML
+   openshiftResources:
+   - provider: vault-secret
+     path: <vault-path>/<bot_name>-slack
+     name: <bot_name>-slack
+     version: 1
+     annotations:
+       qontract.recycle: "true"
+   ```
+3. Pass `slack_secret_name: "<bot_name>-slack"` in the config JSON. The generator emits a `SLACK_SECRET_NAME` deploy parameter; the bot deployment template reads `SLACK_WEBHOOK_URL` from `secretKeyRef: {name: ${SLACK_SECRET_NAME}, key: ${SLACK_SECRET_KEY}}` (defaults: `SLACK_SECRET_NAME=devbot-secrets`, `SLACK_SECRET_KEY=slack-webhook-url`, both `optional: true` — a team that skips this gets no Slack notifications, never a plaintext fallback).
+
+If the team doesn't want Slack notifications, omit `slack_secret_name` entirely.

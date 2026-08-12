@@ -43,8 +43,10 @@ parameters:
   required: true
 - name: VERTEX_ALLOWED_MODELS
   required: true
-- name: SLACK_WEBHOOK_URL
-  value: ""
+- name: SLACK_SECRET_NAME
+  value: devbot-secrets
+- name: SLACK_SECRET_KEY
+  value: slack-webhook-url
 - name: SLACK_NOTIFY_MODE
   value: ""
 objects:
@@ -170,7 +172,11 @@ objects:
           - name: COSTS_API_URL
             value: http://devbot-memory-server:8080/api/costs
           - name: SLACK_WEBHOOK_URL
-            value: ${SLACK_WEBHOOK_URL}
+            valueFrom:
+              secretKeyRef:
+                name: ${SLACK_SECRET_NAME}
+                key: ${SLACK_SECRET_KEY}
+                optional: true
           - name: SLACK_NOTIFY_MODE
             value: ${SLACK_NOTIFY_MODE}
           - name: PROXY_HOST

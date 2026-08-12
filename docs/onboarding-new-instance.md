@@ -368,7 +368,8 @@ resourceTemplates:
       VERTEX_ALLOWED_MODELS: claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
       BOT_CONFIG_REPO: https://github.com/YourOrg/my-bot-instance.git
       BOT_CONFIG_PATH: instance/my-config
-      SLACK_WEBHOOK_URL: 'https://hooks.slack.com/...'
+      # SLACK_SECRET_NAME: myteam-slack       # only if you provisioned a Slack webhook — see Vault Secrets below.
+      #                                        # NEVER put the raw webhook URL here — Vault secret reference only.
       # --- Per-instance proxy (optional — only if custom Jira, and other creds needed) ---
       # PROXY_IMAGE: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
       # PROXY_IMAGE_TAG: <proxy-image-sha>
@@ -434,6 +435,25 @@ openshiftResources:
 The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters so the instance gets its own proxy pod with these credentials.
 
 The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
+
+#### Slack webhook secret (optional)
+
+**Never write a Slack webhook URL as a plaintext parameter value in `deploy.yml` or anywhere else in app-interface.** Webhook URLs are bearer credentials — anyone with the URL can post to your channel — and app-interface config is broadly readable. If your instance wants Slack notifications, provision a dedicated Vault secret instead:
+
+```yaml
+# In namespaces/stage.hcmais01ue1.yml
+openshiftResources:
+- provider: vault-secret
+  path: your/vault/path/myteam-slack
+  name: myteam-slack
+  version: 1
+  annotations:
+    qontract.recycle: "true"
+```
+
+The secret's key must be `slack-webhook-url` — this is fixed, not configurable. Then set `SLACK_SECRET_NAME=myteam-slack` in your deploy.yml parameters. The bot deployment template wires `SLACK_WEBHOOK_URL` into the container via `secretKeyRef`, never a literal value — see [Step 2](#step-2-deploy-template).
+
+If you don't want Slack notifications, omit `SLACK_SECRET_NAME` entirely — the container simply won't get a `SLACK_WEBHOOK_URL` env var (the secretKeyRef is `optional: true`).
 
 ### Reference: Existing app-interface config
 
@@ -506,7 +526,8 @@ After deploying, verify in order:
 | `BOT_BOARD_NAME` | no | Jira board name (for sprint assignment only) |
 | `BOT_SPRINT_PREFIX` | no | Sprint name prefix filter (for sprint assignment only) |
 | `BOT_INCLUDE_BACKLOG` | no | `'true'` to include backlog tickets |
-| `SLACK_WEBHOOK_URL` | no | Slack webhook — Incoming (`/services/`, recommended) or Workflow Builder (`/triggers/`) |
+| `SLACK_SECRET_NAME` | no | Vault-backed Secret name holding the Slack webhook (default: `devbot-secrets`, which has no webhook key — no-op unless overridden). **Never** a raw webhook URL — see [Vault Secrets](#step-4-app-interface-configuration). |
+| `SLACK_SECRET_KEY` | no | Key within `SLACK_SECRET_NAME` holding the webhook (default: `slack-webhook-url`) |
 | `SLACK_NOTIFY_MODE` | no | `immediate` (default) or `daily_digest`. In digest mode, notifications queue instead of sending immediately. Requires `SLACK_DIGEST_HOUR` to be set. |
 | `SLACK_DIGEST_HOUR` | no | UTC hour (0-23) when daily digest is sent. Opt-in — digest is disabled unless this is set. |
 | `PROXY_IMAGE` | no | Proxy container image (only needed if `PROXY_REPLICAS=1`) |
@@ -545,9 +566,9 @@ When pointing an instance at a different workspace, update all Slack-related par
 | `SLACK_OPEN_PRS_CHANNEL` | Channel ID for the Open PRs thread (workspace-specific) |
 | `SLACK_EMOJI_APPROVED` | Emoji name for approved PRs (e.g. `lgtm-5363`) |
 | `SLACK_EMOJI_MERGED` | Emoji name for merged PRs (e.g. `merged2`) |
-| `SLACK_WEBHOOK_URL` | Webhook URL (also workspace-specific) |
+| `SLACK_SECRET_NAME` | Vault secret holding the workspace's webhook (also workspace-specific — point it at a sandbox-specific secret, never reuse the production webhook secret) |
 
-Channel IDs and custom emoji names differ between workspaces — you cannot reuse production values in sandbox.
+Channel IDs and custom emoji names differ between workspaces — you cannot reuse production values in sandbox. The same applies to the webhook secret: provision a separate Vault secret per workspace and reference it via `SLACK_SECRET_NAME`, never a shared literal value.
 
 ---
 

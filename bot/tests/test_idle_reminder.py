@@ -375,8 +375,27 @@ def test_on_preflight_skip_sends_reminder_at_threshold():
     ):
         on_preflight_skip("bot-x", idle_cycle_limit=10, cooldown_seconds=172800)
 
-    mock_send.assert_called_once_with(10, instance_id="bot-x", memory_api_base=None)
+    mock_send.assert_called_once_with(10, instance_id="bot-x", memory_api_base=None, slack_webhook_url=None)
     mock_update.assert_called_once_with("bot-x", 10, _NOW, None)
+
+
+def test_on_preflight_skip_passes_through_slack_webhook_url():
+    """The captured webhook (read before sanitize_env stripped it) is forwarded to send_reminder."""
+    with (
+        patch("bot.idle_reminder.fetch_idle_state", return_value=(9, None)),
+        patch("bot.idle_reminder.send_reminder", return_value=_NOW) as mock_send,
+        patch("bot.idle_reminder.update_idle_state"),
+    ):
+        on_preflight_skip(
+            "bot-x",
+            idle_cycle_limit=10,
+            cooldown_seconds=172800,
+            slack_webhook_url="https://hooks.slack.com/test",
+        )
+
+    mock_send.assert_called_once_with(
+        10, instance_id="bot-x", memory_api_base=None, slack_webhook_url="https://hooks.slack.com/test"
+    )
 
 
 def test_on_preflight_skip_respects_disabled_limit():

@@ -73,7 +73,7 @@ def _build_resource_template(cfg, namespace_ref):
     config_repo = cfg.get("config_repo", repo_url)
     config_path = cfg.get("config_path", f"instance/{config_name}")
     workflow = cfg.get("workflow", "jira-sprint")
-    slack_webhook_url = cfg.get("slack_webhook_url", "")
+    slack_secret_name = _validate_slack_secret_name(cfg.get("slack_secret_name", ""))
 
     gcp_project_id = cfg["gcp_project_id"]
     gcp_region = cfg.get("gcp_region", "global")
@@ -105,8 +105,8 @@ def _build_resource_template(cfg, namespace_ref):
 
     params.append(f"      BOT_INSTANCE_ID: {_yaml_quote(instance_id)}")
 
-    if slack_webhook_url:
-        params.append(f"      SLACK_WEBHOOK_URL: {_yaml_quote(slack_webhook_url)}")
+    if slack_secret_name:
+        params.append(f"      SLACK_SECRET_NAME: {_yaml_quote(slack_secret_name)}")
     slack_notify_mode = cfg.get("slack_notify_mode", "")
     if slack_notify_mode:
         params.append(f"      SLACK_NOTIFY_MODE: {_yaml_quote(slack_notify_mode)}")
@@ -243,6 +243,35 @@ def _safe_path(base, *parts):
 
 
 _SAFE_INSTANCE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+# DNS-1123 label (max 63 chars): lowercase alphanumeric, optional interior hyphens,
+# must start and end with an alphanumeric. Secrets are DNS-1123 subdomains of these
+# labels joined by '.' (overall max 253). See REHOR-123 — never emit raw user input
+# in validation errors (main() serializes str(e) as JSON).
+_SAFE_SECRET_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _validate_slack_secret_name(value):
+    if value == "":
+        return value
+    if not isinstance(value, str):
+        raise ValueError(
+            "slack_secret_name must be a Kubernetes Secret name string "
+            "(or omitted / empty to skip Slack notifications). See REHOR-123."
+        )
+    if "://" in value or "hooks.slack.com" in value.lower():
+        raise ValueError(
+            "slack_secret_name looks like a webhook URL, not a Secret name — "
+            "pass the Vault-backed Kubernetes Secret name instead (key 'slack-webhook-url'). "
+            "See REHOR-123."
+        )
+    if len(value) > 253 or not all(_SAFE_SECRET_LABEL.fullmatch(label) for label in value.split(".")):
+        raise ValueError(
+            "Invalid slack_secret_name: must be a valid Kubernetes Secret name "
+            "(DNS-1123 subdomain: lowercase alphanumeric labels separated by '.', "
+            "each label starting/ending with an alphanumeric character). See REHOR-123."
+        )
+    return value
 
 
 def _create_separate_saas(cfg, repo_path):
@@ -391,6 +420,14 @@ def _add_self_service_datafile(cfg, repo_path):
 
 
 def generate(cfg, repo_path):
+    if "slack_webhook_url" in cfg:
+        raise ValueError(
+            "slack_webhook_url is no longer accepted — plaintext webhook URLs must not be "
+            "committed to app-interface. Provision the webhook in Vault and pass "
+            "slack_secret_name (the Vault-backed Secret name, key 'slack-webhook-url') instead. "
+            "See REHOR-123."
+        )
+
     pattern = cfg.get("pattern", "shared")
 
     if pattern == "shared":
@@ -448,7 +485,11 @@ def main():
         print(json.dumps({"error": "gcp_project_id is required for separate pattern"}))
         sys.exit(1)
 
-    result = generate(cfg, repo_path)
+    try:
+        result = generate(cfg, repo_path)
+    except ValueError as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
     print(json.dumps(result, indent=2))
 
 

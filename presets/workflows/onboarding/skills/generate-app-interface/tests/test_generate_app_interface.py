@@ -583,6 +583,89 @@ class TestSlackRef:
         assert "coreos" not in content
 
 
+class TestSlackWebhookSecret:
+    """REHOR-123: Slack webhooks must be Vault-backed secret refs, never plaintext."""
+
+    def _read_deploy(self, app_interface_repo):
+        return (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        ).read_text()
+
+    def test_slack_secret_name_emitted_when_set(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_secret_name": "myteam-slack"}
+        generate(cfg, str(app_interface_repo))
+        content = self._read_deploy(app_interface_repo)
+        assert "SLACK_SECRET_NAME: myteam-slack" in content
+
+    def test_no_slack_secret_param_by_default(self, app_interface_repo):
+        generate(SHARED_CONFIG, str(app_interface_repo))
+        content = self._read_deploy(app_interface_repo)
+        assert "SLACK_SECRET_NAME" not in content
+        assert "SLACK_WEBHOOK_URL" not in content
+
+    def test_plaintext_webhook_url_rejected(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_webhook_url": "https://hooks.slack.com/test/should-be-rejected"}
+        with pytest.raises(ValueError, match="slack_webhook_url is no longer accepted"):
+            generate(cfg, str(app_interface_repo))
+
+    def test_falsy_webhook_url_key_still_rejected(self, app_interface_repo):
+        """Presence of the retired key is rejected regardless of value (REHOR-123) —
+        an empty/null value must not slip through a truthiness check."""
+        cfg = {**SHARED_CONFIG, "slack_webhook_url": ""}
+        with pytest.raises(ValueError, match="slack_webhook_url is no longer accepted"):
+            generate(cfg, str(app_interface_repo))
+
+    def test_secret_name_shaped_like_url_rejected(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_secret_name": "https://example.com/not-a-secret-name"}
+        with pytest.raises(ValueError, match="looks like a webhook URL") as exc_info:
+            generate(cfg, str(app_interface_repo))
+        # Error text must never echo the rejected input (main() serializes str(e)).
+        assert "https://" not in str(exc_info.value)
+        assert "example.com" not in str(exc_info.value)
+
+    def test_secret_name_invalid_k8s_name_rejected(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_secret_name": "Not A Valid Name!"}
+        with pytest.raises(ValueError, match="Invalid slack_secret_name") as exc_info:
+            generate(cfg, str(app_interface_repo))
+        assert "Not A Valid Name" not in str(exc_info.value)
+
+    def test_secret_name_non_string_rejected(self, app_interface_repo):
+        for bad in (0, False, ["myteam-slack"], None):
+            cfg = {**SHARED_CONFIG, "slack_secret_name": bad}
+            with pytest.raises(ValueError, match="must be a Kubernetes Secret name string"):
+                generate(cfg, str(app_interface_repo))
+
+    def test_secret_name_invalid_label_boundaries_rejected(self, app_interface_repo):
+        for bad in ("myteam-.slack", "myteam.-slack", "myteam..slack", "-myteam", "myteam-"):
+            cfg = {**SHARED_CONFIG, "slack_secret_name": bad}
+            with pytest.raises(ValueError, match="Invalid slack_secret_name"):
+                generate(cfg, str(app_interface_repo))
+
+    def test_secret_name_dotted_dns1123_accepted(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_secret_name": "myteam.slack.webhook"}
+        generate(cfg, str(app_interface_repo))
+        assert "SLACK_SECRET_NAME: myteam.slack.webhook" in self._read_deploy(app_interface_repo)
+
+    def test_plaintext_webhook_url_never_written_to_disk(self, app_interface_repo):
+        cfg = {**SHARED_CONFIG, "slack_webhook_url": "https://hooks.slack.com/test/should-be-rejected"}
+        with pytest.raises(ValueError):
+            generate(cfg, str(app_interface_repo))
+        deploy_path = (
+            app_interface_repo
+            / "data"
+            / "services"
+            / "insights"
+            / "platform-frontend-ai-dev"
+            / "test-agent-dev-deploy.yml"
+        )
+        assert not deploy_path.exists()
+
+
 class TestTeamRoleRefEdgeCases:
     ROLE_REF = "teams/insights/roles/test-role"
 

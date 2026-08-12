@@ -1,0 +1,6 @@
+# Known false positives, reviewed and confirmed safe.
+# Format: <fingerprint> # <reason>
+#
+# generic-api-key false positive: matches the env var *name* GPG_PRIVATE_KEY_B64
+# (a secretKeyRef key reference in deploy/template.yaml), not an actual secret value.
+eca20c194629361575d94005177a5c37b20d1318:deploy/template.yaml:generic-api-key:185

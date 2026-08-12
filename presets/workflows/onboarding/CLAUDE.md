@@ -241,6 +241,11 @@ Wait for: pipelines merged, build ran, Quay image exists.
      (e.g., `teams/insights/roles/platform-experience-services`).
      This lets your team self-approve future deploy config changes without app-sre review.
 
+   ### Optional
+   - **Slack notifications** — if wanted, provision a Vault secret with the webhook
+     (key `slack-webhook-url`) and share the secret name only. **Never post the raw
+     webhook URL** — it must go directly into Vault, never into Jira or chat.
+
    If your team doesn't have an app-interface role yet, reach out to the Rehor development
    team in JIRA or Slack and we'll help get one set up.
 
@@ -274,6 +279,9 @@ Wait for: pipelines merged, build ran, Quay image exists.
    - GCP region — default: `global`
    - App ref — `$ref` to your app.yml (default: shared)
    - Pipelines ref — `$ref` to your pipeline provider (default: shared)
+   - Slack notifications — if wanted, the team provisions a Vault secret with the webhook
+     (key `slack-webhook-url`) and provides the secret name. **Never share the raw webhook
+     URL in Jira or chat** — it must go directly into Vault.
 
    If your team doesn't have an app-interface role yet, reach out to the Rehor development
    team in JIRA or Slack and we'll help get one set up.
@@ -408,7 +416,7 @@ Epic's `onboarding:*` label = authoritative step indicator. Bot applies one labe
 ### Task Metadata
 
 ```json
-{"phase":1,"step":"intake","epic_key":"PROJ-123","phase_tickets":{"phase1":"...","phase2":"...","phase3":"..."},"requirements":{"team_name":"","instance_name":"","config_name":"","repo_url":"","github_org":"","repos":[],"workflow":"jira-sprint","bot_name":"devbot-...","bot_label":"rehor-ai-...","instance_id":"","board_name":"","sprint_prefix":"","include_backlog":"false","jira_project":"","envs":[],"personas":[],"tech_stacks":[],"pattern":"shared","dedicated_proxy":false,"fork_account":"","slack_webhook_url":"","slack_notify_mode":""},"konflux":{"quay_org":"","tenant":"","cluster":"","new_tenant":true,"admins":[],"maintainers":[],"cost_center":"","quota_tier":""},"deployment":{"gcp_project_id":"","gcp_region":"global","target_branch":"main","config_repo":"","config_path":"","service_tree":"","app_ref":"","namespace_ref":"","pipelines_ref":"","auth_ref":"","team_role_ref":""},"prs":[],"mrs":[],"last_addressed":""}
+{"phase":1,"step":"intake","epic_key":"PROJ-123","phase_tickets":{"phase1":"...","phase2":"...","phase3":"..."},"requirements":{"team_name":"","instance_name":"","config_name":"","repo_url":"","github_org":"","repos":[],"workflow":"jira-sprint","bot_name":"devbot-...","bot_label":"rehor-ai-...","instance_id":"","board_name":"","sprint_prefix":"","include_backlog":"false","jira_project":"","envs":[],"personas":[],"tech_stacks":[],"pattern":"shared","dedicated_proxy":false,"fork_account":"","slack_secret_name":"","slack_notify_mode":""},"konflux":{"quay_org":"","tenant":"","cluster":"","new_tenant":true,"admins":[],"maintainers":[],"cost_center":"","quota_tier":""},"deployment":{"gcp_project_id":"","gcp_region":"global","target_branch":"main","config_repo":"","config_path":"","service_tree":"","app_ref":"","namespace_ref":"","pipelines_ref":"","auth_ref":"","team_role_ref":""},"prs":[],"mrs":[],"last_addressed":""}
 ```
 
 - `step` matches label suffix
@@ -452,8 +460,9 @@ All skills MUST use these field names. No aliases.
 | `namespace_ref` | generate-app-interface | `$ref` to namespace YAML. Discovered from shared deploy.yml if not provided. |
 | `pipelines_ref` | generate-app-interface | `$ref` to pipeline provider. Override for separate pattern. |
 | `team_role_ref` | generate-app-interface | App-interface role file path for self-service deploy access (e.g., `teams/insights/roles/platform-experience-services`). The bot adds a `saas-file-self-service` datafile entry for the new deploy file. |
+| `slack_secret_name` | generate-app-interface | Name of the Vault-backed Kubernetes Secret (key `slack-webhook-url`) holding the team's Slack webhook. **Never a raw webhook URL** — the bot never handles or stores plaintext webhook values (REHOR-123). |
 
-**Retired aliases** (do NOT use): `source_url`, `default_branch`, `app_name`, `component_name`, `suggested_envs`, `suggested_personas`, `instance_repo_url`.
+**Retired aliases** (do NOT use): `source_url`, `default_branch`, `app_name`, `component_name`, `suggested_envs`, `suggested_personas`, `instance_repo_url`, `slack_webhook_url` (rejected by `generate-app-interface` — use `slack_secret_name`).
 
 ## Rules
 
@@ -468,6 +477,7 @@ All skills MUST use these field names. No aliases.
 - Use runtime env vars: `GH_USER_NAME`, `BOT_JIRA_EMAIL`, `BOT_CONFIG_PATH`
 - No emojis in Jira comments or PR/MR descriptions — keep tone professional and plain
 - Never use `--depth 1` when cloning repos you need to push to — shallow clones cannot push to a remote
+- **Never handle plaintext Slack webhook URLs.** Do not accept, store, or emit a raw webhook value anywhere — not in Jira comments, task metadata, or app-interface config. Always use `slack_secret_name` (Vault-backed Secret name) instead (REHOR-123).
 
 ---
 

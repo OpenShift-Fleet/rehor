@@ -219,6 +219,36 @@ class TestTemplateRendering:
         content = (tmp_path / "deploy" / "template.yaml").read_text()
         assert "SSO_USERNAME" not in content
 
+    def test_slack_webhook_sourced_from_secret_not_plain_value(self, tmp_path):
+        """REHOR-123: SLACK_WEBHOOK_URL must come from secretKeyRef, never a plain ${} value."""
+        generate(SPRINT_CONFIG, str(tmp_path))
+        content = (tmp_path / "deploy" / "template.yaml").read_text()
+        parsed = yaml.safe_load(content)
+
+        param_names = {p["name"] for p in parsed["parameters"]}
+        assert "SLACK_SECRET_NAME" in param_names
+        assert "SLACK_SECRET_KEY" in param_names
+        assert "SLACK_WEBHOOK_URL" not in param_names
+
+        bot_deployment = next(
+            obj for obj in parsed["objects"] if obj["kind"] == "Deployment" and obj["metadata"]["name"] == "${BOT_NAME}"
+        )
+        env_vars = {e["name"]: e for e in bot_deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
+        slack_env = env_vars["SLACK_WEBHOOK_URL"]
+        assert "valueFrom" in slack_env
+        assert "value" not in slack_env
+        assert slack_env["valueFrom"]["secretKeyRef"]["name"] == "${SLACK_SECRET_NAME}"
+        assert slack_env["valueFrom"]["secretKeyRef"]["key"] == "${SLACK_SECRET_KEY}"
+        assert slack_env["valueFrom"]["secretKeyRef"]["optional"] is True
+
+    def test_slack_secret_name_defaults_to_devbot_secrets(self, tmp_path):
+        generate(SPRINT_CONFIG, str(tmp_path))
+        content = (tmp_path / "deploy" / "template.yaml").read_text()
+        parsed = yaml.safe_load(content)
+        params = {p["name"]: p.get("value") for p in parsed["parameters"]}
+        assert params["SLACK_SECRET_NAME"] == "devbot-secrets"
+        assert params["SLACK_SECRET_KEY"] == "slack-webhook-url"
+
     def test_setup_sh_is_executable(self, tmp_path):
         generate(SPRINT_CONFIG, str(tmp_path))
         mode = (tmp_path / "setup.sh").stat().st_mode

@@ -95,6 +95,13 @@
         "scope": "multi-container runtime startup + entrypoint validation harness (REHOR-62)",
         "required": false,
         "note": "path-filtered to runtime/container harness inputs. full-stack fixture currently manual via workflow_dispatch."
+      },
+      {
+        "name": "gitleaks",
+        "workflow": "secret-scan.yml",
+        "scope": "repo-wide secret scan (gitleaks) — Slack webhooks, tokens, private keys, etc. (REHOR-123)",
+        "required": true,
+        "note": "no path filter — runs on every PR. Eligible for hard branch protection, unlike the path-filtered checks above."
       }
     ],
     "konflux": [
@@ -127,8 +134,8 @@
     ]
   },
   "path_scoping_notes": {
-    "description": "All GitHub Actions workflows use path filters. Only the main bot and memory-server Konflux pipelines run on every PR (no path filter in CEL expression). The proxy Konflux pipeline is path-filtered to proxy/** changes.",
-    "required_in_branch_protection": "Only checks that fire on EVERY PR can be hard-required in branch protection. Currently that is the two non-path-filtered Konflux build checks. Path-filtered checks (all GitHub Actions + proxy Konflux) are trusted to pass when they fire, but not enforced as branch protection gates.",
+    "description": "Most GitHub Actions workflows use path filters. The main bot and memory-server Konflux pipelines, and the gitleaks secret scan (secret-scan.yml), run on every PR with no path filter — secrets can be introduced anywhere, so this check is deliberately not path-scoped. The proxy Konflux pipeline is path-filtered to proxy/** changes.",
+    "required_in_branch_protection": "Only checks that fire on EVERY PR can be hard-required in branch protection. Currently that is the two non-path-filtered Konflux build checks plus gitleaks. Path-filtered checks (all other GitHub Actions + proxy Konflux) are trusted to pass when they fire, but not enforced as branch protection gates.",
     "future": "If a lightweight always-running gate workflow is added (e.g. a status-aggregator that reports success/neutral for path-filtered checks that didn't fire), more checks can be promoted to required."
   }
 }

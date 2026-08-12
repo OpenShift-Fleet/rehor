@@ -4,7 +4,8 @@
     "strict": true,
     "contexts": [
       "Red Hat Konflux / platform-frontend-ai-dev-on-pull-request",
-      "Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request"
+      "Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request",
+      "gitleaks"
     ]
   },
   "enforce_admins": true,

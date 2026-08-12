@@ -20,18 +20,24 @@ from .memory_mcp import memory_call, memory_cleanup
 logger = logging.getLogger(__name__)
 
 
-def try_slack_digest() -> None:
-    """Entry point called by bot/run.py after each cycle. Zero LLM tokens."""
-    if not os.environ.get("SLACK_WEBHOOK_URL"):
+def try_slack_digest(webhook_url: str | None = None) -> None:
+    """Entry point called by bot/run.py after each cycle. Zero LLM tokens.
+
+    `webhook_url` is passed explicitly by the long-running bot process, which
+    reads SLACK_WEBHOOK_URL before it's stripped from os.environ by
+    sanitize_env(). Falls back to os.environ for standalone/CLI invocations.
+    """
+    webhook_url = webhook_url if webhook_url is not None else os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
         return
     try:
-        cmd_digest()
+        cmd_digest(webhook_url)
     except Exception as e:
         logger.warning("Slack digest failed: %s", e)
 
 
-def cmd_digest():
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+def cmd_digest(webhook_url: str | None = None):
+    webhook_url = webhook_url if webhook_url is not None else os.environ.get("SLACK_WEBHOOK_URL", "")
     if not webhook_url:
         print(json.dumps({"sent": False, "reason": "SLACK_WEBHOOK_URL not set"}))
         return

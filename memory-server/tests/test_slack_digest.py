@@ -9,8 +9,14 @@ them out of its internal registry.
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
-from bot_memory_server.tools.slack import _format_digest, _format_pr_label, register_slack_tools
+from bot_memory_server.tools.slack import (
+    _format_digest,
+    _format_pr_label,
+    _sanitize_webhook_error,
+    register_slack_tools,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture: extract tool functions from FastMCP registration
@@ -63,6 +69,42 @@ def _make_row(**kwargs):
     }
     defaults.update(kwargs)
     return defaults
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_webhook_error — never leak the webhook URL (REHOR-123)
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeWebhookError:
+    def test_http_status_error_reports_status_code_only(self):
+        request = httpx.Request("POST", "https://hooks.slack.com/test/secret-path")
+        response = httpx.Response(404, request=request)
+        err = httpx.HTTPStatusError("boom", request=request, response=response)
+
+        result = _sanitize_webhook_error(err)
+
+        assert result == "HTTP 404"
+        assert "hooks.slack.com" not in result
+        assert "secret-path" not in result
+
+    def test_timeout_reports_generic_label(self):
+        request = httpx.Request("POST", "https://hooks.slack.com/test/secret-path")
+        err = httpx.ConnectTimeout("timed out", request=request)
+
+        result = _sanitize_webhook_error(err)
+
+        assert result == "timeout"
+        assert "hooks.slack.com" not in result
+
+    def test_generic_exception_reports_type_name_only(self):
+        err = ValueError("https://hooks.slack.com/test/secret-path is invalid")
+
+        result = _sanitize_webhook_error(err)
+
+        assert result == "ValueError"
+        assert "hooks.slack.com" not in result
+        assert "secret-path" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +202,35 @@ class TestSlackNotifyImmediate:
 
         assert result["sent"] is False
         assert "Webhook error" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_webhook_error_does_not_leak_url(self, slack_tools):
+        """Even if the underlying exception's str() embeds the webhook URL
+        (e.g. httpx.HTTPStatusError), the returned reason must not (REHOR-123)."""
+        slack_notify = slack_tools["slack_notify"]
+        pool = _make_pool(fetchrow_return=None)
+        secret_webhook = "https://hooks.slack.com/test/secret-path-should-not-leak"
+
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
+        ):
+            request = httpx.Request("POST", secret_webhook)
+            response = httpx.Response(403, request=request)
+            mock_client = AsyncMock()
+            mock_client.post.side_effect = httpx.HTTPStatusError("forbidden", request=request, response=response)
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await slack_notify(
+                external_key="RHCLOUD-100",
+                event_type="pr_created",
+                message="Test",
+                webhook_url=secret_webhook,
+            )
+
+        assert result["sent"] is False
+        assert "secret-path-should-not-leak" not in result["reason"]
+        assert result["reason"] == "Webhook error: HTTP 403"
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,16 @@
+title = "dev-bot secret scan config"
+
+# Extends gitleaks' built-in ruleset (includes AWS keys, GitHub/GitLab tokens,
+# private keys, Slack tokens/webhooks, and hundreds more) rather than
+# replacing it. See https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+[extend]
+useDefault = true
+
+# Supplementary rule: catch any hooks.slack.com webhook/trigger URL even if it
+# doesn't match the upstream rule's exact token-length assumption (REHOR-123 —
+# Slack webhook URLs must never be committed in plaintext).
+[[rules]]
+id = "devbot-slack-webhook-url"
+description = "Slack incoming webhook or workflow trigger URL (REHOR-123) — use a Vault-backed secretKeyRef instead"
+regex = '''https?://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_+-]{20,}'''
+keywords = ["hooks.slack.com"]

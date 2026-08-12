@@ -61,6 +61,18 @@ if echo "$TEXT" | grep -qE -e 'AKIA[0-9A-Z]{16}'; then
   deny "BLOCKED: Output contains what looks like an AWS access key."
 fi
 
+# --- SLACK WEBHOOK URLS ---
+if echo "$TEXT" | grep -qiE -e 'hooks\.slack\.com/(services|workflows|triggers)/[A-Za-z0-9/_-]+'; then
+  deny "BLOCKED: Output contains a Slack webhook URL. Never post webhook URLs — use a Vault-backed secret reference (REHOR-123)."
+fi
+
+# --- SLACK TOKENS ---
+# xox[bpoas]- covers bot/user/legacy-workspace/legacy/legacy-workspace tokens;
+# xapp-<version>-<part>-<id>-<hash> is Slack's documented app-level token format.
+if echo "$TEXT" | grep -qiE -e 'xox[bpoas]-[A-Za-z0-9-]{10,}' -e 'xapp-[0-9]-[A-Za-z0-9]+-[0-9]+-[a-z0-9]+'; then
+  deny "BLOCKED: Output contains what looks like a Slack API token."
+fi
+
 # --- GENERIC LONG HEX/BASE64 SECRETS ---
 if echo "$TEXT" | grep -qiE -e '(signing|gpg|pgp|key|secret).{0,30}[0-9A-Fa-f]{40,}'; then
   deny "BLOCKED: Output contains what looks like a key fingerprint or secret in a sensitive context."

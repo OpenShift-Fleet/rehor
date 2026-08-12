@@ -103,3 +103,33 @@ class TestDigestNoWebhook:
         output = json.loads(capsys.readouterr().out.strip())
         assert output["sent"] is False
         assert "SLACK_WEBHOOK_URL" in output["reason"]
+
+
+class TestDigestExplicitWebhookParam:
+    """The long-running bot process passes webhook_url explicitly (REHOR-123) —
+    it's captured before sanitize_env() strips SLACK_WEBHOOK_URL from os.environ."""
+
+    def test_explicit_param_used_even_when_env_unset(self, monkeypatch, capsys):
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+        wednesday_9 = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+
+        with (
+            patch.object(slack_digest, "datetime") as mock_dt,
+            patch.object(slack_digest, "memory_call", return_value={"sent": True, "count": 1}),
+            patch.object(slack_digest, "memory_cleanup"),
+        ):
+            mock_dt.now.return_value = wednesday_9
+            monkeypatch.setenv("SLACK_DIGEST_HOUR", "9")
+            slack_digest.cmd_digest(webhook_url="https://hooks.slack.com/test")
+
+        output = json.loads(capsys.readouterr().out.strip())
+        assert output["sent"] is True
+
+    def test_explicit_none_falls_back_to_env(self, monkeypatch, capsys):
+        monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+
+        slack_digest.cmd_digest(webhook_url=None)
+
+        output = json.loads(capsys.readouterr().out.strip())
+        assert output["sent"] is False
+        assert "SLACK_WEBHOOK_URL" in output["reason"]

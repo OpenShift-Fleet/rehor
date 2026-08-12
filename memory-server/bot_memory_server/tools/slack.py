@@ -14,6 +14,21 @@ COOLDOWN_HOURS = 48
 PR_EVENT_TYPES = {"pr_created", "review_reminder"}
 
 
+def _sanitize_webhook_error(e: Exception) -> str:
+    """Describe a webhook failure without leaking the URL.
+
+    httpx exceptions (HTTPStatusError, ConnectError, etc.) embed the request
+    URL in str(e) — never interpolate that into a tool response, since it
+    flows back into the agent's context and can end up quoted in a Jira
+    comment or PR body. Full details are logged server-side separately.
+    """
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTP {e.response.status_code}"
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    return type(e).__name__
+
+
 def register_slack_tools(mcp: FastMCP):
     @mcp.tool()
     async def slack_notify(
@@ -114,8 +129,8 @@ def register_slack_tools(mcp: FastMCP):
                 resp = await client.post(webhook_url, json=payload)
                 resp.raise_for_status()
         except Exception as e:
-            logger.error("Slack webhook failed: %s", e)
-            return {"sent": False, "reason": f"Webhook error: {e}"}
+            logger.error("Slack webhook failed", exc_info=True)
+            return {"sent": False, "reason": f"Webhook error: {_sanitize_webhook_error(e)}"}
 
         await pool.execute(
             """
@@ -204,8 +219,8 @@ def register_slack_tools(mcp: FastMCP):
                 resp = await client.post(webhook_url, json={"msg": digest_message})
                 resp.raise_for_status()
         except Exception as e:
-            logger.error("Slack digest webhook failed: %s", e)
-            return {"sent": False, "count": len(rows), "reason": f"Webhook error: {e}"}
+            logger.error("Slack digest webhook failed", exc_info=True)
+            return {"sent": False, "count": len(rows), "reason": f"Webhook error: {_sanitize_webhook_error(e)}"}
 
         row_ids = [r["id"] for r in rows]
         await pool.execute(
