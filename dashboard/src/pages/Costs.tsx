@@ -19,6 +19,8 @@ import { fetchCosts, fetchAnalytics } from '../api';
 import { formatDuration, formatTokens, sourceUrl, displayKey } from '../utils';
 import { useWS } from '../hooks/useWebSocket';
 import {
+  Alert,
+  AlertActionCloseButton,
   Card,
   CardBody,
   CardTitle,
@@ -195,7 +197,7 @@ function SummaryCard({ value, label, sub, color }: { value: string; label: strin
   );
 }
 
-export default function Costs() {
+export default function Costs({ instanceId }: { instanceId?: string }) {
   const [dateMode, setDateMode] = useState<DateMode>('preset');
   const [days, setDays] = useState(30);
   const [dateFrom, setDateFrom] = useState('');
@@ -204,6 +206,7 @@ export default function Costs() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [metric, setMetric] = useState<CycleMetric>('cost');
   const [isDaysOpen, setIsDaysOpen] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const { onEvent } = useWS();
 
@@ -211,12 +214,12 @@ export default function Costs() {
     const from = dateMode === 'range' ? dateFrom || undefined : undefined;
     const to = dateMode === 'range' ? dateTo || undefined : undefined;
     const [costsRes, analyticsRes] = await Promise.all([
-      fetchCosts(days, 500, from, to),
-      fetchAnalytics(days, from, to),
+      fetchCosts(days, 500, from, to, instanceId),
+      fetchAnalytics(days, from, to, instanceId),
     ]);
     setData({ cycles: costsRes?.items || [], daily: costsRes?.daily || [] });
     setAnalytics(analyticsRes);
-  }, [days, dateMode, dateFrom, dateTo]);
+  }, [days, dateMode, dateFrom, dateTo, instanceId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -315,6 +318,18 @@ export default function Costs() {
 
   return (
     <div className="costs-page">
+      {instanceId && !bannerDismissed && (
+        <Alert
+          variant="info"
+          isInline
+          title={`Showing costs for ${instanceId} only`}
+          actionClose={<AlertActionCloseButton onClose={() => setBannerDismissed(true)} />}
+          style={{ marginBottom: '16px' }}
+        >
+          <p>Historical entries recorded before per-instance tracking was enabled are not included.{' '}
+          <a href="#/costs">View all instances</a> for the full aggregated view.</p>
+        </Alert>
+      )}
       {/* Date controls */}
       <Flex gap={{ default: 'gapMd' }} alignItems={{ default: 'alignItemsCenter' }} style={{ marginBottom: '16px' }}>
         <FlexItem>

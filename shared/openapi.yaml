@@ -313,6 +313,9 @@ paths:
         - name: to
           in: query
           schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: Cost entries and daily aggregates
@@ -574,6 +577,9 @@ paths:
         - name: to
           in: query
           schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: Analytics data
@@ -756,6 +762,7 @@ components:
         repo: { type: string, nullable: true }
         work_type: { type: string, nullable: true }
         summary: { type: string, nullable: true }
+        instance_id: { type: string, nullable: true }
       additionalProperties: false
 
     CycleRunItem:

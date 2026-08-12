@@ -677,6 +677,12 @@ async def api_costs(request: Request) -> JSONResponse:
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
 
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
+
     pidx = len(date_params) + 1
     rows = await pool.fetch(
         f"SELECT * FROM cycles WHERE {date_filter} ORDER BY timestamp DESC LIMIT ${pidx}",
@@ -738,8 +744,8 @@ async def api_costs_add(request: Request) -> JSONResponse:
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                            external_key, source_type, repo, work_type, summary, instance_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *
         """,
         body.get("label", ""),
@@ -759,6 +765,7 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("repo"),
         body.get("work_type"),
         body.get("summary"),
+        body.get("instance_id"),
     )
     cycle = _cycle(row)
     await bus.publish(Event("cycle_recorded", cycle))
@@ -787,6 +794,12 @@ async def api_analytics(request: Request) -> JSONResponse:
     """GET /api/analytics — aggregated stats for the analytics dashboard."""
     pool = get_pool()
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     # Work type breakdown (derived from ticket titles + work_type)
     work_type_rows = await pool.fetch(
@@ -1370,6 +1383,7 @@ def _cycle(row) -> dict:
         "repo": row.get("repo"),
         "work_type": row.get("work_type"),
         "summary": row.get("summary"),
+        "instance_id": row.get("instance_id"),
     }
 
 
