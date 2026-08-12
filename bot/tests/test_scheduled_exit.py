@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bot.config import InstanceConfig
-from bot.preflight import PreflightResult, ScriptResult
+from bot.preflight import PreflightResult
 
 
 @pytest.fixture
