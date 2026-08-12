@@ -4,8 +4,11 @@ State is now stored in bot_instances via the memory server API, not on disk.
 Memory-server /api/tasks returns {"items": [...], "total": N, ...}.
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
+
+import httpx
 
 from bot.idle_reminder import (
     _format_task_line,
@@ -333,6 +336,30 @@ def test_send_reminder_webhook_failure_returns_none():
         result = send_reminder(10)
 
     assert result is None
+
+
+def test_send_reminder_webhook_error_does_not_leak_url_into_logs(caplog):
+    """httpx.HTTPStatusError.__str__() embeds the request URL — logging it
+    with exc_info=True would put the webhook in the bot's own logs even
+    though nothing here returns the URL to any caller (REHOR-123)."""
+    secret_webhook = "https://hooks.slack.com/test/secret-path-should-not-leak"
+    request = httpx.Request("POST", secret_webhook)
+    response = httpx.Response(403, request=request)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    with (
+        patch("bot.idle_reminder.fetch_open_tasks", return_value=[]),
+        patch("bot.idle_reminder.httpx.post", return_value=mock_resp),
+        patch.dict("os.environ", {"SLACK_WEBHOOK_URL": secret_webhook}),
+        caplog.at_level(logging.WARNING),
+    ):
+        result = send_reminder(10)
+
+    assert result is None
+    assert "secret-path-should-not-leak" not in caplog.text
+    for record in caplog.records:
+        assert record.exc_info is None
 
 
 def test_send_reminder_with_tasks():

@@ -18,6 +18,8 @@ of the unit tests above in isolation.
 """
 
 import os
+import subprocess
+import sys
 from unittest.mock import patch
 
 from bot import idle_reminder
@@ -80,3 +82,53 @@ def test_idle_reminder_webhook_survives_sanitize_env_only_via_explicit_capture(m
     mock_send.assert_called_once_with(
         10, instance_id="bot-x", memory_api_base=None, slack_webhook_url="https://hooks.slack.com/test"
     )
+
+
+def test_full_contract_capture_sanitize_digest_and_agent_env_clean(monkeypatch):
+    """The complete chain in one test, matching bot/run.py exactly:
+
+        SLACK_WEBHOOK_URL exists
+              -> bot/run.py captures it (os.environ.get, before sanitizing)
+              -> sanitize_env() removes it
+              -> _try_slack_digest(captured value) still works
+              -> the environment any subsequently-spawned agent process would
+                 inherit does NOT contain it
+
+    bot/agent.py's run_cycle() calls the Claude Agent SDK's query() with a
+    ClaudeAgentOptions that does not override `env=` — meaning the SDK's
+    subprocess inherits this process's os.environ by default OS semantics,
+    exactly like any subprocess.Popen()/subprocess.run() call with no `env`
+    kwarg. So the most concrete way to prove "the agent's environment is
+    clean" without spinning up the real SDK is to actually spawn a child
+    process at this point and inspect what it inherited — not just re-read
+    os.environ in the same process, which could pass even if inheritance
+    were somehow broken.
+    """
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+
+    # 1. SLACK_WEBHOOK_URL exists.
+    assert os.environ.get("SLACK_WEBHOOK_URL") == "https://hooks.slack.com/test"
+
+    # 2. bot/run.py captures it before sanitizing.
+    slack_webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+
+    # 3. sanitize_env() removes it.
+    sanitize_env()
+    assert os.environ.get("SLACK_WEBHOOK_URL") is None
+
+    # 4. The digest still works, using only the captured value.
+    with patch("bot.slack_digest.cmd_digest") as mock_cmd:
+        _try_slack_digest(slack_webhook_url)
+    mock_cmd.assert_called_once_with("https://hooks.slack.com/test")
+
+    # 5. Any process spawned from here on (like the agent SDK's subprocess)
+    # inherits this process's environment by default — prove that
+    # inheritance chain directly rather than trusting os.environ alone.
+    result = subprocess.run(
+        [sys.executable, "-c", "import os; print(repr(os.environ.get('SLACK_WEBHOOK_URL')))"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=True,
+    )
+    assert result.stdout.strip() == "None"

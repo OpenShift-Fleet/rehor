@@ -18,6 +18,23 @@ from .constants import _DEFAULT_COOLDOWN_SECONDS, MEMORY_API_BASE
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_webhook_error(e: Exception) -> str:
+    """Describe a webhook failure without leaking the URL.
+
+    httpx exceptions (HTTPStatusError, TimeoutException, etc.) embed the
+    request URL in str(e) — exc_info=True would serialize that into this
+    process's own logs. Mirrors the identically-named helper in
+    memory-server/bot_memory_server/tools/slack.py (REHOR-123); duplicated
+    rather than imported since bot/ and memory-server/ are separate
+    deployables with independent dependency trees.
+    """
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTP {e.response.status_code}"
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    return type(e).__name__
+
+
 def fetch_idle_state(
     instance_id: str,
     memory_api_base: str | None = None,
@@ -161,8 +178,10 @@ def send_reminder(
         sent_at = datetime.now(UTC)
         logger.info("Idle reminder sent after %d consecutive idle cycles", consecutive_cycles)
         return sent_at
-    except Exception:
-        logger.warning("Failed to send idle reminder to Slack", exc_info=True)
+    except Exception as e:
+        # No exc_info=True here — httpx.HTTPStatusError.__str__() embeds the
+        # webhook URL itself (REHOR-123).
+        logger.warning("Failed to send idle reminder to Slack: %s", _sanitize_webhook_error(e))
         return None
 
 
