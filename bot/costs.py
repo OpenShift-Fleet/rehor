@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from .constants import MEMORY_API_BASE
+from .metrics import record_cycle_metrics
 
 if TYPE_CHECKING:
     from .agent import CycleContext
@@ -76,16 +77,40 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
 
 
 def record_cost(
-    costs_file: Path, label: str, result, ctx: CycleContext | None = None, instance_id: str | None = None
+    costs_file: Path,
+    label: str,
+    result,
+    ctx: CycleContext | None = None,
+    instance_id: str | None = None,
+    workflow: str = "unknown",
 ) -> bool:
     """Record cost data from a ResultMessage.
 
-    Writes to costs.jsonl (local) and pushes to the dashboard API.
+    Writes to costs.jsonl (local), pushes to the dashboard API, and increments
+    agent Prometheus cost/token counters.
     Returns True if the cycle found no work (for sleep interval decision).
     """
     entry = _build_entry(label, result, ctx)
     if instance_id:
         entry["instance_id"] = instance_id
+
+    if entry["is_error"]:
+        status = "error"
+    elif entry["no_work"]:
+        status = "idle"
+    else:
+        status = "ok"
+    record_cycle_metrics(
+        model=entry["model"],
+        label=label,
+        workflow=workflow,
+        status=status,
+        cost_usd=entry["cost_usd"],
+        input_tokens=entry["input_tokens"],
+        output_tokens=entry["output_tokens"],
+        cache_read_tokens=entry["cache_read_tokens"],
+        cache_write_tokens=entry["cache_write_tokens"],
+    )
 
     # Write to local jsonl (backward compat with costs.sh)
     with open(costs_file, "a") as f:

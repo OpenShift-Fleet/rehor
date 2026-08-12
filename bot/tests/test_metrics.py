@@ -1,6 +1,8 @@
 """Smoke tests for bot.metrics — verify all metrics register without conflicts."""
 
 import contextlib
+from pathlib import Path
+from types import SimpleNamespace
 
 import prometheus_client
 import pytest
@@ -24,9 +26,15 @@ def _clean_registry():
         bot.metrics.TURN_BUDGET_EVENT_TOTAL,
         bot.metrics.TRANSCRIPT_UPLOAD_TOTAL,
         bot.metrics.MCP_SERVER_STATUS_TOTAL,
-        bot.metrics.WAKE_SIGNAL_TOTAL,
         bot.metrics.CYCLE_DURATION_SECONDS,
         bot.metrics.DISK_FREE_MB,
+        bot.metrics.CYCLE_COST_USD_TOTAL,
+        bot.metrics.CYCLE_INPUT_TOKENS_TOTAL,
+        bot.metrics.CYCLE_OUTPUT_TOKENS_TOTAL,
+        bot.metrics.CYCLE_CACHE_READ_TOKENS_TOTAL,
+        bot.metrics.CYCLE_CACHE_WRITE_TOKENS_TOTAL,
+        bot.metrics.CYCLES_TOTAL,
+        bot.metrics.IDLE_WITH_TOKENS_TOTAL,
     ]
     for c in collectors:
         with contextlib.suppress(Exception):
@@ -38,28 +46,32 @@ def _clean_registry():
 def test_all_metrics_importable():
     from bot.metrics import (
         CONFIG_SYNC_TOTAL,
+        CYCLE_COST_USD_TOTAL,
         CYCLE_DURATION_SECONDS,
         CYCLE_TIMEOUT_TOTAL,
+        CYCLES_TOTAL,
         DISK_FREE_MB,
+        IDLE_WITH_TOKENS_TOTAL,
         MCP_SERVER_STATUS_TOTAL,
         PREFLIGHT_CONSECUTIVE_ERRORS,
         PREFLIGHT_OUTCOME_TOTAL,
         TRANSCRIPT_UPLOAD_TOTAL,
         TURN_BUDGET_EVENT_TOTAL,
-        WAKE_SIGNAL_TOTAL,
         WORK_TYPE_TOTAL,
     )
 
     assert CONFIG_SYNC_TOTAL is not None
+    assert CYCLE_COST_USD_TOTAL is not None
     assert CYCLE_DURATION_SECONDS is not None
     assert CYCLE_TIMEOUT_TOTAL is not None
+    assert CYCLES_TOTAL is not None
     assert DISK_FREE_MB is not None
+    assert IDLE_WITH_TOKENS_TOTAL is not None
     assert MCP_SERVER_STATUS_TOTAL is not None
     assert PREFLIGHT_CONSECUTIVE_ERRORS is not None
     assert PREFLIGHT_OUTCOME_TOTAL is not None
     assert TRANSCRIPT_UPLOAD_TOTAL is not None
     assert TURN_BUDGET_EVENT_TOTAL is not None
-    assert WAKE_SIGNAL_TOTAL is not None
     assert WORK_TYPE_TOTAL is not None
 
 
@@ -92,3 +104,73 @@ def test_metric_names_have_devbot_prefix():
         if isinstance(obj, (prometheus_client.Counter, prometheus_client.Gauge, prometheus_client.Histogram)):
             desc = obj.describe()[0]
             assert desc.name.startswith("devbot_"), f"{attr} missing devbot_ prefix"
+
+
+def test_record_cycle_metrics_increments_counters():
+    from bot.metrics import (
+        CYCLE_COST_USD_TOTAL,
+        CYCLE_INPUT_TOKENS_TOTAL,
+        CYCLES_TOTAL,
+        IDLE_WITH_TOKENS_TOTAL,
+        record_cycle_metrics,
+    )
+
+    record_cycle_metrics(
+        model="claude-opus-4",
+        label="test-label",
+        workflow="jira-sprint",
+        status="ok",
+        cost_usd=1.5,
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=20,
+        cache_write_tokens=10,
+    )
+
+    labels = {"model": "claude-opus-4", "label": "test-label", "workflow": "jira-sprint"}
+    assert CYCLE_COST_USD_TOTAL.labels(**labels)._value.get() == 1.5
+    assert CYCLE_INPUT_TOKENS_TOTAL.labels(**labels)._value.get() == 100
+    assert CYCLES_TOTAL.labels(**labels, status="ok")._value.get() == 1
+    assert IDLE_WITH_TOKENS_TOTAL.labels(label="test-label", workflow="jira-sprint")._value.get() == 0
+
+
+def test_idle_with_tokens_increments():
+    from bot.metrics import IDLE_WITH_TOKENS_TOTAL, record_cycle_metrics
+
+    record_cycle_metrics(
+        model="claude-opus-4",
+        label="test-label",
+        workflow="jira-sprint",
+        status="idle",
+        cost_usd=0.1,
+        input_tokens=50,
+        output_tokens=10,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+    )
+
+    assert IDLE_WITH_TOKENS_TOTAL.labels(label="test-label", workflow="jira-sprint")._value.get() == 1
+
+
+def test_record_cost_emits_metrics(tmp_path, monkeypatch):
+    from bot import costs
+    from bot.metrics import CYCLE_COST_USD_TOTAL, CYCLES_TOTAL, IDLE_WITH_TOKENS_TOTAL
+
+    monkeypatch.setattr(costs.httpx, "post", lambda *a, **k: SimpleNamespace(is_success=True, text=""))
+
+    result = SimpleNamespace(
+        usage={"input_tokens": 40, "output_tokens": 5, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        result="NO_WORK_FOUND",
+        model_usage={"claude-opus-4": {}},
+        session_id="sess",
+        num_turns=1,
+        duration_ms=1000,
+        total_cost_usd=0.25,
+        subtype="success",
+    )
+    costs.record_cost(Path(tmp_path) / "costs.jsonl", "bot-a", result, workflow="onboarding")
+
+    labels = {"model": "claude-opus-4", "label": "bot-a", "workflow": "onboarding"}
+    assert CYCLE_COST_USD_TOTAL.labels(**labels)._value.get() == 0.25
+    assert CYCLES_TOTAL.labels(**labels, status="idle")._value.get() == 1
+    assert IDLE_WITH_TOKENS_TOTAL.labels(label="bot-a", workflow="onboarding")._value.get() == 1

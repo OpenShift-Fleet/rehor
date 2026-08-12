@@ -13,8 +13,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
@@ -45,7 +43,6 @@ from .metrics import (
     DISK_FREE_MB,
     PREFLIGHT_CONSECUTIVE_ERRORS,
     PREFLIGHT_OUTCOME_TOTAL,
-    WAKE_SIGNAL_TOTAL,
     WORK_TYPE_TOTAL,
 )
 from .preflight import run_preflight
@@ -214,20 +211,6 @@ def sync_config_repo(label: str) -> tuple[Path | None, Path | None]:
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
 LOW_DISK_THRESHOLD_MB = 512
-WAKE_POLL_INTERVAL = 5
-
-DASHBOARD_BASE_URL = os.environ.get("MEMORY_API_URL", MEMORY_API_BASE)
-
-
-def _check_wake_signal(instance_id: str) -> bool:
-    """Poll the memory server for a wake trigger. Returns True if wake requested."""
-    try:
-        url = f"{DASHBOARD_BASE_URL}/instances/{instance_id}/wake"
-        with urlopen(url, timeout=2) as resp:
-            data = json.loads(resp.read())
-            return data.get("wake", False)
-    except (URLError, OSError, json.JSONDecodeError, Exception):
-        return False
 
 
 def _try_slack_digest() -> None:
@@ -242,14 +225,11 @@ def _write_sleep_signal(seconds: int, reason: str) -> None:
     SLEEP_SIGNAL_FILE.write_text(json.dumps({"recommended_sleep": seconds, "reason": reason}))
 
 
-def _read_sleep_signal(config: Config, label: str, instance_id: str | None = None) -> int:
+def _read_sleep_signal(config: Config) -> int:
     """Read sleep duration from skill-written signal file.
 
     Skills write data/cycle-sleep.json with {"recommended_sleep": N, "reason": "..."}.
     No file = standard interval (work was done). File is always deleted after reading.
-
-    Instead of blocking for the full duration, sleeps in short intervals and polls
-    the memory server for a wake trigger so the dashboard can interrupt the sleep.
     """
     logger = logging.getLogger(__name__)
     sleep_seconds = config.interval
@@ -267,24 +247,8 @@ def _read_sleep_signal(config: Config, label: str, instance_id: str | None = Non
     else:
         logger.info("No sleep signal, using default %ds", config.interval)
 
-    sleep_seconds = max(sleep_seconds, WAKE_POLL_INTERVAL)
     logger.info("Sleeping for %ds...", sleep_seconds)
-
-    if instance_id:
-        elapsed = 0
-        while elapsed < sleep_seconds:
-            time.sleep(WAKE_POLL_INTERVAL)
-            elapsed += WAKE_POLL_INTERVAL
-            if _check_wake_signal(instance_id):
-                logger.info(
-                    "Wake signal received after %ds — starting next cycle early",
-                    elapsed,
-                )
-                WAKE_SIGNAL_TOTAL.labels(label).inc()
-                return elapsed
-    else:
-        time.sleep(sleep_seconds)
-
+    time.sleep(sleep_seconds)
     return sleep_seconds
 
 
@@ -527,7 +491,7 @@ def main() -> None:
                     )
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
                     _write_sleep_signal(error_sleep, "preflight_error")
-                    _read_sleep_signal(config, args.label, instance_id)
+                    _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
                     continue
 
@@ -549,7 +513,7 @@ def main() -> None:
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
                     )
                     _write_sleep_signal(config.idle_interval, "preflight_skip")
-                    _read_sleep_signal(config, args.label, instance_id)
+                    _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
                     continue
 
@@ -592,6 +556,7 @@ def main() -> None:
                     result=result,
                     ctx=ctx,
                     instance_id=instance_id,
+                    workflow=instance_config.workflow,
                 )
                 record_transcript(
                     label=args.label,
@@ -604,7 +569,7 @@ def main() -> None:
             else:
                 logger.warning("Cycle produced no result")
 
-            _read_sleep_signal(config, args.label, instance_id)
+            _read_sleep_signal(config)
 
             cleanup_between_cycles(SCRIPT_DIR)
     finally:
