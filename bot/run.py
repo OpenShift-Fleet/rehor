@@ -489,6 +489,10 @@ def main() -> None:
                         input_prompt=preflight_result.transcript,
                     )
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
+                    if instance_config.source == "scheduled":
+                        logger.info("Scheduled source — exiting after preflight error")
+                        cleanup_between_cycles(SCRIPT_DIR)
+                        break
                     _write_sleep_signal(error_sleep, "preflight_error")
                     _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
@@ -511,6 +515,10 @@ def main() -> None:
                         idle_cycle_limit=instance_config.idle_cycle_limit,
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
                     )
+                    if instance_config.source == "scheduled":
+                        logger.info("Scheduled source — exiting after preflight skip")
+                        cleanup_between_cycles(SCRIPT_DIR)
+                        break
                     _write_sleep_signal(config.idle_interval, "preflight_skip")
                     _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
@@ -567,6 +575,11 @@ def main() -> None:
                 )
             else:
                 logger.warning("Cycle produced no result")
+
+            if instance_config.source == "scheduled":
+                logger.info("Scheduled source — exiting after cycle")
+                cleanup_between_cycles(SCRIPT_DIR)
+                break
 
             _read_sleep_signal(config)
 
