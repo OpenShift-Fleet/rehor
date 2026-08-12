@@ -53,13 +53,9 @@ def _run_loop(instance_config, mock_deps, preflight_action="start"):
     mock_deps["load_instance_config"].return_value = instance_config
 
     if preflight_action == "start":
-        mock_deps["run_preflight"].return_value = PreflightResult(
-            action="start", prompt="test data", scripts=[]
-        )
+        mock_deps["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])
     elif preflight_action == "skip":
-        mock_deps["run_preflight"].return_value = PreflightResult(
-            action="skip", transcript="nothing to do", scripts=[]
-        )
+        mock_deps["run_preflight"].return_value = PreflightResult(action="skip", transcript="nothing to do", scripts=[])
     elif preflight_action == "error":
         mock_deps["run_preflight"].return_value = PreflightResult(
             action="error", transcript="something broke", scripts=[]
