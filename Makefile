@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
 
 LABEL ?= hcc-ai-framework
 CONTAINER_RT ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -115,6 +115,12 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 	@$(CONTAINER_RT) rm -f memory-server-verify memory-server-verify-pg
 	@echo ""
 	@echo "All container verification checks passed."
+
+container-e2e: ## Run REHOR-62 multi-container entrypoint/runtime E2E checks locally.
+	bash tests/container-e2e/test-container.sh --fixture $(or $(FIXTURE),minimal)
+
+container-e2e-browser: ## Run REHOR-62 browser-only fixture (disk-heavy).
+	bash tests/container-e2e/test-container.sh --fixture browser-only
 
 install: ## Install dependencies with uv
 	uv sync

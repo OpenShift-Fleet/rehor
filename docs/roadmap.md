@@ -37,7 +37,7 @@ Engineer experience items (§9–§12) pair naturally with platform foundations:
 
 | Item | Status |
 |------|--------|
-| CI Foundation | In Progress (REHOR-75, 76, 77, 78 shipped; REHOR-107 container build verification in review) |
+| CI Foundation | In Progress (REHOR-75, 76, 77, 78 shipped; REHOR-107 merged; REHOR-62 runtime container E2E harness bootstrap in progress) |
 | Logging & Observability | Planned |
 | Run Identity | Planned |
 | Shared Memory MCP | Planned |

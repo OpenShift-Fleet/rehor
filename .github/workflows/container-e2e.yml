@@ -1,0 +1,58 @@
+name: Container E2E
+
+# REHOR-62 bootstrap:
+# - e2e-minimal runs on PRs and master pushes for container-relevant changes.
+# - heavier manual fixtures run in a separate workflow to avoid "skipped" noise
+#   in pull request checks.
+on:
+  pull_request:
+    paths:
+      - "Dockerfile.runner"
+      - "Makefile"
+      - "entrypoint.sh"
+      - "bot/**"
+      - "proxy/**"
+      - "memory-server/**"
+      - "presets/**"
+      - "tests/container-e2e/**"
+      - ".github/workflows/container-e2e.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "Dockerfile.runner"
+      - "Makefile"
+      - "entrypoint.sh"
+      - "bot/**"
+      - "proxy/**"
+      - "memory-server/**"
+      - "presets/**"
+      - "tests/container-e2e/**"
+      - ".github/workflows/container-e2e.yml"
+permissions:
+  contents: read
+
+jobs:
+  e2e-minimal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run container e2e (minimal fixture)
+        run: |
+          set -euo pipefail
+          make --dry-run container-e2e
+          bash tests/container-e2e/test-container.sh \
+            --fixture minimal \
+            --artifacts-dir "${RUNNER_TEMP}/container-e2e-minimal-logs"
+
+      - name: Upload minimal fixture logs
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: container-e2e-minimal-logs
+          path: ${{ runner.temp }}/container-e2e-minimal-logs
+          if-no-files-found: warn
