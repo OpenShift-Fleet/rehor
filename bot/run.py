@@ -33,7 +33,6 @@ from .config import (
     validate_instance_config,
     validate_manifest,
 )
-from .constants import MEMORY_API_BASE
 from .costs import record_cost
 from .merge import apply_merged_config, install_skills
 from .metrics import (
