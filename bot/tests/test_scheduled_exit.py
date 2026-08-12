@@ -10,7 +10,6 @@ import pytest
 
 from bot.config import InstanceConfig
 from bot.preflight import PreflightResult
-from bot.run import main
 
 
 def _mock_config():
@@ -73,6 +72,13 @@ def main_patches():
         p.stop()
 
 
+def _run_main():
+    """Import and call main() inside the patched context."""
+    from bot.run import main
+
+    main()
+
+
 def _loop_call_count(main_patches):
     """Count how many times the loop body ran (sync_config_repo is called once
     before the loop and once per iteration, so loop iterations = total - 1)."""
@@ -85,7 +91,7 @@ class TestScheduledExit:
     def test_exits_after_preflight_start(self, main_patches):
         main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])
 
-        main()
+        _run_main()
 
         assert _loop_call_count(main_patches) == 1
 
@@ -94,7 +100,7 @@ class TestScheduledExit:
             action="skip", transcript="nothing to do", scripts=[]
         )
 
-        main()
+        _run_main()
 
         assert _loop_call_count(main_patches) == 1
 
@@ -104,7 +110,7 @@ class TestScheduledExit:
             action="error", transcript="something broke", scripts=[]
         )
 
-        main()
+        _run_main()
 
         assert _loop_call_count(main_patches) == 3
         assert mock_sleep.call_count == 2
@@ -123,7 +129,7 @@ class TestScheduledExit:
 
         main_patches["run_preflight"].side_effect = error_then_skip
 
-        main()
+        _run_main()
 
         assert _loop_call_count(main_patches) == 2
         mock_sleep.assert_called_once_with(30)
