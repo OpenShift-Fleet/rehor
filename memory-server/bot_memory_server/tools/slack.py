@@ -35,7 +35,7 @@ def register_slack_tools(mcp: FastMCP):
         external_key: str,
         event_type: str = "",
         message: str = "",
-        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
+        webhook_url: str | None = None,
         source_type: str = "jira",
         instance_id: str | None = None,
         notify_mode: str = "immediate",
@@ -62,6 +62,12 @@ def register_slack_tools(mcp: FastMCP):
         title: PR/issue title (optional, used for richer digest formatting).
 
         Returns {"sent": true/false, "reason": "..."} or {"queued": true} in digest mode."""
+        # REHOR-123: never make the webhook a *literal* parameter default —
+        # FastMCP serializes parameter defaults into the tool's JSON schema, which
+        # is sent to MCP clients (including the agent) via tools/list. Resolving
+        # the env fallback here (not in the signature) keeps the schema secret-free
+        # regardless of what's in this process's environment, in any deployment.
+        webhook_url = webhook_url or os.environ.get("SLACK_WEBHOOK_URL")
         pool = get_pool()
 
         if not webhook_url:
@@ -159,7 +165,7 @@ def register_slack_tools(mcp: FastMCP):
     @mcp.tool()
     async def slack_send_digest(
         instance_id: str | None = None,
-        webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
+        webhook_url: str | None = None,
         digest_key: str | None = None,
     ) -> dict:
         """Send a daily digest of queued Slack notifications.
@@ -177,6 +183,8 @@ def register_slack_tools(mcp: FastMCP):
             sent-today deduplication. If already in slack_notifications, skips.
 
         Returns {"sent": true/false, "count": N, "reason": "..."}."""
+        # REHOR-123: resolved here, not as a signature default — see slack_notify.
+        webhook_url = webhook_url or os.environ.get("SLACK_WEBHOOK_URL")
         if not webhook_url:
             return {"sent": False, "count": 0, "reason": "SLACK_WEBHOOK_URL not configured"}
 

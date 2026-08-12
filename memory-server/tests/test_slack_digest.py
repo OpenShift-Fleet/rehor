@@ -6,6 +6,7 @@ capture them by registering into a real FastMCP instance and pulling
 them out of its internal registry.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +18,7 @@ from bot_memory_server.tools.slack import (
     _sanitize_webhook_error,
     register_slack_tools,
 )
+from fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
 # Fixture: extract tool functions from FastMCP registration
@@ -105,6 +107,73 @@ class TestSanitizeWebhookError:
         assert result == "ValueError"
         assert "hooks.slack.com" not in result
         assert "secret-path" not in result
+
+
+# ---------------------------------------------------------------------------
+# MCP tool schema must never expose the webhook secret (REHOR-123)
+#
+# FastMCP builds each tool's JSON schema (sent to every MCP client, including
+# the agent, via tools/list) from the function signature — parameter defaults
+# are serialized into it. A `webhook_url: str | None = os.environ.get(...)`
+# default is evaluated once at module-import time and gets baked into that
+# schema as a literal value, regardless of who calls the tool. This uses a
+# real FastMCP instance (not the FakeMCP capture fixture) to verify the actual
+# generated schema, not just the function's runtime behavior.
+# ---------------------------------------------------------------------------
+
+
+class TestMcpSchemaNeverLeaksWebhook:
+    SECRET = "https://hooks.slack.com/test/should-never-appear-in-schema"
+
+    @pytest.mark.asyncio
+    async def test_slack_notify_schema_has_no_secret_default(self, monkeypatch):
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", self.SECRET)
+        mcp = FastMCP("test")
+        register_slack_tools(mcp)
+
+        tool = await mcp.get_tool("slack_notify")
+        schema = tool.parameters
+
+        assert self.SECRET not in json.dumps(schema)
+        assert schema["properties"]["webhook_url"].get("default") is None
+
+    @pytest.mark.asyncio
+    async def test_slack_send_digest_schema_has_no_secret_default(self, monkeypatch):
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", self.SECRET)
+        mcp = FastMCP("test")
+        register_slack_tools(mcp)
+
+        tool = await mcp.get_tool("slack_send_digest")
+        schema = tool.parameters
+
+        assert self.SECRET not in json.dumps(schema)
+        assert schema["properties"]["webhook_url"].get("default") is None
+
+    @pytest.mark.asyncio
+    async def test_env_fallback_still_resolves_at_runtime_when_omitted(self, monkeypatch):
+        """The env fallback moved from the signature into the function body
+        (so it's absent from the schema) — confirm it still works at call
+        time when the caller omits webhook_url."""
+        monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+        mcp = FastMCP("test")
+        register_slack_tools(mcp)
+        tool = await mcp.get_tool("slack_notify")
+
+        pool = _make_pool(fetchrow_return=None)
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
+            patch("bot_memory_server.tools.slack.bus", new_callable=AsyncMock),
+        ):
+            mock_client = AsyncMock()
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_client.post.return_value = mock_resp
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await tool.run({"external_key": "RHCLOUD-999"})
+
+        assert result.structured_content["sent"] is True
 
 
 # ---------------------------------------------------------------------------
