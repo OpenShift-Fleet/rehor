@@ -4,7 +4,6 @@ Calls the actual main() function with mocked dependencies to verify
 the real production loop exits after one iteration for scheduled sources.
 """
 
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -102,7 +101,8 @@ class TestScheduledExit:
 
         assert _loop_call_count(main_patches) == 1
 
-    def test_exits_after_preflight_error(self, main_patches):
+    @patch("bot.run.time.sleep")
+    def test_retries_then_exits_after_preflight_errors(self, mock_sleep, main_patches):
         main_patches["run_preflight"].return_value = PreflightResult(
             action="error", transcript="something broke", scripts=[]
         )
@@ -111,7 +111,29 @@ class TestScheduledExit:
 
         main()
 
-        assert _loop_call_count(main_patches) == 1
+        assert _loop_call_count(main_patches) == 3
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_called_with(30)
+
+    @patch("bot.run.time.sleep")
+    def test_recovers_from_transient_preflight_error(self, mock_sleep, main_patches):
+        call_count = 0
+
+        def error_then_skip(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return PreflightResult(action="error", transcript="transient", scripts=[])
+            return PreflightResult(action="skip", transcript="ok now", scripts=[])
+
+        main_patches["run_preflight"].side_effect = error_then_skip
+
+        from bot.run import main
+
+        main()
+
+        assert _loop_call_count(main_patches) == 2
+        mock_sleep.assert_called_once_with(30)
 
     def test_non_scheduled_loops(self, main_patches):
         main_patches["load_instance_config"].return_value = InstanceConfig(workflow="jira-sprint", source="jira")

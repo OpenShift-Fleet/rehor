@@ -490,9 +490,19 @@ def main() -> None:
                     )
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
                     if instance_config.source == "scheduled":
-                        logger.info("Scheduled source — exiting after preflight error")
+                        if consecutive_preflight_errors >= 3:
+                            logger.error(
+                                "Scheduled source — giving up after %d preflight errors", consecutive_preflight_errors
+                            )
+                            cleanup_between_cycles(SCRIPT_DIR)
+                            break
+                        retry_delay = 30
+                        logger.info(
+                            "Scheduled source — retrying in %ds (%d/3)", retry_delay, consecutive_preflight_errors
+                        )
+                        time.sleep(retry_delay)
                         cleanup_between_cycles(SCRIPT_DIR)
-                        break
+                        continue
                     _write_sleep_signal(error_sleep, "preflight_error")
                     _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
