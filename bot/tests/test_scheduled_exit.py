@@ -1,5 +1,10 @@
-"""Tests for source=scheduled single-cycle exit behavior."""
+"""Tests for source=scheduled single-cycle exit behavior.
 
+Calls the actual main() function with mocked dependencies to verify
+the real production loop exits after one iteration for scheduled sources.
+"""
+
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,105 +13,127 @@ from bot.config import InstanceConfig
 from bot.preflight import PreflightResult
 
 
-@pytest.fixture
-def scheduled_config():
-    return InstanceConfig(workflow="quality-monitor", source="scheduled")
+def _mock_config():
+    config = MagicMock()
+    config.interval = 300
+    config.idle_interval = 3600
+    config.cycle_timeout = 600
+    config.idle_reminder_cooldown_seconds = 0
+    return config
+
+
+async def _fake_run_cycle(**kwargs):
+    result = MagicMock()
+    ctx = MagicMock()
+    ctx.work_type = "scan"
+    return result, ctx
 
 
 @pytest.fixture
-def jira_config():
-    return InstanceConfig(workflow="jira-sprint", source="jira")
+def main_patches():
+    """Patch all main() dependencies so it can run in a test."""
+    instance_config = InstanceConfig(workflow="quality-monitor", source="scheduled")
 
-
-@pytest.fixture
-def mock_loop_deps():
-    """Mock all heavy dependencies used inside the main loop."""
-    patches = {
+    all_patches = {
+        "argv": patch("sys.argv", ["dev-bot", "--label", "test", "--instance-id", "test-instance"]),
+        "dotenv": patch("bot.run.load_dotenv"),
+        "setup_git": patch("bot.run.setup_git"),
+        "setup_logging": patch("bot.run.setup_logging"),
+        "load_config": patch("bot.run.load_config", return_value=_mock_config()),
+        "load_mcp_servers": patch("bot.run.load_mcp_servers", return_value={}),
         "sync_config_repo": patch("bot.run.sync_config_repo", return_value=(None, None)),
-        "load_instance_config": patch("bot.run.load_instance_config"),
+        "apply_merged_config": patch("bot.run.apply_merged_config"),
+        "load_instance_config": patch("bot.run.load_instance_config", return_value=instance_config),
         "install_skills": patch("bot.run.install_skills"),
         "resolve_workflow_dir": patch("bot.run.resolve_workflow_dir"),
         "resolve_active_envs": patch("bot.run.resolve_active_envs", return_value=[]),
+        "validate_manifest": patch("bot.run.validate_manifest"),
+        "validate_instance_config": patch("bot.run.validate_instance_config"),
+        "sanitize_env": patch("bot.run.sanitize_env"),
+        "file_lock": patch("bot.run.FileLock"),
+        "signal": patch("bot.run.signal.signal"),
+        "metrics_server": patch("bot.run.start_http_server"),
         "assemble_claude_md": patch("bot.run.assemble_claude_md"),
         "run_preflight": patch("bot.run.run_preflight"),
-        "run_cycle": patch("bot.run.run_cycle"),
+        "run_cycle": patch("bot.run.run_cycle", side_effect=_fake_run_cycle),
         "cleanup": patch("bot.run.cleanup_between_cycles"),
         "sleep_signal": patch("bot.run._read_sleep_signal"),
         "write_signal": patch("bot.run._write_sleep_signal"),
         "post_orphan": patch("bot.run.post_orphan_cycle"),
-        "idle_skip": patch("bot.run.idle_reminder.on_preflight_skip"),
-        "idle_start": patch("bot.run.idle_reminder.on_preflight_start"),
+        "idle_reminder": patch("bot.run.idle_reminder"),
         "slack_digest": patch("bot.run._try_slack_digest"),
         "record_cost": patch("bot.run.record_cost"),
         "record_transcript": patch("bot.run.record_transcript"),
     }
     mocks = {}
-    for name, p in patches.items():
+    for name, p in all_patches.items():
         mocks[name] = p.start()
     yield mocks
-    for p in patches.values():
+    for p in all_patches.values():
         p.stop()
 
 
-def _run_loop(instance_config, mock_deps, preflight_action="start"):
-    """Run the main while-loop extracted from bot.run.main, counting iterations."""
-    mock_deps["load_instance_config"].return_value = instance_config
-
-    if preflight_action == "start":
-        mock_deps["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])
-    elif preflight_action == "skip":
-        mock_deps["run_preflight"].return_value = PreflightResult(action="skip", transcript="nothing to do", scripts=[])
-    elif preflight_action == "error":
-        mock_deps["run_preflight"].return_value = PreflightResult(
-            action="error", transcript="something broke", scripts=[]
-        )
-
-    iterations = 0
-    max_iterations = 3
-    config = MagicMock()
-    config.interval = 300
-    config.idle_interval = 3600
-    config.cycle_timeout = 600
-
-    while True:
-        iterations += 1
-        if iterations > max_iterations:
-            break
-
-        mock_deps["sync_config_repo"].return_value = (None, None)
-
-        preflight_result = mock_deps["run_preflight"].return_value
-
-        if preflight_result is not None:
-            if preflight_result.action == "error":
-                if instance_config.source == "scheduled":
-                    break
-                continue
-
-            if preflight_result.action == "skip":
-                if instance_config.source == "scheduled":
-                    break
-                continue
-
-        if instance_config.source == "scheduled":
-            break
-
-    return iterations
+def _loop_call_count(main_patches):
+    """Count how many times the loop body ran (sync_config_repo is called once
+    before the loop and once per iteration, so loop iterations = total - 1)."""
+    return main_patches["sync_config_repo"].call_count - 1
 
 
 class TestScheduledExit:
-    def test_exits_after_cycle_when_scheduled(self, scheduled_config, mock_loop_deps):
-        iterations = _run_loop(scheduled_config, mock_loop_deps, "start")
-        assert iterations == 1
+    """Verify main() exits after a single loop iteration when source=scheduled."""
 
-    def test_exits_after_skip_when_scheduled(self, scheduled_config, mock_loop_deps):
-        iterations = _run_loop(scheduled_config, mock_loop_deps, "skip")
-        assert iterations == 1
+    def test_exits_after_preflight_start(self, main_patches):
+        main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])
 
-    def test_exits_after_error_when_scheduled(self, scheduled_config, mock_loop_deps):
-        iterations = _run_loop(scheduled_config, mock_loop_deps, "error")
-        assert iterations == 1
+        from bot.run import main
 
-    def test_loops_when_not_scheduled(self, jira_config, mock_loop_deps):
-        iterations = _run_loop(jira_config, mock_loop_deps, "skip")
-        assert iterations > 1
+        main()
+
+        assert _loop_call_count(main_patches) == 1
+
+    def test_exits_after_preflight_skip(self, main_patches):
+        main_patches["run_preflight"].return_value = PreflightResult(
+            action="skip", transcript="nothing to do", scripts=[]
+        )
+
+        from bot.run import main
+
+        main()
+
+        assert _loop_call_count(main_patches) == 1
+
+    def test_exits_after_preflight_error(self, main_patches):
+        main_patches["run_preflight"].return_value = PreflightResult(
+            action="error", transcript="something broke", scripts=[]
+        )
+
+        from bot.run import main
+
+        main()
+
+        assert _loop_call_count(main_patches) == 1
+
+    def test_non_scheduled_loops(self, main_patches):
+        main_patches["load_instance_config"].return_value = InstanceConfig(workflow="jira-sprint", source="jira")
+        main_patches["run_preflight"].return_value = PreflightResult(
+            action="skip", transcript="nothing to do", scripts=[]
+        )
+
+        call_count = 0
+
+        def counting_sync(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count > 3:
+                raise SystemExit(0)
+            return (None, None)
+
+        main_patches["sync_config_repo"].side_effect = counting_sync
+
+        from bot.run import main
+
+        with pytest.raises(SystemExit):
+            main()
+
+        loop_iterations = call_count - 1
+        assert loop_iterations >= 2
