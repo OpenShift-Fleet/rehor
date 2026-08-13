@@ -31,7 +31,7 @@ async def _fake_run_cycle(**kwargs):
 @pytest.fixture
 def main_patches():
     """Patch all main() dependencies so it can run in a test."""
-    instance_config = InstanceConfig(workflow="quality-monitor", source="scheduled")
+    instance_config = InstanceConfig(workflow="quality-monitor", source="keda_scheduled")
 
     all_patches = {
         "argv": patch("sys.argv", ["dev-bot", "--label", "test", "--instance-id", "test-instance"]),
@@ -86,7 +86,7 @@ def _loop_call_count(main_patches):
 
 
 class TestScheduledExit:
-    """Verify main() exits after a single loop iteration when source=scheduled."""
+    """Verify main() exits after a single loop iteration when source=keda_scheduled."""
 
     def test_exits_after_preflight_start(self, main_patches):
         main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="test data", scripts=[])

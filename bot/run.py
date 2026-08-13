@@ -489,7 +489,7 @@ def main() -> None:
                         input_prompt=preflight_result.transcript,
                     )
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
-                    if instance_config.source == "scheduled":
+                    if instance_config.source == "keda_scheduled":
                         if consecutive_preflight_errors >= 3:
                             logger.error(
                                 "Scheduled source — giving up after %d preflight errors", consecutive_preflight_errors
@@ -525,7 +525,7 @@ def main() -> None:
                         idle_cycle_limit=instance_config.idle_cycle_limit,
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
                     )
-                    if instance_config.source == "scheduled":
+                    if instance_config.source == "keda_scheduled":
                         logger.info("Scheduled source — exiting after preflight skip")
                         cleanup_between_cycles(SCRIPT_DIR)
                         break
@@ -586,7 +586,7 @@ def main() -> None:
             else:
                 logger.warning("Cycle produced no result")
 
-            if instance_config.source == "scheduled":
+            if instance_config.source == "keda_scheduled":
                 logger.info("Scheduled source — exiting after cycle")
                 cleanup_between_cycles(SCRIPT_DIR)
                 break

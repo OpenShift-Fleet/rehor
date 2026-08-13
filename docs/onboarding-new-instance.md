@@ -91,7 +91,7 @@ envs:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `workflow` | string | `jira-sprint` | Workflow preset name (built-in) or `./path` (custom). See below. |
-| `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
+| `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based (loops with sleep). `keda_scheduled` = KEDA-triggered (exits after one cycle). |
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
 
