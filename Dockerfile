@@ -152,6 +152,8 @@ COPY presets/ presets/
 # Run env preset install scripts (no-op until presets are extracted)
 RUN bash -c 'shopt -s nullglob; for script in presets/envs/*/install.sh; do bash "$script"; done'
 
+RUN rm -rf /root/.npm
+
 ENV HOME=/home/botuser
 USER botuser
 

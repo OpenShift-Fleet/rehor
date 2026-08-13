@@ -17,6 +17,7 @@ def task(
     return {
         "id": id,
         "external_key": key,
+        "jira_key": key,
         "source_type": "jira",
         "source_url": f"https://issues.redhat.com/browse/{key}",
         "artifacts": [
@@ -106,8 +107,12 @@ def cycle_entry(
     no_work: bool = False,
     external_key: str | None = None,
     repo: str | None = None,
+    instance_id: str | None = None,
 ) -> dict[str, Any]:
-    """Generate cycle entry (costs) payload."""
+    """Generate cycle entry (costs) payload.
+
+    Omit instance_id to simulate pre-migration rows (column exists, value is NULL).
+    """
     return {
         "id": id,
         "timestamp": f"2026-07-{day}T10:00:00Z",
@@ -128,6 +133,7 @@ def cycle_entry(
         "repo": repo,
         "work_type": "implementation" if not no_work else None,
         "summary": f"Completed work on {external_key}" if external_key else "Idle cycle",
+        "instance_id": instance_id,
     }
 
 
@@ -197,11 +203,109 @@ CYCLE_RUNS = [
 ]
 
 COSTS = [
-    cycle_entry(1, "impl-RHCLOUD-001", day="01", cost=0.12, external_key="RHCLOUD-001", repo="frontend"),
-    cycle_entry(2, "review-RHCLOUD-001", day="01", cost=0.08, external_key="RHCLOUD-001", repo="frontend"),
-    cycle_entry(3, "impl-RHCLOUD-002", day="02", cost=0.15, external_key="RHCLOUD-002", repo="ui-lib"),
-    cycle_entry(4, "idle", day="03", cost=0.01, no_work=True),
-    cycle_entry(5, "impl-RHCLOUD-004", day="04", cost=0.10, external_key="RHCLOUD-004", repo="frontend"),
+    # dev-bot entries
+    cycle_entry(
+        1, "impl-RHCLOUD-001", day="01", cost=0.12, external_key="RHCLOUD-001", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        2, "review-RHCLOUD-001", day="01", cost=0.08, external_key="RHCLOUD-001", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        6, "impl-RHCLOUD-005", day="02", cost=0.22, external_key="RHCLOUD-005", repo="backend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        8, "impl-RHCLOUD-006", day="03", cost=0.18, external_key="RHCLOUD-006", repo="worker", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        9, "review-RHCLOUD-006", day="03", cost=0.05, external_key="RHCLOUD-006", repo="worker", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        11, "impl-RHCLOUD-008", day="04", cost=0.31, external_key="RHCLOUD-008", repo="backend", instance_id="dev-bot"
+    ),
+    cycle_entry(4, "idle", day="05", cost=0.01, no_work=True, instance_id="dev-bot"),
+    cycle_entry(
+        14, "impl-RHCLOUD-010", day="06", cost=0.14, external_key="RHCLOUD-010", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(16, "error-cycle", day="07", cost=0.03, is_error=True, instance_id="dev-bot"),
+    cycle_entry(
+        18, "impl-RHCLOUD-012", day="08", cost=0.19, external_key="RHCLOUD-012", repo="backend", instance_id="dev-bot"
+    ),
+    # staging-bot entries
+    cycle_entry(
+        3, "impl-RHCLOUD-002", day="01", cost=0.15, external_key="RHCLOUD-002", repo="ui-lib", instance_id="staging-bot"
+    ),
+    cycle_entry(
+        5,
+        "impl-RHCLOUD-004",
+        day="02",
+        cost=0.10,
+        external_key="RHCLOUD-004",
+        repo="frontend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        7,
+        "review-RHCLOUD-005",
+        day="02",
+        cost=0.06,
+        external_key="RHCLOUD-005",
+        repo="backend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        10,
+        "impl-RHCLOUD-007",
+        day="04",
+        cost=0.25,
+        external_key="RHCLOUD-007",
+        repo="ui-lib",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        12,
+        "review-RHCLOUD-007",
+        day="04",
+        cost=0.04,
+        external_key="RHCLOUD-007",
+        repo="ui-lib",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        13,
+        "impl-RHCLOUD-009",
+        day="05",
+        cost=0.17,
+        external_key="RHCLOUD-009",
+        repo="frontend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(15, "idle-staging", day="06", cost=0.01, no_work=True, instance_id="staging-bot"),
+    cycle_entry(
+        17,
+        "impl-RHCLOUD-011",
+        day="07",
+        cost=0.28,
+        external_key="RHCLOUD-011",
+        repo="worker",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        19,
+        "review-RHCLOUD-011",
+        day="08",
+        cost=0.07,
+        external_key="RHCLOUD-011",
+        repo="worker",
+        instance_id="staging-bot",
+    ),
+    # Pre-migration rows: no instance_id passed (old data before the column was added)
+    cycle_entry(20, "legacy-impl-OLD-001", day="09", cost=0.09, external_key="OLD-001", repo="legacy-app"),
+    cycle_entry(21, "legacy-review-OLD-001", day="09", cost=0.04, external_key="OLD-001", repo="legacy-app"),
+    cycle_entry(22, "legacy-idle", day="10", cost=0.01, no_work=True),
+    cycle_entry(23, "legacy-impl-OLD-002", day="10", cost=0.13, external_key="OLD-002", repo="legacy-app"),
+    cycle_entry(24, "legacy-error", day="11", cost=0.02, is_error=True),
+    cycle_entry(25, "legacy-impl-OLD-003", day="12", cost=0.11, external_key="OLD-003", repo="old-service"),
+    cycle_entry(26, "legacy-review-OLD-003", day="12", cost=0.05, external_key="OLD-003", repo="old-service"),
 ]
 
 EMBEDDINGS = [
@@ -358,6 +462,35 @@ TASK_CYCLE_GROUPS = [
         "total_tokens": 45000,
         "first_cycle": "2026-07-02T10:00:00Z",
         "last_cycle": "2026-07-02T18:00:00Z",
+    },
+]
+
+DAILY_COSTS = [
+    {
+        "day": "2026-07-01",
+        "cycles": 2,
+        "total_cost": 0.20,
+        "input_tokens": 20000,
+        "output_tokens": 10000,
+        "cache_read": 4000,
+        "cache_write": 2000,
+        "total_duration": 600000,
+        "total_turns": 16,
+        "idle_cycles": 0,
+        "error_cycles": 0,
+    },
+    {
+        "day": "2026-07-02",
+        "cycles": 1,
+        "total_cost": 0.15,
+        "input_tokens": 10000,
+        "output_tokens": 5000,
+        "cache_read": 2000,
+        "cache_write": 1000,
+        "total_duration": 300000,
+        "total_turns": 8,
+        "idle_cycles": 0,
+        "error_cycles": 0,
     },
 ]
 

@@ -110,7 +110,7 @@ function InstanceScoped() {
           <Route path="cycles" element={<CycleRuns instanceId={instanceId} />} />
           <Route path="memories" element={<Memories />} />
           <Route path="search" element={<Search />} />
-          <Route path="costs" element={<Costs />} />
+          <Route path="costs" element={<Costs instanceId={instanceId} />} />
           <Route path="viz" element={<EmbeddingMap />} />
           <Route path="" element={<Navigate to="tasks" replace />} />
         </Routes>

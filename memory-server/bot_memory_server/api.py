@@ -532,6 +532,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    instance_id = body.get("instance_id")
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
@@ -540,6 +541,31 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             updated_at = NOW()
         WHERE id = 1 RETURNING *
         """,
+        state,
+        message,
+        external_key,
+        source_type,
+        repo,
+    )
+    await pool.execute(
+        """
+        INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo,
+                                   cycle_start, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6,
+            CASE WHEN $2 = 'working' THEN NOW() ELSE NULL END,
+            NOW())
+        ON CONFLICT (instance_id) DO UPDATE SET
+            state = $2, message = $3,
+            external_key = COALESCE($4, bot_instances.external_key),
+            source_type = COALESCE($5, bot_instances.source_type),
+            repo = COALESCE($6, bot_instances.repo),
+            cycle_start = CASE
+                WHEN bot_instances.state = 'idle' AND $2 = 'working' THEN NOW()
+                ELSE bot_instances.cycle_start
+            END,
+            updated_at = NOW()
+        """,
+        instance_id,
         state,
         message,
         external_key,
@@ -646,10 +672,16 @@ async def api_instance_idle_update(request: Request) -> JSONResponse:
 async def api_costs(request: Request) -> JSONResponse:
     """GET /api/costs — list cycle cost records. POST to add one."""
     if request.method == "POST":
-        return await api_costs_add(request)
+        return await _api_costs_add(request)
     pool = get_pool()
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     pidx = len(date_params) + 1
     rows = await pool.fetch(
@@ -700,7 +732,7 @@ async def api_costs(request: Request) -> JSONResponse:
     return JSONResponse({"items": items, "daily": daily})
 
 
-async def api_costs_add(request: Request) -> JSONResponse:
+async def _api_costs_add(request: Request) -> JSONResponse:
     """POST /api/costs — record a new cycle cost entry."""
     pool = get_pool()
     body = await request.json()
@@ -712,8 +744,8 @@ async def api_costs_add(request: Request) -> JSONResponse:
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                            external_key, source_type, repo, work_type, summary, instance_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *
         """,
         body.get("label", ""),
@@ -733,8 +765,10 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("repo"),
         body.get("work_type"),
         body.get("summary"),
+        body.get("instance_id"),
     )
     cycle = _cycle(row)
+
     await bus.publish(Event("cycle_recorded", cycle))
     return JSONResponse(cycle, status_code=201)
 
@@ -761,6 +795,12 @@ async def api_analytics(request: Request) -> JSONResponse:
     """GET /api/analytics — aggregated stats for the analytics dashboard."""
     pool = get_pool()
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     # Work type breakdown (derived from ticket titles + work_type)
     work_type_rows = await pool.fetch(
@@ -1344,6 +1384,7 @@ def _cycle(row) -> dict:
         "repo": row.get("repo"),
         "work_type": row.get("work_type"),
         "summary": row.get("summary"),
+        "instance_id": row.get("instance_id"),
     }
 
 

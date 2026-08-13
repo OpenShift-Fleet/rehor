@@ -39,10 +39,31 @@ var (
 		},
 		[]string{"method"},
 	)
+	PolicyDenyTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "executor_policy_deny_total",
+			Help: "Total commands denied by the executor policy, by tool.",
+		},
+		[]string{"tool"},
+	)
+	VertexModelRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "vertex_model_requests_total",
+			Help: "Total Vertex AI proxy requests by model and outcome status.",
+		},
+		[]string{"model", "status"},
+	)
 )
 
 func init() {
-	prometheus.MustRegister(HTTPRequestsTotal, HTTPRequestDuration, GRPCRequestsTotal, GRPCRequestDuration)
+	prometheus.MustRegister(
+		HTTPRequestsTotal,
+		HTTPRequestDuration,
+		GRPCRequestsTotal,
+		GRPCRequestDuration,
+		PolicyDenyTotal,
+		VertexModelRequestsTotal,
+	)
 }
 
 type responseWriter struct {
