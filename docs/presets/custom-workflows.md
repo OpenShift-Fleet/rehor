@@ -153,7 +153,7 @@ claude_md:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `workflow` | `jira-sprint` | Workflow name (built-in) or `./path` (custom) |
-| `source` | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based (loops with sleep). `keda_scheduled` = KEDA-triggered (exits after one cycle). |
+| `source` | `jira` | Work source: `jira` (continuous polling), `scheduled` (continuous with sleep), `keda_scheduled` (run once then exit). See [Source types](../onboarding-new-instance.md#source-types). |
 | `envs` | `null` (all) | Env presets to activate. `null` = all available, `[]` = none. |
 | `claude_md.strategy` | `ignore` | How instance CLAUDE.md combines with workflow CLAUDE.md |
 
