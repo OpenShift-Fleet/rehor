@@ -672,7 +672,7 @@ async def api_instance_idle_update(request: Request) -> JSONResponse:
 async def api_costs(request: Request) -> JSONResponse:
     """GET /api/costs — list cycle cost records. POST to add one."""
     if request.method == "POST":
-        return await api_costs_add(request)
+        return await _api_costs_add(request)
     pool = get_pool()
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
@@ -732,7 +732,7 @@ async def api_costs(request: Request) -> JSONResponse:
     return JSONResponse({"items": items, "daily": daily})
 
 
-async def api_costs_add(request: Request) -> JSONResponse:
+async def _api_costs_add(request: Request) -> JSONResponse:
     """POST /api/costs — record a new cycle cost entry."""
     pool = get_pool()
     body = await request.json()
@@ -768,6 +768,7 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("instance_id"),
     )
     cycle = _cycle(row)
+
     await bus.publish(Event("cycle_recorded", cycle))
     return JSONResponse(cycle, status_code=201)
 
