@@ -101,9 +101,9 @@ envs:
 |--------|--------------|----------|
 | `jira` | Runs continuously, sleeps between cycles, polls for new work | Your bot pulls tickets from a Jira board |
 | `scheduled` | Runs continuously, sleeps between cycles (same as `jira`) | Your bot runs on a timer but the pod stays alive between cycles |
-| `keda_scheduled` | Runs one cycle then exits | Your pod is scaled 0-to-1 by KEDA on a cron schedule. KEDA handles timing; the bot runs once and the pod scales back to zero. |
+| `run_to_completion` | Runs one cycle then exits | Your pod is scaled 0-to-1 by KEDA on a cron schedule. KEDA handles timing; the bot runs once and the pod scales back to zero. |
 
-Use `keda_scheduled` when KEDA (or a similar external scheduler) controls pod lifecycle. Use `scheduled` when the pod stays alive and the bot manages its own sleep interval between runs.
+Use `run_to_completion` when KEDA (or a similar external scheduler) controls pod lifecycle. Use `scheduled` when the pod stays alive and the bot manages its own sleep interval between runs.
 
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 
