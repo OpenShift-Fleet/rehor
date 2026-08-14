@@ -495,12 +495,11 @@ def main() -> None:
                                 "Scheduled source — giving up after %d preflight errors", consecutive_preflight_errors
                             )
                             cleanup_between_cycles(SCRIPT_DIR)
-                            break
-                        retry_delay = 30
+                            sys.exit(1)
                         logger.info(
-                            "Scheduled source — retrying in %ds (%d/3)", retry_delay, consecutive_preflight_errors
+                            "Scheduled source — retrying in %ds (%d/3)", error_sleep, consecutive_preflight_errors
                         )
-                        time.sleep(retry_delay)
+                        time.sleep(error_sleep)
                         cleanup_between_cycles(SCRIPT_DIR)
                         continue
                     _write_sleep_signal(error_sleep, "preflight_error")
