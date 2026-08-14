@@ -518,13 +518,6 @@ class PostPROperations:
             if self.dry_run:
                 logger.info(f"[DRY RUN] Would send Slack notification: {message}")
             else:
-                repo = None
-                try:
-                    info = self._parse_pr_url(pr_url)
-                    repo = f"{info['owner']}/{info['repo']}" if info.get("owner") else info.get("repo")
-                except Exception:
-                    pass
-
                 result = memory_call(
                     "slack_notify",
                     {
@@ -533,16 +526,12 @@ class PostPROperations:
                         "message": message,
                         "webhook_url": self.slack_webhook,
                         "notify_mode": os.environ.get("SLACK_NOTIFY_MODE", "immediate"),
-                        "pr_url": pr_url,
-                        "pr_number": pr_number,
-                        "repo": repo,
-                        "title": summary,
                     },
                 )
                 if result and result.get("sent"):
                     logger.info("Sent Slack notification via MCP")
-                elif result and result.get("queued"):
-                    logger.info("Slack notification queued for digest")
+                elif result and result.get("suppressed"):
+                    logger.info("Slack notification suppressed (daily digest mode)")
                 else:
                     reason = result.get("reason", "unknown") if result else "MCP call failed"
                     logger.warning(f"Slack notification not sent: {reason}")

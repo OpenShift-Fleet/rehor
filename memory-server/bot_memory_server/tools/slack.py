@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -11,7 +12,6 @@ from ..events import Event, bus
 logger = logging.getLogger(__name__)
 
 COOLDOWN_HOURS = 48
-PR_EVENT_TYPES = {"pr_created", "review_reminder"}
 
 
 def register_slack_tools(mcp: FastMCP):
@@ -24,15 +24,10 @@ def register_slack_tools(mcp: FastMCP):
         source_type: str = "jira",
         instance_id: str | None = None,
         notify_mode: str = "immediate",
-        pr_url: str | None = None,
-        pr_number: int | None = None,
-        repo: str | None = None,
-        title: str | None = None,
     ) -> dict:
         """Send a Slack notification. Deduplicates by external_key (48h cooldown per ticket, any event type).
 
-        In daily_digest mode, queues the notification instead of sending immediately.
-        Use slack_send_digest to send the digest.
+        In daily_digest mode, suppresses the notification (digest reads from tasks table directly).
 
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         source_type: Source system — 'jira', 'github', etc.
@@ -41,49 +36,19 @@ def register_slack_tools(mcp: FastMCP):
         webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var on the memory server.
         instance_id: Bot instance identifier (optional, used for digest grouping).
         notify_mode: 'immediate' (default) or 'daily_digest'. Passed by the caller from its env.
-        pr_url: PR URL (optional, used for richer digest formatting).
-        pr_number: PR number (optional, used for richer digest formatting).
-        repo: Repository name (optional, used for richer digest formatting).
-        title: PR/issue title (optional, used for richer digest formatting).
 
-        Returns {"sent": true/false, "reason": "..."} or {"queued": true} in digest mode."""
+        Returns {"sent": true/false, "reason": "..."} or {"suppressed": true} in digest mode."""
         pool = get_pool()
 
         if not webhook_url:
             return {"sent": False, "reason": "SLACK_WEBHOOK_URL not configured"}
 
         if notify_mode == "daily_digest":
-            existing = await pool.fetchrow(
-                """
-                SELECT id FROM slack_digest_queue
-                WHERE jira_key = $1 AND event_type = $2 AND sent = FALSE
-                """,
-                external_key,
-                event_type,
-            )
-            if existing:
-                return {
-                    "sent": False,
-                    "queued": False,
-                    "reason": f"Already queued: {event_type} for {external_key}",
-                }
-
-            await pool.execute(
-                """
-                INSERT INTO slack_digest_queue
-                    (instance_id, jira_key, event_type, pr_url, pr_number, repo, title, message)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                instance_id,
-                external_key,
-                event_type,
-                pr_url,
-                pr_number,
-                repo,
-                title,
-                message,
-            )
-            return {"sent": False, "queued": True, "reason": "Queued for daily digest"}
+            return {
+                "sent": False,
+                "suppressed": True,
+                "reason": "Suppressed — daily digest mode active",
+            }
 
         cutoff = datetime.now(UTC) - timedelta(hours=COOLDOWN_HOURS)
         recent = await pool.fetchrow(
@@ -147,16 +112,17 @@ def register_slack_tools(mcp: FastMCP):
         webhook_url: str | None = os.environ.get("SLACK_WEBHOOK_URL"),
         digest_key: str | None = None,
     ) -> dict:
-        """Send a daily digest of queued Slack notifications.
+        """Send a daily digest of open PRs from the tasks table.
 
-        Groups events by jira_key, formats a single summary message, and sends
-        to the webhook. Skips silently when the queue is empty.
+        Queries tasks with status pr_open or pr_changes and formats a
+        snapshot summary. This is NOT event-based — it always reflects the
+        current state of open PRs.
 
         Timing and weekend checks are handled by the caller (bot runner).
         This tool handles sent-today deduplication via digest_key in
         slack_notifications table.
 
-        instance_id: Filter queued items by bot instance (optional).
+        instance_id: Filter tasks by bot instance (optional).
         webhook_url: Slack webhook URL. Defaults to SLACK_WEBHOOK_URL env var.
         digest_key: Deterministic key (e.g. digest-instance-2026-07-28) for
             sent-today deduplication. If already in slack_notifications, skips.
@@ -178,23 +144,28 @@ def register_slack_tools(mcp: FastMCP):
         if instance_id:
             rows = await pool.fetch(
                 """
-                SELECT * FROM slack_digest_queue
-                WHERE sent = FALSE AND instance_id = $1
-                ORDER BY queued_at ASC
+                SELECT external_key, status, title, repo, artifacts, metadata, created_at
+                FROM tasks
+                WHERE status = ANY($1::task_status[])
+                AND instance_id = $2
+                ORDER BY created_at ASC
                 """,
+                ["pr_open", "pr_changes"],
                 instance_id,
             )
         else:
             rows = await pool.fetch(
                 """
-                SELECT * FROM slack_digest_queue
-                WHERE sent = FALSE
-                ORDER BY queued_at ASC
+                SELECT external_key, status, title, repo, artifacts, metadata, created_at
+                FROM tasks
+                WHERE status = ANY($1::task_status[])
+                ORDER BY created_at ASC
                 """,
+                ["pr_open", "pr_changes"],
             )
 
         if not rows:
-            return {"sent": False, "count": 0, "reason": "No items to digest"}
+            return {"sent": False, "count": 0, "reason": "No open PRs to report"}
 
         now = datetime.now(UTC)
         digest_message = _format_digest(instance_id, rows, now)
@@ -206,12 +177,6 @@ def register_slack_tools(mcp: FastMCP):
         except Exception as e:
             logger.error("Slack digest webhook failed: %s", e)
             return {"sent": False, "count": len(rows), "reason": f"Webhook error: {e}"}
-
-        row_ids = [r["id"] for r in rows]
-        await pool.execute(
-            "UPDATE slack_digest_queue SET sent = TRUE WHERE id = ANY($1::int[])",
-            row_ids,
-        )
 
         if digest_key:
             await pool.execute(
@@ -237,35 +202,62 @@ def register_slack_tools(mcp: FastMCP):
 
 def _format_digest(instance_id: str | None, rows: list, now: datetime) -> str:
     date_str = now.strftime("%Y-%m-%d")
-    instance_label = f"Instance: `{instance_id}`" if instance_id else "All instances"
-    lines = [f"*Daily Bot Digest* — {instance_label} | {date_str}", ""]
+    instance_label = f"Instance: {instance_id}" if instance_id else "All instances"
+    lines = [f"Daily Bot Digest — {instance_label} | {date_str}", ""]
 
-    pr_items = [r for r in rows if r["event_type"] in PR_EVENT_TYPES]
-    other_items = [r for r in rows if r["event_type"] not in PR_EVENT_TYPES]
-
-    if pr_items:
-        lines.append(f"*PR events ({len(pr_items)}):*")
-        for r in pr_items:
-            pr_label = _format_pr_label(r)
-            title_part = f" — {r['title']}" if r["title"] else ""
-            lines.append(f"• {pr_label}{title_part}")
-            lines.append(f"  {r['jira_key']} | {r['event_type']}")
-        lines.append("")
-
-    if other_items:
-        lines.append(f"*Other events ({len(other_items)}):*")
-        for r in other_items:
-            lines.append(f"• {r['jira_key']}: {r['event_type']} — {r['message']}")
-        lines.append("")
+    lines.append(f"Open PRs ({len(rows)}):")
+    for r in rows:
+        pr_label = _format_pr_label(r)
+        title_part = f" — {r['title']}" if r.get("title") else ""
+        age_days = (now - r["created_at"]).days
+        status_label = _status_label(r["status"])
+        lines.append(f"• {pr_label}{title_part} - {r['external_key']} · {status_label} {age_days}d")
+    lines.append("")
 
     return "\n".join(lines)
 
 
+_STATUS_LABELS = {
+    "pr_open": "open for",
+    "pr_changes": "changes requested ·",
+}
+
+
+def _status_label(status: str) -> str:
+    return _STATUS_LABELS.get(status, status)
+
+
+def _parse_artifacts(raw) -> list:
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
 def _format_pr_label(row) -> str:
-    if row["pr_url"] and row["pr_number"] and row["repo"]:
-        return f"<{row['pr_url']}|{row['repo']}#{row['pr_number']}>"
-    if row["pr_url"] and row["pr_number"]:
-        return f"<{row['pr_url']}|#{row['pr_number']}>"
-    if row["pr_url"]:
-        return f"<{row['pr_url']}|PR>"
-    return "PR"
+    artifacts = _parse_artifacts(row.get("artifacts"))
+    for art in artifacts:
+        art_type = art.get("type", "")
+        if art_type in ("pull_request", "merge_request") and art.get("url"):
+            name = art.get("name", "PR")
+            return f"{name} ({art['url']})"
+
+    metadata = row.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+    if isinstance(metadata, dict):
+        prs = metadata.get("prs", [])
+        if prs and isinstance(prs, list) and prs[0].get("url"):
+            pr = prs[0]
+            repo = row.get("repo", "")
+            number = pr.get("number", "?")
+            return f"{repo}#{number} ({pr['url']})"
+
+    return "PR (no link)"

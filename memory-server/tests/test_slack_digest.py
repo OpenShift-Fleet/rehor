@@ -10,7 +10,11 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from bot_memory_server.tools.slack import _format_digest, _format_pr_label, register_slack_tools
+from bot_memory_server.tools.slack import (
+    _format_digest,
+    _format_pr_label,
+    register_slack_tools,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture: extract tool functions from FastMCP registration
@@ -47,19 +51,21 @@ def _make_pool(fetchrow_return=None, fetch_return=None):
     return pool
 
 
-def _make_row(**kwargs):
+def _make_task_row(**kwargs):
     defaults = {
-        "id": 1,
-        "instance_id": "test-instance",
-        "jira_key": "RHCLOUD-100",
-        "event_type": "pr_created",
-        "pr_url": "https://github.com/org/repo/pull/42",
-        "pr_number": 42,
-        "repo": "org/repo",
+        "external_key": "RHCLOUD-100",
+        "status": "pr_open",
         "title": "Fix navigation dropdown",
-        "message": "New PR created: #42",
-        "queued_at": datetime.now(UTC),
-        "sent": False,
+        "repo": "org/repo",
+        "artifacts": [
+            {
+                "name": "PR #42",
+                "url": "https://github.com/org/repo/pull/42",
+                "type": "pull_request",
+            }
+        ],
+        "metadata": {},
+        "created_at": datetime.now(UTC) - timedelta(days=3),
     }
     defaults.update(kwargs)
     return defaults
@@ -163,15 +169,15 @@ class TestSlackNotifyImmediate:
 
 
 # ---------------------------------------------------------------------------
-# slack_notify — digest mode
+# slack_notify — digest mode (suppressed)
 # ---------------------------------------------------------------------------
 
 
 class TestSlackNotifyDigest:
     @pytest.mark.asyncio
-    async def test_digest_mode_queues_instead_of_sending(self, slack_tools):
+    async def test_digest_mode_suppresses_notification(self, slack_tools):
         slack_notify = slack_tools["slack_notify"]
-        pool = _make_pool(fetchrow_return=None)
+        pool = _make_pool()
 
         with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
             result = await slack_notify(
@@ -180,90 +186,42 @@ class TestSlackNotifyDigest:
                 message="New PR: #99",
                 webhook_url="https://hooks.slack.com/test",
                 notify_mode="daily_digest",
-                instance_id="framework-1",
-                pr_url="https://github.com/org/repo/pull/99",
-                pr_number=99,
-                repo="org/repo",
-                title="Fix bug",
             )
 
         assert result["sent"] is False
-        assert result["queued"] is True
-        assert "daily digest" in result["reason"]
-
-        pool.execute.assert_called_once()
-        call_args = pool.execute.call_args
-        assert "slack_digest_queue" in call_args[0][0]
-        assert call_args[0][1] == "framework-1"
-        assert call_args[0][2] == "RHCLOUD-200"
-        assert call_args[0][3] == "pr_created"
-
-    @pytest.mark.asyncio
-    async def test_digest_different_event_types_both_queued(self, slack_tools):
-        """Different event types for the same key are both queued."""
-        slack_notify = slack_tools["slack_notify"]
-        pool = _make_pool(fetchrow_return=None)
-
-        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
-            r1 = await slack_notify(
-                external_key="RHCLOUD-300",
-                event_type="pr_created",
-                message="First",
-                webhook_url="https://hooks.slack.com/test",
-                notify_mode="daily_digest",
-            )
-            r2 = await slack_notify(
-                external_key="RHCLOUD-300",
-                event_type="review_reminder",
-                message="Second",
-                webhook_url="https://hooks.slack.com/test",
-                notify_mode="daily_digest",
-            )
-
-        assert r1["queued"] is True
-        assert r2["queued"] is True
-        assert pool.execute.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_digest_duplicate_event_rejected(self, slack_tools):
-        """Same (jira_key, event_type) already in queue is rejected."""
-        slack_notify = slack_tools["slack_notify"]
-        pool = _make_pool(fetchrow_return={"id": 99})
-
-        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
-            result = await slack_notify(
-                external_key="RHCLOUD-300",
-                event_type="pr_created",
-                message="Duplicate",
-                webhook_url="https://hooks.slack.com/test",
-                notify_mode="daily_digest",
-            )
-
-        assert result["queued"] is False
-        assert "Already queued" in result["reason"]
+        assert result["suppressed"] is True
         pool.execute.assert_not_called()
+        pool.fetchrow.assert_not_called()
+        pool.fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# slack_send_digest
+# slack_send_digest — task-based
 # ---------------------------------------------------------------------------
 
 
 class TestSlackSendDigest:
     @pytest.mark.asyncio
-    async def test_send_digest_success(self, slack_tools):
+    async def test_send_digest_with_open_prs(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         rows = [
-            _make_row(id=1, jira_key="RHCLOUD-100", event_type="pr_created"),
-            _make_row(
-                id=2,
-                jira_key="RHCLOUD-101",
-                event_type="needs_help",
-                pr_url=None,
-                pr_number=None,
-                repo=None,
-                title=None,
-                message="Blocked on missing API endpoint",
+            _make_task_row(
+                external_key="RHCLOUD-100",
+                status="pr_open",
+                title="Fix navigation dropdown",
+            ),
+            _make_task_row(
+                external_key="RHCLOUD-101",
+                status="pr_changes",
+                title="Add drag handle",
+                artifacts=[
+                    {
+                        "name": "PR #15",
+                        "url": "https://github.com/org/repo/pull/15",
+                        "type": "pull_request",
+                    }
+                ],
+                created_at=datetime.now(UTC) - timedelta(days=7),
             ),
         ]
         pool = _make_pool(fetch_return=rows)
@@ -292,9 +250,10 @@ class TestSlackSendDigest:
         assert "Daily Bot Digest" in payload["msg"]
         assert "RHCLOUD-100" in payload["msg"]
         assert "RHCLOUD-101" in payload["msg"]
+        assert "Open PRs (2)" in payload["msg"]
 
     @pytest.mark.asyncio
-    async def test_send_digest_empty_queue_skips(self, slack_tools):
+    async def test_send_digest_no_open_prs(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         pool = _make_pool(fetch_return=[])
 
@@ -305,7 +264,7 @@ class TestSlackSendDigest:
 
         assert result["sent"] is False
         assert result["count"] == 0
-        assert "No items" in result["reason"]
+        assert "No open PRs" in result["reason"]
 
     @pytest.mark.asyncio
     async def test_send_digest_no_webhook(self, slack_tools):
@@ -327,8 +286,8 @@ class TestSlackSendDigest:
             )
 
         fetch_call = pool.fetch.call_args
-        assert "instance_id = $1" in fetch_call[0][0]
-        assert fetch_call[0][1] == "framework-1"
+        assert "instance_id = $2" in fetch_call[0][0]
+        assert fetch_call[0][2] == "framework-1"
 
     @pytest.mark.asyncio
     async def test_send_digest_no_instance_fetches_all(self, slack_tools):
@@ -345,20 +304,7 @@ class TestSlackSendDigest:
         assert "instance_id" not in fetch_call[0][0]
 
     @pytest.mark.asyncio
-    async def test_send_digest_idempotent(self, slack_tools):
-        """Second call after all items sent returns empty."""
-        slack_send_digest = slack_tools["slack_send_digest"]
-        pool = _make_pool(fetch_return=[])
-
-        with patch("bot_memory_server.tools.slack.get_pool", return_value=pool):
-            result = await slack_send_digest(webhook_url="https://hooks.slack.com/test")
-
-        assert result["sent"] is False
-        assert result["count"] == 0
-
-    @pytest.mark.asyncio
-    async def test_send_digest_already_sent_today_skips(self, slack_tools):
-        """Digest with same digest_key already sent is skipped."""
+    async def test_send_digest_already_sent_today(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
         pool = _make_pool(fetchrow_return={"id": 1})
 
@@ -372,9 +318,9 @@ class TestSlackSendDigest:
         assert "already sent" in result["reason"]
 
     @pytest.mark.asyncio
-    async def test_send_digest_webhook_error_does_not_mark_sent(self, slack_tools):
+    async def test_send_digest_webhook_error(self, slack_tools):
         slack_send_digest = slack_tools["slack_send_digest"]
-        rows = [_make_row(id=1)]
+        rows = [_make_task_row()]
         pool = _make_pool(fetch_return=rows)
 
         with (
@@ -391,8 +337,35 @@ class TestSlackSendDigest:
 
         assert result["sent"] is False
         assert "Webhook error" in result["reason"]
-        for call in pool.execute.call_args_list:
-            assert "UPDATE" not in call[0][0]
+        pool.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_digest_records_digest_key(self, slack_tools):
+        slack_send_digest = slack_tools["slack_send_digest"]
+        rows = [_make_task_row()]
+        pool = _make_pool(fetchrow_return=None, fetch_return=rows)
+
+        with (
+            patch("bot_memory_server.tools.slack.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.slack.httpx.AsyncClient") as mock_client_class,
+            patch("bot_memory_server.tools.slack.bus", new_callable=AsyncMock),
+        ):
+            mock_client = AsyncMock()
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_client.post.return_value = mock_resp
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await slack_send_digest(
+                webhook_url="https://hooks.slack.com/test",
+                digest_key="digest-framework-1-2026-08-13",
+            )
+
+        assert result["sent"] is True
+        pool.execute.assert_called_once()
+        insert_call = pool.execute.call_args
+        assert "slack_notifications" in insert_call[0][0]
+        assert insert_call[0][1] == "digest-framework-1-2026-08-13"
 
 
 # ---------------------------------------------------------------------------
@@ -401,78 +374,136 @@ class TestSlackSendDigest:
 
 
 class TestFormatDigest:
-    def test_format_digest_with_pr_and_other_events(self):
+    def test_format_with_artifacts(self):
         rows = [
-            _make_row(
-                id=1,
-                jira_key="RHCLOUD-100",
-                event_type="pr_created",
-                pr_url="https://github.com/org/repo/pull/42",
-                pr_number=42,
-                repo="org/repo",
+            _make_task_row(
+                external_key="RHCLOUD-100",
+                status="pr_open",
                 title="Fix nav dropdown",
-            ),
-            _make_row(
-                id=2,
-                jira_key="RHCLOUD-101",
-                event_type="needs_help",
-                pr_url=None,
-                pr_number=None,
-                repo=None,
-                title=None,
-                message="Blocked on missing API",
+                artifacts=[
+                    {
+                        "name": "PR #42",
+                        "url": "https://github.com/org/repo/pull/42",
+                        "type": "pull_request",
+                    }
+                ],
+                created_at=datetime(2026, 8, 10, 9, 0, tzinfo=UTC),
             ),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+        now = datetime(2026, 8, 13, 9, 0, tzinfo=UTC)
 
         result = _format_digest("framework-1", rows, now)
 
-        assert "*Daily Bot Digest*" in result
+        assert "Daily Bot Digest" in result
         assert "framework-1" in result
-        assert "2026-07-15" in result
-        assert "*PR events (1):*" in result
-        assert "*Other events (1):*" in result
-        assert "RHCLOUD-100" in result
-        assert "RHCLOUD-101" in result
-        assert "Blocked on missing API" in result
+        assert "2026-08-13" in result
+        assert "Open PRs (1):" in result
+        assert "PR #42 (https://github.com/org/repo/pull/42) — Fix nav dropdown - RHCLOUD-100 · open for 3d" in result
 
-    def test_format_digest_only_pr_events(self):
+    def test_format_with_metadata_prs_fallback(self):
         rows = [
-            _make_row(id=1, event_type="pr_created"),
-            _make_row(id=2, event_type="review_reminder", jira_key="RHCLOUD-101", title="Add tests"),
+            _make_task_row(
+                external_key="RHCLOUD-200",
+                status="pr_changes",
+                title="Add drag handle",
+                repo="org/frontend",
+                artifacts=[],
+                metadata={"prs": [{"url": "https://github.com/org/frontend/pull/15", "number": 15}]},
+                created_at=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+            ),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+        now = datetime(2026, 8, 13, 9, 0, tzinfo=UTC)
+
+        result = _format_digest("framework-1", rows, now)
+
+        assert "org/frontend#15 (https://github.com/org/frontend/pull/15)" in result
+        assert "7d" in result
+
+    def test_format_no_pr_info(self):
+        rows = [
+            _make_task_row(
+                external_key="RHCLOUD-300",
+                status="pr_open",
+                title="Something",
+                artifacts=[],
+                metadata={},
+                created_at=datetime(2026, 8, 13, 9, 0, tzinfo=UTC),
+            ),
+        ]
+        now = datetime(2026, 8, 13, 9, 0, tzinfo=UTC)
 
         result = _format_digest(None, rows, now)
 
-        assert "*PR events (2):*" in result
-        assert "*Other events" not in result
+        assert "PR (no link)" in result
         assert "All instances" in result
 
-    def test_format_digest_only_other_events(self):
+    def test_format_pr_age(self):
         rows = [
-            _make_row(id=1, event_type="needs_help", message="Help needed"),
-            _make_row(id=2, event_type="release_pending", jira_key="RHCLOUD-102", message="PR merged"),
+            _make_task_row(
+                created_at=datetime(2026, 8, 3, 9, 0, tzinfo=UTC),
+            ),
         ]
-        now = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
+        now = datetime(2026, 8, 13, 9, 0, tzinfo=UTC)
 
         result = _format_digest("bot-1", rows, now)
 
-        assert "*Other events (2):*" in result
-        assert "*PR events" not in result
+        assert "10d" in result
 
-    def test_format_pr_label_full_info(self):
-        row = _make_row(pr_url="https://github.com/org/repo/pull/42", pr_number=42, repo="org/repo")
-        assert _format_pr_label(row) == "<https://github.com/org/repo/pull/42|org/repo#42>"
 
-    def test_format_pr_label_no_repo(self):
-        row = _make_row(pr_url="https://github.com/org/repo/pull/42", pr_number=42, repo=None)
-        assert _format_pr_label(row) == "<https://github.com/org/repo/pull/42|#42>"
+# ---------------------------------------------------------------------------
+# _format_pr_label
+# ---------------------------------------------------------------------------
 
-    def test_format_pr_label_only_url(self):
-        row = _make_row(pr_url="https://github.com/org/repo/pull/42", pr_number=None, repo=None)
-        assert _format_pr_label(row) == "<https://github.com/org/repo/pull/42|PR>"
 
-    def test_format_pr_label_no_info(self):
-        row = _make_row(pr_url=None, pr_number=None, repo=None)
-        assert _format_pr_label(row) == "PR"
+class TestFormatPrLabel:
+    def test_from_artifacts(self):
+        row = _make_task_row(
+            artifacts=[
+                {
+                    "name": "PR #42",
+                    "url": "https://github.com/org/repo/pull/42",
+                    "type": "pull_request",
+                }
+            ],
+        )
+        assert _format_pr_label(row) == "PR #42 (https://github.com/org/repo/pull/42)"
+
+    def test_from_artifacts_merge_request(self):
+        row = _make_task_row(
+            artifacts=[
+                {
+                    "name": "MR #10",
+                    "url": "https://gitlab.com/org/repo/-/merge_requests/10",
+                    "type": "merge_request",
+                }
+            ],
+        )
+        assert _format_pr_label(row) == "MR #10 (https://gitlab.com/org/repo/-/merge_requests/10)"
+
+    def test_from_metadata_prs(self):
+        row = _make_task_row(
+            artifacts=[],
+            repo="org/repo",
+            metadata={"prs": [{"url": "https://github.com/org/repo/pull/42", "number": 42}]},
+        )
+        assert _format_pr_label(row) == "org/repo#42 (https://github.com/org/repo/pull/42)"
+
+    def test_no_info(self):
+        row = _make_task_row(artifacts=[], metadata={})
+        assert _format_pr_label(row) == "PR (no link)"
+
+    def test_artifacts_as_json_string(self):
+        import json
+
+        row = _make_task_row(
+            artifacts=json.dumps(
+                [
+                    {
+                        "name": "PR #42",
+                        "url": "https://github.com/org/repo/pull/42",
+                        "type": "pull_request",
+                    }
+                ]
+            ),
+        )
+        assert _format_pr_label(row) == "PR #42 (https://github.com/org/repo/pull/42)"
