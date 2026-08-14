@@ -507,7 +507,7 @@ After deploying, verify in order:
 | `BOT_SPRINT_PREFIX` | no | Sprint name prefix filter (for sprint assignment only) |
 | `BOT_INCLUDE_BACKLOG` | no | `'true'` to include backlog tickets |
 | `SLACK_WEBHOOK_URL` | no | Slack webhook — Incoming (`/services/`, recommended) or Workflow Builder (`/triggers/`) |
-| `SLACK_NOTIFY_MODE` | no | `immediate` (default) or `daily_digest`. In digest mode, notifications queue instead of sending immediately. Requires `SLACK_DIGEST_HOUR` to be set. |
+| `SLACK_NOTIFY_MODE` | no | `immediate` (default) or `daily_digest`. In digest mode, individual notifications are suppressed and a daily snapshot of open PRs is sent instead. Requires `SLACK_DIGEST_HOUR` to be set. |
 | `SLACK_DIGEST_HOUR` | no | UTC hour (0-23) when daily digest is sent. Opt-in — digest is disabled unless this is set. |
 | `PROXY_IMAGE` | no | Proxy container image (only needed if `PROXY_REPLICAS=1`) |
 | `PROXY_IMAGE_TAG` | no | Proxy image tag (default: `latest`) |
