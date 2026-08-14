@@ -180,6 +180,7 @@ log "Starting bot container with real entrypoint"
   -e BOT_MEMORY_HEALTH_URL=http://"$MEMORY_CONTAINER":8080/health \
   -e BOT_MEMORY_HEALTH_TIMEOUT=90 \
   -e BOT_LABEL=rehor62-e2e \
+  -e BOT_INSTANCE_ID=rehor62-e2e \
   -e GH_USER_NAME="Dev Bot" \
   -e GH_USER_EMAIL="dev-bot@example.com" \
   -e GL_USER_NAME="Dev Bot" \

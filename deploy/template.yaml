@@ -315,14 +315,18 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: glitchtip-token
+          # HTTP /metrics avoids Squid logging TCP kubelet probes as
+          # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 5
             periodSeconds: 15
           readinessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10
           resources:

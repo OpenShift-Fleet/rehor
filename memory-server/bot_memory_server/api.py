@@ -848,6 +848,8 @@ async def api_analytics(request: Request) -> JSONResponse:
     )
 
     # Ticket lifecycle — cycles per ticket, impl vs review, cost, time to resolve
+    # Qualify column refs for the JOIN (both cycles and tasks have instance_id/timestamp)
+    c_date_filter = date_filter.replace("instance_id", "c.instance_id").replace("timestamp", "c.timestamp")
     ticket_rows = await pool.fetch(
         f"""
         SELECT
@@ -862,7 +864,7 @@ async def api_analytics(request: Request) -> JSONResponse:
             ROUND(EXTRACT(EPOCH FROM (MAX(c.timestamp) - MIN(c.timestamp)))/3600.0, 1) AS hours_span
         FROM cycles c
         LEFT JOIN tasks t ON t.external_key = c.external_key
-        WHERE {date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
+        WHERE {c_date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
         GROUP BY c.external_key, t.title, t.status, t.repo
         ORDER BY total_cycles DESC
         LIMIT 30
