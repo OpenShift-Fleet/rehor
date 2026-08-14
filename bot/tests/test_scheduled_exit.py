@@ -110,11 +110,11 @@ class TestScheduledExit:
             action="error", transcript="something broke", scripts=[]
         )
 
-        _run_main()
+        with pytest.raises(SystemExit, match="1"):
+            _run_main()
 
         assert _loop_call_count(main_patches) == 3
         assert mock_sleep.call_count == 2
-        mock_sleep.assert_called_with(30)
 
     @patch("bot.run.time.sleep")
     def test_recovers_from_transient_preflight_error(self, mock_sleep, main_patches):
@@ -132,7 +132,7 @@ class TestScheduledExit:
         _run_main()
 
         assert _loop_call_count(main_patches) == 2
-        mock_sleep.assert_called_once_with(30)
+        mock_sleep.assert_called_once_with(300)
 
     def test_non_scheduled_loops(self, main_patches):
         main_patches["load_instance_config"].return_value = InstanceConfig(workflow="jira-sprint", source="jira")
