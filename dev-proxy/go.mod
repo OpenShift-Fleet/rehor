@@ -5,7 +5,7 @@ go 1.25.8
 require github.com/caddyserver/caddy/v2 v2.11.3
 
 require (
-	github.com/RedHatInsights/frontend-development-proxy/rh_identity_transform v0.0.0-20260731140449-805327367fe4
+	github.com/RedHatInsights/frontend-development-proxy/rh_identity_transform v0.0.0-20260812145503-44d40fbce00e
 	github.com/caddyserver/cache-handler v0.16.0
 	github.com/caddyserver/transform-encoder v0.0.0-20260423033309-ba4124974830
 )
