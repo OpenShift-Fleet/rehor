@@ -6,7 +6,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 	_ "github.com/caddyserver/cache-handler"
 	_ "github.com/caddyserver/transform-encoder"
-	_ "rh_identity_transform"
+	_ "github.com/RedHatInsights/frontend-development-proxy/rh_identity_transform"
 )
 
 func main() {

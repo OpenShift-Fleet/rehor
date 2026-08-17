@@ -7,14 +7,14 @@ patterns used by api.py REST handlers.
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import SCHEMA_PATH
 
 os.environ.setdefault("JIRA_URL", "https://redhat.atlassian.net")
 
-from bot_memory_server.artifacts import JIRA_BASE_URL  # noqa: E402
+from bot_memory_server.artifacts import JIRA_BASE_URL
 
 ZERO_VECTOR = "[" + ",".join(["0"] * 384) + "]"
 
@@ -118,7 +118,7 @@ async def test_cycle_record_and_serialization(db):
 @pytest.mark.asyncio
 async def test_daily_aggregates(db):
     await _apply_schema(db)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     yesterday = now - timedelta(days=1)
 
     await _insert_cycle(db, cost_usd=1.00, timestamp=now)

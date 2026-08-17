@@ -1,7 +1,33 @@
+# install: pip install pre-commit && pre-commit install
+# run manually: pre-commit run --all-files
+
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.15
+    rev: b831c3dc5d27d9da294ae4e915773b99aa24a7c5 # v0.15.10
     hooks:
-      - id: ruff
-        args: [--fix]
       - id: ruff-format
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        always_run: true
+        pass_filenames: false
+        types: [python]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b # v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-merge-conflict
+      - id: detect-private-key

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,7 +16,7 @@ from starlette.websockets import WebSocket
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
-from .metrics import PrometheusMiddleware
+from .metrics import PrometheusMiddleware, db_gauge_refresh_loop
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,8 +30,12 @@ async def lifespan(app):
     load_model()
     logger.info("Connecting to database...")
     await init_pool()
+    gauge_task = asyncio.create_task(db_gauge_refresh_loop())
     logger.info("Memory server ready")
     yield
+    gauge_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await gauge_task
     await close_pool()
 
 
@@ -39,12 +44,12 @@ mcp = FastMCP(
 )
 
 # Register MCP tools
-from .tools.cycles import register_cycle_tools  # noqa: E402
-from .tools.konflux import register_konflux_tools  # noqa: E402
-from .tools.org_members import register_org_member_tools  # noqa: E402
-from .tools.rag import register_rag_tools  # noqa: E402
-from .tools.slack import register_slack_tools  # noqa: E402
-from .tools.tasks import register_task_tools  # noqa: E402
+from .tools.cycles import register_cycle_tools
+from .tools.konflux import register_konflux_tools
+from .tools.org_members import register_org_member_tools
+from .tools.rag import register_rag_tools
+from .tools.slack import register_slack_tools
+from .tools.tasks import register_task_tools
 
 register_task_tools(mcp)
 register_rag_tools(mcp)
@@ -82,7 +87,7 @@ async def asset_files(request: Request) -> FileResponse:
 
 
 # REST API for the dashboard
-from .api import (  # noqa: E402
+from .api import (
     api_analytics,
     api_bot_status,
     api_costs,
@@ -155,9 +160,8 @@ if __name__ == "__main__":
 
     @asynccontextmanager
     async def combined_lifespan(app):
-        async with lifespan(app):
-            async with mcp_app.lifespan(app):
-                yield
+        async with lifespan(app), mcp_app.lifespan(app):
+            yield
 
     async def metrics_endpoint(request: Request) -> Response:
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

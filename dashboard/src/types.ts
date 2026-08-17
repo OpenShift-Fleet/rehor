@@ -39,7 +39,7 @@ export interface Memory {
 
 export interface BotInstance {
   instance_id: string;
-  state: 'working' | 'idle' | 'error' | 'unknown';
+  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
   message: string;
   external_key: string | null;
   source_type: string | null;
@@ -47,12 +47,13 @@ export interface BotInstance {
   repo: string | null;
   cycle_start: string | null;
   updated_at: string;
+  last_seen: string | null;
   active_tasks: number;
   max_tasks: number;
 }
 
 export interface BotStatus {
-  state: 'working' | 'idle' | 'error' | 'unknown';
+  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
   message: string;
   external_key: string | null;
   source_type: string | null;
@@ -61,6 +62,7 @@ export interface BotStatus {
   instance_id: string | null;
   cycle_start: string | null;
   updated_at: string;
+  last_seen?: string | null;
 }
 
 export interface CycleEntry {

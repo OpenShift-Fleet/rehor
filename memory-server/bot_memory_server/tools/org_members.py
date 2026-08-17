@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastmcp import FastMCP
 
@@ -37,7 +37,7 @@ def register_org_member_tools(mcp: FastMCP):
             org.lower(),
         )
         if row:
-            age = datetime.now(timezone.utc) - row["checked_at"]
+            age = datetime.now(UTC) - row["checked_at"]
             if age < CACHE_TTL:
                 return {
                     "cached": True,

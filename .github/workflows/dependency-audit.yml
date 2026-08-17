@@ -1,0 +1,135 @@
+name: Dependency audit
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'proxy/executor/go.mod'
+      - 'proxy/executor/go.sum'
+      - 'dashboard/package-lock.json'
+      - '.github/workflows/dependency-audit.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'proxy/executor/go.mod'
+      - 'proxy/executor/go.sum'
+      - 'dashboard/package-lock.json'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    - cron: '30 7 * * 1' # every monday 7:30 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  python-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install uv and deps
+        run: |
+          pip install uv
+          uv sync --frozen --extra dev
+
+      - name: Check lockfile drift
+        run: uv lock --check
+
+      - name: Run pip-audit
+        run: |
+          pip install pip-audit
+          uv run pip-audit --strict --desc --local
+
+  go-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy/executor
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: proxy/executor/go.mod
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  node-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          # TODO(REHOR-95): remove GHSA-qwww-vcr4-c8h2 allowlist when a fixed
+          # react-router-dom release is available upstream.
+          npm audit --audit-level=high --json > audit.json || true
+          node <<'EOF'
+          const fs = require("fs");
+          const report = JSON.parse(fs.readFileSync("audit.json", "utf8"));
+          const allowed = new Set(["GHSA-qwww-vcr4-c8h2"]);
+          const findings = new Map();
+
+          for (const vuln of Object.values(report.vulnerabilities || {})) {
+            if (!["high", "critical"].includes(vuln.severity)) continue;
+            for (const via of vuln.via || []) {
+              if (!via || typeof via === "string") continue;
+              const severity = via.severity || vuln.severity;
+              if (!["high", "critical"].includes(severity)) continue;
+              const advisory = (via.url || "").split("/").pop() || via.source?.toString() || "unknown";
+              findings.set(advisory, via.url || advisory);
+            }
+          }
+
+          if (findings.size === 0) {
+            process.exit(0);
+          }
+
+          const unresolved = [...findings.keys()].filter((id) => !allowed.has(id));
+          if (unresolved.length > 0) {
+            console.error("unallowlisted high/critical npm audit findings:");
+            for (const id of unresolved) {
+              console.error(`- ${id}: ${findings.get(id)}`);
+            }
+            process.exit(1);
+          }
+
+          console.warn("allowlisted npm audit findings detected:");
+          for (const [id, url] of findings.entries()) {
+            console.warn(`- ${id}: ${url}`);
+          }
+          console.warn("TODO(REHOR-95): remove allowlist after upstream React Router fix is released.");
+          EOF

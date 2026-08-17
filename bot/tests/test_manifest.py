@@ -101,6 +101,5 @@ class TestValidateManifest:
     def test_error_lists_all_failures(self, tmp_preset_dir):
         """All missing requirements reported in one exit, not one at a time."""
         mcp_servers = {}
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(SystemExit):
-                validate_manifest(tmp_preset_dir, "jira-sprint", mcp_servers)
+        with patch.dict(os.environ, {}, clear=True), pytest.raises(SystemExit):
+            validate_manifest(tmp_preset_dir, "jira-sprint", mcp_servers)

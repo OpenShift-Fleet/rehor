@@ -6,16 +6,24 @@ The bot operates as an autonomous loop: a scheduler triggers cycles, lightweight
 
 ```mermaid
 graph TB
-    KEDA["KEDA Cron Scaler<br/>(Kubernetes)<br/>Scales pod to 1 during working hours"]
-    Loop["Polling Loop<br/>(bot/run.py)<br/>preflight → session or sleep → repeat"]
-    Preflight["Preflight Scripts<br/>(Python, $0)<br/>Gather data, classify, decide"]
-    Session["Claude Code Session<br/>(AI, tokens)<br/>Reads CLAUDE.md + preflight data<br/>Writes code, opens PRs"]
-    Sleep["Sleep<br/>(no session)<br/>Wait for next cycle"]
-    Memory["Memory Server<br/>(FastMCP + PostgreSQL)"]
 
-    TasksDB["Tasks DB<br/>(Postgres)"]
-    SSE["SSE Event Bus<br/>(real-time)"]
-    REST["REST API<br/>(dashboard)"]
+    subgraph Scheduler["Scheduler"]
+        KEDA["KEDA Cron Scaler<br/>(Kubernetes)"]
+    end
+
+    subgraph Core["Polling Loop (bot/run.py)"]
+        Loop["preflight → session or sleep → repeat"]
+        Preflight["Preflight Scripts<br/>(Python, $0)"]
+        Session["Claude Code Session<br/>(AI, tokens)"]
+        Sleep["Sleep<br/>(no session)"]
+    end
+
+    subgraph Persistence["Memory Layer"]
+        Memory["Memory Server<br/>(FastMCP + PostgreSQL)"]
+        TasksDB["Tasks DB"]
+        SSE["SSE Event Bus"]
+        REST["REST API"]
+    end
 
     KEDA -->|"pod running"| Loop
     Loop -->|"each cycle"| Preflight
@@ -25,13 +33,6 @@ graph TB
     Memory --- TasksDB
     Memory --- SSE
     Memory --- REST
-
-    style KEDA fill:#f5f5f5,stroke:#999
-    style Loop fill:#f5f5f5,stroke:#999
-    style Preflight fill:#f5f5f5,stroke:#999
-    style Sleep fill:#f5f5f5,stroke:#999
-    style Session fill:#e8f5e9,stroke:#4caf50
-    style Memory fill:#f5f5f5,stroke:#999
 ```
 
 ## The Cycle
@@ -365,7 +366,7 @@ graph LR
 
 ### MCP Tools
 
-The agent interacts with tasks through MCP tools exposed by the `bot-memory` server. For the full tool reference, see [the core instructions](../presets/core/CLAUDE.md#task-tools).
+The agent interacts with tasks through MCP tools exposed by the `bot-memory` server. For the full tool reference, see [the core instructions](https://github.com/RedHatInsights/platform-frontend-ai-dev/blob/master/presets/core/CLAUDE.md#task-tools).
 
 | Tool | Purpose | Key behavior |
 |------|---------|-------------|

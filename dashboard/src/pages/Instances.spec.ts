@@ -11,6 +11,7 @@ function makeInstance(overrides: Record<string, any> = {}) {
     repo: null,
     cycle_start: null,
     updated_at: '2026-07-01T10:00:00Z',
+    last_seen: null,
     active_tasks: 2,
     max_tasks: 10,
     ...overrides,
@@ -46,7 +47,7 @@ test.describe('Instances page', () => {
   });
 
   test('renders idle instance with wake button', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle' });
+    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });
@@ -56,7 +57,7 @@ test.describe('Instances page', () => {
   });
 
   test('calls wakeInstance when wake button clicked', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle' });
+    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });
@@ -90,6 +91,29 @@ test.describe('Instances page', () => {
     const link = page.getByRole('link', { name: 'RHCLOUD-500' });
     await expect(link).toHaveAttribute('href', 'https://redhat.atlassian.net/browse/RHCLOUD-500');
     await expect(page.getByText('org/repo')).toBeVisible();
+  });
+
+  test('renders sleep state for instance with stale last_seen', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'sleep-bot', state: 'idle', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+    await page.route('**/api/instances', (route) => {
+      route.fulfill({ json: [inst] });
+    });
+
+    await mount('Instances/Default');
+    await expect(page.getByText('SLEEP', { exact: true })).toBeVisible();
+    await expect(page.getByText("Bot hasn't checked in recently")).toBeVisible();
+    expect(await page.getByTitle('Wake bot — start next cycle immediately').count()).toBe(0);
+  });
+
+  test('does not show sleep for working instance even with stale last_seen', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'busy-bot', state: 'working', message: 'On it', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+    await page.route('**/api/instances', (route) => {
+      route.fulfill({ json: [inst] });
+    });
+
+    await mount('Instances/Default');
+    await expect(page.getByText('WORKING', { exact: true })).toBeVisible();
+    await expect(page.getByText('On it')).toBeVisible();
   });
 
   test('renders error state badge', async ({ mount, page }) => {

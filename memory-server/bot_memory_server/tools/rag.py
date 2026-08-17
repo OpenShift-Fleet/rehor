@@ -1,5 +1,4 @@
 import json
-from typing import Optional
 
 from fastmcp import FastMCP
 
@@ -48,11 +47,11 @@ def register_rag_tools(mcp: FastMCP):
         category: str,
         title: str,
         content: str,
-        repo: Optional[str] = None,
-        external_key: Optional[str] = None,
-        source_type: Optional[str] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[dict] = None,
+        repo: str | None = None,
+        external_key: str | None = None,
+        source_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         """Store a memory with auto-generated embedding.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345'). Optional.
@@ -91,9 +90,9 @@ def register_rag_tools(mcp: FastMCP):
     @mcp.tool()
     async def memory_search(
         query: str,
-        category: Optional[str] = None,
-        repo: Optional[str] = None,
-        tag: Optional[str] = None,
+        category: str | None = None,
+        repo: str | None = None,
+        tag: str | None = None,
         limit: int = 5,
     ) -> list[dict]:
         """Semantic search over memories. Returns top matches with similarity scores. Filter by tag."""
@@ -133,9 +132,9 @@ def register_rag_tools(mcp: FastMCP):
 
     @mcp.tool()
     async def memory_list(
-        category: Optional[str] = None,
-        repo: Optional[str] = None,
-        tag: Optional[str] = None,
+        category: str | None = None,
+        repo: str | None = None,
+        tag: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> dict:

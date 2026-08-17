@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -51,7 +51,7 @@ class OperationResult:
     operation: str
     status: OperationStatus
     message: str
-    details: Optional[Dict[str, Any]] = None
+    details: dict[str, Any] | None = None
 
 
 @dataclass
@@ -59,7 +59,7 @@ class WorkflowResult:
     """Result of the entire workflow."""
 
     success: bool
-    operations: List[OperationResult]
+    operations: list[OperationResult]
     jira_key: str
 
 
@@ -67,7 +67,7 @@ class ClaimTicketOperations:
     """Handles all ticket claiming operations."""
 
     # Class-level cache for bot account ID
-    _bot_account_id_cache: Optional[str] = None
+    _bot_account_id_cache: str | None = None
 
     def __init__(
         self,
@@ -85,10 +85,10 @@ class ClaimTicketOperations:
         self.dry_run = dry_run
 
         # Workflow state
-        self.bot_account_id: Optional[str] = None
-        self.transition_id: Optional[str] = None
-        self.board_id: Optional[str] = None
-        self.sprint_id: Optional[int] = None
+        self.bot_account_id: str | None = None
+        self.transition_id: str | None = None
+        self.board_id: str | None = None
+        self.sprint_id: int | None = None
 
     def get_bot_email(self) -> OperationResult:
         """
@@ -180,7 +180,7 @@ class ClaimTicketOperations:
                 details={"transition_id": self.transition_id},
             )
         except Exception as e:
-            error_msg = f"Failed to get transitions: {str(e)}"
+            error_msg = f"Failed to get transitions: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="get_transitions",
@@ -242,7 +242,7 @@ class ClaimTicketOperations:
                 message=f"Assigned {jira_key} to bot user",
             )
         except Exception as e:
-            error_msg = f"Failed to assign ticket: {str(e)}"
+            error_msg = f"Failed to assign ticket: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="assign_ticket",
@@ -304,7 +304,7 @@ class ClaimTicketOperations:
                 message=f"Transitioned {jira_key} to 'In Progress'",
             )
         except Exception as e:
-            error_msg = f"Failed to transition ticket: {str(e)}"
+            error_msg = f"Failed to transition ticket: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="transition_to_in_progress",
@@ -378,7 +378,7 @@ class ClaimTicketOperations:
                 details={"board_id": self.board_id},
             )
         except Exception as e:
-            error_msg = f"Failed to resolve board: {str(e)}"
+            error_msg = f"Failed to resolve board: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="resolve_board",
@@ -453,7 +453,7 @@ class ClaimTicketOperations:
                 details={"sprint_id": self.sprint_id, "sprint_name": sprints[0].get("name")},
             )
         except Exception as e:
-            error_msg = f"Failed to get active sprint: {str(e)}"
+            error_msg = f"Failed to get active sprint: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="get_active_sprint",
@@ -461,7 +461,7 @@ class ClaimTicketOperations:
                 message=error_msg,
             )
 
-    def _check_existing_sprint(self, jira_key: str) -> Optional[str]:
+    def _check_existing_sprint(self, jira_key: str) -> str | None:
         """Return the name of the ticket's current active/future sprint, or None."""
         try:
             data = jira_call(
@@ -545,7 +545,7 @@ class ClaimTicketOperations:
                 message=f"Added {jira_key} to sprint {self.sprint_id}",
             )
         except Exception as e:
-            error_msg = f"Failed to add to sprint: {str(e)}"
+            error_msg = f"Failed to add to sprint: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="add_to_sprint",
@@ -604,7 +604,7 @@ class ClaimTicketOperations:
                 message=error_msg,
             )
         except Exception as e:
-            error_msg = f"Failed to add task to memory server: {str(e)}"
+            error_msg = f"Failed to add task to memory server: {e!s}"
             logger.error(error_msg)
             return OperationResult(
                 operation="task_add",
@@ -615,8 +615,8 @@ class ClaimTicketOperations:
 
 def execute_claim_ticket_workflow(
     jira_key: str,
-    memory_url: Optional[str] = None,
-    skip_operations: Optional[List[str]] = None,
+    memory_url: str | None = None,
+    skip_operations: list[str] | None = None,
     dry_run: bool = False,
 ) -> WorkflowResult:
     """
@@ -655,7 +655,7 @@ def execute_claim_ticket_workflow(
         dry_run=dry_run,
     )
 
-    results: List[OperationResult] = []
+    results: list[OperationResult] = []
 
     # Execute operations in sequence (fail-fast)
     logger.info(f"Starting claim ticket workflow for {jira_key}...")

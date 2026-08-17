@@ -33,4 +33,14 @@ test.describe('BotBanner', () => {
     const root = await mount('BotBanner/WorkingNoWake');
     expect(await root.getByTitle('Wake bot — start next cycle immediately').count()).toBe(0);
   });
+
+  test('renders sleep state when idle with stale last_seen', async ({ mount, page }) => {
+    await page.route('**/api/instances/*/wake', (route) => {
+      route.fulfill({ json: { ok: true } });
+    });
+    const root = await mount('BotBanner/Sleep');
+    await expect(root.getByText('SLEEP', { exact: true })).toBeVisible();
+    await expect(root.getByText("Bot hasn't checked in recently")).toBeVisible();
+    expect(await root.getByTitle('Wake bot — start next cycle immediately').count()).toBe(0);
+  });
 });

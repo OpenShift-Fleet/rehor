@@ -106,6 +106,16 @@ Installs Chromium and the chrome-devtools MCP server for visual verification. Th
 
 **When to use**: Any instance working on UI repos where visual verification matters. The bot starts a dev server, navigates to the relevant page, and takes screenshots.
 
+**Custom DNS (extra-hosts)**: Create `instance/<name>/agent/extra-hosts` to inject hostnames into `/etc/hosts` before Chrome starts. Standard hosts format:
+
+```
+# Dev proxy hostname — resolves to localhost where Caddy listens
+127.0.0.1    stage.foo.redhat.com
+::1          stage.foo.redhat.com
+```
+
+The entrypoint loads this file automatically. Instances without `extra-hosts` are unaffected. Use this when Chrome needs to resolve hostnames that don't exist in public DNS (e.g. dev-proxy targets).
+
 **Requires env var**: `PLAYWRIGHT_BROWSERS_PATH` (set automatically in the container)
 
 **Depends on**: nothing
@@ -165,10 +175,10 @@ Adds the Slack notification skill. The bot sends alerts when PRs are created, ti
 The payload key is auto-detected from the URL: `{"text": ...}` for Incoming Webhooks, `{"msg": ...}` for Workflow Builder.
 
 **Optional env vars**:
-- `SLACK_NOTIFY_MODE` — `immediate` (default) or `daily_digest`. In immediate mode, each event sends a separate Slack message with 48h cooldown. In daily digest mode, events queue and are sent as a single summary message at the configured hour.
+- `SLACK_NOTIFY_MODE` — `immediate` (default) or `daily_digest`. In immediate mode, each event sends a separate Slack message with 48h cooldown. In daily digest mode, individual notifications are suppressed and a daily snapshot of open PRs (from the tasks table) is sent at the configured hour.
 - `SLACK_DIGEST_HOUR` — UTC hour (0-23) when the daily digest is sent. Opt-in: digest is disabled unless this is set. The bot runner triggers it automatically after each cycle — zero LLM tokens spent.
 
-Both `SLACK_NOTIFY_MODE=daily_digest` and `SLACK_DIGEST_HOUR` must be set to enable digest mode. Without `SLACK_DIGEST_HOUR`, notifications fall back to immediate mode.
+Both `SLACK_NOTIFY_MODE=daily_digest` and `SLACK_DIGEST_HOUR` must be set to enable digest mode. Without `SLACK_DIGEST_HOUR`, digest is disabled (notifications still suppressed but no digest is sent).
 
 **Depends on**: nothing
 

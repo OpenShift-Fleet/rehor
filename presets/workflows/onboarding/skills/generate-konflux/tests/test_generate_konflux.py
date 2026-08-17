@@ -294,7 +294,7 @@ class TestExistingTenantGuards:
         tenant_dir = konflux_repo / "tenants-config" / "cluster" / "test-cluster" / "tenants" / "test-tenant"
         tenant_dir.mkdir(parents=True, exist_ok=True)
         cfg = {**EXISTING_TENANT_CONFIG}
-        with pytest.raises(ValueError, match="kustomization.yaml not found"):
+        with pytest.raises(ValueError, match=r"kustomization\.yaml not found"):
             generate(cfg, str(konflux_repo))
 
 

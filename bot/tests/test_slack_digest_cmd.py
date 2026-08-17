@@ -1,7 +1,7 @@
 """Tests for bot/slack_digest.py — hour check, weekend check, and digest triggering."""
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from bot import slack_digest
@@ -10,7 +10,7 @@ from bot import slack_digest
 class TestDigestWeekendCheck:
     def test_skips_on_saturday(self, monkeypatch, capsys):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
-        saturday = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
+        saturday = datetime(2026, 7, 18, 9, 0, tzinfo=UTC)
 
         with patch.object(slack_digest, "datetime") as mock_dt:
             mock_dt.now.return_value = saturday
@@ -22,7 +22,7 @@ class TestDigestWeekendCheck:
 
     def test_skips_on_sunday(self, monkeypatch, capsys):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
-        sunday = datetime(2026, 7, 19, 9, 0, tzinfo=timezone.utc)
+        sunday = datetime(2026, 7, 19, 9, 0, tzinfo=UTC)
 
         with patch.object(slack_digest, "datetime") as mock_dt:
             mock_dt.now.return_value = sunday
@@ -37,7 +37,7 @@ class TestDigestHourCheck:
     def test_skips_before_digest_hour(self, monkeypatch, capsys):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
         monkeypatch.setenv("SLACK_DIGEST_HOUR", "9")
-        wednesday_7 = datetime(2026, 7, 15, 7, 0, tzinfo=timezone.utc)
+        wednesday_7 = datetime(2026, 7, 15, 7, 0, tzinfo=UTC)
 
         with patch.object(slack_digest, "datetime") as mock_dt:
             mock_dt.now.return_value = wednesday_7
@@ -50,7 +50,7 @@ class TestDigestHourCheck:
     def test_proceeds_at_exact_hour(self, monkeypatch, capsys):
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
         monkeypatch.setenv("SLACK_DIGEST_HOUR", "9")
-        wednesday_9 = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+        wednesday_9 = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
 
         with (
             patch.object(slack_digest, "datetime") as mock_dt,
@@ -67,7 +67,7 @@ class TestDigestHourCheck:
         """If cycle missed 9:00, digest still fires at 10:01."""
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
         monkeypatch.setenv("SLACK_DIGEST_HOUR", "9")
-        wednesday_10 = datetime(2026, 7, 15, 10, 1, tzinfo=timezone.utc)
+        wednesday_10 = datetime(2026, 7, 15, 10, 1, tzinfo=UTC)
 
         with (
             patch.object(slack_digest, "datetime") as mock_dt,
@@ -84,7 +84,7 @@ class TestDigestHourCheck:
         """Opt-in: no SLACK_DIGEST_HOUR means digest is disabled."""
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
         monkeypatch.delenv("SLACK_DIGEST_HOUR", raising=False)
-        wednesday_9 = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
+        wednesday_9 = datetime(2026, 7, 15, 9, 0, tzinfo=UTC)
 
         with patch.object(slack_digest, "datetime") as mock_dt:
             mock_dt.now.return_value = wednesday_9

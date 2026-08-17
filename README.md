@@ -4,6 +4,8 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 
 ## Documentation
 
+**[Browse the full documentation site](https://openshift-fleet.github.io/rehor/)**
+
 | Document | Description |
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | System design, credential isolation, component overview |

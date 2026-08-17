@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .memory_mcp import memory_call, memory_cleanup
 
@@ -36,7 +36,7 @@ def cmd_digest():
         print(json.dumps({"sent": False, "reason": "SLACK_WEBHOOK_URL not set"}))
         return
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     if now.weekday() >= 5:
         print(json.dumps({"sent": False, "reason": "Weekend — digest skipped"}))

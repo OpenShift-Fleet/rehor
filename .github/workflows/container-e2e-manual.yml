@@ -1,0 +1,57 @@
+name: Container E2E Manual
+
+# Manual-only heavy fixture runs for REHOR-62:
+# - kept separate from pull_request workflow to avoid skipped-check noise
+# - intended for deeper investigation and periodic validation
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run container e2e (full-stack fixture)
+        run: |
+          set -euo pipefail
+          bash tests/container-e2e/test-container.sh \
+            --fixture full-stack \
+            --artifacts-dir "${RUNNER_TEMP}/container-e2e-full-stack-logs"
+
+      - name: Upload full-stack fixture logs
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: container-e2e-full-stack-logs
+          path: ${{ runner.temp }}/container-e2e-full-stack-logs
+          if-no-files-found: warn
+
+  e2e-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run container e2e (browser-only fixture)
+        run: |
+          set -euo pipefail
+          bash tests/container-e2e/test-container.sh \
+            --fixture browser-only \
+            --artifacts-dir "${RUNNER_TEMP}/container-e2e-browser-logs"
+
+      - name: Upload browser fixture logs
+        if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4
+        with:
+          name: container-e2e-browser-logs
+          path: ${{ runner.temp }}/container-e2e-browser-logs
+          if-no-files-found: warn

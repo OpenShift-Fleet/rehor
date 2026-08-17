@@ -126,11 +126,13 @@ def _build_project_repos(repos):
         elif host == "github":
             repo_basename = fork_repo_name or _parse_repo_basename(url, "github.com")
             entry["url"] = f"https://github.com/{fork_account}/{repo_basename}.git"
-            entry["upstream"] = url
+            upstream = url if url.endswith(".git") else f"{url.rstrip('/')}.git"
+            entry["upstream"] = upstream
         elif host == "gitlab":
             repo_basename = fork_repo_name or _parse_repo_basename(url, "gitlab.cee.redhat.com")
             entry["url"] = f"https://gitlab.cee.redhat.com/{fork_account}/{repo_basename}.git"
-            entry["upstream"] = url
+            upstream = url if url.endswith(".git") else f"{url.rstrip('/')}.git"
+            entry["upstream"] = upstream
             entry["host"] = "gitlab"
         else:
             entry["url"] = url

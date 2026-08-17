@@ -532,6 +532,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    instance_id = body.get("instance_id")
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
@@ -540,6 +541,31 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
             updated_at = NOW()
         WHERE id = 1 RETURNING *
         """,
+        state,
+        message,
+        external_key,
+        source_type,
+        repo,
+    )
+    await pool.execute(
+        """
+        INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo,
+                                   cycle_start, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6,
+            CASE WHEN $2 = 'working' THEN NOW() ELSE NULL END,
+            NOW())
+        ON CONFLICT (instance_id) DO UPDATE SET
+            state = $2, message = $3,
+            external_key = COALESCE($4, bot_instances.external_key),
+            source_type = COALESCE($5, bot_instances.source_type),
+            repo = COALESCE($6, bot_instances.repo),
+            cycle_start = CASE
+                WHEN bot_instances.state = 'idle' AND $2 = 'working' THEN NOW()
+                ELSE bot_instances.cycle_start
+            END,
+            updated_at = NOW()
+        """,
+        instance_id,
         state,
         message,
         external_key,
@@ -595,6 +621,7 @@ def _instance_row(r, active_tasks: int = 0) -> dict:
         "last_idle_reminder_sent_at": (
             r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
         ),
+        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
     }
 
 
@@ -645,10 +672,16 @@ async def api_instance_idle_update(request: Request) -> JSONResponse:
 async def api_costs(request: Request) -> JSONResponse:
     """GET /api/costs — list cycle cost records. POST to add one."""
     if request.method == "POST":
-        return await api_costs_add(request)
+        return await _api_costs_add(request)
     pool = get_pool()
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     pidx = len(date_params) + 1
     rows = await pool.fetch(
@@ -699,7 +732,7 @@ async def api_costs(request: Request) -> JSONResponse:
     return JSONResponse({"items": items, "daily": daily})
 
 
-async def api_costs_add(request: Request) -> JSONResponse:
+async def _api_costs_add(request: Request) -> JSONResponse:
     """POST /api/costs — record a new cycle cost entry."""
     pool = get_pool()
     body = await request.json()
@@ -711,8 +744,8 @@ async def api_costs_add(request: Request) -> JSONResponse:
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                            external_key, source_type, repo, work_type, summary, instance_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         RETURNING *
         """,
         body.get("label", ""),
@@ -732,8 +765,10 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("repo"),
         body.get("work_type"),
         body.get("summary"),
+        body.get("instance_id"),
     )
     cycle = _cycle(row)
+
     await bus.publish(Event("cycle_recorded", cycle))
     return JSONResponse(cycle, status_code=201)
 
@@ -760,6 +795,12 @@ async def api_analytics(request: Request) -> JSONResponse:
     """GET /api/analytics — aggregated stats for the analytics dashboard."""
     pool = get_pool()
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     # Work type breakdown (derived from ticket titles + work_type)
     work_type_rows = await pool.fetch(
@@ -807,6 +848,8 @@ async def api_analytics(request: Request) -> JSONResponse:
     )
 
     # Ticket lifecycle — cycles per ticket, impl vs review, cost, time to resolve
+    # Qualify column refs for the JOIN (both cycles and tasks have instance_id/timestamp)
+    c_date_filter = date_filter.replace("instance_id", "c.instance_id").replace("timestamp", "c.timestamp")
     ticket_rows = await pool.fetch(
         f"""
         SELECT
@@ -821,7 +864,7 @@ async def api_analytics(request: Request) -> JSONResponse:
             ROUND(EXTRACT(EPOCH FROM (MAX(c.timestamp) - MIN(c.timestamp)))/3600.0, 1) AS hours_span
         FROM cycles c
         LEFT JOIN tasks t ON t.external_key = c.external_key
-        WHERE {date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
+        WHERE {c_date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
         GROUP BY c.external_key, t.title, t.status, t.repo
         ORDER BY total_cycles DESC
         LIMIT 30
@@ -1066,15 +1109,16 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
     instance_id_val = body.get("instance_id")
     input_prompt = body.get("input_prompt")
 
-    # When uploading a transcript, attach it to the most recent cycle_run
-    # for this specific instance that has no transcript yet (created by
-    # progress_store during the same cycle).
+    # Attach metadata (and optional transcript) to the most recent cycle_run
+    # for this instance that has no transcript yet (created by progress_store
+    # during the same cycle). If no transcript is available, still merge the
+    # metadata so we don't create a duplicate cycle_run.
     row = None
-    if transcript_bytes and instance_id_val:
+    if instance_id_val:
         row = await pool.fetchrow(
             f"""
             UPDATE cycle_runs
-            SET transcript = $1,
+            SET transcript = COALESCE($1, transcript),
                 finished_at = COALESCE($2, finished_at, NOW()),
                 tool_calls = COALESCE($3, tool_calls),
                 tokens_used = COALESCE($4, tokens_used),
@@ -1252,7 +1296,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
                 "last_cycle": r["last_cycle"].isoformat() if r["last_cycle"] else None,
             }
         )
-    return JSONResponse(groups)
+    return JSONResponse({"items": groups, "total": len(groups)})
 
 
 async def api_instance_wake_trigger(request: Request) -> JSONResponse:
@@ -1276,6 +1320,12 @@ async def api_instance_wake_check(request: Request) -> JSONResponse:
     instance_id = request.path_params.get("instance_id")
     if not instance_id:
         return JSONResponse({"error": "missing instance_id"}, status_code=400)
+
+    pool = get_pool()
+    await pool.execute(
+        "UPDATE bot_instances SET last_seen = NOW() WHERE instance_id = $1",
+        instance_id,
+    )
 
     if instance_id in wake_signals:
         wake_signals.discard(instance_id)
@@ -1336,6 +1386,7 @@ def _cycle(row) -> dict:
         "repo": row.get("repo"),
         "work_type": row.get("work_type"),
         "summary": row.get("summary"),
+        "instance_id": row.get("instance_id"),
     }
 
 

@@ -8,8 +8,10 @@ Returns start when there's actionable work:
   - Nothing actionable → skip
 """
 
+import json
 import os
 import re
+import subprocess
 
 from common import (
     INSTANCE_ID,
@@ -20,6 +22,7 @@ from common import (
     get_tasks,
     output_result,
     save_state,
+    upstream_repo,
 )
 from jira_mcp import jira_call, jira_cleanup
 
@@ -28,28 +31,43 @@ if BOT_LABEL and not re.match(r"^[a-zA-Z0-9:_-]+$", BOT_LABEL):
     raise ValueError(f"Invalid BOT_LABEL: {BOT_LABEL!r}")
 BOT_JIRA_EMAIL = os.environ.get("BOT_JIRA_EMAIL", "")
 
+# MCP tool returns oldest-first, no pagination: https://github.com/sooperset/mcp-atlassian/issues/1215
+JIRA_COMMENT_LIMIT = 100
+
 
 def _jira_issue(key):
     return jira_call(
         "jira_get_issue",
         {
             "issue_key": key,
-            "fields": "summary,status,assignee,labels,issuelinks,comment",
-            "comment_limit": 10,
+            "fields": "summary,status,assignee,labels,issuelinks,comment,updated",
+            "comment_limit": JIRA_COMMENT_LIMIT,
         },
     )
 
 
-def _has_new_jira_feedback(task, issue):
+def _get_comments(issue):
     if not issue:
-        return False
-    comments = issue.get("comments", [])
+        return []
+    return issue.get("comments") or (issue.get("fields") or {}).get("comment", {}).get("comments") or []
+
+
+def _has_new_jira_feedback(comments, last_addressed):
     if not comments:
         return False
-    last_addressed = task.get("last_addressed", "")
     if not last_addressed:
         return bool(comments)
     return any((c.get("created", "") or c.get("t", ""))[:16] > last_addressed[:16] for c in comments)
+
+
+def _comments_may_be_truncated(issue, all_comments, last_addressed):
+    """Detect when the MCP tool's oldest-first comment limit hid newer comments."""
+    if not issue or not last_addressed:
+        return False
+    if len(all_comments) < JIRA_COMMENT_LIMIT:
+        return False
+    updated = issue.get("updated") or (issue.get("fields") or {}).get("updated", "")
+    return updated[:16] > last_addressed[:16] if updated else False
 
 
 def _jira_search(jql, limit=10):
@@ -80,6 +98,12 @@ def _get_candidates():
 
 BLOCKED_LABEL = "onboarding:blocked"
 
+STEP_TO_PHASE = {
+    "scaffolding-pr": "phase1",
+    "konflux-mr": "phase2",
+    "app-interface-mr": "phase3",
+}
+
 
 def _is_blocked(issue):
     if not issue:
@@ -96,6 +120,84 @@ def _get_onboarding_label(issue):
         if lbl.startswith("onboarding:") and lbl != BLOCKED_LABEL:
             return lbl
     return None
+
+
+def _phase_ticket_done(task, step):
+    """Check if the phase sub-ticket for the given step is already Done."""
+    phase_key = STEP_TO_PHASE.get(step)
+    if not phase_key:
+        return False
+    meta = task.get("metadata") or {}
+    ticket_key = meta.get("phase_tickets", {}).get(phase_key)
+    if not ticket_key:
+        return False
+    issue = _jira_issue(ticket_key)
+    if not issue:
+        return False
+    status = issue.get("status", {})
+    name = (status.get("name", "") if isinstance(status, dict) else str(status)).lower()
+    return name in ("done", "closed", "resolved")
+
+
+def _any_pr_mr_merged(task, step):
+    """Check if the PR/MR for the current phase step has been merged.
+
+    Uses the phase sub-ticket as source of truth: if the sub-ticket is
+    already Done, the merge was handled in a prior cycle.  Only checks
+    the most recent PR/MR matching the step's host to avoid false
+    positives from earlier phases' merged PRs/MRs.
+    """
+    if _phase_ticket_done(task, step):
+        return False
+
+    prs = get_task_prs(task)
+    if not prs:
+        return False
+
+    if step == "scaffolding-pr":
+        candidates = [p for p in prs if p.get("host", "github") == "github"]
+    else:
+        candidates = [p for p in prs if p.get("host") == "gitlab"]
+
+    if not candidates:
+        return False
+
+    target = candidates[-1]
+    host = target.get("host", "github")
+    num = target.get("number")
+    repo = target.get("repo", "")
+    if not num or not repo:
+        return False
+
+    try:
+        if host == "github":
+            up, _ = upstream_repo(repo)
+            if not up:
+                return False
+            r = subprocess.run(
+                ["gh", "pr", "view", str(num), "--repo", up, "--json", "state"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                return json.loads(r.stdout).get("state") == "MERGED"
+        else:
+            up, _ = upstream_repo(repo)
+            if not up:
+                return False
+            encoded = up.replace("/", "%2F")
+            r = subprocess.run(
+                ["glab", "api", f"projects/{encoded}/merge_requests/{num}", "--hostname", "gitlab.cee.redhat.com"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                return json.loads(r.stdout).get("state") == "merged"
+    except Exception:
+        pass
+    return False
 
 
 def _fmt_candidate(issue):
@@ -147,12 +249,16 @@ def main():
             task_lines.append(f"  phase_tickets: P1={p1} P2={p2} P3={p3}")
 
         if issue:
-            new_feedback = _has_new_jira_feedback(task, issue)
+            all_comments = _get_comments(issue)
+            last_addr = task.get("last_addressed", "")
+            jira_comments = all_comments[-10:]
+            new_feedback = _has_new_jira_feedback(jira_comments, last_addr)
+            if not new_feedback and _comments_may_be_truncated(issue, all_comments, last_addr):
+                new_feedback = True
             if new_feedback:
                 task_lines.append("  *** HAS NEW JIRA FEEDBACK ***")
                 has_work = True
-            comments = issue.get("comments", [])
-            task_lines.append(fmt_comments(comments, "jira_comments", task.get("last_addressed")))
+            task_lines.append(fmt_comments(jira_comments, "jira_comments", last_addr))
         else:
             task_lines.append("  [jira unavailable]")
 
@@ -163,8 +269,11 @@ def main():
 
         labels_with_auto_advance = ("scaffolding-pr", "konflux-mr", "app-interface-mr")
         if step_from_label in labels_with_auto_advance:
-            task_lines.append(f"  *** CHECK FOR PHASE ADVANCE (current: {step_from_label}) ***")
-            has_work = True
+            if _any_pr_mr_merged(task, step_from_label):
+                task_lines.append(f"  *** PR/MR MERGED — ADVANCE PHASE (current: {step_from_label}) ***")
+                has_work = True
+            else:
+                task_lines.append(f"  waiting for PR/MR merge (current: {step_from_label})")
 
         lines.append("\n".join(task_lines))
 

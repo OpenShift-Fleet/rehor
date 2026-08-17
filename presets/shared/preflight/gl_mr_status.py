@@ -45,6 +45,7 @@ def gl_mr_notes(project_path, num):
             [
                 "glab",
                 "api",
+                "--paginate",
                 f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
                 "--hostname",
                 "gitlab.cee.redhat.com",
@@ -158,7 +159,7 @@ def fmt_task(enriched):
     return "\n".join(lines)
 
 
-def main():
+def main(suppress_terminal_if_addressed=False):
     if not INSTANCE_ID:
         output_result("error", "BOT_INSTANCE_ID not set")
         return
@@ -181,16 +182,20 @@ def main():
     for e in enriched:
         issues = e["issues"]
         if "merged" in issues:
-            merged.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                merged.append(e)
         elif "closed" in issues:
-            closed.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
             ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif "unresolved_threads" in issues:
-            feedback.append(e)
-        elif has_new_feedback(e):
+        elif "unresolved_threads" in issues or has_new_feedback(e):
             feedback.append(e)
         else:
             clean.append(e)

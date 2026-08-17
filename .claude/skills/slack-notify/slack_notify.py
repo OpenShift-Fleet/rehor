@@ -40,6 +40,7 @@ def main():
             "event_type": event_type,
             "message": message,
             "webhook_url": webhook_url,
+            "notify_mode": os.environ.get("SLACK_NOTIFY_MODE", "immediate"),
         },
     )
     memory_cleanup()
