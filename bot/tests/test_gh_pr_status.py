@@ -127,6 +127,51 @@ def test_review_at_exact_last_addressed_ignored():
     assert "review:alice" not in issues
 
 
+def test_security_scan_filtered_from_ci_fail():
+    """Security scan checks should not appear in ci_fail issues."""
+    checks = [
+        {"name": "unit-tests", "conclusion": "FAILURE"},
+        {"name": "clair-scan", "conclusion": "FAILURE"},
+    ]
+    state, issues = classify_gh(_make_pr(checks=checks))
+    ci_fail_issues = [i for i in issues if i.startswith("ci_fail:")]
+    assert len(ci_fail_issues) == 1
+    assert "unit-tests" in ci_fail_issues[0]
+    assert "clair-scan" not in ci_fail_issues[0]
+
+
+def test_security_scan_only_no_ci_fail():
+    """When only security scans fail, no ci_fail issue should be raised."""
+    checks = [
+        {"name": "clair-scan", "conclusion": "FAILURE"},
+        {"name": "sast-snyk-check", "conclusion": "FAILURE"},
+    ]
+    state, issues = classify_gh(_make_pr(checks=checks))
+    assert not any(i.startswith("ci_fail:") for i in issues)
+    assert any(i.startswith("security_scan_fail:") for i in issues)
+
+
+def test_security_scan_reported_separately():
+    """Filtered security scans should appear as security_scan_fail issues."""
+    checks = [
+        {"name": "lint", "conclusion": "FAILURE"},
+        {"name": "grype-vulnerability-scan", "conclusion": "FAILURE"},
+    ]
+    state, issues = classify_gh(_make_pr(checks=checks))
+    assert "ci_fail:lint" in issues
+    sec_issues = [i for i in issues if i.startswith("security_scan_fail:")]
+    assert len(sec_issues) == 1
+    assert "grype-vulnerability-scan" in sec_issues[0]
+
+
+def test_no_security_scans_unchanged():
+    """When no security scans are present, behavior is unchanged."""
+    checks = [{"name": "lint", "conclusion": "FAILURE"}]
+    state, issues = classify_gh(_make_pr(checks=checks))
+    assert "ci_fail:lint" in issues
+    assert not any(i.startswith("security_scan_fail:") for i in issues)
+
+
 def test_conflict_and_ci_not_affected_by_last_addressed():
     """Conflicts and CI failures are current-state, not affected by last_addressed."""
     checks = [{"name": "lint", "conclusion": "FAILURE"}]

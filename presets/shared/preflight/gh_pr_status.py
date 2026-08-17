@@ -16,6 +16,7 @@ from common import (
     get_task_prs,
     get_tasks,
     is_bot_author,
+    is_security_scan,
     output_result,
     save_state,
     upstream_repo,
@@ -84,12 +85,17 @@ def classify_gh(pr, last_addressed=""):
         issues.append("conflict")
     checks = pr.get("statusCheckRollup") or []
     failed_checks = [c for c in checks if c.get("conclusion") == "FAILURE"]
-    failed = [c.get("name", "?") for c in failed_checks]
+    ci_failed = [c for c in failed_checks if not is_security_scan(c.get("name", "?"))]
+    sec_failed = [c for c in failed_checks if is_security_scan(c.get("name", "?"))]
+    failed = [c.get("name", "?") for c in ci_failed]
     if failed:
         issues.append(f"ci_fail:{','.join(failed)}")
-        konflux_urls = [c.get("detailsUrl", "") for c in failed_checks if "pipelinerun" in c.get("detailsUrl", "")]
+        konflux_urls = [c.get("detailsUrl", "") for c in ci_failed if "pipelinerun" in c.get("detailsUrl", "")]
         if konflux_urls:
             issues.append(f"konflux_urls:{';'.join(konflux_urls)}")
+    sec_names = [c.get("name", "?") for c in sec_failed]
+    if sec_names:
+        issues.append(f"security_scan_fail:{','.join(sec_names)}")
     if pr.get("reviewDecision") == "CHANGES_REQUESTED":
         issues.append("changes_requested")
     last_prefix = last_addressed[:16] if last_addressed else ""
@@ -186,6 +192,8 @@ def fmt_task(enriched):
             if issue.startswith("konflux_urls:"):
                 for url in issue.split(":", 1)[1].split(";"):
                     lines.append(f"    konflux_details: {url}")
+            elif issue.startswith("security_scan_fail:"):
+                lines.append(f"    security_scans_failed (excluded): {issue.split(':', 1)[1]}")
     last_addr = enriched["task"].get("last_addressed")
     if enriched["pr_comments"]:
         lines.append(fmt_comments(enriched["pr_comments"], "pr_comments", since=last_addr))
@@ -225,7 +233,7 @@ def main(suppress_terminal_if_addressed=False):
             else:
                 closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls", "security_scan_fail")) for i in issues)
             if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
                 clean.append(e)
             else:

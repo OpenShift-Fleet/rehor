@@ -13,6 +13,7 @@ from common import (
     build_repo_lookup,
     fmt_comments,
     is_bot_author,
+    is_security_scan,
     upstream_repo,
 )
 from gh_pr_status import classify_gh, gh_pr_comments, has_new_feedback
@@ -96,6 +97,44 @@ def test_is_bot_author_humans():
     assert is_bot_author("") is False
     assert is_bot_author("?") is False
     assert is_bot_author(None) is False
+
+
+# --- is_security_scan ---
+
+
+def test_is_security_scan_known_scans():
+    assert is_security_scan("clair-scan") is True
+    assert is_security_scan("sast-snyk-check") is True
+    assert is_security_scan("sast-coverity-check") is True
+    assert is_security_scan("clamav-scan") is True
+    assert is_security_scan("grype") is True
+    assert is_security_scan("trivy-scan") is True
+    assert is_security_scan("rpms-signature-scan") is True
+    assert is_security_scan("deprecated-image-check") is True
+    assert is_security_scan("container-scan") is True
+    assert is_security_scan("image-scan-results") is True
+
+
+def test_is_security_scan_case_insensitive():
+    assert is_security_scan("Clair-Scan") is True
+    assert is_security_scan("SAST-SNYK-CHECK") is True
+    assert is_security_scan("Grype") is True
+
+
+def test_is_security_scan_non_security():
+    assert is_security_scan("unit-tests") is False
+    assert is_security_scan("lint") is False
+    assert is_security_scan("e2e-tests") is False
+    assert is_security_scan("build") is False
+    assert is_security_scan("integration-test") is False
+    assert is_security_scan("") is False
+    assert is_security_scan("?") is False
+
+
+def test_is_security_scan_substring_match():
+    assert is_security_scan("my-repo-grype-scan") is True
+    assert is_security_scan("project-sast-snyk-check") is True
+    assert is_security_scan("custom-security-scan-job") is True
 
 
 # --- fmt_comments ---
@@ -264,7 +303,7 @@ def _classify_bucket(enriched_list):
         elif "closed" in issues:
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls", "security_scan_fail")) for i in issues)
             if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
                 clean.append(e)
             else:
@@ -323,6 +362,25 @@ def test_ci_only_with_old_feedback_is_clean():
     e = _make_ci_enriched(
         last_addressed="2026-07-14T18:00",
         pr_comments=[{"a": "reviewer", "t": "2026-07-14T10:00", "b": "can you retry CI?"}],
+    )
+    result = _classify_bucket([e])
+    assert len(result["clean"]) == 1
+    assert len(result["ci_fail"]) == 0
+
+
+def test_security_scan_only_failure_is_not_ci_fail():
+    """PR with only security scan failures should not be in ci_fail bucket."""
+    e = _make_ci_enriched(extra_issues=["security_scan_fail:clair-scan"])
+    e["issues"] = ["security_scan_fail:clair-scan"]
+    result = _classify_bucket([e])
+    assert len(result["ci_fail"]) == 0
+
+
+def test_ci_plus_security_scan_addressed_is_clean():
+    """CI + security scan failures with last_addressed and no feedback -> clean."""
+    e = _make_ci_enriched(
+        last_addressed="2026-07-14T17:49",
+        extra_issues=["security_scan_fail:clair-scan"],
     )
     result = _classify_bucket([e])
     assert len(result["clean"]) == 1
