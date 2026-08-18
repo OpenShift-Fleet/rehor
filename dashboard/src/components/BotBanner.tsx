@@ -1,7 +1,5 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import type { BotStatus } from '../types';
-import { wakeInstance } from '../api';
-import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus, stateBorderColor } from '../utils';
 import {
   Card,
@@ -9,7 +7,6 @@ import {
   Flex,
   FlexItem,
   Label,
-  Button,
   Icon
 } from '@patternfly/react-core';
 import { CircleIcon } from '@patternfly/react-icons';
@@ -20,31 +17,7 @@ interface Props {
 
 export default function BotBanner({ status }: Props) {
   const [elapsed, setElapsed] = useState('');
-  const [waking, setWaking] = useState(false);
-  const { onEvent } = useWS();
   const state = effectiveState(status);
-
-  const handleWake = useCallback(async () => {
-    if (!status.instance_id) return;
-    setWaking(true);
-    try {
-      await wakeInstance(status.instance_id);
-    } catch {
-      setWaking(false);
-    }
-  }, [status.instance_id]);
-
-  useEffect(() => {
-    return onEvent((event) => {
-      if (
-        event.type === 'bot_status' &&
-        event.data.instance_id === status.instance_id &&
-        event.data.state === 'working'
-      ) {
-        setWaking(false);
-      }
-    });
-  }, [onEvent, status.instance_id]);
 
   useEffect(() => {
     if (status.state !== 'working' || !status.cycle_start) {
@@ -120,19 +93,6 @@ export default function BotBanner({ status }: Props) {
               {timeAgo(status.updated_at)}
             </span>
           </FlexItem>
-          {state === 'idle' && status.instance_id && (
-            <FlexItem>
-              <Button
-                variant="plain"
-                size="sm"
-                isDisabled={waking}
-                onClick={handleWake}
-                title="Wake bot \u2014 start next cycle immediately"
-              >
-                {waking ? 'Waking\u2026' : '\u25B6'}
-              </Button>
-            </FlexItem>
-          )}
         </Flex>
       </Flex>
       </CardBody>

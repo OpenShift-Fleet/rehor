@@ -23,9 +23,6 @@ test.describe('Instances page', () => {
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [] });
     });
-    await page.route('**/api/instances/*/wake', (route) => {
-      route.fulfill({ json: { ok: true } });
-    });
   });
 
   test('shows empty state when no instances', async ({ mount, page }) => {
@@ -44,35 +41,6 @@ test.describe('Instances page', () => {
     await expect(page.getByText('WORKING', { exact: true })).toBeVisible();
     await expect(page.getByText('Working on task')).toBeVisible();
     await expect(page.getByText('3/10 tasks')).toBeVisible();
-  });
-
-  test('renders idle instance with wake button', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
-    await page.route('**/api/instances', (route) => {
-      route.fulfill({ json: [inst] });
-    });
-
-    await mount('Instances/Default');
-    await expect(page.getByTitle('Wake bot — start next cycle immediately')).toBeVisible();
-  });
-
-  test('calls wakeInstance when wake button clicked', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
-    await page.route('**/api/instances', (route) => {
-      route.fulfill({ json: [inst] });
-    });
-
-    let wakeCalled = false;
-    await page.route('**/api/instances/idle-bot/wake', (route) => {
-      wakeCalled = true;
-      route.fulfill({ json: { ok: true } });
-    });
-
-    await mount('Instances/Default');
-    await page.getByTitle('Wake bot — start next cycle immediately').click();
-    await page.waitForTimeout(200);
-
-    expect(wakeCalled).toBe(true);
   });
 
   test('renders external key link for jira instance', async ({ mount, page }) => {
@@ -102,7 +70,6 @@ test.describe('Instances page', () => {
     await mount('Instances/Default');
     await expect(page.getByText('SLEEP', { exact: true })).toBeVisible();
     await expect(page.getByText("Bot hasn't checked in recently")).toBeVisible();
-    expect(await page.getByTitle('Wake bot — start next cycle immediately').count()).toBe(0);
   });
 
   test('does not show sleep for working instance even with stale last_seen', async ({ mount, page }) => {

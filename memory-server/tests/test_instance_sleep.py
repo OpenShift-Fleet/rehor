@@ -1,14 +1,10 @@
-"""Tests for instance sleep heartbeat (last_seen column and wake-poll update)."""
+"""Tests for the instance last_seen column (schema and _instance_row serialization)."""
 
 from datetime import UTC, datetime
 
 import pytest
 from bot_memory_server.api import _instance_row
 from conftest import SCHEMA_PATH
-
-UPDATE_LAST_SEEN_SQL = """
-    UPDATE bot_instances SET last_seen = NOW() WHERE instance_id = $1
-"""
 
 
 async def _apply_schema(db):
@@ -33,17 +29,6 @@ async def test_last_seen_column_exists(db):
     await _insert_instance(db, "inst-1")
     row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-1")
     assert row["last_seen"] is None
-
-
-@pytest.mark.asyncio
-async def test_last_seen_updated_on_wake_poll(db):
-    await _apply_schema(db)
-    await _insert_instance(db, "inst-2")
-    before = datetime.now(UTC)
-    await db.execute(UPDATE_LAST_SEEN_SQL, "inst-2")
-    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-2")
-    assert row["last_seen"] is not None
-    assert row["last_seen"] >= before
 
 
 @pytest.mark.asyncio

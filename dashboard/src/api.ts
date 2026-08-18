@@ -108,11 +108,6 @@ export async function fetchCycleRunTranscript(id: number): Promise<string> {
   return res.text();
 }
 
-export async function wakeInstance(instanceId: string): Promise<{ ok: boolean }> {
-  const res = await fetch(`/api/instances/${encodeURIComponent(instanceId)}/wake`, { method: 'POST' });
-  return res.json();
-}
-
 export async function fetchAnalytics(days = 30, dateFrom?: string, dateTo?: string, instanceId?: string) {
   const qs = new URLSearchParams();
   if (dateFrom) qs.set('from', dateFrom);

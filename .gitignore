@@ -55,3 +55,6 @@ site/
 .vscode/
 # MkDocs build output
 site/
+
+# Dashboard Playwright output
+dashboard/test-results/

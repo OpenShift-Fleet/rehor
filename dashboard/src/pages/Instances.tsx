@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { BotInstance } from '../types';
-import { fetchInstances, wakeInstance } from '../api';
+import { fetchInstances } from '../api';
 import { useWS } from '../hooks/useWebSocket';
 import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus } from '../utils';
 import {
@@ -14,7 +14,6 @@ import {
   Label,
   Flex,
   FlexItem,
-  Button,
   Content,
   Divider,
   Icon
@@ -23,7 +22,6 @@ import { CircleIcon } from '@patternfly/react-icons';
 
 export default function Instances() {
   const [instances, setInstances] = useState<BotInstance[]>([]);
-  const [wakingIds, setWakingIds] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
   const { onEvent } = useWS();
 
@@ -40,32 +38,10 @@ export default function Instances() {
     load();
   }, [load]);
 
-  const handleWake = useCallback(async (e: React.MouseEvent, instanceId: string) => {
-    e.stopPropagation();
-    setWakingIds((prev) => new Set(prev).add(instanceId));
-    try {
-      await wakeInstance(instanceId);
-    } catch {
-      setWakingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(instanceId);
-        return next;
-      });
-    }
-  }, []);
-
   useEffect(() => {
     return onEvent((event) => {
       if (event.type === 'bot_status') {
         const id = event.data.instance_id;
-        if (id && event.data.state === 'working') {
-          setWakingIds((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          });
-        }
         setInstances((prev) => {
           if (!id) return prev;
           const idx = prev.findIndex((i) => i.instance_id === id);
@@ -138,17 +114,6 @@ export default function Instances() {
               <Flex justifyContent={{ default: 'justifyContentSpaceBetween' }} alignItems={{ default: 'alignItemsCenter' }}>
                 <Label variant="outline">{inst.active_tasks}/{inst.max_tasks} tasks</Label>
                 <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
-                  {state === 'idle' && (
-                    <Button
-                      variant="plain"
-                      size="sm"
-                      isDisabled={wakingIds.has(inst.instance_id)}
-                      onClick={(e: React.MouseEvent) => handleWake(e, inst.instance_id)}
-                      title="Wake bot — start next cycle immediately"
-                    >
-                      {wakingIds.has(inst.instance_id) ? 'Waking…' : '▶'}
-                    </Button>
-                  )}
                   <Content>
                     <small title={inst.updated_at}>{timeAgo(inst.updated_at)}</small>
                   </Content>
