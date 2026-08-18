@@ -1,5 +1,6 @@
 """Core agent cycle — invokes Claude Agent SDK."""
 
+import asyncio
 import json
 import logging
 import os
@@ -77,6 +78,23 @@ async def _push_status(
                 "Dashboard unreachable (%d consecutive failures, silencing)",
                 _STATUS_FAIL_WARNING_THRESHOLD,
             )
+
+
+def push_status(
+    state: str,
+    message: str,
+    *,
+    instance_id: str | None = None,
+    jira_key: str | None = None,
+    repo: str | None = None,
+) -> None:
+    """Synchronous status push for the runner loop (preflight skip/error)."""
+
+    async def _run() -> None:
+        async with httpx.AsyncClient() as http:
+            await _push_status(http, state, message, jira_key=jira_key, repo=repo, instance_id=instance_id)
+
+    asyncio.run(_run())
 
 
 def _describe_tool_use(block) -> str:

@@ -19,7 +19,7 @@ from filelock import FileLock, Timeout
 from prometheus_client import start_http_server
 
 from . import idle_reminder
-from .agent import run_cycle
+from .agent import push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
     Config,
@@ -488,6 +488,7 @@ def main() -> None:
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
                     _write_sleep_signal(error_sleep, "preflight_error")
                     _read_sleep_signal(config)
@@ -506,6 +507,7 @@ def main() -> None:
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("idle", "No work found. Sleeping...", instance_id=instance_id)
                     idle_reminder.on_preflight_skip(
                         instance_id or args.label,
                         idle_cycle_limit=instance_config.idle_cycle_limit,
