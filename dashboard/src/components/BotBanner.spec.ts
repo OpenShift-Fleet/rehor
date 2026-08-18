@@ -21,7 +21,7 @@ test.describe('BotBanner', () => {
     await expect(root.getByText('Cycle failed')).toBeVisible();
   });
 
-  test('renders sleep state when idle with stale last_seen', async ({ mount }) => {
+  test('renders sleep state when idle with stale updated_at', async ({ mount }) => {
     const root = await mount('BotBanner/Sleep');
     await expect(root.getByText('SLEEP', { exact: true })).toBeVisible();
     await expect(root.getByText("Bot hasn't checked in recently")).toBeVisible();

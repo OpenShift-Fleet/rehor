@@ -1,68 +1,46 @@
-"""Tests for the instance last_seen column (schema and _instance_row serialization)."""
-
-from datetime import UTC, datetime
+"""Tests that last_seen is dropped from bot_instances (schema and API)."""
 
 import pytest
 from bot_memory_server.api import _instance_row
 from conftest import SCHEMA_PATH
 
+LAST_SEEN_EXISTS_SQL = """
+    SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'bot_instances' AND column_name = 'last_seen'
+    )
+"""
+
 
 async def _apply_schema(db):
-    schema = SCHEMA_PATH.read_text()
-    await db.execute(schema)
+    await db.execute(SCHEMA_PATH.read_text())
 
 
-async def _insert_instance(db, instance_id, **kwargs):
+@pytest.mark.asyncio
+async def test_last_seen_column_absent_after_schema(db):
+    await _apply_schema(db)
+    assert await db.fetchval(LAST_SEEN_EXISTS_SQL) is False
+
+
+@pytest.mark.asyncio
+async def test_schema_drops_existing_last_seen_column(db):
+    await _apply_schema(db)
+    await db.execute("ALTER TABLE bot_instances ADD COLUMN last_seen TIMESTAMPTZ")
+    await _apply_schema(db)
+    assert await db.fetchval(LAST_SEEN_EXISTS_SQL) is False
+
+
+@pytest.mark.asyncio
+async def test_instance_row_omits_last_seen(db):
+    await _apply_schema(db)
     await db.execute(
         """INSERT INTO bot_instances (instance_id, state, message, repo)
            VALUES ($1, $2, $3, $4)""",
-        instance_id,
-        kwargs.get("state", "idle"),
-        kwargs.get("message", ""),
-        kwargs.get("repo", "test-repo"),
-    )
-
-
-@pytest.mark.asyncio
-async def test_last_seen_column_exists(db):
-    await _apply_schema(db)
-    await _insert_instance(db, "inst-1")
-    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-1")
-    assert row["last_seen"] is None
-
-
-@pytest.mark.asyncio
-async def test_last_seen_in_instance_row(db):
-    await _apply_schema(db)
-    ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-    await db.execute(
-        """INSERT INTO bot_instances (instance_id, state, message, repo, last_seen)
-           VALUES ($1, $2, $3, $4, $5)""",
-        "inst-3",
+        "inst-1",
         "idle",
         "",
         "test-repo",
-        ts,
     )
-    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-3")
+    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-1")
     result = _instance_row(row)
-    assert result["last_seen"] == ts.isoformat()
-
-
-@pytest.mark.asyncio
-async def test_last_seen_null_when_not_set(db):
-    await _apply_schema(db)
-    await _insert_instance(db, "inst-4")
-    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-4")
-    result = _instance_row(row)
-    assert result["last_seen"] is None
-
-
-@pytest.mark.asyncio
-async def test_last_seen_schema_migration_idempotent(db):
-    schema = SCHEMA_PATH.read_text()
-    await db.execute(schema)
-    await db.execute(schema)
-    await _insert_instance(db, "inst-5")
-    row = await db.fetchrow("SELECT * FROM bot_instances WHERE instance_id = $1", "inst-5")
-    assert row["last_seen"] is None
+    assert "last_seen" not in result

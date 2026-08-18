@@ -799,7 +799,6 @@ components:
         instance_id: { type: string }
         updated_at: { type: string }
         cycle_start: { type: string, nullable: true }
-        last_seen: { type: string, nullable: true }
 
     BotInstance:
       type: object
@@ -814,7 +813,6 @@ components:
         repo: { type: string, nullable: true }
         cycle_start: { type: string, nullable: true }
         updated_at: { type: string }
-        last_seen: { type: string, nullable: true }
         active_tasks: { type: integer }
         max_tasks: { type: integer }
         idle_consecutive_cycles: { type: integer }

@@ -94,7 +94,7 @@ const scenarios: Record<string, () => JSX.Element> = {
     <BotBanner status={makeBotStatus({ state: 'error', message: 'Cycle failed' })} />
   ),
   'BotBanner/Sleep': () => (
-    <BotBanner status={makeBotStatus({ state: 'idle', message: '', instance_id: 'dev-bot', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' })} />
+    <BotBanner status={makeBotStatus({ state: 'idle', message: '', instance_id: 'dev-bot', updated_at: '2020-01-01T00:00:00Z' })} />
   ),
   // ── ConfirmDialog ──
   'ConfirmDialog/Default': () => (

@@ -619,7 +619,6 @@ def _instance_row(r, active_tasks: int = 0) -> dict:
         "last_idle_reminder_sent_at": (
             r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
         ),
-        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
     }
 
 

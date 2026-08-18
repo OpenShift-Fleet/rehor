@@ -11,7 +11,6 @@ function makeInstance(overrides: Record<string, any> = {}) {
     repo: null,
     cycle_start: null,
     updated_at: '2026-07-01T10:00:00Z',
-    last_seen: null,
     active_tasks: 2,
     max_tasks: 10,
     ...overrides,
@@ -61,8 +60,8 @@ test.describe('Instances page', () => {
     await expect(page.getByText('org/repo')).toBeVisible();
   });
 
-  test('renders sleep state for instance with stale last_seen', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'sleep-bot', state: 'idle', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+  test('renders sleep state for instance with stale updated_at', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'sleep-bot', state: 'idle', updated_at: '2020-01-01T00:00:00Z' });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });
@@ -72,8 +71,8 @@ test.describe('Instances page', () => {
     await expect(page.getByText("Bot hasn't checked in recently")).toBeVisible();
   });
 
-  test('does not show sleep for working instance even with stale last_seen', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'busy-bot', state: 'working', message: 'On it', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+  test('does not show sleep for working instance even with stale updated_at', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'busy-bot', state: 'working', message: 'On it', updated_at: '2020-01-01T00:00:00Z' });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });

@@ -217,7 +217,6 @@ function AppInner() {
           instance_id: currentInstance.instance_id,
           cycle_start: currentInstance.cycle_start,
           updated_at: currentInstance.updated_at,
-          last_seen: currentInstance.last_seen,
         }} />
       )}
 
