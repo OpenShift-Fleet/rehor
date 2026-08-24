@@ -165,6 +165,10 @@
     "url": "https://github.com/platex-rehor-bot/platform-frontend-ai-dev.git",
     "upstream": "https://github.com/RedHatInsights/platform-frontend-ai-dev.git"
   },
+  "platform-settings-ui": {
+    "url": "https://github.com/platex-rehor-bot/platform-settings-ui.git",
+    "upstream": "https://github.com/RedHatInsights/platform-settings-ui.git"
+  },
   "api-frontend": {
     "url": "https://github.com/platex-rehor-bot/api-frontend.git",
     "upstream": "https://github.com/RedHatInsights/api-frontend.git"
