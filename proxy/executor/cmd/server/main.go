@@ -34,7 +34,7 @@ var (
 
 	jiraListen   = flag.String("jira-listen", ":8445", "jira auth proxy listen address")
 	jiraURL      = flag.String("jira-url", "", "upstream Jira URL")
-	jiraUsername  = flag.String("jira-username", "", "Jira username")
+	jiraUsername = flag.String("jira-username", "", "Jira username")
 	jiraToken    = flag.String("jira-token", "", "Jira API token")
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
