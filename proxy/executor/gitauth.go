@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -10,9 +11,14 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+
+
 
 const (
 	// Auth type constants
@@ -36,6 +42,7 @@ type GitHost struct {
 	AuthType string
 	Token    func() string
 	Username func() string
+	TLSInsecureSkipVerify bool
 }
 
 func defaultHostRegistry() map[string]*GitHost {
@@ -53,6 +60,7 @@ func defaultHostRegistry() map[string]*GitHost {
 			AuthType: AuthTypeBasic,
 			Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
 			Username: func() string { return os.Getenv("GL_USERNAME") },
+			TLSInsecureSkipVerify: getEnvAsBool("GITLAB_TLS_SKIP_VERIFY", false),
 		},
 	}
 }
@@ -110,6 +118,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		},
 		FlushInterval:  DisableFlush,
 		ModifyResponse: stripSensitiveResponseHeaders,
+		Transport:     NewPerHostTransportManager(hostRegistry),
 	}
 
 	// Helper to log requests with consistent format
@@ -201,4 +210,73 @@ func ValidateGitAuthConfig() error {
 	}
 
 	return nil
+}
+
+// PerHostTransportManager caches and manages http.Transport instances per backend host.
+type PerHostTransportManager struct {
+	mu         sync.Mutex
+	transports map[string]*http.Transport
+    hostRegistry map[string]*GitHost
+}
+
+func NewPerHostTransportManager(hosts map[string]*GitHost) *PerHostTransportManager {
+	return &PerHostTransportManager{
+		transports: make(map[string]*http.Transport),
+		hostRegistry: hosts,
+	}
+}
+
+// RoundTrip intercepts the request, determines the target host, and routes it
+// through a Transport configured specifically for that host.
+func (m *PerHostTransportManager) RoundTrip(req *http.Request) (*http.Response, error) {
+	host := req.URL.Host
+
+	m.mu.Lock()
+	tr, exists := m.transports[host]
+	if !exists {
+		// Build a custom TLS config dynamically based on the target host
+		tlsConfig := m.getTLSConfigForHost(host)
+
+		tr = &http.Transport{
+			TLSClientConfig:     tlsConfig,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+		}
+		m.transports[host] = tr
+	}
+	m.mu.Unlock()
+
+	return tr.RoundTrip(req)
+}
+
+// getTLSConfigForHost defines your custom rules per backend host
+func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
+
+	tlsConfig := tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	matchedHost, exists := m.hostRegistry[host]
+	if !exists {
+		return &tlsConfig
+	}
+
+	tlsConfig.InsecureSkipVerify = matchedHost.TLSInsecureSkipVerify
+
+	return &tlsConfig
+}
+
+
+func getEnvAsBool(envVar string, defaultValue bool) bool {
+	valStr := os.Getenv(envVar)
+	if valStr == "" {
+		return defaultValue
+	}
+
+	val, err := strconv.ParseBool(valStr)
+	if err != nil {
+		return defaultValue
+	}
+
+	return val
 }
