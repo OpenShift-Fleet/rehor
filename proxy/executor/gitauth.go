@@ -17,9 +17,6 @@ import (
 	"time"
 )
 
-
-
-
 const (
 	// Auth type constants
 	AuthTypeBearer = "bearer"
@@ -37,11 +34,11 @@ const (
 )
 
 type GitHost struct {
-	Scheme   string
-	Host     string
-	AuthType string
-	Token    func() string
-	Username func() string
+	Scheme                string
+	Host                  string
+	AuthType              string
+	Token                 func() string
+	Username              func() string
 	TLSInsecureSkipVerify bool
 }
 
@@ -55,11 +52,11 @@ func defaultHostRegistry() map[string]*GitHost {
 			Username: nil,
 		},
 		"gitlab.cee.redhat.com": {
-			Scheme:   "https",
-			Host:     "gitlab.cee.redhat.com",
-			AuthType: AuthTypeBasic,
-			Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
-			Username: func() string { return os.Getenv("GL_USERNAME") },
+			Scheme:                "https",
+			Host:                  "gitlab.cee.redhat.com",
+			AuthType:              AuthTypeBasic,
+			Token:                 func() string { return os.Getenv("GITLAB_TOKEN") },
+			Username:              func() string { return os.Getenv("GL_USERNAME") },
 			TLSInsecureSkipVerify: getEnvAsBool("GITLAB_TLS_SKIP_VERIFY", false),
 		},
 	}
@@ -214,14 +211,14 @@ func ValidateGitAuthConfig() error {
 
 // PerHostTransportManager caches and manages http.Transport instances per backend host.
 type PerHostTransportManager struct {
-	mu         sync.Mutex
-	transports map[string]*http.Transport
-    hostRegistry map[string]*GitHost
+	mu           sync.Mutex
+	transports   map[string]*http.Transport
+	hostRegistry map[string]*GitHost
 }
 
 func NewPerHostTransportManager(hosts map[string]*GitHost) *PerHostTransportManager {
 	return &PerHostTransportManager{
-		transports: make(map[string]*http.Transport),
+		transports:   make(map[string]*http.Transport),
 		hostRegistry: hosts,
 	}
 }
@@ -265,7 +262,6 @@ func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
 
 	return &tlsConfig
 }
-
 
 func getEnvAsBool(envVar string, defaultValue bool) bool {
 	valStr := os.Getenv(envVar)

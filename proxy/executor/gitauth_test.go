@@ -398,11 +398,11 @@ func TestGetEnvAsBool(t *testing.T) {
 
 func TestPerHostTransportManager_TLSConfig(t *testing.T) {
 	tests := []struct {
-		name                  string
-		host                  string
-		hostRegistry          map[string]*GitHost
+		name                   string
+		host                   string
+		hostRegistry           map[string]*GitHost
 		wantInsecureSkipVerify bool
-		wantMinVersion        uint16
+		wantMinVersion         uint16
 	}{
 		{
 			name: "gitlab with InsecureSkipVerify true",
