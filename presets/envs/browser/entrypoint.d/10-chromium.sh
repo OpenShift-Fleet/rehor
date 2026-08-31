@@ -1,6 +1,26 @@
 #!/bin/bash
 # Start headless Chromium for chrome-devtools MCP
 
+# Map SSO credentials to E2E vars (used by Playwright global-setup).
+# SSO_USERNAME/SSO_PASSWORD are unset by entrypoint.sh before entrypoint.d runs,
+# so read from the .credentials file that entrypoint.sh writes at line 36-39.
+# BEGIN CREDENTIAL MAPPING.
+CRED_FILE="${CRED_FILE:-/home/botuser/app/.credentials}"
+if [ -z "${E2E_USER:-}" ] && [ -f "$CRED_FILE" ]; then
+    E2E_USER=$(python3 -c "import json,sys; d=json.load(open('$CRED_FILE')); print(d['sso']['username'])" 2>/dev/null)
+    if [ -z "$E2E_USER" ]; then
+        echo "WARNING: Could not read SSO username from $CRED_FILE"
+    fi
+    E2E_PASSWORD=$(python3 -c "import json,sys; d=json.load(open('$CRED_FILE')); print(d['sso']['password'])" 2>/dev/null)
+    if [ -z "$E2E_PASSWORD" ]; then
+        echo "WARNING: Could not read SSO password from $CRED_FILE"
+    fi
+    if [ -n "$E2E_USER" ]; then
+        export E2E_USER E2E_PASSWORD
+    fi
+fi
+# END CREDENTIAL MAPPING
+
 # Load extra hosts from instance config (e.g. instance/<name>/agent/extra-hosts)
 # Standard /etc/hosts format — one entry per line:
 #   127.0.0.1    stage.foo.redhat.com
