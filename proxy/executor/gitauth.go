@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +69,7 @@ type contextKey string
 
 const (
 	hostConfigKey    contextKey = "hostConfig"
+	backendHostKey   contextKey = "backendHost"
 	pathRemainderKey contextKey = "pathRemainder"
 	tokenKey         contextKey = "token"
 )
@@ -115,7 +115,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		},
 		FlushInterval:  DisableFlush,
 		ModifyResponse: stripSensitiveResponseHeaders,
-		Transport:     NewPerHostTransportManager(hostRegistry),
+		Transport:      NewPerHostTransportManager(hostRegistry),
 	}
 
 	// Helper to log requests with consistent format
@@ -176,6 +176,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		}
 
 		ctx := context.WithValue(r.Context(), hostConfigKey, hostConfig)
+		ctx = context.WithValue(ctx, backendHostKey, host)
 		ctx = context.WithValue(ctx, pathRemainderKey, remainder)
 		ctx = context.WithValue(ctx, tokenKey, token)
 		r = r.WithContext(ctx)
@@ -226,7 +227,10 @@ func NewPerHostTransportManager(hosts map[string]*GitHost) *PerHostTransportMana
 // RoundTrip intercepts the request, determines the target host, and routes it
 // through a Transport configured specifically for that host.
 func (m *PerHostTransportManager) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
+	host, ok := req.Context().Value(backendHostKey).(string)
+	if !ok {
+		host = req.URL.Host
+	}
 
 	m.mu.Lock()
 	tr, exists := m.transports[host]
@@ -264,15 +268,17 @@ func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
 }
 
 func getEnvAsBool(envVar string, defaultValue bool) bool {
-	valStr := os.Getenv(envVar)
+	valStr := strings.ToLower(strings.TrimSpace(os.Getenv(envVar)))
 	if valStr == "" {
 		return defaultValue
 	}
 
-	val, err := strconv.ParseBool(valStr)
-	if err != nil {
+	switch valStr {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
 		return defaultValue
 	}
-
-	return val
 }

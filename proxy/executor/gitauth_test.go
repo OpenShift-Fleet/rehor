@@ -372,10 +372,30 @@ func TestGetEnvAsBool(t *testing.T) {
 			want:         true,
 		},
 		{
+			name:     "yes returns true",
+			envValue: "yes",
+			want:     true,
+		},
+		{
+			name:     "on returns true",
+			envValue: "on",
+			want:     true,
+		},
+		{
 			name:         "0 returns false",
 			envValue:     "0",
 			defaultValue: true,
 			want:         false,
+		},
+		{
+			name:     "no returns false",
+			envValue: "no",
+			want:     false,
+		},
+		{
+			name:     "off returns false",
+			envValue: "off",
+			want:     false,
 		},
 		{
 			name:         "invalid value returns default",
@@ -490,7 +510,7 @@ func TestPerHostTransportManager_CachesTransports(t *testing.T) {
 
 func TestGitAuthProxy_GitLabWithTLSInsecureSkipVerify(t *testing.T) {
 	var gotAuth, gotPath string
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
 		w.WriteHeader(http.StatusOK)
@@ -525,5 +545,32 @@ func TestGitAuthProxy_GitLabWithTLSInsecureSkipVerify(t *testing.T) {
 	}
 	if gotPath != "/team/project.git/git-receive-pack" {
 		t.Errorf("Path = %q, want /team/project.git/git-receive-pack", gotPath)
+	}
+}
+
+func TestGitAuthProxy_GitLabTLSVerificationRemainsStrictWhenDisabled(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	registry := map[string]*GitHost{
+		"gitlab.cee.redhat.com": {
+			Scheme:   upstreamURL.Scheme,
+			Host:     upstreamURL.Host,
+			AuthType: AuthTypeBasic,
+			Token:    func() string { return "token" },
+			Username: func() string { return "user" },
+		},
+	}
+
+	handler := newGitAuthProxyWithRegistry(registry)
+	req := httptest.NewRequest("GET", "/gitlab.cee.redhat.com/team/project.git/info/refs", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", w.Code)
 	}
 }

@@ -17,7 +17,7 @@ Integration tests for the Git Auth Reverse Proxy feature (`test_git_proxy_integr
    ```
 
 3. **Proxy container healthy**:
-   The proxy must expose port 8447 for the git-auth proxy (this is Phase 2 work).
+   The proxy must expose port 8447 for the git-auth proxy.
 
 ## Running the Tests
 
@@ -98,17 +98,11 @@ cd /path/to/rehor
 pytest tests/test_git_proxy_integration.py -v
 ```
 
-## Phase 1 vs Phase 2
+## Runtime requirements
 
-**Phase 1** (current): 
-- Proxy implementation exists (`proxy/executor/gitauth.go`)
-- Unit tests pass
-- Integration tests written but may skip if proxy not fully integrated
-
-**Phase 2** (future):
-- Proxy integrated into docker-compose (port 8447 exposed)
-- `bot/run.py` updated to generate `.gitconfig` with `insteadOf` rewrites
-- Integration tests fully functional
+- Proxy listens on port 8447 for Git auth forwarding.
+- Bot uses `GIT_AUTH_PROXY_HOST` to generate `insteadOf` rewrites.
+- Set `GITLAB_TLS_SKIP_VERIFY=true` only for environments using self-signed GitLab certificates.
 
 ## CI/CD Integration
 
