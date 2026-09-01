@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from .constants import MEMORY_API_BASE
+from .metrics import TRANSCRIPT_UPLOAD_TOTAL
 
 if TYPE_CHECKING:
     from .agent import CycleContext
@@ -74,10 +75,15 @@ def record_transcript(
     instance_id: str | None = None,
     input_prompt: str | None = None,
 ) -> None:
-    """Compress and store the cycle transcript + metadata to the dashboard API."""
+    """Compress and store the cycle transcript + metadata to the dashboard API.
+
+    Only called after an agent session ran. Missing transcripts are alertable —
+    preflight skip/error use post_orphan_cycle and must not hit this path.
+    """
     session_id = getattr(result, "session_id", "")
     if not session_id:
-        logger.debug("No session_id in result — skipping transcript capture")
+        logger.warning("No session_id in result — session cycle missing transcript")
+        TRANSCRIPT_UPLOAD_TOTAL.labels(label, "missing").inc()
         return
 
     usage = getattr(result, "usage", None) or {}
@@ -107,6 +113,8 @@ def record_transcript(
         },
     }
 
+    has_transcript = False
+    outcome = None
     transcript_path = _find_transcript(session_id, cwd)
     if transcript_path:
         try:
@@ -116,6 +124,7 @@ def record_transcript(
             compressor = zstd.ZstdCompressor(level=19)
             compressed = compressor.compress(raw)
             body["transcript_b64"] = base64.b64encode(compressed).decode()
+            has_transcript = True
             logger.info(
                 "Transcript: %d bytes → %d compressed (%.0f%% savings)",
                 len(raw),
@@ -124,17 +133,25 @@ def record_transcript(
             )
         except ImportError:
             logger.warning("zstandard not installed — storing cycle run without transcript")
+            outcome = "compress_error"
         except Exception:
             logger.warning("Failed to read/compress transcript", exc_info=True)
+            outcome = "compress_error"
     else:
-        logger.debug("Transcript file not found for session %s", session_id)
+        logger.warning("Transcript file not found for session %s", session_id)
+        outcome = "missing"
 
     try:
         url = _get_cycle_runs_url()
         resp = httpx.post(url, json=body, timeout=10.0)
         logger.info("Cycle run stored: id=%s status=%s", resp.json().get("id"), resp.status_code)
+        if outcome is None:
+            outcome = "ok" if has_transcript else "missing"
     except Exception:
         logger.warning("Failed to push cycle run to %s", _get_cycle_runs_url(), exc_info=True)
+        outcome = "push_error"
+
+    TRANSCRIPT_UPLOAD_TOTAL.labels(label, outcome).inc()
 
 
 def post_orphan_cycle(

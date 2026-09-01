@@ -47,7 +47,6 @@ export interface BotInstance {
   repo: string | null;
   cycle_start: string | null;
   updated_at: string;
-  last_seen: string | null;
   active_tasks: number;
   max_tasks: number;
 }
@@ -62,7 +61,6 @@ export interface BotStatus {
   instance_id: string | null;
   cycle_start: string | null;
   updated_at: string;
-  last_seen?: string | null;
 }
 
 export interface CycleEntry {

@@ -44,13 +44,10 @@ const SLEEP_THRESHOLD_MS = 60_000; // 60 seconds
 
 export type DisplayState = 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
 
-export function effectiveState(instance: { state: string; last_seen?: string | null; updated_at?: string }): DisplayState {
-  if (instance.state === 'idle') {
-    const ref = instance.last_seen || instance.updated_at;
-    if (ref) {
-      const age = Date.now() - new Date(ref).getTime();
-      if (age > SLEEP_THRESHOLD_MS) return 'sleep';
-    }
+export function effectiveState(instance: { state: string; updated_at?: string }): DisplayState {
+  if (instance.state === 'idle' && instance.updated_at) {
+    const age = Date.now() - new Date(instance.updated_at).getTime();
+    if (age > SLEEP_THRESHOLD_MS) return 'sleep';
   }
   return instance.state as DisplayState;
 }

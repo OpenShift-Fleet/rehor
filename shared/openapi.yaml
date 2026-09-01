@@ -313,6 +313,9 @@ paths:
         - name: to
           in: query
           schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: Cost entries and daily aggregates
@@ -522,44 +525,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/BotInstance'
 
-  /api/instances/{instance_id}/wake:
-    get:
-      operationId: checkInstanceWake
-      summary: Check if a wake signal is pending (consumed on read)
-      parameters:
-        - name: instance_id
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Wake status
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [wake]
-                properties:
-                  wake: { type: boolean }
-    post:
-      operationId: triggerInstanceWake
-      summary: Send a wake signal to an instance
-      parameters:
-        - name: instance_id
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Wake triggered
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok]
-                properties:
-                  ok: { type: boolean }
-
   /api/analytics:
     get:
       operationId: getAnalytics
@@ -574,6 +539,9 @@ paths:
         - name: to
           in: query
           schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
       responses:
         '200':
           description: Analytics data
@@ -756,6 +724,7 @@ components:
         repo: { type: string, nullable: true }
         work_type: { type: string, nullable: true }
         summary: { type: string, nullable: true }
+        instance_id: { type: string, nullable: true }
       additionalProperties: false
 
     CycleRunItem:
@@ -830,7 +799,6 @@ components:
         instance_id: { type: string }
         updated_at: { type: string }
         cycle_start: { type: string, nullable: true }
-        last_seen: { type: string, nullable: true }
 
     BotInstance:
       type: object
@@ -845,7 +813,6 @@ components:
         repo: { type: string, nullable: true }
         cycle_start: { type: string, nullable: true }
         updated_at: { type: string }
-        last_seen: { type: string, nullable: true }
         active_tasks: { type: integer }
         max_tasks: { type: integer }
         idle_consecutive_cycles: { type: integer }

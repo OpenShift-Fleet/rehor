@@ -8,7 +8,7 @@
   },
   "polling": {
     "intervalSeconds": 300,
-    "idleIntervalSeconds": 3600,
+    "idleIntervalSeconds": 300,
     "idleReminderCooldownSeconds": 172800
   }
 }

@@ -1,0 +1,227 @@
+name: Container Verify
+
+# Builds the bot, proxy, and memory-server images and runs a minimal smoke
+# check against each. This is intentionally path-filtered like every other
+# GitHub Actions workflow in this repo: GitHub does not render a "skipped"
+# badge for a non-triggered path-filtered workflow, it simply doesn't appear
+# on the PR. "Non-blocking for unrelated PRs" means exactly that: unrelated
+# file changes never surface this check at all.
+#
+# Full multi-container runtime verification (executor sidecar + proxy +
+# memory-server + real entrypoint stages) is out of scope here — see
+# docs/operations/rehor-107-container-verification.md for the REHOR-62
+# hand-off notes.
+#
+# The three jobs below are independent (separate images, separate failure
+# domains). If one fails due to transient runner/infra issues (e.g. GitHub's
+# action-download service or a stuck queued runner) rather than an actual
+# build/smoke-check failure, use "Re-run failed jobs" once the whole run has
+# completed — GitHub won't let you re-run individual jobs while others are
+# still in progress.
+
+on:
+  pull_request:
+    paths:
+      # bot image inputs
+      - "Dockerfile.runner"
+      - "entrypoint.sh"
+      - "config.json"
+      - ".mcp.json"
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "presets/**"
+      - "dev-proxy/**"
+      - "bot/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      # proxy image inputs
+      - "proxy/**"
+      # memory-server image inputs
+      - "memory-server/**"
+      # shared
+      - "docker-compose.yml"
+      - ".github/workflows/container-verify.yml"
+  push:
+    branches:
+      - master
+    paths:
+      # bot image inputs
+      - "Dockerfile.runner"
+      - "entrypoint.sh"
+      - "config.json"
+      - ".mcp.json"
+      - "CLAUDE.md"
+      - ".claude/**"
+      - "presets/**"
+      - "dev-proxy/**"
+      - "bot/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      # proxy image inputs
+      - "proxy/**"
+      # memory-server image inputs
+      - "memory-server/**"
+      # shared
+      - "docker-compose.yml"
+      - ".github/workflows/container-verify.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build bot runner image
+        run: |
+          set -euo pipefail
+          BUILD_ROOT="$(mktemp -d)"
+          mkdir -p "$BUILD_ROOT/dev-bot" "$BUILD_ROOT/instance/verify/agent"
+          rsync -a --delete --exclude ".git" ./ "$BUILD_ROOT/dev-bot/"
+          cat > "$BUILD_ROOT/setup.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          EOF
+          chmod +x "$BUILD_ROOT/setup.sh"
+          cat > "$BUILD_ROOT/instance/verify/agent/instance.yaml" <<'EOF'
+          envs:
+            - node
+            - go
+            - browser
+            - container-scan
+          EOF
+          docker build --build-arg GOVERSIONS="1.24.2 1.25.7" -t bot:verify -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
+
+      - name: Verify required tooling is present
+        # The bot image's real entrypoint (entrypoint.sh) unconditionally waits
+        # up to 30s for a Unix socket produced by the proxy sidecar's
+        # executor-server and hard-exits if it's not there. That socket only
+        # exists in the full multi-container stack, so we bypass the entrypoint
+        # here and verify the runner image actually produced a working image with
+        # the tooling it installs. gh/glab/gpg are checked for presence only
+        # (never invoked) — they're symlinks to the executor thin client, which
+        # dials EXECUTOR_ADDR immediately regardless of args and would fail
+        # without a live socket.
+        run: |
+          set -euo pipefail
+          fail=0
+          for tool in python3 uv git tini bwrap buildah node go gcc make gh glab gpg; do
+            if docker run --rm --entrypoint bash bot:verify -c "command -v ${tool}" >/dev/null 2>&1; then
+              echo "OK: ${tool} present"
+            else
+              echo "::error::bot image is missing required tool: ${tool}"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            docker run --rm --entrypoint bash bot:verify -c 'echo "PATH=$PATH"'
+            exit 1
+          fi
+          docker run --rm --entrypoint bash bot:verify -c '
+            set -euo pipefail
+            python3 --version
+            uv --version
+            git --version
+            node --version
+          '
+
+  verify-proxy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build proxy image
+        run: |
+          docker build -t proxy:verify ./proxy
+
+      - name: Start proxy container
+        run: |
+          docker run -d --name proxy-verify -e GH_TOKEN=dummy-smoke-token proxy:verify
+
+      - name: Wait for squid to become ready
+        run: |
+          squid_ok=0
+          for i in $(seq 1 15); do
+            if docker exec proxy-verify squidclient -h 127.0.0.1 -p 3128 mgr:info >/dev/null 2>&1; then
+              squid_ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$squid_ok" -ne 1 ]; then
+            echo "::error::proxy image built but squid did not become ready within 30s"
+            docker logs proxy-verify
+            exit 1
+          fi
+          echo "squid is ready"
+
+      - name: Verify executor socket is listening
+        run: |
+          if ! docker exec proxy-verify test -S /var/run/devbot/executor.sock; then
+            echo "::error::proxy image built but executor-server did not create its listening socket"
+            docker logs proxy-verify
+            exit 1
+          fi
+          echo "executor socket is present"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f proxy-verify
+
+  verify-memory-server:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: devbot_test
+          POSTGRES_PASSWORD: devbot_test
+          POSTGRES_DB: devbot_migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devbot_test -d devbot_migration_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build memory-server image
+        run: |
+          docker build -f memory-server/Dockerfile -t memory-server:verify .
+
+      - name: Start memory-server container
+        run: |
+          docker run -d --name memory-server-verify --network host \
+            -e DATABASE_URL=postgresql://devbot_test:devbot_test@localhost:5432/devbot_migration_test \
+            memory-server:verify
+
+      - name: Wait for /health
+        run: |
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::memory-server image built but /health never returned success within 60s"
+            docker logs memory-server-verify
+            exit 1
+          fi
+          echo "memory-server /health is ready"
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f memory-server-verify

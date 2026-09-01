@@ -106,22 +106,16 @@ describe('effectiveState', () => {
     expect(effectiveState({ state: 'error', updated_at: '2025-01-01T00:00:00Z' })).toBe('error');
   });
 
-  it('returns idle when last_seen is recent', () => {
+  it('returns idle when updated_at is recent', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T12:00:30Z'));
-    expect(effectiveState({ state: 'idle', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('idle');
+    expect(effectiveState({ state: 'idle', updated_at: '2025-01-01T12:00:00Z' })).toBe('idle');
   });
 
-  it('returns sleep when last_seen is stale and state is idle', () => {
+  it('returns sleep when updated_at is stale and state is idle', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
-    expect(effectiveState({ state: 'idle', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('sleep');
-  });
-
-  it('falls back to updated_at when last_seen is null', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
-    expect(effectiveState({ state: 'idle', last_seen: null, updated_at: '2025-01-01T12:00:00Z' })).toBe('sleep');
+    expect(effectiveState({ state: 'idle', updated_at: '2025-01-01T12:00:00Z' })).toBe('sleep');
   });
 
   it('returns idle when no timestamps available', () => {
@@ -131,6 +125,6 @@ describe('effectiveState', () => {
   it('does not convert working to sleep even if stale', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T12:05:00Z'));
-    expect(effectiveState({ state: 'working', last_seen: '2025-01-01T12:00:00Z', updated_at: '2025-01-01T11:00:00Z' })).toBe('working');
+    expect(effectiveState({ state: 'working', updated_at: '2025-01-01T11:00:00Z' })).toBe('working');
   });
 });

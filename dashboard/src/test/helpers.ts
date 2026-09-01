@@ -39,7 +39,6 @@ export function makeBotInstance(overrides: Partial<BotInstance> = {}): BotInstan
     repo: defaultBotStatus.repo,
     cycle_start: defaultBotStatus.cycle_start,
     updated_at: defaultBotStatus.updated_at,
-    last_seen: null,
     active_tasks: 2,
     max_tasks: 10,
     ...overrides,

@@ -11,7 +11,6 @@ function makeInstance(overrides: Record<string, any> = {}) {
     repo: null,
     cycle_start: null,
     updated_at: '2026-07-01T10:00:00Z',
-    last_seen: null,
     active_tasks: 2,
     max_tasks: 10,
     ...overrides,
@@ -22,9 +21,6 @@ test.describe('Instances page', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [] });
-    });
-    await page.route('**/api/instances/*/wake', (route) => {
-      route.fulfill({ json: { ok: true } });
     });
   });
 
@@ -46,35 +42,6 @@ test.describe('Instances page', () => {
     await expect(page.getByText('3/10 tasks')).toBeVisible();
   });
 
-  test('renders idle instance with wake button', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
-    await page.route('**/api/instances', (route) => {
-      route.fulfill({ json: [inst] });
-    });
-
-    await mount('Instances/Default');
-    await expect(page.getByTitle('Wake bot — start next cycle immediately')).toBeVisible();
-  });
-
-  test('calls wakeInstance when wake button clicked', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'idle-bot', state: 'idle', updated_at: new Date().toISOString() });
-    await page.route('**/api/instances', (route) => {
-      route.fulfill({ json: [inst] });
-    });
-
-    let wakeCalled = false;
-    await page.route('**/api/instances/idle-bot/wake', (route) => {
-      wakeCalled = true;
-      route.fulfill({ json: { ok: true } });
-    });
-
-    await mount('Instances/Default');
-    await page.getByTitle('Wake bot — start next cycle immediately').click();
-    await page.waitForTimeout(200);
-
-    expect(wakeCalled).toBe(true);
-  });
-
   test('renders external key link for jira instance', async ({ mount, page }) => {
     const inst = makeInstance({
       instance_id: 'jira-bot',
@@ -93,8 +60,8 @@ test.describe('Instances page', () => {
     await expect(page.getByText('org/repo')).toBeVisible();
   });
 
-  test('renders sleep state for instance with stale last_seen', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'sleep-bot', state: 'idle', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+  test('renders sleep state for instance with stale updated_at', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'sleep-bot', state: 'idle', updated_at: '2020-01-01T00:00:00Z' });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });
@@ -102,11 +69,10 @@ test.describe('Instances page', () => {
     await mount('Instances/Default');
     await expect(page.getByText('SLEEP', { exact: true })).toBeVisible();
     await expect(page.getByText("Bot hasn't checked in recently")).toBeVisible();
-    expect(await page.getByTitle('Wake bot — start next cycle immediately').count()).toBe(0);
   });
 
-  test('does not show sleep for working instance even with stale last_seen', async ({ mount, page }) => {
-    const inst = makeInstance({ instance_id: 'busy-bot', state: 'working', message: 'On it', last_seen: '2020-01-01T00:00:00Z', updated_at: '2020-01-01T00:00:00Z' });
+  test('does not show sleep for working instance even with stale updated_at', async ({ mount, page }) => {
+    const inst = makeInstance({ instance_id: 'busy-bot', state: 'working', message: 'On it', updated_at: '2020-01-01T00:00:00Z' });
     await page.route('**/api/instances', (route) => {
       route.fulfill({ json: [inst] });
     });

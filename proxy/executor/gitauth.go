@@ -64,9 +64,9 @@ func NewGitAuthProxy() http.Handler {
 type contextKey string
 
 const (
-	hostConfigKey contextKey = "hostConfig"
+	hostConfigKey    contextKey = "hostConfig"
 	pathRemainderKey contextKey = "pathRemainder"
-	tokenKey contextKey = "token"
+	tokenKey         contextKey = "token"
 )
 
 func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler {
@@ -108,7 +108,8 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 				r.Out.Header.Set("Authorization", basicAuth)
 			}
 		},
-		FlushInterval: DisableFlush,
+		FlushInterval:  DisableFlush,
+		ModifyResponse: stripSensitiveResponseHeaders,
 	}
 
 	// Helper to log requests with consistent format

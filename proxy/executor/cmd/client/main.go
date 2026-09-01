@@ -117,4 +117,3 @@ func needsStdin(tool string, args []string) bool {
 	}
 	return false
 }
-

@@ -34,7 +34,7 @@ var (
 
 	jiraListen   = flag.String("jira-listen", ":8445", "jira auth proxy listen address")
 	jiraURL      = flag.String("jira-url", "", "upstream Jira URL")
-	jiraUsername  = flag.String("jira-username", "", "Jira username")
+	jiraUsername = flag.String("jira-username", "", "Jira username")
 	jiraToken    = flag.String("jira-token", "", "Jira API token")
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
@@ -75,6 +75,7 @@ func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Execu
 
 	if err := s.policy.Check(tool, args); err != nil {
 		log.Printf("policy-deny: tool=%s subcmd=%s reason=%s", tool, subcmd, err)
+		executor.PolicyDenyTotal.WithLabelValues(tool).Inc()
 		exitCode = 1
 		return &pb.ExecuteResponse{
 			Stderr:   err.Error() + "\n",
