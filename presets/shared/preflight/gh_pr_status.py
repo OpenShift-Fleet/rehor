@@ -90,8 +90,6 @@ def classify_gh(pr, last_addressed=""):
         konflux_urls = [c.get("detailsUrl", "") for c in failed_checks if "pipelinerun" in c.get("detailsUrl", "")]
         if konflux_urls:
             issues.append(f"konflux_urls:{';'.join(konflux_urls)}")
-    if pr.get("reviewDecision") == "CHANGES_REQUESTED":
-        issues.append("changes_requested")
     last_prefix = last_addressed[:16] if last_addressed else ""
     for rv in pr.get("reviews") or []:
         rstate = rv.get("state", "")
