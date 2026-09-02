@@ -71,4 +71,5 @@ nav:
     - Custom Preflight Scripts: presets/custom-preflight.md
   - Migrations:
     - Preset Migration Guide: migrations/preset-migration-guide.md
+    - OpenCode Migration Design: migrations/opencode-migration.md
   - Roadmap: roadmap.md
