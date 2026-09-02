@@ -91,9 +91,19 @@ envs:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `workflow` | string | `jira-sprint` | Workflow preset name (built-in) or `./path` (custom). See below. |
-| `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
+| `source` | string | `jira` | Work source. See **Source types** below. |
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
+
+**Source types** control how the bot's main loop behaves between cycles:
+
+| Source | Loop behavior | Use when |
+|--------|--------------|----------|
+| `jira` | Runs continuously, sleeps between cycles, polls for new work | Your bot pulls tickets from a Jira board |
+| `scheduled` | Runs continuously, sleeps between cycles (same as `jira`) | Your bot runs on a timer but the pod stays alive between cycles |
+| `run_and_exit` | Runs one cycle then exits | Your pod is scaled 0-to-1 by KEDA on a cron schedule. KEDA handles timing; the bot runs once and the pod scales back to zero. |
+
+Use `run_and_exit` when KEDA (or a similar external scheduler) controls pod lifecycle. Use `scheduled` when the pod stays alive and the bot manages its own sleep interval between runs.
 
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 
