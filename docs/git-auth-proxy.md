@@ -92,6 +92,7 @@ type GitHost struct {
     AuthType string            // "bearer" or "basic"
     Token    func() string     // token getter (reads env at call time)
     Username func() string     // for basic auth only
+    TLSInsecureSkipVerify bool  // explicitly disable TLS verification for this host
 }
 
 var hosts = map[string]GitHost{
@@ -142,6 +143,10 @@ Git over HTTPS uses two endpoints per repo:
 - Content-Type negotiation (`application/x-git-*`)
 
 No special handling needed — the proxy is auth injection only.
+
+> Deployment follow-up: Git auth remains opt-in until the OpenShift template
+> exposes port 8447 for Git auth and moves the existing GlitchTip listener to a
+> separate port. Local Compose validation enables it with `GIT_AUTH_ENABLED=true`.
 
 ## Implementation
 

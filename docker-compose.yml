@@ -47,6 +47,8 @@ services:
     environment:
       - GH_TOKEN
       - GITLAB_TOKEN
+      - GITLAB_TLS_SKIP_VERIFY
+      - GIT_AUTH_ENABLED
       - GH_USERNAME
       - GL_USERNAME
       - GPG_PRIVATE_KEY_B64
