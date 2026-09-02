@@ -23,6 +23,10 @@ parameters:
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
   value: devbot-secrets
+- name: GIT_AUTH_ENABLED
+  value: "false"
+- name: GITLAB_TLS_SKIP_VERIFY
+  value: "false"
 objects:
 
 # ============================================================================
@@ -249,6 +253,9 @@ objects:
             name: screenshot
             protocol: TCP
           - containerPort: 8447
+            name: git-auth
+            protocol: TCP
+          - containerPort: 8448
             name: glitchtip
             protocol: TCP
           - containerPort: 9091
@@ -315,6 +322,10 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: glitchtip-token
+          - name: GIT_AUTH_ENABLED
+            value: ${GIT_AUTH_ENABLED}
+          - name: GITLAB_TLS_SKIP_VERIFY
+            value: ${GITLAB_TLS_SKIP_VERIFY}
           # HTTP /metrics avoids Squid logging TCP kubelet probes as
           # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
@@ -371,6 +382,10 @@ objects:
       protocol: TCP
       name: screenshot
     - port: 8447
+      targetPort: git-auth
+      protocol: TCP
+      name: git-auth
+    - port: 8448
       targetPort: glitchtip
       protocol: TCP
       name: glitchtip
@@ -409,6 +424,8 @@ objects:
       - port: 8446
         protocol: TCP
       - port: 8447
+        protocol: TCP
+      - port: 8448
         protocol: TCP
     - from:
       - namespaceSelector:
