@@ -167,10 +167,47 @@ def test_classify_gh_ci_failure():
     assert "test" in issues[0]
 
 
-def test_classify_gh_changes_requested():
+def test_classify_gh_changes_requested_review_old():
+    """Old CHANGES_REQUESTED review (before last_addressed) should not add issues."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T10:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T18:00:00")
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
+
+
+def test_classify_gh_changes_requested_review_new():
+    """New CHANGES_REQUESTED review (after last_addressed) should add review:{author}."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T18:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T10:00:00")
+    assert "review:reviewer" in issues
+
+
+def test_classify_gh_reviewdecision_without_reviews():
+    """reviewDecision alone (no reviews array) should not add issues."""
     pr = {"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED"}
     state, issues = classify_gh(pr)
-    assert "changes_requested" in issues
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
 
 
 def test_classify_gh_review_comment():
@@ -329,11 +366,27 @@ def test_ci_only_with_old_feedback_is_clean():
     assert len(result["ci_fail"]) == 0
 
 
-def test_ci_plus_changes_requested_is_actionable():
-    """CI failure + changes_requested should not be classified as CI-only."""
+def test_ci_plus_old_changes_requested_is_clean():
+    """CI fail + old CHANGES_REQUESTED review (before last_addressed) → CLEAN.
+
+    This is the main bug fix: sticky reviewDecision no longer causes false positives.
+    The review was addressed (before last_addressed), so should be suppressed.
+    """
     e = _make_ci_enriched(
-        last_addressed="2026-07-14T17:49",
-        extra_issues=["changes_requested"],
+        last_addressed="2026-07-14T18:00",
+        pr_comments=[],
+    )
+    # No "changes_requested" in issues because classify_gh filters old reviews
+    result = _classify_bucket([e])
+    assert len(result["clean"]) == 1
+    assert len(result["ci_fail"]) == 0
+
+
+def test_ci_plus_new_changes_requested_is_actionable():
+    """CI failure + NEW changes_requested review → actionable."""
+    e = _make_ci_enriched(
+        last_addressed="2026-07-14T10:00",
+        extra_issues=["review:reviewer"],  # New review adds review:{author}, not changes_requested
     )
     result = _classify_bucket([e])
     assert len(result["ci_fail"]) == 1
