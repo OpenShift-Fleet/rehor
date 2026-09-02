@@ -110,6 +110,56 @@ Therefore, one server per independent bot instance is required. A central
 server shared by unrelated bot instances would combine code execution,
 filesystem, session, and credential-adjacent authority in one process.
 
+## Native TypeScript Runtime Option
+
+[scriptc](https://scriptc.dev/) can compile TypeScript to native executables
+that do not require Node, V8, or a JavaScript engine. This is a possible
+follow-up optimization for the Rehor runner and standalone preflight tools.
+
+It does not mean the complete OpenCode stack can be compiled immediately:
+
+- The scriptc compiler itself requires Node 24 or newer during image build.
+- npm dependencies normally run in scriptc's embedded QuickJS dynamic tier.
+- `@opencode-ai/sdk` must pass `scriptc coverage`; static compilation is not assumed.
+- OpenCode plugins are loaded and executed by OpenCode's Bun runtime and use Bun's `$` shell API.
+- Compiling a plugin as a separate binary does not make it an OpenCode plugin.
+- `--dynamic` removes the Node runtime dependency but embeds a JavaScript engine.
+- Native networking and HTTP are supported, but SDK behavior, streaming, TLS,
+  subprocesses, signals, and filesystem semantics need integration tests.
+
+### Viable Shape
+
+```text
+build image
+  Node 24 + scriptc → rehor-runner native binary
+
+runtime image
+  rehor-runner native binary
+  OpenCode official native binary or supported OpenCode runtime
+  no Node installation
+```
+
+The safest target is a native Rehor runner that connects to an already-running
+OpenCode server through HTTP. This avoids compiling OpenCode internals and
+keeps plugin loading under its supported runtime. An alternative is compiling
+small standalone TypeScript preflight utilities, provided they remain free of
+unsupported npm/runtime APIs.
+
+### Acceptance Test Before Adoption
+
+- `scriptc coverage` reports acceptable static coverage for runner entry point.
+- `scriptc build` succeeds for target Linux architecture.
+- Binary runs without Node or `node_modules`.
+- SDK client connects to OpenCode server and completes a session.
+- SSE event stream handles long responses and disconnects.
+- MCP configuration and tool calls remain functional.
+- Signals, timeouts, child processes, Git, and filesystem behavior match current runner.
+- Native and normal-runtime runs produce equivalent cycle results and cost data.
+
+Until this test passes, use a supported OpenCode distribution and treat scriptc
+as an optimization experiment. Do not make native compilation a dependency of
+initial OpenCode migration.
+
 ## Direct OpenAI Authentication
 
 OpenAI API requests use HTTP Bearer authentication:
