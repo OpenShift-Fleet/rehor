@@ -198,7 +198,8 @@ def main(suppress_terminal_if_addressed=False):
             else:
                 closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            if not ci_failure_needs_session(e):
+            ci_only = all(i.startswith("ci_fail") for i in issues)
+            if ci_only and not ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)
