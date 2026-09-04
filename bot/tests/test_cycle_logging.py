@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
@@ -9,6 +10,14 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, T
 from bot.agent import run_cycle
 from bot.config import Config
 from bot.costs import summarize_result
+
+_DEFAULT_USAGE = {
+    "input_tokens": 1000,
+    "output_tokens": 500,
+    "cache_read_input_tokens": 200,
+    "cache_creation_input_tokens": 100,
+}
+_DEFAULT_MODEL_USAGE = {"claude-opus-4": {"input_tokens": 1000}}
 
 
 def _config() -> Config:
@@ -22,26 +31,22 @@ def _config() -> Config:
     )
 
 
-def _result(**kwargs) -> ResultMessage:
-    defaults = {
-        "subtype": "success",
-        "duration_ms": 30000,
-        "duration_api_ms": 1000,
-        "is_error": False,
-        "num_turns": 5,
-        "session_id": "sess",
-        "total_cost_usd": 0.25,
-        "usage": {
-            "input_tokens": 1000,
-            "output_tokens": 500,
-            "cache_read_input_tokens": 200,
-            "cache_creation_input_tokens": 100,
-        },
-        "model_usage": {"claude-opus-4": {"input_tokens": 1000}},
-        "result": "ok",
-    }
-    defaults.update(kwargs)
-    return ResultMessage(**defaults)
+def _result(
+    usage: dict[str, Any] | None = None,
+    model_usage: dict[str, Any] | None = None,
+) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=30000,
+        duration_api_ms=1000,
+        is_error=False,
+        num_turns=5,
+        session_id="sess",
+        total_cost_usd=0.25,
+        usage=_DEFAULT_USAGE if usage is None else usage,
+        model_usage=_DEFAULT_MODEL_USAGE if model_usage is None else model_usage,
+        result="ok",
+    )
 
 
 async def _run(messages):
