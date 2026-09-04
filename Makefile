@@ -66,7 +66,7 @@ memory-verify: ## Run memory-server CI-equivalent checks locally
 
 container-verify: ## Run container build + smoke checks locally (CI-equivalent, see .github/workflows/container-verify.yml). Uses --network host; on macOS this needs Docker Desktop's host-networking feature enabled, or run under a Linux VM/CI.
 	@echo "=== bot: build ==="
-	$(CONTAINER_RT) build --build-arg GOVERSIONS="1.24.2 1.25.7" -t bot:verify -f Dockerfile .
+	$(CONTAINER_RT) build --build-arg GOVERSIONS="1.24.13 1.25.13" -t bot:verify -f Dockerfile .
 	@echo "=== bot: tooling presence check ==="
 	@for tool in python3 uv git tini bwrap buildah node go gcc make gh glab gpg; do \
 		$(CONTAINER_RT) run --rm --entrypoint bash bot:verify -c "command -v $$tool" >/dev/null \
