@@ -40,15 +40,37 @@ def _is_no_work(text: str) -> bool:
     return any(p.lower() in lower for p in _NO_WORK_PATTERNS)
 
 
-def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
-    """Build a cost entry dict from an SDK ResultMessage."""
-    usage = getattr(result, "usage", None) or {}
-    result_text = getattr(result, "result", "") or ""
+def summarize_result(result) -> dict:
+    """Model / token / cache fields from an SDK ResultMessage.
 
+    Used by `_build_entry` (JSONL/API) and the cycle-done log so those numbers
+    cannot drift. `cache_ratio` is logging-only — not an API field.
+    """
+    usage = getattr(result, "usage", None) or {}
     model = ""
     model_usage = getattr(result, "model_usage", None)
     if model_usage and isinstance(model_usage, dict):
         model = next(iter(model_usage.keys()), "")
+
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    ratio = f"{cache_read / cache_write:.2f}" if cache_write else "n/a"
+
+    return {
+        "model": model,
+        "model_usage": model_usage if model_usage else {},
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "cache_ratio": ratio,
+    }
+
+
+def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
+    """Build a cost entry dict from an SDK ResultMessage."""
+    summary = summarize_result(result)
+    result_text = getattr(result, "result", "") or ""
 
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
@@ -57,12 +79,12 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
         "num_turns": getattr(result, "num_turns", 0),
         "duration_ms": getattr(result, "duration_ms", 0),
         "cost_usd": getattr(result, "total_cost_usd", 0) or 0,
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-        "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
-        "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
-        "model": model,
-        "model_usage": model_usage if model_usage else {},
+        "input_tokens": summary["input_tokens"],
+        "output_tokens": summary["output_tokens"],
+        "cache_read_tokens": summary["cache_read_tokens"],
+        "cache_write_tokens": summary["cache_write_tokens"],
+        "model": summary["model"],
+        "model_usage": summary["model_usage"],
         "is_error": getattr(result, "subtype", "") != "success",
         "no_work": _is_no_work(result_text),
     }
