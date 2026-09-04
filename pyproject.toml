@@ -38,6 +38,7 @@ dev-bot = "bot.run:main"
 
 [tool.pytest.ini_options]
 testpaths = [
+    "tests",
     "bot/tests",
     "dashboard/tests",
     "presets/shared/skills/auto-fork/tests",
@@ -62,7 +63,10 @@ pythonpath = ["dashboard/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --strict-markers --strict-config --tb=short --import-mode=importlib"
+addopts = "-v --strict-markers --strict-config --tb=short --import-mode=importlib --ignore=tests/integration"
+markers = [
+    "integration: requires external services (docker-compose stack, databases, etc.)",
+]
 
 [tool.ruff]
 line-length = 120
