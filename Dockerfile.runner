@@ -89,6 +89,8 @@ COPY instance/ /home/botuser/app/instance/
 
 # Env presets — selective install based on instance.yaml envs list
 COPY dev-bot/presets/ presets/
+ARG GOVERSIONS="1.24.13 1.25.14"
+ENV GOVERSIONS="${GOVERSIONS}"
 RUN bash presets/install-envs.sh
 
 ENV HOME=/home/botuser

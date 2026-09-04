@@ -78,7 +78,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        GOVERSIONS: "1.24.2 1.25.7"
+        GOVERSIONS: "1.24.13 1.25.14"
     security_opt:
       - no-new-privileges
     shm_size: 512m
