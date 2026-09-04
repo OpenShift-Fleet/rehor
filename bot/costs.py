@@ -41,11 +41,10 @@ def _is_no_work(text: str) -> bool:
 
 
 def summarize_result(result) -> dict:
-    """Extract model, token, and cache fields from an SDK ResultMessage.
+    """Model / token / cache fields from an SDK ResultMessage.
 
-    Ratio is cache_read / cache_write when write > 0, else ``n/a``.
-    Does not log; callers decide what to print. JSONL/API entries should not
-    include ``cache_ratio`` (logging-only).
+    Used by `_build_entry` (JSONL/API) and the cycle-done log so those numbers
+    cannot drift. `cache_ratio` is logging-only — not an API field.
     """
     usage = getattr(result, "usage", None) or {}
     model = ""

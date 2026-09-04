@@ -6,7 +6,6 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 import httpx
 from claude_agent_sdk import (
@@ -17,8 +16,6 @@ from claude_agent_sdk import (
     SystemMessage,
     TextBlock,
     ToolResultBlock,
-    ToolUseBlock,
-    UserMessage,
     query,
 )
 
@@ -140,14 +137,12 @@ def _describe_tool_use(block) -> str:
         return name
 
 
-def _complete_tool(pending: dict[str, tuple[float, str]], tool_use_id: str | None, fallback_desc: str = "") -> None:
-    """Log tool completion duration if this id still has a matching start."""
+def _complete_tool(pending: dict[str, tuple[float, str]], tool_use_id: str | None) -> None:
+    """Log duration for a tool if we still have a matching start time."""
     if not tool_use_id:
-        logger.debug("Tool completed with no tool_use_id")
         return
     start = pending.pop(tool_use_id, None)
     if start is None:
-        logger.debug("Tool %s completed with no matching start", fallback_desc or tool_use_id)
         return
     t0, desc = start
     elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -210,22 +205,9 @@ async def run_cycle(
     turn_hook = _make_turn_budget_hook(config.max_turns, label)
     pending_tools: dict[str, tuple[float, str]] = {}
 
-    async def tool_timing_pre(input_data, tool_use_id, context):
-        tid = tool_use_id or input_data.get("tool_use_id")
-        if not tid or tid in pending_tools:
-            return {}
-        desc = _describe_tool_use(
-            SimpleNamespace(name=input_data.get("tool_name", ""), input=input_data.get("tool_input") or {})
-        )
-        pending_tools[tid] = (time.monotonic(), desc)
-        return {}
-
     async def tool_timing_post(input_data, tool_use_id, context):
-        tid = tool_use_id or input_data.get("tool_use_id")
-        desc = _describe_tool_use(
-            SimpleNamespace(name=input_data.get("tool_name", ""), input=input_data.get("tool_input") or {})
-        )
-        _complete_tool(pending_tools, tid, desc)
+        # Live SDK stream usually does not yield ToolResultBlock; PostToolUse does.
+        _complete_tool(pending_tools, tool_use_id or input_data.get("tool_use_id"))
         return {}
 
     options = ClaudeAgentOptions(
@@ -237,7 +219,6 @@ async def run_cycle(
         cwd=cwd,
         permission_mode="acceptEdits",
         hooks={
-            "PreToolUse": [HookMatcher(hooks=[tool_timing_pre])],
             "PostToolUse": [HookMatcher(hooks=[turn_hook, tool_timing_post])],
             "PostToolUseFailure": [HookMatcher(hooks=[tool_timing_post])],
         },
@@ -311,21 +292,13 @@ async def run_cycle(
                         elif isinstance(block, ToolResultBlock):
                             _extract_task_id_from_result(block, ctx)
                             _complete_tool(pending_tools, block.tool_use_id)
-                        elif isinstance(block, ToolUseBlock) or hasattr(block, "name"):
+                        elif hasattr(block, "name"):
                             desc = _describe_tool_use(block)
                             logger.info("[tool] %s", desc)
                             tool_id = getattr(block, "id", None)
-                            if tool_id and tool_id not in pending_tools:
+                            if tool_id:
                                 pending_tools[tool_id] = (time.monotonic(), desc)
-                            elif tool_id and tool_id in pending_tools:
-                                t0, _ = pending_tools[tool_id]
-                                pending_tools[tool_id] = (t0, desc)
                             _extract_context(block, ctx)
-
-                elif isinstance(message, UserMessage) and isinstance(message.content, list):
-                    for block in message.content:
-                        if isinstance(block, ToolResultBlock):
-                            _complete_tool(pending_tools, block.tool_use_id)
 
                 elif isinstance(message, ResultMessage):
                     result = message

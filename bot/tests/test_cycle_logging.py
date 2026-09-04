@@ -4,7 +4,7 @@ import asyncio
 import logging
 from unittest.mock import AsyncMock, patch
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock, UserMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
 
 from bot.agent import run_cycle
 from bot.config import Config
@@ -156,19 +156,3 @@ def test_parallel_tools_pair_by_id(caplog):
     )
     assert "[tool] Bash: one completed in" in caplog.text
     assert "[tool] Bash: two completed in" in caplog.text
-
-
-def test_tool_result_on_user_message_logs_duration(caplog):
-    caplog.set_level(logging.INFO)
-    tool = ToolUseBlock(id="tool_1", name="Read", input={"file_path": "/tmp/x"})
-    asyncio.run(
-        _run(
-            [
-                AssistantMessage(content=[tool], model="claude-opus-4"),
-                UserMessage(content=[ToolResultBlock(tool_use_id="tool_1", content="ok")]),
-                _result(),
-            ]
-        )
-    )
-    assert "[tool] Read: /tmp/x" in caplog.text
-    assert "[tool] Read: /tmp/x completed in" in caplog.text
