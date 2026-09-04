@@ -7,14 +7,17 @@ proxy backed by direct OpenAI API keys.
 
 Status: Proposed
 
+The initial migration slice is preparation only. It changes no tenant routing
+or model selection.
+
 Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
 `REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`
 
 ## Decision Summary
 
-- Run one OpenCode server per bot pod and workspace.
-- Permit multiple clients and sessions only within that bot trust boundary.
-- Do not run shared OpenCode servers in the central proxy pod.
+- Start one runner-owned OpenCode server per cycle and close it when the cycle ends.
+- Create one workspace-scoped client and session per cycle.
+- Never share OpenCode servers across bot instances or cycles.
 - Keep model credentials in the proxy deployment, not bot pods or OpenCode auth files.
 - Add an OpenAI-compatible proxy endpoint backed by direct OpenAI API keys.
 - Keep existing Jira, Git, memory, and browser MCP services separate.
@@ -49,21 +52,23 @@ defined in `deploy/template.yaml`.
 ```text
 bot pod
   TypeScript runner
-    OpenCode server (:4096, localhost or pod-local)
-    OpenCode SDK client
-      sessions: one per cycle/task
-      SSE events: lifecycle, tool, usage, error
+    AgentRuntime
+      OpenCodeRuntime
+        V1ServerDriver
+          runner-owned child `opencode serve`
+          loopback-bound server
+          one workspace-scoped client and session per cycle
+          SSE events: lifecycle, tool, usage, error
     AGENTS.md / compatible CLAUDE.md
     .opencode/agents, plugins, skills
     MCP: memory, Jira, browser
-    HTTP: OpenAI-compatible model proxy, Git proxy, Squid
+    HTTP: Rehor model gateway, Git proxy, Squid
 
 central proxy pod
-  OpenAI-compatible model proxy (:8450)
-    direct OpenAI API key from Vault
-    model allowlist
-    request authentication and authorization
-    rate limits and usage metrics
+  Rehor model gateway
+    Vertex route (legacy/canary)
+    OpenAI route (canary/new)
+    provider/model allowlist and policy
   Jira MCP proxy
   Git auth proxy
   Executor server
@@ -74,9 +79,10 @@ OpenCode is an agent runtime, not replacement for every existing proxy. The
 proxy remains credential and egress boundary. OpenCode remains execution
 boundary inside each bot pod.
 
-## OpenCode Server and Multiple Clients
+## OpenCode Server Lifecycle
 
-OpenCode supports both modes:
+OpenCode supports runner-owned and client-only modes. The following is an API
+shape example, not production supervisor code:
 
 ```ts
 import { createOpencode } from "@opencode-ai/sdk"
@@ -95,20 +101,10 @@ const client = createOpencodeClient({
 })
 ```
 
-One server can serve multiple clients. Each client should use a separate
-session. This is suitable for multiple logical cycles in one bot pod.
-
-Shared-server restrictions:
-
-- Server project and working-directory context are shared.
-- Sessions and event streams need client-side ownership checks.
-- Concurrent sessions must not modify the same worktree.
-- OpenCode server Basic Auth is coarse-grained, not task authorization.
-- A server exposes powerful filesystem, shell, MCP, and session APIs.
-
-Therefore, one server per independent bot instance is required. A central
-server shared by unrelated bot instances would combine code execution,
-filesystem, session, and credential-adjacent authority in one process.
+The runner starts one server per cycle as a child process, binds it to loopback,
+creates one client with the cycle worktree, and closes the server during cycle
+cleanup. A central or persistent shared server is out of scope. OpenCode server
+authentication is not a substitute for Rehor task authorization.
 
 ## Native TypeScript Runtime Option
 
@@ -235,8 +231,8 @@ silently rewriting arbitrary JSON.
 
 ### Proxy Endpoint Contract
 
-Initial endpoint should support the OpenAI Chat Completions contract because it
-is widely supported by OpenCode's `@ai-sdk/openai-compatible` provider:
+Initial OpenAI route should support the Chat Completions contract because it is
+widely supported by OpenCode's `@ai-sdk/openai-compatible` provider:
 
 - `POST /v1/chat/completions`
 - `GET /v1/models`
@@ -292,6 +288,12 @@ Exact model IDs remain deployment configuration. Do not hardcode model names
 until OpenAI account access, pricing, tool support, and regional requirements
 are confirmed.
 
+Provider selection remains independent from runtime selection. During canary,
+OpenCode may select either the existing Vertex route or the OpenAI Chat
+Completions route. If a selected model requires OpenAI Responses API semantics,
+use OpenCode's native `@ai-sdk/openai` provider and add a separately tested
+Responses route; do not translate request schemas inside header injection.
+
 ## Vertex-to-OpenAI Migration
 
 This is a provider and credential migration, not only a URL change.
@@ -330,7 +332,7 @@ rollout without changing central routing for existing Claude-based instances.
 ### Phase 1: Compatibility Canary
 
 - Add OpenCode runtime and TypeScript runner beside Python runner.
-- Start one OpenCode server per bot pod.
+- Start one OpenCode server per cycle as a runner-owned child process.
 - Reuse current MCP endpoints and Git auth proxy.
 - Reuse current `CLAUDE.md`, personas, and `.claude/skills`.
 - Keep Python preflight scripts unchanged.
@@ -347,7 +349,7 @@ Replace `claude-agent-sdk` usage in `bot/agent.py` with SDK operations:
 - subscribe to SSE events
 - collect assistant text, tool calls, errors, and usage
 - abort session on timeout or shutdown
-- close server on process termination
+- close server during cycle cleanup and process termination
 
 Preserve current `CycleContext`, status updates, transcript storage, cost
 posting, turn limits, and signal handling.
@@ -372,7 +374,8 @@ Port only lifecycle behavior that benefits from OpenCode hooks:
 - compaction context
 - custom Rehor tools
 
-Keep scheduled, no-LLM preflights outside OpenCode. Existing preflight contract
+Keep deterministic, no-LLM preflights and policy decisions outside OpenCode.
+Existing preflight contract
 (`start`, `skip`, `error`) is already a useful runner boundary.
 
 ### Phase 5: Model Tiering
@@ -465,7 +468,7 @@ Rollback:
 - Do regional or organizational restrictions require a different OpenAI endpoint?
 - Should proxy support Responses API later, or standardize on Chat Completions first?
 - Which existing cost fields map reliably to OpenAI usage fields?
-- Should OpenCode server run as a child process or separate container in each bot pod?
+- Should a future persistent-volume design support server reuse across cycles?
 
 ## References
 
@@ -479,6 +482,7 @@ Rollback:
 - [OpenCode Rules and Claude compatibility](https://opencode.ai/docs/rules/)
 - [OpenAI Authentication](https://platform.openai.com/docs/api-reference/authentication)
 - [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)
+- [OpenAI Responses](https://platform.openai.com/docs/api-reference/responses)
 - [Git auth proxy design](../git-auth-proxy.md)
-- [Current architecture](../../ARCHITECTURE.md)
+- [Current architecture](https://github.com/OpenShift-Fleet/rehor/blob/master/ARCHITECTURE.md)
 - [Custom preflight guide](../presets/custom-preflight.md)
