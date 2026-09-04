@@ -104,7 +104,9 @@ def main():
             "",
             "## Interpretation",
             "",
-            "These keys were referenced by persisted Rehor task records but were absent from saved filter at collection time. Add only confirmed Rehor labels/projects to filter JQL; do not blindly add every label found.",
+            "These keys were referenced by persisted Rehor task records but were absent "
+            "from saved filter at collection time. Add only confirmed Rehor labels/projects "
+            "to filter JQL; do not blindly add every label found.",
             "",
         ]
     )

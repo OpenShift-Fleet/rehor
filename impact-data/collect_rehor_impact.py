@@ -455,7 +455,9 @@ def main():
         write_json(output / "memory.json", memory)
         write_task_reference_export(memory.get("tasks", []), output)
         print(
-            f"[collector] Rehor API: {len(memory.get('tasks', []))} tasks, {len(memory.get('instances', []))} instances, {len(memory.get('cycle_runs', []))} cycles",
+            f"[collector] Rehor API: {len(memory.get('tasks', []))} tasks, "
+            f"{len(memory.get('instances', []))} instances, "
+            f"{len(memory.get('cycle_runs', []))} cycles",
             flush=True,
         )
     except Exception as error:
@@ -474,13 +476,17 @@ def main():
     reconciliation = reconcile(jira, memory, git_activity, inventory)
     write_json(output / "reconciliation.json", reconciliation)
     print(
-        f"[collector] identities: {reconciliation['canonical_identity_count']} canonical, {reconciliation['canonical_unresolved_identity_count']} unresolved",
+        f"[collector] identities: {reconciliation['canonical_identity_count']} canonical, "
+        f"{reconciliation['canonical_unresolved_identity_count']} unresolved",
         flush=True,
     )
 
     summary = """# Rehor Impact Collection\n\n"""
     summary += f"- Run: `{run_id}`\n- Jira filter issues: **{reconciliation['jira_issue_count']}**\n"
-    summary += f"- Rehor tasks: **{reconciliation['memory_task_count']}**\n- Rehor instances: **{reconciliation['memory_instance_count']}**\n"
+    summary += (
+        f"- Rehor tasks: **{reconciliation['memory_task_count']}**\n"
+        f"- Rehor instances: **{reconciliation['memory_instance_count']}**\n"
+    )
     summary += f"- Cycle runs: **{reconciliation['memory_cycle_count']}**\n"
     summary += f"- Jira keys absent from task records: **{len(reconciliation['jira_keys_missing_from_tasks'])}**\n"
     summary += f"- Task Jira keys absent from filter: **{len(reconciliation['task_jira_keys_missing_from_filter'])}**\n"
