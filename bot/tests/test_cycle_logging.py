@@ -1,4 +1,4 @@
-"""Cycle / tool / cost log signals (REHOR-42)."""
+"""Tests for cycle, tool, and cost logging"""
 
 import asyncio
 import logging
