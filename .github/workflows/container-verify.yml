@@ -94,7 +94,7 @@ jobs:
             - browser
             - container-scan
           EOF
-          docker build --build-arg GOVERSIONS="1.24.13 1.25.14" -t bot:verify -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
+          docker build --build-arg GOVERSIONS="1.24.13 1.25.13" -t bot:verify -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
 
       - name: Verify required tooling is present
         # The bot image's real entrypoint (entrypoint.sh) unconditionally waits

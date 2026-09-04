@@ -15,7 +15,7 @@ export PATH="$GOENV_ROOT/bin:$PATH"
 eval "$(goenv init -)"
 
 # Pre-install default Go versions
-GOVERSIONS="${GOVERSIONS:-1.24.13 1.25.14}"
+GOVERSIONS="${GOVERSIONS:-1.24.13 1.25.13}"
 DEFAULT=$(echo $GOVERSIONS | awk '{print $1}')
 for v in $GOVERSIONS; do
     if goenv versions --bare 2>/dev/null | grep -q "^${v}$"; then

@@ -12,7 +12,7 @@ You are working on a backend service. Backend repos may be Go or Node.js — che
 
 ### Go repos
 
-- **Go version**: Check `go.mod` for the required Go version. If it differs from the default (`go version`), switch with: `eval "$(use-go 1.25.14)"` (replace with needed version). Available versions are pre-installed in the container. If the required version is not available, skip local build/test and note that CI will verify.
+- **Go version**: Check `go.mod` for the required Go version. If it differs from the default (`go version`), switch with: `eval "$(use-go 1.25.13)"` (replace with needed version). Available versions are pre-installed in the container. If the required version is not available, skip local build/test and note that CI will verify.
 - Use `make test` (or `go test ./... -v`) to run tests.
 - Use `make build` to verify the project compiles.
 - Use `go vet ./...` to check for issues.

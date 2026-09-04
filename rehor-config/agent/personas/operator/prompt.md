@@ -3,7 +3,7 @@
 You are working on a Kubernetes operator written in Go.
 
 ### Before making any changes
-- **Go version**: Check `go.mod` for the required Go version. If it differs from the default (`go version`), switch with: `eval "$(use-go 1.25.14)"` (replace with needed version). Available versions are pre-installed in the container.
+- **Go version**: Check `go.mod` for the required Go version. If it differs from the default (`go version`), switch with: `eval "$(use-go 1.25.13)"` (replace with needed version). Available versions are pre-installed in the container.
 - Run `go mod tidy` to ensure dependencies are up to date.
 - If it fails, STOP immediately. Report the failure on the Jira ticket and do not proceed.
 
