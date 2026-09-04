@@ -153,7 +153,7 @@ def test_timeout_logs_cost_data_loss_warning(caplog):
 
     caplog.set_level(logging.WARNING)
 
-    result, ctx = handle_cycle_timeout(timeout_seconds=600)
+    result, ctx = handle_cycle_timeout(timeout_seconds=600, label="test-label")
 
     assert result is None
     assert ctx is None

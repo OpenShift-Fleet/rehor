@@ -47,6 +47,8 @@ services:
     environment:
       - GH_TOKEN
       - GITLAB_TOKEN
+      - GITLAB_TLS_SKIP_VERIFY
+      - GIT_AUTH_ENABLED
       - GH_USERNAME
       - GL_USERNAME
       - GPG_PRIVATE_KEY_B64
@@ -57,6 +59,8 @@ services:
       - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
       - JIRA_USERNAME
       - JIRA_API_TOKEN
+      - GLITCHTIP_URL
+      - GLITCHTIP_TOKEN
     volumes:
       - executor-sock:/var/run/devbot
     healthcheck:

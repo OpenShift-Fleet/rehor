@@ -16,16 +16,25 @@ on:
       - 'proxy/executor/go.sum'
       - '.github/workflows/go-tests.yml'
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.23'
+          go-version-file: proxy/executor/go.mod
+
+      - name: Vet
+        working-directory: proxy/executor
+        run: go vet ./...
 
       - name: Run tests
         working-directory: proxy/executor
@@ -38,11 +47,6 @@ jobs:
           go tool cover -func=coverage.txt
           COVERAGE=$(go tool cover -func=coverage.txt | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage: ${COVERAGE}%"
-          # Optionally fail if coverage is too low
-          # if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-          #   echo "Coverage ${COVERAGE}% is below 70% threshold"
-          #   exit 1
-          # fi
 
       - name: Build binaries
         working-directory: proxy/executor

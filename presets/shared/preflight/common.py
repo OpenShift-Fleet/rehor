@@ -126,7 +126,7 @@ def is_bot_author(author):
     if not author or author == "?":
         return False
     a = author.lower()
-    return "[bot]" in a or a.endswith("-bot") or a in ("github-actions", "dependabot", "renovate")
+    return "[bot]" in a or a.endswith(("-bot", "-robot")) or a in ("github-actions", "dependabot", "renovate")
 
 
 def fmt_comments(comments, label, since=None, max_comments=30):
@@ -181,6 +181,7 @@ def get_task_prs(task):
     repo = task.get("repo", "")
     meta = task.get("metadata") or {}
     prs_info = list(meta.get("prs", []))
+    prs_info.extend(meta.get("mrs", []))
     if not prs_info:
         for a in task.get("artifacts") or []:
             if a.get("type") == "pull_request" and a.get("url"):

@@ -18,6 +18,7 @@ from fixtures.api_payloads import (
     BOT_STATUS,
     COSTS,
     CYCLE_RUNS,
+    DAILY_COSTS,
     EMBEDDINGS,
     MAX_ACTIVE,
     MEMORIES,
@@ -121,7 +122,20 @@ class Handler(BaseHTTPRequestHandler):
                         "updated_at": BOT_STATUS["updated_at"],
                         "active_tasks": sum(1 for t in TASKS.values() if t["status"] in ACTIVE_STATUSES),
                         "max_tasks": MAX_ACTIVE,
-                    }
+                    },
+                    {
+                        "instance_id": "staging-bot",
+                        "state": "idle",
+                        "message": "",
+                        "external_key": None,
+                        "source_type": "jira",
+                        "source_url": None,
+                        "repo": None,
+                        "cycle_start": None,
+                        "updated_at": "2026-07-20T08:00:00Z",
+                        "active_tasks": 0,
+                        "max_tasks": 5,
+                    },
                 ]
             )
 
@@ -173,19 +187,58 @@ class Handler(BaseHTTPRequestHandler):
                 memories = [m for m in memories if tag in m["tags"]]
 
             memories = [{**m, "similarity": 0.85} for m in memories[:limit]]
-            self.send_json({"items": memories, "total": len(memories)})
+            self.send_json(memories)
 
         elif path == "/api/memories/embeddings":
-            self.send_json({"items": EMBEDDINGS, "total": len(EMBEDDINGS)})
+            self.send_json(EMBEDDINGS)
 
         elif path == "/api/tags":
             self.send_json(TAGS)
 
         elif path == "/api/costs":
             limit = int(qs.get("limit", ["200"])[0])
+            instance_filter = qs.get("instance_id", [None])[0]
 
-            costs = COSTS[:limit]
-            self.send_json({"items": costs, "total": len(costs), "limit": limit, "offset": 0})
+            costs = COSTS[:]
+            if instance_filter:
+                costs = [c for c in costs if c.get("instance_id") == instance_filter]
+            costs = costs[:limit]
+
+            if instance_filter:
+                daily = {}
+                for c in costs:
+                    day = c["timestamp"][:10]
+                    if day not in daily:
+                        daily[day] = {
+                            "day": day,
+                            "cycles": 0,
+                            "total_cost": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_read": 0,
+                            "cache_write": 0,
+                            "total_duration": 0,
+                            "total_turns": 0,
+                            "idle_cycles": 0,
+                            "error_cycles": 0,
+                        }
+                    daily[day]["cycles"] += 1
+                    daily[day]["total_cost"] += c["cost_usd"]
+                    daily[day]["input_tokens"] += c["input_tokens"]
+                    daily[day]["output_tokens"] += c["output_tokens"]
+                    daily[day]["cache_read"] += c["cache_read_tokens"]
+                    daily[day]["cache_write"] += c["cache_write_tokens"]
+                    daily[day]["total_duration"] += c["duration_ms"]
+                    daily[day]["total_turns"] += c["num_turns"]
+                    if c["no_work"]:
+                        daily[day]["idle_cycles"] += 1
+                    if c["is_error"]:
+                        daily[day]["error_cycles"] += 1
+                daily_result = list(daily.values())
+            else:
+                daily_result = DAILY_COSTS
+
+            self.send_json({"items": costs, "daily": daily_result})
 
         elif path == "/api/cycle-runs":
             task_id = qs.get("task_id", [None])[0]
@@ -213,9 +266,8 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                # In real impl would filter, here just return all
                 pass
-            self.send_json({"items": groups, "total": len(groups)})
+            self.send_json(groups)
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
             run_id = int(path.split("/")[3])
@@ -231,7 +283,34 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(transcript.encode())
 
         elif path == "/api/analytics":
-            self.send_json(ANALYTICS)
+            instance_filter = qs.get("instance_id", [None])[0]
+            if instance_filter:
+                filtered = [c for c in COSTS if c.get("instance_id") == instance_filter]
+                work = [c for c in filtered if not c["no_work"] and not c["is_error"]]
+                total_cost = sum(c["cost_usd"] for c in filtered)
+                self.send_json(
+                    {
+                        "summary": {
+                            "total_cycles": len(filtered),
+                            "work_cycles": len(work),
+                            "idle_cycles": sum(1 for c in filtered if c["no_work"]),
+                            "error_cycles": sum(1 for c in filtered if c["is_error"]),
+                            "unique_tickets": len({c["external_key"] for c in work if c.get("external_key")}),
+                            "total_cost": round(total_cost, 2),
+                            "avg_cost_per_work_cycle": round(total_cost / len(work), 2) if work else 0,
+                            "avg_turns": round(sum(c["num_turns"] for c in work) / len(work), 1) if work else 0,
+                            "avg_duration_ms": round(sum(c["duration_ms"] for c in work) / len(work)) if work else 0,
+                            "repos_touched": len({c["repo"] for c in work if c.get("repo")}),
+                            "tickets_resolved": 0,
+                        },
+                        "work_types": ANALYTICS["work_types"],
+                        "repos": ANALYTICS["repos"],
+                        "tickets": ANALYTICS["tickets"],
+                        "feedback": ANALYTICS["feedback"],
+                    }
+                )
+            else:
+                self.send_json(ANALYTICS)
 
         else:
             self.send_json({"error": "not found"}, 404)
@@ -274,12 +353,6 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             print(f"  bot-status → state={BOT_STATUS['state']} key={BOT_STATUS['external_key']}")
-            return self.send_json({"ok": True})
-
-        if len(parts) == 4 and parts[0] == "api" and parts[1] == "instances" and parts[3] == "wake":
-            print(f"  Wake requested for {parts[2]}")
-            BOT_STATUS["state"] = "working"
-            BOT_STATUS["message"] = "Starting cycle..."
             return self.send_json({"ok": True})
 
         if len(parts) == 4 and parts[3] == "unarchive":
@@ -334,7 +407,6 @@ if __name__ == "__main__":
     print("  POST /api/tasks/:key/pause  - Pause a task")
     print("  POST /api/tasks/:key/unpause - Unpause a task")
     print("  POST /api/tasks/:key/unarchive - Unarchive a task")
-    print("  POST /api/instances/:id/wake - Wake an instance")
     print("  POST /api/bot-status        - Update bot status")
     print("  DELETE /api/tasks/:key      - Archive a task")
     print("  DELETE /api/memories/:id    - Delete a memory")

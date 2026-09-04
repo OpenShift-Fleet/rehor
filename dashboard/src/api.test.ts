@@ -18,7 +18,6 @@ import {
   fetchCycleRuns,
   fetchCycleRunsByTask,
   fetchCycleRunTranscript,
-  wakeInstance,
   fetchAnalytics,
 } from './api';
 
@@ -251,16 +250,6 @@ describe('fetchCycleRunTranscript', () => {
   it('throws on failure', async () => {
     mockFetch.mockResolvedValue({ ok: false, status: 404 });
     await expect(fetchCycleRunTranscript(99)).rejects.toThrow('Failed to fetch transcript: 404');
-  });
-});
-
-describe('wakeInstance', () => {
-  it('sends POST with encoded instance id', async () => {
-    const data = { ok: true };
-    mockFetch.mockResolvedValue(jsonResponse(data));
-    const result = await wakeInstance('bot/with/slash');
-    expect(mockFetch).toHaveBeenCalledWith('/api/instances/bot%2Fwith%2Fslash/wake', { method: 'POST' });
-    expect(result).toEqual(data);
   });
 });
 

@@ -39,7 +39,7 @@ export interface Memory {
 
 export interface BotInstance {
   instance_id: string;
-  state: 'working' | 'idle' | 'error' | 'unknown';
+  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
   message: string;
   external_key: string | null;
   source_type: string | null;
@@ -52,7 +52,7 @@ export interface BotInstance {
 }
 
 export interface BotStatus {
-  state: 'working' | 'idle' | 'error' | 'unknown';
+  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
   message: string;
   external_key: string | null;
   source_type: string | null;

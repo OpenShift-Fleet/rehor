@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,11 +33,12 @@ const (
 )
 
 type GitHost struct {
-	Scheme   string
-	Host     string
-	AuthType string
-	Token    func() string
-	Username func() string
+	Scheme                string
+	Host                  string
+	AuthType              string
+	Token                 func() string
+	Username              func() string
+	TLSInsecureSkipVerify bool
 }
 
 func defaultHostRegistry() map[string]*GitHost {
@@ -48,11 +51,12 @@ func defaultHostRegistry() map[string]*GitHost {
 			Username: nil,
 		},
 		"gitlab.cee.redhat.com": {
-			Scheme:   "https",
-			Host:     "gitlab.cee.redhat.com",
-			AuthType: AuthTypeBasic,
-			Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
-			Username: func() string { return os.Getenv("GL_USERNAME") },
+			Scheme:                "https",
+			Host:                  "gitlab.cee.redhat.com",
+			AuthType:              AuthTypeBasic,
+			Token:                 func() string { return os.Getenv("GITLAB_TOKEN") },
+			Username:              func() string { return os.Getenv("GL_USERNAME") },
+			TLSInsecureSkipVerify: getEnvAsBool("GITLAB_TLS_SKIP_VERIFY", false),
 		},
 	}
 }
@@ -64,9 +68,10 @@ func NewGitAuthProxy() http.Handler {
 type contextKey string
 
 const (
-	hostConfigKey contextKey = "hostConfig"
+	hostConfigKey    contextKey = "hostConfig"
+	backendHostKey   contextKey = "backendHost"
 	pathRemainderKey contextKey = "pathRemainder"
-	tokenKey contextKey = "token"
+	tokenKey         contextKey = "token"
 )
 
 func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler {
@@ -108,7 +113,9 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 				r.Out.Header.Set("Authorization", basicAuth)
 			}
 		},
-		FlushInterval: DisableFlush,
+		FlushInterval:  DisableFlush,
+		ModifyResponse: stripSensitiveResponseHeaders,
+		Transport:      NewPerHostTransportManager(hostRegistry),
 	}
 
 	// Helper to log requests with consistent format
@@ -169,6 +176,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		}
 
 		ctx := context.WithValue(r.Context(), hostConfigKey, hostConfig)
+		ctx = context.WithValue(ctx, backendHostKey, host)
 		ctx = context.WithValue(ctx, pathRemainderKey, remainder)
 		ctx = context.WithValue(ctx, tokenKey, token)
 		r = r.WithContext(ctx)
@@ -200,4 +208,77 @@ func ValidateGitAuthConfig() error {
 	}
 
 	return nil
+}
+
+// PerHostTransportManager caches and manages http.Transport instances per backend host.
+type PerHostTransportManager struct {
+	mu           sync.Mutex
+	transports   map[string]*http.Transport
+	hostRegistry map[string]*GitHost
+}
+
+func NewPerHostTransportManager(hosts map[string]*GitHost) *PerHostTransportManager {
+	return &PerHostTransportManager{
+		transports:   make(map[string]*http.Transport),
+		hostRegistry: hosts,
+	}
+}
+
+// RoundTrip intercepts the request, determines the target host, and routes it
+// through a Transport configured specifically for that host.
+func (m *PerHostTransportManager) RoundTrip(req *http.Request) (*http.Response, error) {
+	host, ok := req.Context().Value(backendHostKey).(string)
+	if !ok {
+		host = req.URL.Host
+	}
+
+	m.mu.Lock()
+	tr, exists := m.transports[host]
+	if !exists {
+		// Build a custom TLS config dynamically based on the target host
+		tlsConfig := m.getTLSConfigForHost(host)
+
+		tr = &http.Transport{
+			TLSClientConfig:     tlsConfig,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+		}
+		m.transports[host] = tr
+	}
+	m.mu.Unlock()
+
+	return tr.RoundTrip(req)
+}
+
+// getTLSConfigForHost defines your custom rules per backend host
+func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
+
+	tlsConfig := tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	matchedHost, exists := m.hostRegistry[host]
+	if !exists {
+		return &tlsConfig
+	}
+
+	tlsConfig.InsecureSkipVerify = matchedHost.TLSInsecureSkipVerify
+
+	return &tlsConfig
+}
+
+func getEnvAsBool(envVar string, defaultValue bool) bool {
+	valStr := strings.ToLower(strings.TrimSpace(os.Getenv(envVar)))
+	if valStr == "" {
+		return defaultValue
+	}
+
+	switch valStr {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }

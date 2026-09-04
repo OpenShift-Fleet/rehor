@@ -1,0 +1,39 @@
+{
+  "task": {
+    "external_key": "RHCLOUD-50000",
+    "status": "pr_open",
+    "repo": "notifications-frontend",
+    "last_addressed": "2026-09-02T10:09:00+00:00",
+    "metadata": {
+      "prs": [
+        {
+          "repo": "notifications-frontend",
+          "number": 1039,
+          "host": "github"
+        }
+      ]
+    }
+  },
+  "pr": {
+    "state": "OPEN",
+    "mergeable": "MERGEABLE",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "statusCheckRollup": [
+      {
+        "name": "Red Hat Konflux / notifications-frontend-on-pull-request",
+        "conclusion": "FAILURE",
+        "detailsUrl": "https://konflux.example/pipelinerun/1039"
+      }
+    ],
+    "reviews": [
+      {
+        "state": "CHANGES_REQUESTED",
+        "submittedAt": "2026-08-04T12:00:00Z",
+        "author": {
+          "login": "reviewer-1"
+        }
+      }
+    ]
+  },
+  "comments": []
+}

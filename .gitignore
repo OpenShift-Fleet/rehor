@@ -22,6 +22,7 @@ __pycache__/
 .venv/
 .python-version
 dashboard/node_modules/
+dashboard/tsconfig.tsbuildinfo
 # Dashboard build output (built in Dockerfile, not committed)
 memory-server/bot_memory_server/static/assets/
 memory-server/bot_memory_server/static/index.html
@@ -51,5 +52,13 @@ rehor-impact-assessment-generated.md
 .claude/skills/wrap-up/
 .claude/skills/triage/
 .claude/skills/new-work/
+# MkDocs build output
+site/
+
 # IDEs and Editors
 .vscode/
+# MkDocs build output
+site/
+
+# Dashboard Playwright output
+dashboard/test-results/

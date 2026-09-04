@@ -29,15 +29,20 @@ var (
 	timeout  = flag.Duration("timeout", 60*time.Second, "per-command timeout")
 
 	vertexListen  = flag.String("vertex-listen", ":8443", "vertex auth proxy listen address")
+	gitAuthListen = flag.String("git-auth-listen", ":8447", "git auth proxy listen address")
 	vertexProject = flag.String("vertex-project", "", "real GCP project ID")
 	vertexRegion  = flag.String("vertex-region", "", "real GCP region")
 
 	jiraListen   = flag.String("jira-listen", ":8445", "jira auth proxy listen address")
 	jiraURL      = flag.String("jira-url", "", "upstream Jira URL")
-	jiraUsername  = flag.String("jira-username", "", "Jira username")
+	jiraUsername = flag.String("jira-username", "", "Jira username")
 	jiraToken    = flag.String("jira-token", "", "Jira API token")
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
+
+	glitchtipListen = flag.String("glitchtip-listen", ":8448", "glitchtip auth proxy listen address")
+	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
+	glitchtipToken  = flag.String("glitchtip-token", "", "GlitchTip API token")
 
 	metricsListen = flag.String("metrics-listen", ":9091", "address for Prometheus /metrics endpoint (env: METRICS_LISTEN)")
 )
@@ -71,6 +76,7 @@ func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Execu
 
 	if err := s.policy.Check(tool, args); err != nil {
 		log.Printf("policy-deny: tool=%s subcmd=%s reason=%s", tool, subcmd, err)
+		executor.PolicyDenyTotal.WithLabelValues(tool).Inc()
 		exitCode = 1
 		return &pb.ExecuteResponse{
 			Stderr:   err.Error() + "\n",
@@ -209,6 +215,9 @@ func main() {
 	if v := os.Getenv("VERTEX_AUTH_LISTEN"); v != "" {
 		*vertexListen = v
 	}
+	if v := os.Getenv("GIT_AUTH_LISTEN"); v != "" {
+		*gitAuthListen = v
+	}
 	if v := os.Getenv("GCP_PROJECT_ID"); v != "" {
 		*vertexProject = v
 	}
@@ -229,6 +238,15 @@ func main() {
 	}
 	if v := os.Getenv("SCREENSHOT_LISTEN"); v != "" {
 		*screenshotListen = v
+	}
+	if v := os.Getenv("GLITCHTIP_LISTEN"); v != "" {
+		*glitchtipListen = v
+	}
+	if v := os.Getenv("GLITCHTIP_URL"); v != "" {
+		*glitchtipURL = v
+	}
+	if v := os.Getenv("GLITCHTIP_TOKEN"); v != "" {
+		*glitchtipToken = v
 	}
 	if v := os.Getenv("METRICS_LISTEN"); v != "" {
 		*metricsListen = v
@@ -280,6 +298,20 @@ func main() {
 		}()
 	}
 
+	var gitAuthSrv *http.Server
+	// Keep Git auth opt-in until deployment exposes 8447 and moves GlitchTip off it.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_AUTH_ENABLED")), "true") &&
+		(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "") {
+		handler := executor.InstrumentHTTPHandler("gitauth", executor.NewGitAuthProxy())
+		gitAuthSrv = &http.Server{Addr: *gitAuthListen, Handler: handler}
+		go func() {
+			log.Printf("git-auth-proxy listening on %s", *gitAuthListen)
+			if err := gitAuthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("git auth proxy: %v", err)
+			}
+		}()
+	}
+
 	var jiraSrv *http.Server
 	if *jiraURL != "" {
 		if err := executor.ValidateJiraConfig(*jiraURL, *jiraUsername, *jiraToken); err != nil {
@@ -307,6 +339,21 @@ func main() {
 		}()
 	}
 
+	var glitchtipSrv *http.Server
+	if *glitchtipURL != "" {
+		if err := executor.ValidateGlitchTipConfig(*glitchtipURL, *glitchtipToken); err != nil {
+			log.Fatalf("glitchtip config: %v", err)
+		}
+		handler := executor.InstrumentHTTPHandler("glitchtip", executor.NewGlitchTipProxy(*glitchtipURL, *glitchtipToken))
+		glitchtipSrv = &http.Server{Addr: *glitchtipListen, Handler: handler}
+		go func() {
+			log.Printf("glitchtip-auth-proxy listening on %s (upstream=%s)", *glitchtipListen, *glitchtipURL)
+			if err := glitchtipSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("glitchtip proxy: %v", err)
+			}
+		}()
+	}
+
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -318,11 +365,17 @@ func main() {
 		if vertexSrv != nil {
 			vertexSrv.Shutdown(ctx)
 		}
+		if gitAuthSrv != nil {
+			gitAuthSrv.Shutdown(ctx)
+		}
 		if jiraSrv != nil {
 			jiraSrv.Shutdown(ctx)
 		}
 		if screenshotSrv != nil {
 			screenshotSrv.Shutdown(ctx)
+		}
+		if glitchtipSrv != nil {
+			glitchtipSrv.Shutdown(ctx)
 		}
 		if err := metricsSrv.Shutdown(ctx); err != nil {
 			log.Printf("metrics server shutdown error: %v", err)

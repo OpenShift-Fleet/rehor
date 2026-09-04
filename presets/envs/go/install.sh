@@ -32,6 +32,7 @@ goenv global "${DEFAULT}"
 # Add goenv init to profile so interactive shells get goenv
 cat > /etc/profile.d/goenv.sh << 'PROFILE'
 export GOENV_ROOT="/usr/local/goenv"
+export GOENV_PATH_ORDER=front
 export PATH="$GOENV_ROOT/bin:$PATH"
 eval "$(goenv init -)"
 PROFILE

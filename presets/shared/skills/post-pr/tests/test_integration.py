@@ -334,7 +334,7 @@ class TestWorkflowPersistence:
         memory_store = Path(os.environ["POST_PR_MEMORY_STORE"])
         assert memory_store.exists()
 
-        with open(memory_store, "r") as f:
+        with open(memory_store) as f:
             memories = json.load(f)
             assert len(memories) == 3
 
@@ -368,7 +368,7 @@ class TestWorkflowPersistence:
         status_file = Path("/tmp/bot_status.json")
         assert status_file.exists()
 
-        with open(status_file, "r") as f:
+        with open(status_file) as f:
             status = json.load(f)
             assert status["status"] == "idle"
             assert status["timestamp"]

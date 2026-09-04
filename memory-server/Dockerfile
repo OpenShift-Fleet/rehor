@@ -5,6 +5,7 @@ WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
 RUN npm ci
 COPY dashboard/ .
+COPY shared/ /app/shared/
 RUN npm run build
 
 # Stage 2: Python memory server

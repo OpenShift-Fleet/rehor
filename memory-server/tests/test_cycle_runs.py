@@ -2,11 +2,11 @@
 
 import base64
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from bot_memory_server.api import api_cycle_run_transcript, api_cycle_runs
+from bot_memory_server.api import api_cycle_run_transcript, api_cycle_runs, api_cycle_runs_by_task
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -14,6 +14,7 @@ from starlette.routing import Route
 app = Starlette(
     routes=[
         Route("/api/cycle-runs", api_cycle_runs, methods=["GET", "POST"]),
+        Route("/api/cycle-runs/by-task", api_cycle_runs_by_task, methods=["GET"]),
         Route(
             "/api/cycle-runs/{id}/transcript",
             api_cycle_run_transcript,
@@ -31,7 +32,7 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
     ``transcript`` (raw bytes) through their own column set, so we
     keep that key as a fallback.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return {
         "id": id,
         "task_id": task_id,
@@ -44,6 +45,24 @@ def _fake_cycle_run_row(id=1, task_id=42, **kwargs):
         "progress": kwargs.get("progress", json.dumps({"last_step": "implemented"})),
         "created_at": kwargs.get("created_at", now),
         "has_transcript": kwargs.get("has_transcript", False),
+    }
+
+
+def _fake_by_task_row(**kwargs):
+    now = datetime.now(UTC)
+    return {
+        "task_id": kwargs.get("task_id", 42),
+        "external_key": kwargs.get("external_key", "RHCLOUD-100"),
+        "source_type": kwargs.get("source_type", "jira"),
+        "title": kwargs.get("title", "Fix login"),
+        "task_status": kwargs.get("task_status", "in_progress"),
+        "repo": kwargs.get("repo", "test-repo"),
+        "cycle_count": kwargs.get("cycle_count", 3),
+        "transcript_count": kwargs.get("transcript_count", 1),
+        "total_tool_calls": kwargs.get("total_tool_calls", 100),
+        "total_tokens": kwargs.get("total_tokens", 250000),
+        "first_cycle": kwargs.get("first_cycle", now),
+        "last_cycle": kwargs.get("last_cycle", now),
     }
 
 
@@ -63,6 +82,8 @@ def mock_pool():
 
 @pytest.mark.asyncio
 async def test_post_cycle_run_basic(mock_pool):
+    # UPDATE (no orphan found → None), then INSERT
+    mock_pool.fetchrow = AsyncMock(side_effect=[None, _fake_cycle_run_row(id=1, task_id=42)])
     body = {
         "task_id": 42,
         "cycle_type": "task_work",
@@ -78,7 +99,7 @@ async def test_post_cycle_run_basic(mock_pool):
     assert data["id"] == 1
     assert data["task_id"] == 42
     assert data["cycle_type"] == "task_work"
-    mock_pool.fetchrow.assert_called_once()
+    assert mock_pool.fetchrow.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -160,6 +181,8 @@ async def test_post_cycle_run_no_task(mock_pool):
 
 @pytest.mark.asyncio
 async def test_post_cycle_run_with_timestamps(mock_pool):
+    # UPDATE (no orphan found → None), then INSERT
+    mock_pool.fetchrow = AsyncMock(side_effect=[None, _fake_cycle_run_row(id=1, task_id=42)])
     body = {
         "task_id": 42,
         "cycle_type": "task_work",
@@ -174,9 +197,82 @@ async def test_post_cycle_run_with_timestamps(mock_pool):
         resp = await client.post("/api/cycle-runs", json=body)
 
     assert resp.status_code == 201
+    # call_args is from the INSERT call (UPDATE returned None, INSERT was second)
     call_args = mock_pool.fetchrow.call_args[0]
-    assert call_args[6] == 87  # tool_calls
-    assert call_args[7] == 150000  # tokens_used
+    assert call_args[6] == 87  # tool_calls ($6 in INSERT)
+    assert call_args[7] == 150000  # tokens_used ($7 in INSERT)
+
+
+# --- REST API: POST /api/cycle-runs — merge without transcript (REHOR-102) ---
+
+
+@pytest.mark.asyncio
+async def test_post_cycle_run_no_transcript_merges_into_orphan(mock_pool):
+    """REHOR-102: When record_transcript posts without a transcript (file not found),
+    it should still UPDATE the existing progress_store row instead of creating a duplicate."""
+    # UPDATE finds the orphan → returns updated row
+    mock_pool.fetchrow = AsyncMock(return_value=_fake_cycle_run_row(id=50, task_id=42, has_transcript=False))
+
+    body = {
+        "task_id": 42,
+        "cycle_type": "task_work",
+        "instance_id": "test-instance",
+        "tool_calls": 30,
+        "tokens_used": 80000,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/cycle-runs", json=body)
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["id"] == 50
+    assert mock_pool.fetchrow.call_count == 1
+    query = mock_pool.fetchrow.call_args[0][0]
+    assert "UPDATE cycle_runs" in query
+    assert "COALESCE($1, transcript)" in query
+
+
+@pytest.mark.asyncio
+async def test_post_cycle_run_no_transcript_no_orphan_inserts(mock_pool):
+    """REHOR-102: When no orphan exists and no transcript provided, fall through to INSERT."""
+    mock_pool.fetchrow = AsyncMock(side_effect=[None, _fake_cycle_run_row(id=51, task_id=42)])
+
+    body = {
+        "task_id": 42,
+        "cycle_type": "task_work",
+        "instance_id": "test-instance",
+        "tool_calls": 25,
+        "tokens_used": 60000,
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/cycle-runs", json=body)
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["id"] == 51
+    assert mock_pool.fetchrow.call_count == 2
+    insert_query = mock_pool.fetchrow.call_args[0][0]
+    assert "INSERT INTO cycle_runs" in insert_query
+
+
+@pytest.mark.asyncio
+async def test_post_cycle_run_no_instance_id_skips_update(mock_pool):
+    """Without instance_id, skip the UPDATE path entirely and INSERT directly."""
+    mock_pool.fetchrow = AsyncMock(return_value=_fake_cycle_run_row(id=52, task_id=None, cycle_type="idle"))
+
+    body = {
+        "cycle_type": "idle",
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.post("/api/cycle-runs", json=body)
+
+    assert resp.status_code == 201
+    assert mock_pool.fetchrow.call_count == 1
+    query = mock_pool.fetchrow.call_args[0][0]
+    assert "INSERT INTO cycle_runs" in query
 
 
 # --- REST API: GET /api/cycle-runs ---
@@ -226,6 +322,34 @@ async def test_get_cycle_runs_filter_by_cycle_type(mock_pool):
     call_args = mock_pool.fetch.call_args
     query = call_args[0][0]
     assert "cycle_type = $" in query
+
+
+@pytest.mark.asyncio
+async def test_get_cycle_runs_by_task_returns_paginated(mock_pool):
+    """REHOR-79: by-task endpoint must return {items, total}, not a plain array."""
+    mock_pool.fetch = AsyncMock(return_value=[_fake_by_task_row(), _fake_by_task_row(external_key="RHCLOUD-200")])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/cycle-runs/by-task")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "items" in data
+    assert "total" in data
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+    assert data["items"][0]["external_key"] == "RHCLOUD-100"
+
+
+@pytest.mark.asyncio
+async def test_get_cycle_runs_by_task_empty(mock_pool):
+    mock_pool.fetch = AsyncMock(return_value=[])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/cycle-runs/by-task")
+
+    data = resp.json()
+    assert data == {"items": [], "total": 0}
 
 
 @pytest.mark.asyncio

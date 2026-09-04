@@ -3,6 +3,7 @@
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -12,14 +13,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
+from prometheus_client import start_http_server
 
 from . import idle_reminder
-from .agent import run_cycle
+from .agent import push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
     Config,
@@ -33,9 +33,17 @@ from .config import (
     validate_instance_config,
     validate_manifest,
 )
-from .constants import MEMORY_API_BASE
 from .costs import record_cost
 from .merge import apply_merged_config, install_skills
+from .metrics import (
+    CONFIG_SYNC_TOTAL,
+    CYCLE_DURATION_SECONDS,
+    CYCLE_TIMEOUT_TOTAL,
+    DISK_FREE_MB,
+    PREFLIGHT_CONSECUTIVE_ERRORS,
+    PREFLIGHT_OUTCOME_TOTAL,
+    WORK_TYPE_TOTAL,
+)
 from .preflight import run_preflight
 from .transcripts import post_orphan_cycle, record_transcript
 
@@ -62,6 +70,7 @@ def setup_git(script_dir: Path) -> None:
     gh_email = os.environ.get("GH_USER_EMAIL")
     gl_name = os.environ.get("GL_USER_NAME")
     gl_email = os.environ.get("GL_USER_EMAIL")
+    git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")
 
     if not gh_name and not gl_name:
         return
@@ -94,11 +103,25 @@ def setup_git(script_dir: Path) -> None:
         "\tgpgsign = true",
         "[gpg]",
         "\tformat = openpgp",
-        '[credential "https://github.com"]',
-        "\thelper = !/usr/local/bin/gh auth git-credential",
-        '[credential "https://gitlab.cee.redhat.com"]',
-        "\thelper = !/usr/local/bin/glab credential-helper",
     ]
+    if git_proxy_host:
+        lines.extend(
+            [
+                f'[url "http://{git_proxy_host}:8447/github.com/"]',
+                "\tinsteadOf = https://github.com/",
+                f'[url "http://{git_proxy_host}:8447/gitlab.cee.redhat.com/"]',
+                "\tinsteadOf = https://gitlab.cee.redhat.com/",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                '[credential "https://github.com"]',
+                "\thelper = !/usr/local/bin/gh auth git-credential",
+                '[credential "https://gitlab.cee.redhat.com"]',
+                "\thelper = !/usr/local/bin/glab credential-helper",
+            ]
+        )
 
     config_path.write_text("\n".join(lines) + "\n")
     os.environ["GIT_CONFIG_GLOBAL"] = str(config_path)
@@ -130,7 +153,7 @@ def setup_logging() -> None:
 REMOTE_CONFIG_DIR = DATA_DIR / "remote-config"
 
 
-def sync_config_repo() -> tuple[Path | None, Path | None]:
+def sync_config_repo(label: str) -> tuple[Path | None, Path | None]:
     """Clone or pull BOT_CONFIG_REPO.
 
     Returns (profile_agent_dir, shared_agent_dir).
@@ -156,6 +179,7 @@ def sync_config_repo() -> tuple[Path | None, Path | None]:
                     r.returncode,
                     r.stderr.decode().strip(),
                 )
+                CONFIG_SYNC_TOTAL.labels(label, "pull_failed").inc()
         else:
             config_dir.parent.mkdir(parents=True, exist_ok=True)
             r = subprocess.run(
@@ -170,12 +194,15 @@ def sync_config_repo() -> tuple[Path | None, Path | None]:
                     r.returncode,
                     r.stderr.decode().strip(),
                 )
+                CONFIG_SYNC_TOTAL.labels(label, "clone_failed").inc()
                 return None, None
     except subprocess.TimeoutExpired:
         logger.warning("Config repo sync timed out — using built-in config")
+        CONFIG_SYNC_TOTAL.labels(label, "timeout").inc()
         return None, None
     except Exception as exc:
         logger.warning("Config repo sync failed: %s — using built-in config", exc)
+        CONFIG_SYNC_TOTAL.labels(label, "error").inc()
         return None, None
 
     sub = os.environ.get("BOT_CONFIG_PATH", "rehor-config")
@@ -183,6 +210,7 @@ def sync_config_repo() -> tuple[Path | None, Path | None]:
     agent_dir = profile_dir / "agent"
     if not agent_dir.is_dir():
         logger.warning("Config repo has no %s/agent/ dir — using built-in config", sub)
+        CONFIG_SYNC_TOTAL.labels(label, "no_agent_dir").inc()
         return None, None
 
     shared_agent_dir = None
@@ -191,25 +219,12 @@ def sync_config_repo() -> tuple[Path | None, Path | None]:
         shared_agent_dir = shared_dir
         logger.info("Multi-profile: shared config at %s", shared_dir)
 
+    CONFIG_SYNC_TOTAL.labels(label, "ok").inc()
     return agent_dir, shared_agent_dir
 
 
 SLEEP_SIGNAL_FILE = DATA_DIR / "cycle-sleep.json"
 LOW_DISK_THRESHOLD_MB = 512
-WAKE_POLL_INTERVAL = 5
-
-DASHBOARD_BASE_URL = os.environ.get("MEMORY_API_URL", MEMORY_API_BASE)
-
-
-def _check_wake_signal(instance_id: str) -> bool:
-    """Poll the memory server for a wake trigger. Returns True if wake requested."""
-    try:
-        url = f"{DASHBOARD_BASE_URL}/instances/{instance_id}/wake"
-        with urlopen(url, timeout=2) as resp:
-            data = json.loads(resp.read())
-            return data.get("wake", False)
-    except (URLError, OSError, json.JSONDecodeError, Exception):
-        return False
 
 
 def _try_slack_digest() -> None:
@@ -224,14 +239,11 @@ def _write_sleep_signal(seconds: int, reason: str) -> None:
     SLEEP_SIGNAL_FILE.write_text(json.dumps({"recommended_sleep": seconds, "reason": reason}))
 
 
-def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
+def _read_sleep_signal(config: Config) -> int:
     """Read sleep duration from skill-written signal file.
 
     Skills write data/cycle-sleep.json with {"recommended_sleep": N, "reason": "..."}.
     No file = standard interval (work was done). File is always deleted after reading.
-
-    Instead of blocking for the full duration, sleeps in short intervals and polls
-    the memory server for a wake trigger so the dashboard can interrupt the sleep.
     """
     logger = logging.getLogger(__name__)
     sleep_seconds = config.interval
@@ -249,23 +261,8 @@ def _read_sleep_signal(config: Config, instance_id: str | None = None) -> int:
     else:
         logger.info("No sleep signal, using default %ds", config.interval)
 
-    sleep_seconds = max(sleep_seconds, WAKE_POLL_INTERVAL)
     logger.info("Sleeping for %ds...", sleep_seconds)
-
-    if instance_id:
-        elapsed = 0
-        while elapsed < sleep_seconds:
-            time.sleep(WAKE_POLL_INTERVAL)
-            elapsed += WAKE_POLL_INTERVAL
-            if _check_wake_signal(instance_id):
-                logger.info(
-                    "Wake signal received after %ds — starting next cycle early",
-                    elapsed,
-                )
-                return elapsed
-    else:
-        time.sleep(sleep_seconds)
-
+    time.sleep(sleep_seconds)
     return sleep_seconds
 
 
@@ -334,6 +331,7 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         free_mb = usage.free // (1024 * 1024)
     except OSError:
         return
+    DISK_FREE_MB.set(free_mb)
 
     if free_mb >= LOW_DISK_THRESHOLD_MB:
         logger.info("Disk OK: %dM free (threshold %dM)", free_mb, LOW_DISK_THRESHOLD_MB)
@@ -360,25 +358,24 @@ def cleanup_between_cycles(script_dir: Path) -> None:
     if repos_dir.exists():
         for repo in repos_dir.iterdir():
             if (repo / ".git").is_dir():
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired, FileNotFoundError):
                     subprocess.run(
                         ["git", "gc", "--auto", "--quiet"],
                         cwd=str(repo),
                         capture_output=True,
                         timeout=60,
                     )
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    pass
 
     try:
         usage = shutil.disk_usage(str(script_dir))
         free_mb = usage.free // (1024 * 1024)
+        DISK_FREE_MB.set(free_mb)
         logger.info("Cleanup done. Free space: %dM", free_mb)
     except OSError:
         pass
 
 
-def handle_cycle_timeout(timeout_seconds: int) -> tuple[None, None]:
+def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:
     """Log timeout and warn about lost cost data. Returns (None, None) for result, ctx."""
     logger = logging.getLogger(__name__)
     logger.error(
@@ -386,6 +383,7 @@ def handle_cycle_timeout(timeout_seconds: int) -> tuple[None, None]:
         timeout_seconds,
     )
     logger.warning("Cost data for timed-out cycle lost (SDK does not expose partial usage)")
+    CYCLE_TIMEOUT_TOTAL.labels(label).inc()
     return None, None
 
 
@@ -420,7 +418,7 @@ def main() -> None:
 
     # Initial config sync + instance config load (before validation so
     # instance.yaml can override the workflow preset)
-    initial_agent_dir, initial_shared_dir = sync_config_repo()
+    initial_agent_dir, initial_shared_dir = sync_config_repo(args.label)
     if initial_shared_dir:
         apply_merged_config(SCRIPT_DIR, initial_shared_dir)
     if initial_agent_dir:
@@ -456,6 +454,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
+    start_http_server(9091)
+    logger.info("Metrics server listening on :9091")
+
     instance_id = args.instance_id or None
     logger.info(
         "Dev bot started. Label: %s. Instance: %s. Provider: Vertex AI. Active interval: %ds. Idle interval: %ds.",
@@ -469,7 +470,9 @@ def main() -> None:
 
     try:
         while True:
-            remote_agent_dir, shared_agent_dir = sync_config_repo()
+            _try_slack_digest()
+
+            remote_agent_dir, shared_agent_dir = sync_config_repo(args.label)
             if shared_agent_dir:
                 apply_merged_config(SCRIPT_DIR, shared_agent_dir)
             if remote_agent_dir:
@@ -491,45 +494,56 @@ def main() -> None:
                 if preflight_result.action == "error":
                     consecutive_preflight_errors += 1
                     logger.error("Preflight error (consecutive: %d)", consecutive_preflight_errors)
+                    PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "error").inc()
+                    PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(consecutive_preflight_errors)
+                    WORK_TYPE_TOTAL.labels(args.label, "error").inc()
                     post_orphan_cycle(
                         instance_id or args.label,
                         "error",
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
                     _write_sleep_signal(error_sleep, "preflight_error")
-                    _read_sleep_signal(config, instance_id)
+                    _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
                     continue
 
                 if preflight_result.action == "skip":
                     consecutive_preflight_errors = 0
                     logger.info("Preflight skip — no session needed")
+                    PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "skip").inc()
+                    PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
+                    WORK_TYPE_TOTAL.labels(args.label, "idle").inc()
                     post_orphan_cycle(
                         instance_id or args.label,
                         "idle",
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("idle", "No work found. Sleeping...", instance_id=instance_id)
                     idle_reminder.on_preflight_skip(
                         instance_id or args.label,
                         idle_cycle_limit=instance_config.idle_cycle_limit,
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
                     )
                     _write_sleep_signal(config.idle_interval, "preflight_skip")
-                    _read_sleep_signal(config, instance_id)
+                    _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
                     continue
 
                 # action == "start"
                 consecutive_preflight_errors = 0
+                PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "start").inc()
+                PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
                 idle_reminder.on_preflight_start(instance_id or args.label)
                 preflight_prompt = preflight_result.prompt
                 logger.info("Preflight start — launching session with pre-fetched data")
 
             logger.info("Running agent cycle...")
 
+            cycle_start = time.monotonic()
             try:
                 result, ctx = asyncio.run(
                     asyncio.wait_for(
@@ -545,8 +559,11 @@ def main() -> None:
                         timeout=config.cycle_timeout,
                     )
                 )
-            except asyncio.TimeoutError:
-                result, ctx = handle_cycle_timeout(config.cycle_timeout)
+            except TimeoutError:
+                result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
+            cycle_duration = time.monotonic() - cycle_start
+            work_type = (ctx.work_type if ctx else None) or "unknown"
+            CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
 
             if result is not None:
                 record_cost(
@@ -554,6 +571,8 @@ def main() -> None:
                     label=args.label,
                     result=result,
                     ctx=ctx,
+                    instance_id=instance_id,
+                    workflow=instance_config.workflow,
                 )
                 record_transcript(
                     label=args.label,
@@ -566,9 +585,7 @@ def main() -> None:
             else:
                 logger.warning("Cycle produced no result")
 
-            _try_slack_digest()
-
-            _read_sleep_signal(config, instance_id)
+            _read_sleep_signal(config)
 
             cleanup_between_cycles(SCRIPT_DIR)
     finally:

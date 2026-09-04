@@ -23,6 +23,10 @@ parameters:
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
   value: devbot-secrets
+- name: GIT_AUTH_ENABLED
+  value: "false"
+- name: GITLAB_TLS_SKIP_VERIFY
+  value: "false"
 objects:
 
 # ============================================================================
@@ -45,6 +49,8 @@ objects:
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
 #      upload-memory-password — (temporary) shared secret for bulk memory upload
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
+#      glitchtip-url         — GlitchTip instance URL (e.g. https://glitchtip.devshift.net)
+#      glitchtip-token       — GlitchTip API token for error tracking
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
@@ -246,6 +252,12 @@ objects:
           - containerPort: 8446
             name: screenshot
             protocol: TCP
+          - containerPort: 8447
+            name: git-auth
+            protocol: TCP
+          - containerPort: 8448
+            name: glitchtip
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -300,14 +312,32 @@ objects:
               secretKeyRef:
                 name: ${JIRA_SECRET_NAME}
                 key: jira-token
+          - name: GLITCHTIP_URL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: glitchtip-url
+          - name: GLITCHTIP_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: glitchtip-token
+          - name: GIT_AUTH_ENABLED
+            value: ${GIT_AUTH_ENABLED}
+          - name: GITLAB_TLS_SKIP_VERIFY
+            value: ${GITLAB_TLS_SKIP_VERIFY}
+          # HTTP /metrics avoids Squid logging TCP kubelet probes as
+          # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 5
             periodSeconds: 15
           readinessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10
           resources:
@@ -316,7 +346,7 @@ objects:
               memory: 128Mi
             limits:
               cpu: 300m
-              memory: 256Mi
+              memory: 512Mi
 
 # --- Proxy Service ---
 - apiVersion: v1
@@ -351,6 +381,14 @@ objects:
       targetPort: screenshot
       protocol: TCP
       name: screenshot
+    - port: 8447
+      targetPort: git-auth
+      protocol: TCP
+      name: git-auth
+    - port: 8448
+      targetPort: glitchtip
+      protocol: TCP
+      name: glitchtip
     - port: 9091
       targetPort: metrics
       protocol: TCP
@@ -384,6 +422,10 @@ objects:
       - port: 8444
         protocol: TCP
       - port: 8446
+        protocol: TCP
+      - port: 8447
+        protocol: TCP
+      - port: 8448
         protocol: TCP
     - from:
       - namespaceSelector:

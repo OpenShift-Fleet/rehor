@@ -25,6 +25,7 @@ Usage:
   python3 collect-impact-data.py
 """
 
+import contextlib
 import csv
 import json
 import os
@@ -637,10 +638,8 @@ def compute_stats(tickets, pr_map, comment_links, gh_prs, with_prs, with_mrs):
     for pr in gh_prs:
         created = pr.get("created_at", "")
         if created:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 pr_dates.append(datetime.fromisoformat(created.replace("Z", "+00:00")).date())
-            except (ValueError, TypeError):
-                pass
     if pr_dates:
         first_pr_date = min(pr_dates).isoformat()
         period_days = (today - min(pr_dates)).days

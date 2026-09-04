@@ -186,8 +186,7 @@ class TestValidateInstanceConfig:
 
         ic = InstanceConfig(envs=None)
         env = {"PLAYWRIGHT_BROWSERS_PATH": "/opt/pw", "SLACK_WEBHOOK_URL": "https://hooks.slack.com/x"}
-        with caplog.at_level(logging.INFO):
-            with patch.dict(os.environ, env, clear=False):
-                validate_instance_config(preset_tree, ic)
+        with caplog.at_level(logging.INFO), patch.dict(os.environ, env, clear=False):
+            validate_instance_config(preset_tree, ic)
         assert "browser" in caplog.text
         assert "container-scan" in caplog.text

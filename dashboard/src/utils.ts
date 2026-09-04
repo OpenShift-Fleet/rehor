@@ -39,3 +39,36 @@ export function sourceUrl(item: SourceLike): string | null {
 export function displayKey(item: SourceLike): string {
   return item.external_key || '';
 }
+
+const SLEEP_THRESHOLD_MS = 60_000; // 60 seconds
+
+export type DisplayState = 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
+
+export function effectiveState(instance: { state: string; updated_at?: string }): DisplayState {
+  if (instance.state === 'idle' && instance.updated_at) {
+    const age = Date.now() - new Date(instance.updated_at).getTime();
+    if (age > SLEEP_THRESHOLD_MS) return 'sleep';
+  }
+  return instance.state as DisplayState;
+}
+
+export function stateLabelColor(state: DisplayState): 'orange' | 'red' | 'green' | 'grey' {
+  if (state === 'working') return 'orange';
+  if (state === 'error') return 'red';
+  if (state === 'idle') return 'green';
+  return 'grey';
+}
+
+export function stateIconStatus(state: DisplayState): 'warning' | 'danger' | 'success' | 'custom' {
+  if (state === 'working') return 'warning';
+  if (state === 'error') return 'danger';
+  if (state === 'idle') return 'success';
+  return 'custom';
+}
+
+export function stateBorderColor(state: DisplayState): string {
+  if (state === 'working') return 'var(--yellow)';
+  if (state === 'error') return 'var(--red)';
+  if (state === 'idle') return 'var(--green)';
+  return 'var(--text-dim)';
+}

@@ -1,0 +1,20 @@
+{
+  "$comment": "GitHub branch protection policy for PUT /repos/{owner}/{repo}/branches/{branch}/protection. Apply with scripts/apply_branch_protection.sh.",
+  "required_status_checks": {
+    "strict": true,
+    "contexts": [
+      "Red Hat Konflux / platform-frontend-ai-dev-on-pull-request",
+      "Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request"
+    ]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 1
+  },
+  "restrictions": null,
+  "required_linear_history": false,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}

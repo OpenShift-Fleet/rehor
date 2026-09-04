@@ -4,6 +4,8 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 
 ## Documentation
 
+**[Browse the full documentation site](https://openshift-fleet.github.io/rehor/)**
+
 | Document | Description |
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | System design, credential isolation, component overview |
@@ -315,6 +317,9 @@ Personas provide domain-specific guidelines for different repo types. They live 
 
 The bot has built-in skills (Claude Code slash commands) in `.claude/skills/`:
 
+OpenCode-only project skills live in `.agents/skills/` and are not installed
+through Rehor presets.
+
 | Skill | Purpose |
 |-------|---------|
 | `triage` | Pre-gathers all active task statuses, PR/MR states, CI, reviews, Jira comments |
@@ -326,6 +331,7 @@ The bot has built-in skills (Claude Code slash commands) in `.claude/skills/`:
 | `slack-notify` | Sends Slack notifications with 48h per-ticket cooldown |
 | `auto-fork` | Forks repos under the bot's GitHub account |
 | `gh-release-upload` | Uploads screenshots to GitHub releases for PR comments |
+| `debug-preflight-cycles` | Reproduces false-positive cycle starts with source fixtures and TDD |
 
 ## Memory system
 

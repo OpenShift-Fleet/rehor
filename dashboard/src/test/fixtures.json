@@ -3,6 +3,7 @@
     "RHCLOUD-001": {
       "id": 1,
       "external_key": "RHCLOUD-001",
+      "jira_key": "RHCLOUD-001",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-001",
       "artifacts": [
@@ -42,6 +43,7 @@
     "RHCLOUD-002": {
       "id": 2,
       "external_key": "RHCLOUD-002",
+      "jira_key": "RHCLOUD-002",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-002",
       "artifacts": [
@@ -77,6 +79,7 @@
     "RHCLOUD-003": {
       "id": 3,
       "external_key": "RHCLOUD-003",
+      "jira_key": "RHCLOUD-003",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-003",
       "artifacts": [
@@ -112,6 +115,7 @@
     "RHCLOUD-004": {
       "id": 4,
       "external_key": "RHCLOUD-004",
+      "jira_key": "RHCLOUD-004",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-004",
       "artifacts": [
@@ -151,6 +155,7 @@
     "RHCLOUD-005": {
       "id": 5,
       "external_key": "RHCLOUD-005",
+      "jira_key": "RHCLOUD-005",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-005",
       "artifacts": [
@@ -186,6 +191,7 @@
     "RHCLOUD-006": {
       "id": 6,
       "external_key": "RHCLOUD-006",
+      "jira_key": "RHCLOUD-006",
       "source_type": "jira",
       "source_url": "https://issues.redhat.com/browse/RHCLOUD-006",
       "artifacts": [
@@ -468,6 +474,34 @@
       "repo": "frontend",
       "work_type": "implementation",
       "summary": "Completed work on RHCLOUD-004"
+    }
+  ],
+  "dailyCosts": [
+    {
+      "day": "2026-07-01",
+      "cycles": 2,
+      "total_cost": 0.2,
+      "input_tokens": 20000,
+      "output_tokens": 10000,
+      "cache_read": 4000,
+      "cache_write": 2000,
+      "total_duration": 600000,
+      "total_turns": 16,
+      "idle_cycles": 0,
+      "error_cycles": 0
+    },
+    {
+      "day": "2026-07-02",
+      "cycles": 1,
+      "total_cost": 0.15,
+      "input_tokens": 10000,
+      "output_tokens": 5000,
+      "cache_read": 2000,
+      "cache_write": 1000,
+      "total_duration": 300000,
+      "total_turns": 8,
+      "idle_cycles": 0,
+      "error_cycles": 0
     }
   ],
   "embeddings": [

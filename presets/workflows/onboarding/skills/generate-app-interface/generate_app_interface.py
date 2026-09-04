@@ -315,11 +315,9 @@ def _add_code_component(cfg, repo_path):
     if not isinstance(data, dict) or "codeComponents" not in data:
         return None
 
-    if not isinstance(data["codeComponents"], list):
-        data["codeComponents"] = []
-
-    data["codeComponents"].append({"name": instance_name, "resource": "upstream", "url": repo_url})
-    app_path.write_text("---\n" + yaml.dump(data, default_flow_style=False, sort_keys=False))
+    new_entry = f"- name: {instance_name}\n  resource: upstream\n  url: {repo_url}"
+    content = content.rstrip("\n")
+    app_path.write_text(content + "\n" + new_entry + "\n")
     return str(app_path.relative_to(repo_path))
 
 
@@ -355,25 +353,40 @@ def _add_self_service_datafile(cfg, repo_path):
     if not isinstance(data, dict):
         return None
 
-    if "self_service" not in data or not isinstance(data["self_service"], list):
-        data["self_service"] = []
+    new_datafile_line = f"  - $ref: {deploy_ref}"
 
-    ss_entry = None
-    for entry in data["self_service"]:
-        ct = entry.get("change_type", {})
-        if isinstance(ct, dict) and ct.get("$ref") == SAAS_SELF_SERVICE_REF:
-            ss_entry = entry
-            break
+    ss_ref_pattern = re.escape(SAAS_SELF_SERVICE_REF)
+    ss_match = re.search(rf"\$ref:\s*{ss_ref_pattern}", content)
+    if ss_match:
+        datafiles_match = re.search(r"datafiles:\s*\n", content[ss_match.end() :])
+        if datafiles_match:
+            block_start = ss_match.end() + datafiles_match.end()
+            last_ref_end = block_start
+            for m in re.finditer(r"  - \$ref:\s*\S+[^\n]*\n?", content[block_start:]):
+                last_ref_end = block_start + m.end()
+            if content[last_ref_end - 1 : last_ref_end] != "\n":
+                new_datafile_line = "\n" + new_datafile_line
+            updated = (
+                content[:last_ref_end].rstrip("\n")
+                + "\n"
+                + new_datafile_line
+                + "\n"
+                + content[last_ref_end:].lstrip("\n")
+            )
+            role_path.write_text(updated)
+            return str(role_path.relative_to(repo_path))
 
-    if ss_entry is None:
-        ss_entry = {"change_type": {"$ref": SAAS_SELF_SERVICE_REF}, "datafiles": []}
-        data["self_service"].append(ss_entry)
+    new_ct_block = f"- change_type:\n    $ref: {SAAS_SELF_SERVICE_REF}\n  datafiles:\n{new_datafile_line}\n"
 
-    if "datafiles" not in ss_entry or not isinstance(ss_entry["datafiles"], list):
-        ss_entry["datafiles"] = []
+    if "self_service:" in content:
+        ss_line_match = re.search(r"^self_service:\s*$", content, re.MULTILINE)
+        if ss_line_match:
+            insert_pos = ss_line_match.end()
+            role_path.write_text(content[:insert_pos] + "\n" + new_ct_block + content[insert_pos:])
+            return str(role_path.relative_to(repo_path))
 
-    ss_entry["datafiles"].append({"$ref": deploy_ref})
-    role_path.write_text("---\n" + yaml.dump(data, default_flow_style=False, sort_keys=False))
+    content = content.rstrip("\n") + "\n\nself_service:\n" + new_ct_block
+    role_path.write_text(content)
     return str(role_path.relative_to(repo_path))
 
 

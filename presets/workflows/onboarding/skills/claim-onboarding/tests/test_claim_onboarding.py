@@ -8,7 +8,7 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SKILL_DIR))
 sys.path.insert(0, str(SKILL_DIR.parent))
 
-from claim_onboarding import _transition_in_progress  # noqa: E402
+from claim_onboarding import _transition_in_progress
 
 TRANSITIONS_LIST = [
     {"id": "11", "name": "To Do"},

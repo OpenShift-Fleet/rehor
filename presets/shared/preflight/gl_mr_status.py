@@ -45,6 +45,7 @@ def gl_mr_notes(project_path, num):
             [
                 "glab",
                 "api",
+                "--paginate",
                 f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
                 "--hostname",
                 "gitlab.cee.redhat.com",
@@ -146,6 +147,12 @@ def has_new_feedback(enriched):
     return False
 
 
+def ci_failure_needs_session(enriched):
+    """Return whether an addressed CI failure needs another agent session."""
+    task = enriched["task"]
+    return not task.get("last_addressed") or has_new_feedback(enriched)
+
+
 def fmt_task(enriched):
     """Format a task with GL MR details."""
     lines = fmt_task_header(enriched["task"])
@@ -158,7 +165,7 @@ def fmt_task(enriched):
     return "\n".join(lines)
 
 
-def main():
+def main(suppress_terminal_if_addressed=False):
     if not INSTANCE_ID:
         output_result("error", "BOT_INSTANCE_ID not set")
         return
@@ -181,16 +188,24 @@ def main():
     for e in enriched:
         issues = e["issues"]
         if "merged" in issues:
-            merged.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                merged.append(e)
         elif "closed" in issues:
-            closed.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_fail.append(e)
+            ci_only = all(i.startswith("ci_fail") for i in issues)
+            if ci_only and not ci_failure_needs_session(e):
+                clean.append(e)
+            else:
+                ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif "unresolved_threads" in issues:
-            feedback.append(e)
-        elif has_new_feedback(e):
+        elif "unresolved_threads" in issues or has_new_feedback(e):
             feedback.append(e)
         else:
             clean.append(e)

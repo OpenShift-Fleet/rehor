@@ -1,0 +1,147 @@
+name: Memory Server CI
+
+on:
+  pull_request:
+    paths:
+      - "memory-server/**"
+      - ".github/workflows/memory-server-ci.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "memory-server/**"
+      - ".github/workflows/memory-server-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: devbot_test
+          POSTGRES_PASSWORD: devbot_test
+          POSTGRES_DB: devbot_migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U devbot_test -d devbot_migration_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install uv and dependencies
+        run: |
+          pip install uv
+          cd memory-server
+          uv sync --frozen --extra test
+
+      - name: Validate pgvector extension loads
+        env:
+          PGPASSWORD: devbot_test
+        run: |
+          psql -h localhost -U devbot_test -d devbot_migration_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run memory-server tests
+        env:
+          PGSQL_HOSTNAME: localhost
+          PGSQL_PORT: "5432"
+          PGSQL_USER: devbot_test
+          PGSQL_PASSWORD: devbot_test
+          PGSQL_DATABASE: devbot_migration_test
+        run: |
+          cd memory-server
+          uv run pytest -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install uv and dependencies
+        run: |
+          pip install uv
+          cd memory-server
+          uv sync --frozen --extra test
+
+      - name: Verify lock consistency
+        run: |
+          cd memory-server
+          uv lock --check
+
+      - name: Run pip-audit
+        run: |
+          cd memory-server
+          # TODO(follow-up): switch to blocking once memory-server dependency
+          # remediation lands (authlib, cryptography, starlette, pyjwt, etc.)
+          set +e
+          uv run pip-audit --desc --local --skip-editable
+          status=$?
+          set -e
+          if [ "$status" -eq 1 ]; then
+            echo "::warning::pip-audit reported vulnerabilities in memory-server. Report-only until dependency remediation."
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::pip-audit execution failed (exit $status)."
+            exit "$status"
+          fi
+
+      - name: Print dependency tree
+        if: always()
+        run: |
+          cd memory-server
+          uv tree
+
+  container-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build memory-server image
+        run: |
+          docker build -f memory-server/Dockerfile -t memory-server:ci .
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: memory-server:ci
+          format: json
+          output: trivy-report.json
+          severity: CRITICAL,HIGH
+          # TODO(REHOR-95): switch back to exit-code 1 after dependency remediation.
+          exit-code: "0"
+          ignore-unfixed: true
+
+      - name: Report Trivy findings (report-only)
+        run: |
+          total=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' trivy-report.json)
+          critical=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-report.json)
+          high=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-report.json)
+          if [ "$total" -gt 0 ]; then
+            echo "::warning::Trivy reported HIGH/CRITICAL vulnerabilities (total=$total, critical=$critical, high=$high). Report-only mode is enabled until remediation lands."
+          else
+            echo "Trivy found no HIGH/CRITICAL vulnerabilities."
+          fi

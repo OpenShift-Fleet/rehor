@@ -179,7 +179,9 @@ fi
 
 
 # Source env preset profile scripts (persist env vars from install time)
-for pf in /etc/profile.d/*.sh; do [ -f "$pf" ] && . "$pf"; done
+# || true: profile scripts may return non-zero (e.g. goenv warnings) which
+# must not be fatal under set -e
+for pf in /etc/profile.d/*.sh; do [ -f "$pf" ] && . "$pf" || true; done
 
 # Run env preset entrypoint scripts — only for installed envs
 INSTALLED_ENVS=""

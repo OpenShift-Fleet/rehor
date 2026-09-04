@@ -26,7 +26,8 @@ func NewJiraProxy(jiraURL, username, token string) http.Handler {
 			r.Out.Host = upstream.Host
 			r.Out.Header.Set("Authorization", basicAuth)
 		},
-		FlushInterval: -1,
+		FlushInterval:  -1,
+		ModifyResponse: stripSensitiveResponseHeaders,
 	}
 
 	mux := http.NewServeMux()

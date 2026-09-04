@@ -106,7 +106,7 @@ Parse team responses from comments.
 The slug for `bot_name`, `bot_label`, and `config_name` is derived from team/project context, not from `instance_name`. These are all independently settable.
 
 When all gathered:
-1. `git clone --depth 1` target repos
+1. `git clone` target repos (full clone — do NOT use `--depth 1`)
 2. `/detect-tech-stack` on each
 3. `needs_team_review` → tag Rehor team (unsupported stack), apply `onboarding:blocked`
 4. `/post-plan` w/ config
@@ -142,7 +142,16 @@ Wait for repo URL. Verify access via `/auto-fork`.
 
 **Note**: No `.tekton/` files — those come from Konflux Phase 2.
 
-Post scaffolding PR link. Link PR to Jira: `jira_create_remote_issue_link` on both the parent ticket and the Phase 1 sub-ticket. Apply `onboarding:scaffolding-pr`.
+Post scaffolding PR link as a Jira comment. Avoid nested square brackets in markdown links — they break the markdown-to-ADF conversion and the link won't render:
+```
+## Phase 1/3: Instance Setup — Scaffolding PR
+
+PR opened: [PR #<number> — Add instance scaffolding for <team_name> (<TICKET_KEY>)](<pr_url>)
+
+Please review and merge when ready. Phase 2 (Konflux CI/CD) will begin once this PR is merged.
+```
+
+Link PR to Jira: `jira_create_remote_issue_link` on both the parent ticket and the Phase 1 sub-ticket. Apply `onboarding:scaffolding-pr`.
 
 ---
 
@@ -159,20 +168,48 @@ Update metadata: `phase: 2`, `step: "konflux-info"`.
 
 ### `onboarding:konflux-info`
 
-Parse Konflux responses. Clone `konflux-release-data` fork → `/generate-konflux` → run `build-single.sh` → commit → push → open MR.
+Parse Konflux responses, then generate and submit the Konflux MR:
 
-After `/generate-konflux`, run `build-single.sh` to regenerate the `auto-generated/` directory:
-```bash
-cd <konflux_repo>/tenants-config
-./build-single.sh <tenant>
-```
-The script accepts the tenant name with or without the `-tenant` suffix. This runs `kustomize build` on the tenant directory and produces the `auto-generated/` files that CI requires.
+1. **Clone the existing fork** — do NOT attempt to fork the repo; the fork already exists. Look up `konflux-release-data` in `project-repos.json` for the fork and upstream URLs:
+   ```bash
+   git clone <project-repos.json url> /tmp/konflux-release-data
+   cd /tmp/konflux-release-data
+   git remote add upstream <project-repos.json upstream>
+   git fetch upstream main
+   git checkout -b bot/onboarding-<TICKET_KEY> upstream/main
+   ```
 
-Before committing, verify that `auto-generated/` changes are scoped to the target tenant only:
-```bash
-git diff --name-only -- tenants-config/auto-generated/ | grep -v "tenants/<tenant>"
-```
-If any auto-generated files for other tenants appear, discard them with `git checkout` before committing. Commit both the source files (tenant YAML, RPA, constraints, CODEOWNERS) and the scoped `auto-generated/` output.
+2. **Generate files**: Run `/generate-konflux` targeting `/tmp/konflux-release-data`.
+
+3. **Build auto-generated output**: Run `build-single.sh` to regenerate the `auto-generated/` directory:
+   ```bash
+   cd /tmp/konflux-release-data/tenants-config
+   ./build-single.sh <tenant>
+   ```
+   The script accepts the tenant name with or without the `-tenant` suffix. This runs `kustomize build` on the tenant directory and produces the `auto-generated/` files that CI requires.
+
+4. **Verify scope**: Confirm `auto-generated/` changes are scoped to the target tenant only:
+   ```bash
+   git diff --name-only -- tenants-config/auto-generated/ | grep -v "tenants/<tenant>"
+   ```
+   If any auto-generated files for other tenants appear, discard them with `git checkout` before committing.
+
+5. **Commit**: Stage and commit both the source files (tenant YAML, RPA, constraints, CODEOWNERS) and the scoped `auto-generated/` output.
+
+6. **Push and open MR** — do NOT use `glab mr create` (doesn't work for cross-fork MRs). Use the API:
+   ```bash
+   git push origin bot/onboarding-<TICKET_KEY>
+   glab api projects/releng%2Fkonflux-release-data/merge_requests -X POST \
+     -f source_branch="bot/onboarding-<TICKET_KEY>" \
+     -f target_branch="main" \
+     -f title="Add Konflux config for <instance_name>" \
+     -f description="$(cat <<'EOF'
+   Onboarding: adds Application, Component, ImageRepository, ReleasePlan, IntegrationTestScenario, and ReleasePlanAdmission for <instance_name>.
+   EOF
+   )" \
+     --hostname gitlab.cee.redhat.com
+   ```
+   Parse the MR number and URL from the JSON response.
 
 Post MR link. Link MR to Jira: `jira_create_remote_issue_link` on both the parent ticket and the Phase 2 sub-ticket. Apply `onboarding:konflux-mr`. Transition Phase 2 sub-ticket to "In Progress" (team needs to merge MR). Store Konflux info in metadata.
 
@@ -242,7 +279,35 @@ Wait for: pipelines merged, build ran, Quay image exists.
    team in JIRA or Slack and we'll help get one set up.
    ```
    If the team doesn't have an app-interface role, apply `onboarding:blocked`.
-3. Clone app-interface fork → discover infrastructure values at generation time → `/generate-app-interface` → commit → push → open MR. The MR includes:
+3. **Clone the existing app-interface fork** — do NOT attempt to fork; the fork already exists. Look up `app-interface` in `project-repos.json` for the fork and upstream URLs:
+   ```bash
+   git clone <project-repos.json url> /tmp/app-interface
+   cd /tmp/app-interface
+   git remote add upstream <project-repos.json upstream>
+   git fetch upstream master
+   git checkout -b bot/onboarding-<TICKET_KEY> upstream/master
+   ```
+
+4. **Discover and generate**: Discover infrastructure values at generation time, then run `/generate-app-interface` targeting `/tmp/app-interface`.
+
+5. **Commit**: Stage and commit all generated files.
+
+6. **Push and open MR** — do NOT use `glab mr create` (doesn't work for cross-fork MRs). Use the API:
+   ```bash
+   git push origin bot/onboarding-<TICKET_KEY>
+   glab api projects/service%2Fapp-interface/merge_requests -X POST \
+     -f source_branch="bot/onboarding-<TICKET_KEY>" \
+     -f target_branch="master" \
+     -f title="[Phase 3/3] Add <instance_name> deployment (<TICKET_KEY>)" \
+     -f description="$(cat <<'EOF'
+   Onboarding: adds SaaS deploy file, codeComponents entry, and self-service datafile for <instance_name>.
+   EOF
+   )" \
+     --hostname gitlab.cee.redhat.com
+   ```
+   Parse the MR number and URL from the JSON response.
+
+   The MR includes:
    - The deploy file (`<instance_name>-deploy.yml`)
    - A `codeComponents` entry in `app.yml` for the instance repo (if not already present)
    - A `self_service` datafile entry in the team's role file (`team_role_ref`) under the `saas-file-self-service` change type, pointing to the new deploy file. This gives the team self-service approval for future deploy config changes.
@@ -380,6 +445,7 @@ All skills MUST use these field names. No aliases.
 | `gcp_region` | generate-app-interface | GCP region (default: `global`) |
 | `bot_name` | generate-instance, generate-app-interface | OpenShift deployment name |
 | `bot_label` | generate-instance, generate-app-interface, post-manual-steps | Jira label the bot filters on |
+| `board_name` | generate-app-interface | Jira board name or ID (`BOT_BOARD_NAME`). Required for jira-sprint and jira-kanban workflows. |
 | `dedicated_proxy` | post-plan, post-manual-steps | Whether team needs own proxy (dedicated infra) |
 | `service_tree` | generate-app-interface | Path under `data/services/` for separate pattern (e.g., `my-platform/my-team`). Required for `separate`, not used for `shared`. |
 | `app_ref` | generate-app-interface | `$ref` to app.yml (default: shared service tree). Override for separate pattern. |
@@ -401,6 +467,7 @@ All skills MUST use these field names. No aliases.
 - After completion: `memory_store` category `learning` tags `onboarding`
 - Use runtime env vars: `GH_USER_NAME`, `BOT_JIRA_EMAIL`, `BOT_CONFIG_PATH`
 - No emojis in Jira comments or PR/MR descriptions — keep tone professional and plain
+- Never use `--depth 1` when cloning repos you need to push to — shallow clones cannot push to a remote
 
 ---
 

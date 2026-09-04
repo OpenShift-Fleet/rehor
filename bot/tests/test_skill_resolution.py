@@ -160,7 +160,7 @@ class TestSkillImportResolution:
                     sibling_dir = manifest_path.parent / "skills" / sibling_dir_name
                     candidate = sibling_dir / f"{module_name}.py"
                     locations_checked.append(str(candidate.relative_to(REPO_ROOT)))
-                    if candidate.is_file():
+                    if candidate.is_file():  # noqa: SIM102
                         if sibling_dir_name in all_provided:
                             found = True
                             break
