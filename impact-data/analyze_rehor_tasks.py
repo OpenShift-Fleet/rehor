@@ -9,7 +9,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-DEFAULT_API = "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api"
+DEFAULT_API = (
+    "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api"
+)
 JIRA_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b(?!-\d)")
 GH_RE = re.compile(r"https://github\.com/[^\s\]\)>,]+/pull/\d+")
 GL_RE = re.compile(r"https://gitlab\.cee\.redhat\.com/[^\s\]\)>,]+/merge_requests/\d+")
@@ -62,22 +64,24 @@ def main():
         jira_keys.update(found["jira_keys"])
         github_prs.update(found["github_prs"])
         gitlab_mrs.update(found["gitlab_mrs"])
-        rows.append({
-            "task_id": task.get("id", ""),
-            "external_key": task.get("external_key", ""),
-            "source_type": task.get("source_type", ""),
-            "instance_id": task.get("instance_id", ""),
-            "status": task.get("status", ""),
-            "repo": task.get("repo", ""),
-            "branch": task.get("branch", ""),
-            "title": task.get("title", "") or "",
-            "jira_keys": " | ".join(found["jira_keys"]),
-            "github_prs": " | ".join(found["github_prs"]),
-            "gitlab_mrs": " | ".join(found["gitlab_mrs"]),
-            "artifact_types": " | ".join(artifact_types(task)),
-            "artifact_count": len(task.get("artifacts", [])),
-            "metadata_keys": " | ".join(sorted((task.get("metadata") or {}).keys())),
-        })
+        rows.append(
+            {
+                "task_id": task.get("id", ""),
+                "external_key": task.get("external_key", ""),
+                "source_type": task.get("source_type", ""),
+                "instance_id": task.get("instance_id", ""),
+                "status": task.get("status", ""),
+                "repo": task.get("repo", ""),
+                "branch": task.get("branch", ""),
+                "title": task.get("title", "") or "",
+                "jira_keys": " | ".join(found["jira_keys"]),
+                "github_prs": " | ".join(found["github_prs"]),
+                "gitlab_mrs": " | ".join(found["gitlab_mrs"]),
+                "artifact_types": " | ".join(artifact_types(task)),
+                "artifact_count": len(task.get("artifacts", [])),
+                "metadata_keys": " | ".join(sorted((task.get("metadata") or {}).keys())),
+            }
+        )
 
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -93,7 +97,9 @@ def main():
         "task_count": len(tasks),
         "tasks_with_jira_reference": with_jira,
         "tasks_with_pr_or_mr_reference": with_pr,
-        "tasks_with_jira_and_pr_or_mr": sum(bool(row["jira_keys"] and (row["github_prs"] or row["gitlab_mrs"])) for row in rows),
+        "tasks_with_jira_and_pr_or_mr": sum(
+            bool(row["jira_keys"] and (row["github_prs"] or row["gitlab_mrs"])) for row in rows
+        ),
         "tasks_without_detected_external_reference": unresolved,
         "unique_jira_keys": sorted(jira_keys),
         "unique_github_prs": sorted(github_prs),

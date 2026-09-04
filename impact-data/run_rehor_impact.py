@@ -20,7 +20,15 @@ def main():
     parser.add_argument("--no-clone-config-repos", action="store_true")
     args = parser.parse_args()
 
-    collector_args = ["collect_rehor_impact.py", "--output-dir", args.output_dir, "--app-interface", args.app_interface, "--jira-filter", args.jira_filter]
+    collector_args = [
+        "collect_rehor_impact.py",
+        "--output-dir",
+        args.output_dir,
+        "--app-interface",
+        args.app_interface,
+        "--jira-filter",
+        args.jira_filter,
+    ]
     if args.memory_api:
         collector_args.extend(["--memory-api", args.memory_api])
     if args.skip_cycles:

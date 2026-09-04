@@ -19,11 +19,12 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-
-DEFAULT_MEMORY_API = "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api"
+DEFAULT_MEMORY_API = (
+    "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api"
+)
 JIRA_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b(?!-\d)")
 GH_URL_RE = re.compile(r"https://github\.com/[^\s\]\)>,]+/pull/\d+")
 GL_URL_RE = re.compile(r"https://gitlab\.cee\.redhat\.com/[^\s\]\)>,]+/merge_requests/\d+")
@@ -159,10 +160,16 @@ def fetch_git_activity():
     author_id = os.environ.get("GL_AUTHOR_ID", "32231")
     page = 1
     while True:
-        result = cli_json([
-            "glab", "api", f"merge_requests?scope=all&author_id={author_id}&state=all&per_page=100&page={page}",
-            "--hostname", host,
-        ], gl_env)
+        result = cli_json(
+            [
+                "glab",
+                "api",
+                f"merge_requests?scope=all&author_id={author_id}&state=all&per_page=100&page={page}",
+                "--hostname",
+                host,
+            ],
+            gl_env,
+        )
         gitlab.append(result)
         if not result.get("ok") or len(result.get("data", [])) < 100:
             break
@@ -170,17 +177,28 @@ def fetch_git_activity():
     return {
         "local_cli_identity": {
             "github": cli_json(["gh", "api", "user"]),
-            "gitlab": cli_json([
-                "glab", "api", "/user", "--hostname",
-                os.environ.get("GITLAB_HOST", "gitlab.cee.redhat.com"),
-            ]),
+            "gitlab": cli_json(
+                [
+                    "glab",
+                    "api",
+                    "/user",
+                    "--hostname",
+                    os.environ.get("GITLAB_HOST", "gitlab.cee.redhat.com"),
+                ]
+            ),
         },
         "bot_cli_identity": {
             "github": cli_json(["gh", "api", "user"], gh_env),
-            "gitlab": cli_json([
-                "glab", "api", "/user", "--hostname",
-                os.environ.get("GITLAB_HOST", "gitlab.cee.redhat.com"),
-            ], gl_env),
+            "gitlab": cli_json(
+                [
+                    "glab",
+                    "api",
+                    "/user",
+                    "--hostname",
+                    os.environ.get("GITLAB_HOST", "gitlab.cee.redhat.com"),
+                ],
+                gl_env,
+            ),
         },
         "github": github,
         "gitlab": gitlab,
@@ -219,13 +237,17 @@ def inventory_app_interface(path: Path):
         if not relevant_path and not relevant_text:
             continue
         config_repos.update(re.findall(r"BOT_CONFIG_REPO:\s*[\"']?([^\s\"']+)", text))
-        files.append({
-            "path": relative,
-            "instance_ids": sorted(set(re.findall(r"(?:instance[_-]?id|name):\s*[\"']?([^\s\"']+)", text, re.I))),
-            "secret_refs": sorted(set(re.findall(r"(?:secretName|secretKeyRef:\s*\n?\s*name):\s*([^\s]+)", text, re.I))),
-            "github_urls": sorted(set(GH_URL_RE.findall(text))),
-            "gitlab_urls": sorted(set(GL_URL_RE.findall(text))),
-        })
+        files.append(
+            {
+                "path": relative,
+                "instance_ids": sorted(set(re.findall(r"(?:instance[_-]?id|name):\s*[\"']?([^\s\"']+)", text, re.I))),
+                "secret_refs": sorted(
+                    set(re.findall(r"(?:secretName|secretKeyRef:\s*\n?\s*name):\s*([^\s]+)", text, re.I))
+                ),
+                "github_urls": sorted(set(GH_URL_RE.findall(text))),
+                "gitlab_urls": sorted(set(GL_URL_RE.findall(text))),
+            }
+        )
     return {"path": str(path), "files": files, "config_repos": sorted(config_repos)}
 
 
@@ -249,26 +271,43 @@ def clone_config_repos(repos, destination: Path):
 
 
 def write_task_reference_export(tasks, output: Path):
-    fields = ["task_id", "external_key", "source_type", "instance_id", "status", "repo", "branch", "jira_keys", "github_prs", "gitlab_mrs", "artifact_types", "artifact_count"]
+    fields = [
+        "task_id",
+        "external_key",
+        "source_type",
+        "instance_id",
+        "status",
+        "repo",
+        "branch",
+        "jira_keys",
+        "github_prs",
+        "gitlab_mrs",
+        "artifact_types",
+        "artifact_count",
+    ]
     with (output / "task-references.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for task in tasks:
             blob = json.dumps(task, ensure_ascii=False, default=str)
-            writer.writerow({
-                "task_id": task.get("id", ""),
-                "external_key": task.get("external_key", ""),
-                "source_type": task.get("source_type", ""),
-                "instance_id": task.get("instance_id", ""),
-                "status": task.get("status", ""),
-                "repo": task.get("repo", ""),
-                "branch": task.get("branch", ""),
-                "jira_keys": " | ".join(sorted(set(JIRA_KEY_RE.findall(blob)))),
-                "github_prs": " | ".join(sorted(set(GH_URL_RE.findall(blob)))),
-                "gitlab_mrs": " | ".join(sorted(set(GL_URL_RE.findall(blob)))),
-                "artifact_types": " | ".join(sorted({a.get("type", "unknown") for a in task.get("artifacts", []) if isinstance(a, dict)})),
-                "artifact_count": len(task.get("artifacts", [])),
-            })
+            writer.writerow(
+                {
+                    "task_id": task.get("id", ""),
+                    "external_key": task.get("external_key", ""),
+                    "source_type": task.get("source_type", ""),
+                    "instance_id": task.get("instance_id", ""),
+                    "status": task.get("status", ""),
+                    "repo": task.get("repo", ""),
+                    "branch": task.get("branch", ""),
+                    "jira_keys": " | ".join(sorted(set(JIRA_KEY_RE.findall(blob)))),
+                    "github_prs": " | ".join(sorted(set(GH_URL_RE.findall(blob)))),
+                    "gitlab_mrs": " | ".join(sorted(set(GL_URL_RE.findall(blob)))),
+                    "artifact_types": " | ".join(
+                        sorted({a.get("type", "unknown") for a in task.get("artifacts", []) if isinstance(a, dict)})
+                    ),
+                    "artifact_count": len(task.get("artifacts", [])),
+                }
+            )
 
 
 def reconcile(jira, memory, git_activity, inventory):
@@ -321,7 +360,10 @@ def reconcile(jira, memory, git_activity, inventory):
         else:
             external = task.get("external_key") or f"task-{task.get('id', 'unknown')}"
             add_identity(f"task:{task.get('source_type', 'unknown')}:{external}", "task", external)
-    for pages, kind, url_key in ((git_activity.get("github", []), "github_pr", "html_url"), (git_activity.get("gitlab", []), "gitlab_mr", "web_url")):
+    for pages, kind, url_key in (
+        (git_activity.get("github", []), "github_pr", "html_url"),
+        (git_activity.get("gitlab", []), "gitlab_mr", "web_url"),
+    ):
         for page in pages:
             if not page.get("ok"):
                 continue
@@ -382,7 +424,7 @@ def main():
 
     load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     load_dotenv(Path(__file__).resolve().parent.parent / ".env.report")
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     output = Path(args.output_dir) / run_id
     output.mkdir(parents=True, exist_ok=True)
     print(f"Run: {run_id}", file=sys.stderr)
@@ -390,7 +432,7 @@ def main():
 
     sources = {
         "run_id": run_id,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "config": {"jira_filter": args.jira_filter, "memory_api": args.memory_api, "app_interface": args.app_interface},
     }
     write_json(output / "manifest.json", sources)
@@ -405,11 +447,17 @@ def main():
         write_json(output / "jira-error.json", jira)
 
     try:
-        print(f"[collector] Rehor API: fetching tasks and instances{' plus cycles' if not args.skip_cycles else ''}", flush=True)
+        print(
+            f"[collector] Rehor API: fetching tasks and instances{' plus cycles' if not args.skip_cycles else ''}",
+            flush=True,
+        )
         memory = fetch_memory(args.memory_api, not args.skip_cycles)
         write_json(output / "memory.json", memory)
         write_task_reference_export(memory.get("tasks", []), output)
-        print(f"[collector] Rehor API: {len(memory.get('tasks', []))} tasks, {len(memory.get('instances', []))} instances, {len(memory.get('cycle_runs', []))} cycles", flush=True)
+        print(
+            f"[collector] Rehor API: {len(memory.get('tasks', []))} tasks, {len(memory.get('instances', []))} instances, {len(memory.get('cycle_runs', []))} cycles",
+            flush=True,
+        )
     except Exception as error:
         memory = {"error": str(error), "tasks": [], "instances": []}
         write_json(output / "memory-error.json", memory)
@@ -425,7 +473,10 @@ def main():
     write_json(output / "app-interface.json", inventory)
     reconciliation = reconcile(jira, memory, git_activity, inventory)
     write_json(output / "reconciliation.json", reconciliation)
-    print(f"[collector] identities: {reconciliation['canonical_identity_count']} canonical, {reconciliation['canonical_unresolved_identity_count']} unresolved", flush=True)
+    print(
+        f"[collector] identities: {reconciliation['canonical_identity_count']} canonical, {reconciliation['canonical_unresolved_identity_count']} unresolved",
+        flush=True,
+    )
 
     summary = """# Rehor Impact Collection\n\n"""
     summary += f"- Run: `{run_id}`\n- Jira filter issues: **{reconciliation['jira_issue_count']}**\n"

@@ -32,18 +32,24 @@ def build_context(run: Path):
     for source in memory.get("instances", []):
         instance_id = source.get("instance_id", "")
         owned = [task for task in tasks if task.get("instance_id") == instance_id]
-        jira_linked = sum(bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b(?!-\d)", json.dumps(task, default=str))) for task in owned)
+        jira_linked = sum(
+            bool(re.search(r"\b[A-Z][A-Z0-9]+-\d+\b(?!-\d)", json.dumps(task, default=str))) for task in owned
+        )
         pr_linked = sum("/pull/" in json.dumps(task) or "merge_requests/" in json.dumps(task) for task in owned)
-        instances.append({
-            "name": instance_id,
-            "tasks": len({task.get("id") for task in owned}),
-            "jira_linked": jira_linked,
-            "non_jira": len(owned) - jira_linked,
-            "pr_linked": pr_linked,
-            "repos": len({task.get("repo") for task in owned if task.get("repo")}),
-            "cycles": sum(cycle.get("instance_id") == instance_id for cycle in cycles),
-        })
-    gh = [item for page in activity.get("github", []) if page.get("ok") for item in page.get("data", {}).get("items", [])]
+        instances.append(
+            {
+                "name": instance_id,
+                "tasks": len({task.get("id") for task in owned}),
+                "jira_linked": jira_linked,
+                "non_jira": len(owned) - jira_linked,
+                "pr_linked": pr_linked,
+                "repos": len({task.get("repo") for task in owned if task.get("repo")}),
+                "cycles": sum(cycle.get("instance_id") == instance_id for cycle in cycles),
+            }
+        )
+    gh = [
+        item for page in activity.get("github", []) if page.get("ok") for item in page.get("data", {}).get("items", [])
+    ]
     gl = [item for page in activity.get("gitlab", []) if page.get("ok") for item in page.get("data", [])]
     jira_completed = sum(
         issue.get("fields", {}).get("status", {}).get("statusCategory", {}).get("key") == "done"
@@ -51,7 +57,9 @@ def build_context(run: Path):
         for issue in jira.get("issues", [])
     )
     gh_merged = sum(bool(item.get("pull_request", {}).get("merged_at")) for item in gh)
-    gh_closed_unmerged = sum(item.get("state") == "closed" and not item.get("pull_request", {}).get("merged_at") for item in gh)
+    gh_closed_unmerged = sum(
+        item.get("state") == "closed" and not item.get("pull_request", {}).get("merged_at") for item in gh
+    )
     gl_merged = sum(item.get("state") == "merged" or bool(item.get("merged_at")) for item in gl)
     gl_closed_unmerged = sum(item.get("state") == "closed" and not item.get("merged_at") for item in gl)
     merge_decisions = gh_merged + gh_closed_unmerged + gl_merged + gl_closed_unmerged

@@ -7,7 +7,7 @@ import urllib.parse
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from collect_rehor_impact import HttpClient, fetch_memory, jira_client, load_dotenv, fetch_jira
+from collect_rehor_impact import fetch_jira, fetch_memory, jira_client, load_dotenv
 
 JIRA_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b(?!-\d)")
 
@@ -17,7 +17,10 @@ def main():
     load_dotenv(root / ".env")
     load_dotenv(root / ".env.report")
     filter_id = __import__("os").environ.get("JIRA_FILTER_ID", "107017")
-    api = __import__("os").environ.get("REHOR_MEMORY_API", "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api")
+    api = __import__("os").environ.get(
+        "REHOR_MEMORY_API",
+        "https://devbot-memory-server-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com/api",
+    )
 
     memory = fetch_memory(api, False)
     task_keys = set()
@@ -32,7 +35,11 @@ def main():
     for index, key in enumerate(missing_keys, 1):
         print(f"[coverage] Jira issue {index}/{len(missing_keys)}: {key}", flush=True)
         try:
-            issues.append(client.get(f"rest/api/3/issue/{urllib.parse.quote(key)}", {"fields": "project,labels,issuetype,status,summary"}))
+            issues.append(
+                client.get(
+                    f"rest/api/3/issue/{urllib.parse.quote(key)}", {"fields": "project,labels,issuetype,status,summary"}
+                )
+            )
         except Exception as error:
             issues.append({"key": key, "error": str(error)})
 
@@ -50,7 +57,10 @@ def main():
     for project in projects:
         try:
             data = client.get("rest/agile/1.0/board", {"projectKeyOrId": project, "maxResults": 100})
-            boards[project] = [{"id": board.get("id"), "name": board.get("name"), "type": board.get("type")} for board in data.get("values", [])]
+            boards[project] = [
+                {"id": board.get("id"), "name": board.get("name"), "type": board.get("type")}
+                for board in data.get("values", [])
+            ]
         except Exception as error:
             boards[project] = [{"error": str(error)}]
 
@@ -70,10 +80,17 @@ def main():
     }
     (output / "audit.json").write_text(json.dumps(result, indent=2, default=lambda value: dict(value)))
     lines = [
-        "# Jira Filter Coverage Audit", "",
-        f"- Filter: `{filter_id}`", f"- Issues in filter: **{len(filter_keys)}**",
-        f"- Task-referenced Jira keys: **{len(task_keys)}**", f"- Missing from filter: **{len(missing_keys)}**", "",
-        "## Missing Projects", "", "| Project | Missing issues | Boards |", "|---|---:|---|",
+        "# Jira Filter Coverage Audit",
+        "",
+        f"- Filter: `{filter_id}`",
+        f"- Issues in filter: **{len(filter_keys)}**",
+        f"- Task-referenced Jira keys: **{len(task_keys)}**",
+        f"- Missing from filter: **{len(missing_keys)}**",
+        "",
+        "## Missing Projects",
+        "",
+        "| Project | Missing issues | Boards |",
+        "|---|---:|---|",
     ]
     for project, count in projects.most_common():
         board_names = ", ".join(board.get("name", "error") for board in boards[project])
@@ -82,7 +99,15 @@ def main():
     lines.extend(f"| `{label}` | {count} |" for label, count in labels.most_common())
     lines.extend(["", "## Missing Issue Types", "", "| Type | Issues |", "|---|---:|"])
     lines.extend(f"| {issue_type} | {count} |" for issue_type, count in types.most_common())
-    lines.extend(["", "## Interpretation", "", "These keys were referenced by persisted Rehor task records but were absent from saved filter at collection time. Add only confirmed Rehor labels/projects to filter JQL; do not blindly add every label found.", ""])
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            "These keys were referenced by persisted Rehor task records but were absent from saved filter at collection time. Add only confirmed Rehor labels/projects to filter JQL; do not blindly add every label found.",
+            "",
+        ]
+    )
     (output / "report.md").write_text("\n".join(lines))
     print(f"[coverage] report: {output / 'report.md'}", flush=True)
 
