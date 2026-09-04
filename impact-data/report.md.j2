@@ -1,0 +1,129 @@
+# Rehor Impact Evidence Report
+
+**Collection run:** `{{ run_id }}`<br>
+**Generated:** `{{ generated_at }}`
+
+**Jira baseline filter:** [Filter 107017](https://redhat.atlassian.net/issues/?filter=107017)
+
+> [!IMPORTANT]
+> This report counts **observed Rehor work** across Jira, persisted task records, and authenticated bot Git activity. Jira filter 107017 is a baseline only and may not contain all Rehor tasks. Rehor was also used locally before deployment, with developer credentials and without memory-server tracking. That additional pre-deployment population is currently unknown and must not be interpreted as zero.
+
+## Executive Summary
+
+| Measure | Observed value |
+|---|---:|
+| Jira issues in baseline filter | **{{ jira_count }}** |
+| Rehor task records | **{{ task_count }}** |
+| Bot GitHub PR records | **{{ gh_count }}** |
+| Bot GitLab MR records | **{{ gl_count }}** |
+| Observed unique work identities | **{{ canonical_count }}** |
+| Observed Jira-key identities | **{{ canonical_jira_count }}** |
+| Observed non-Jira identities | **{{ unresolved_count }}** |
+
+### Reading These Numbers
+
+- **Observed unique work identities**: deduplicated union of Jira issues, task records, and authenticated bot PR/MR records. Every identity in this union is counted as Rehor work.
+- **Observed Jira-key identities**: work identities that can be tied to a Jira key, including keys outside baseline filter.
+- **Observed non-Jira identities**: valid Rehor task or PR/MR records without detected Jira key references. These include GitHub/GitLab, manual, grooming, and other workflows.
+- **Complete historical total**: permanently unrecoverable from current systems. Local pre-deployment activity has no reliable central record. Treat it as a fixed historical caveat; its share of total Rehor work will become progressively smaller as post-deployment observed work accumulates.
+
+## Evidence Sources
+
+| Source | What it establishes | Coverage |
+|---|---|---:|
+| [Jira filter `107017`](https://redhat.atlassian.net/issues/?filter=107017) | Baseline Jira population only; may be incomplete | {{ jira_count }} issues |
+| Rehor memory API | Complete persisted task list and instance ownership | {{ task_count }} tasks |
+| GitHub API | PRs authored by configured bot identity | {{ gh_count }} PRs |
+| GitLab CEE API | MRs authored by configured bot identity | {{ gl_count }} MRs |
+| Dashboard costs API | Recorded cycle cost data | {{ cost_count }} records |
+| App-interface checkout | Deployed instance/configuration evidence | {{ inventory.get('files', [])|length }} files |
+
+## Historical Instance Workload
+
+Current state is intentionally omitted. It does not answer how much work each instance performed. This table counts persisted historical task ownership.
+
+| Instance | Tasks | Jira-linked | Non-Jira | PR/MR-linked | Repos | Cycle runs |
+|---|---:|---:|---:|---:|---:|---:|
+{% for instance in instances %}| `{{ instance.name }}` | {{ instance.tasks }} | {{ instance.jira_linked }} | {{ instance.non_jira }} | {{ instance.pr_linked }} | {{ instance.repos }} | {{ instance.cycles }} |
+{% endfor %}
+
+**Note:** `Cycle runs` is zero when collection uses `--skip-cycles`. Task counts remain valid independently.
+
+## Identity Reconciliation
+
+Jira key is primary identity. Task artifacts and PR/MR metadata are searched for Jira keys and attached to matching identities. Records are not counted twice merely because they appear in multiple systems. Dashboard task list is complete for persisted Rehor tracking at collection time; it does not contain work performed locally before task tracking was deployed.
+
+| Reconciliation result | Count |
+|---|---:|
+| Observed unique work identities | **{{ canonical_count }}** |
+| Observed Jira-key identities | **{{ canonical_jira_count }}** |
+| Observed non-Jira identities | **{{ unresolved_count }}** |
+| Task Jira keys absent from baseline filter | **{{ missing_filter_count }}** |
+| Baseline-filter Jira keys absent from task records | **{{ missing_task_count }}** |
+
+### Interpretation
+
+- Jira-key identities can exceed baseline filter because tasks and PRs reference Jira projects or keys outside filter `107017`.
+- Filter issues can lack task records because work happened locally before deployment, or because issue/filter scope differs from persisted Rehor task scope.
+- Non-Jira identities are Rehor work when present in persisted task records or authenticated bot Git activity. Their workflow type can be classified from task metadata, artifacts, config repositories, or Git history.
+
+## Cost Evidence
+
+| Measure | Value |
+|---|---:|
+| Dashboard cost records | {{ cost_count }} |
+| Total recorded cost | **${{ cost_summary.get('total_cost', 'unknown') }}** |
+| Recorded work cycles | {{ cost_summary.get('work_cycles', 'unknown') }} |
+| Recorded idle cycles | {{ cost_summary.get('idle_cycles', 'unknown') }} |
+| Recorded error cycles | {{ cost_summary.get('error_cycles', 'unknown') }} |
+
+Costs cover recorded dashboard cycles only. They do not cover local pre-deployment runs unless those runs were submitted to the dashboard API.
+
+## Completion And Acceptance
+
+Jira completion and Git merge acceptance are separate outcomes. A Jira issue can be completed without a PR/MR, and a PR/MR can be merged while Jira state is delayed or absent.
+
+| Outcome | Completed / accepted | Denominator | Rate |
+|---|---:|---:|---:|
+| Jira issues completed | {{ jira_completed }} | {{ jira_count }} Jira issues | {{ ((jira_completed / jira_count * 100)|round(1)) if jira_count else 'unknown' }}% |
+| GitHub PRs merged | {{ gh_merged }} | {{ gh_merged + gh_closed_unmerged }} decided PRs | {{ ((gh_merged / (gh_merged + gh_closed_unmerged) * 100)|round(1)) if (gh_merged + gh_closed_unmerged) else 'unknown' }}% |
+| GitLab MRs merged | {{ gl_merged }} | {{ gl_merged + gl_closed_unmerged }} decided MRs | {{ ((gl_merged / (gl_merged + gl_closed_unmerged) * 100)|round(1)) if (gl_merged + gl_closed_unmerged) else 'unknown' }}% |
+| Combined PRs/MRs accepted | {{ gh_merged + gl_merged }} | {{ merge_decisions }} decided PRs/MRs | {{ merge_acceptance_pct if merge_acceptance_pct is not none else 'unknown' }}% |
+
+Acceptance denominator excludes open PRs/MRs. This measures merge acceptance among decided submissions, not all attempted work. It does not measure code quality, reviewer effort, or value delivered.
+
+## Bot Identities
+
+| System | Authenticated bot identity |
+|---|---|
+| GitHub | `{{ bot_github }}` |
+| GitLab CEE | `{{ bot_gitlab }}` |
+
+## Jira Labels
+
+Candidate Rehor-related labels found in baseline filter:
+
+| Label | Issues |
+|---|---:|
+{% for label, count in labels.items() %}| `{{ label }}` | {{ count }} |
+{% endfor %}
+
+## App-Interface Deployment Evidence
+
+- Checkout: `{{ inventory.get('path', 'unknown') }}`
+- Relevant tracked files: **{{ inventory.get('files', [])|length }}**
+- Configuration repositories discovered: **{{ inventory.get('config_repos', [])|length }}**
+- Configuration repository checkout directory: `REHOR_CONFIG_REPOS_DIR` (default `~/rehor`)
+
+Relevant files:
+
+{% for item in inventory.get('files', []) %}- `{{ item.path }}`
+{% endfor %}
+
+## Limitations And Next Evidence
+
+- Baseline Jira filter is not proof of complete Rehor history.
+- Memory-server tasks, dashboard cost cycles, and cycle-run transcripts are separate populations.
+- Local pre-deployment work is not represented and cannot be reliably reconstructed. Its relative share should decline over time as new persisted work accumulates.
+- App-interface exposes deployment/configuration references, not Vault secret values.
+- Current report should be extended with exported developer-machine logs and historical personal-account PR/MR searches.
