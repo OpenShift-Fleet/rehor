@@ -1,13 +1,12 @@
 """Tests for preflight shared modules (presets/shared/preflight/)."""
 
+import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
-
-from unittest.mock import MagicMock
 
 from common import (
     build_repo_lookup,
@@ -16,8 +15,17 @@ from common import (
     upstream_repo,
 )
 from gh_pr_status import classify_gh, gh_pr_comments, has_new_feedback
-from gl_mr_status import classify_gl, gl_mr_notes
-from gl_mr_status import has_new_feedback as gl_has_new_feedback
+from gh_pr_status import main as gh_main
+from gl_mr_status import (
+    ci_failure_needs_session as gl_ci_failure_needs_session,
+)
+from gl_mr_status import (
+    classify_gl,
+    gl_mr_notes,
+)
+from gl_mr_status import (
+    has_new_feedback as gl_has_new_feedback,
+)
 
 # --- upstream_repo ---
 
@@ -88,6 +96,7 @@ def test_is_bot_author_known_bots():
     assert is_bot_author("github-actions") is True
     assert is_bot_author("my-app[bot]") is True
     assert is_bot_author("coderabbit-bot") is True
+    assert is_bot_author("openshift-ci-robot") is True
 
 
 def test_is_bot_author_humans():
@@ -183,6 +192,65 @@ def test_classify_gh_changes_requested_review_old():
     state, issues = classify_gh(pr, last_addressed="2026-07-14T18:00:00")
     assert "changes_requested" not in issues
     assert not any(i.startswith("review:") for i in issues)
+
+
+def test_production_cycle_skips_addressed_sticky_review_and_ci_failure(monkeypatch):
+    """Cycle 39824 source data must not launch session for already-addressed work."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39824-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (6, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("RedHatInsights/notifications-frontend", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "CI FAILING" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_production_cycle_skips_automated_ci_robot_comments(monkeypatch):
+    """Cycle 39746 source data must ignore automated CI comments as feedback."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39746-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (9, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("openshift/console", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "FEEDBACK" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_gl_addressed_ci_failure_does_not_need_session():
+    enriched = {
+        "task": {"last_addressed": "2026-09-02T10:09:00+00:00"},
+        "mr_notes": [],
+    }
+
+    assert gl_ci_failure_needs_session(enriched) is False
 
 
 def test_classify_gh_changes_requested_review_new():
@@ -287,6 +355,7 @@ def _make_ci_enriched(last_addressed=None, extra_issues=None, pr_comments=None):
         },
         "prs": [{"repo": "test-repo", "num": 1, "host": "github", "state": "OPEN", "issues": issues, "data": {}}],
         "pr_comments": pr_comments or [],
+        "mr_notes": pr_comments or [],
         "issues": issues,
     }
 
@@ -302,7 +371,7 @@ def _classify_bucket(enriched_list):
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
             ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
-            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+            if ci_only and not gl_ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)
@@ -339,6 +408,14 @@ def test_ci_only_no_last_addressed_is_actionable():
 def test_ci_plus_conflict_is_actionable():
     """CI failure combined with conflict → actionable even with last_addressed."""
     e = _make_ci_enriched(last_addressed="2026-07-14T17:49", extra_issues=["conflict"])
+    result = _classify_bucket([e])
+    assert len(result["ci_fail"]) == 1
+    assert len(result["clean"]) == 0
+
+
+def test_ci_plus_unresolved_discussions_is_actionable():
+    """CI failure combined with unresolved discussions stays actionable."""
+    e = _make_ci_enriched(last_addressed="2026-07-14T17:49", extra_issues=["unresolved_threads"])
     result = _classify_bucket([e])
     assert len(result["ci_fail"]) == 1
     assert len(result["clean"]) == 0

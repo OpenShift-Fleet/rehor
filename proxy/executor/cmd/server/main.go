@@ -29,6 +29,7 @@ var (
 	timeout  = flag.Duration("timeout", 60*time.Second, "per-command timeout")
 
 	vertexListen  = flag.String("vertex-listen", ":8443", "vertex auth proxy listen address")
+	gitAuthListen = flag.String("git-auth-listen", ":8447", "git auth proxy listen address")
 	vertexProject = flag.String("vertex-project", "", "real GCP project ID")
 	vertexRegion  = flag.String("vertex-region", "", "real GCP region")
 
@@ -39,7 +40,7 @@ var (
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
 
-	glitchtipListen = flag.String("glitchtip-listen", ":8447", "glitchtip auth proxy listen address")
+	glitchtipListen = flag.String("glitchtip-listen", ":8448", "glitchtip auth proxy listen address")
 	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
 	glitchtipToken  = flag.String("glitchtip-token", "", "GlitchTip API token")
 
@@ -214,6 +215,9 @@ func main() {
 	if v := os.Getenv("VERTEX_AUTH_LISTEN"); v != "" {
 		*vertexListen = v
 	}
+	if v := os.Getenv("GIT_AUTH_LISTEN"); v != "" {
+		*gitAuthListen = v
+	}
 	if v := os.Getenv("GCP_PROJECT_ID"); v != "" {
 		*vertexProject = v
 	}
@@ -294,6 +298,20 @@ func main() {
 		}()
 	}
 
+	var gitAuthSrv *http.Server
+	// Keep Git auth opt-in until deployment exposes 8447 and moves GlitchTip off it.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_AUTH_ENABLED")), "true") &&
+		(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "") {
+		handler := executor.InstrumentHTTPHandler("gitauth", executor.NewGitAuthProxy())
+		gitAuthSrv = &http.Server{Addr: *gitAuthListen, Handler: handler}
+		go func() {
+			log.Printf("git-auth-proxy listening on %s", *gitAuthListen)
+			if err := gitAuthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("git auth proxy: %v", err)
+			}
+		}()
+	}
+
 	var jiraSrv *http.Server
 	if *jiraURL != "" {
 		if err := executor.ValidateJiraConfig(*jiraURL, *jiraUsername, *jiraToken); err != nil {
@@ -346,6 +364,9 @@ func main() {
 		defer cancel()
 		if vertexSrv != nil {
 			vertexSrv.Shutdown(ctx)
+		}
+		if gitAuthSrv != nil {
+			gitAuthSrv.Shutdown(ctx)
 		}
 		if jiraSrv != nil {
 			jiraSrv.Shutdown(ctx)

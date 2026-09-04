@@ -73,6 +73,7 @@ fi
 # EXECUTOR_LISTEN controls transport: unix:///path (local dev) or :9090 (k8s)
 /usr/local/bin/executor-server \
     --listen "${EXECUTOR_LISTEN:-unix:///var/run/devbot/executor.sock}" \
+    --git-auth-listen "${GIT_AUTH_LISTEN:-:8447}" \
     --gh-path /usr/local/bin/gh-real \
     --glab-path /usr/local/bin/glab-real \
     --gpg-path /usr/bin/gpg &
@@ -83,4 +84,3 @@ trap cleanup EXIT TERM INT
 
 wait -n $SQUID_PID $EXECUTOR_PID ${MCP_PID:+"$MCP_PID"}
 exit $?
-

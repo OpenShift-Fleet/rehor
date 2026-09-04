@@ -70,6 +70,7 @@ def setup_git(script_dir: Path) -> None:
     gh_email = os.environ.get("GH_USER_EMAIL")
     gl_name = os.environ.get("GL_USER_NAME")
     gl_email = os.environ.get("GL_USER_EMAIL")
+    git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")
 
     if not gh_name and not gl_name:
         return
@@ -102,11 +103,25 @@ def setup_git(script_dir: Path) -> None:
         "\tgpgsign = true",
         "[gpg]",
         "\tformat = openpgp",
-        '[credential "https://github.com"]',
-        "\thelper = !/usr/local/bin/gh auth git-credential",
-        '[credential "https://gitlab.cee.redhat.com"]',
-        "\thelper = !/usr/local/bin/glab credential-helper",
     ]
+    if git_proxy_host:
+        lines.extend(
+            [
+                f'[url "http://{git_proxy_host}:8447/github.com/"]',
+                "\tinsteadOf = https://github.com/",
+                f'[url "http://{git_proxy_host}:8447/gitlab.cee.redhat.com/"]',
+                "\tinsteadOf = https://gitlab.cee.redhat.com/",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                '[credential "https://github.com"]',
+                "\thelper = !/usr/local/bin/gh auth git-credential",
+                '[credential "https://gitlab.cee.redhat.com"]',
+                "\thelper = !/usr/local/bin/glab credential-helper",
+            ]
+        )
 
     config_path.write_text("\n".join(lines) + "\n")
     os.environ["GIT_CONFIG_GLOBAL"] = str(config_path)
