@@ -1,6 +1,11 @@
-# Dev Bot (Rehor)
+# Řehoř
 
-An autonomous developer agent that picks groomed Jira tickets, implements them, opens PRs, and maintains them through review — all without human intervention. It runs in a polling loop using the Claude Agent SDK (Python) and integrates with Jira, GitHub/GitLab, and a persistent memory system.
+An autonomous developer tool. Selected workflows discover work,
+implement code changes, open PRs/MRs, and maintain them through review. The
+default `jira-sprint` workflow uses groomed Jira tickets; custom workflows can
+use other sources and decision loops. Řehoř runs in a polling loop using the
+Claude Agent SDK (Python), with optional Jira, GitHub/GitLab, and persistent
+memory integrations.
 
 ## Documentation
 
@@ -12,6 +17,7 @@ An autonomous developer agent that picks groomed Jira tickets, implements them, 
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
+| [Instance Configuration](docs/presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
 | [Custom Workflows](docs/presets/custom-workflows.md) | Guide to building custom workflows for your instance |
 | [Custom Preflight Scripts](docs/presets/custom-preflight.md) | Guide to writing pre-session data-gathering scripts |
@@ -31,7 +37,7 @@ Before setting up the bot, make sure you have the following installed:
 | [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` |
 | [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login --hostname gitlab.cee.redhat.com` |
 
-The bot also uses the [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) MCP server for Jira integration — it runs inside the proxy container (see [Architecture](#architecture-credential-isolation)).
+Workflows that use Jira connect through the [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) MCP server inside the proxy container (see [Architecture](#architecture-credential-isolation)).
 
 ### Authentication
 
@@ -44,9 +50,9 @@ JIRA_URL=https://your-instance.atlassian.net
 JIRA_USERNAME=your-email@company.com
 JIRA_API_TOKEN=your-jira-api-token
 
-# Claude — GCP Vertex AI (service account)
-# Follow the RH internal guide to set up Vertex AI access
-# and generate a service account key file (sa-key.json).
+# Claude — GCP Vertex AI credentials
+# Use personal application-default credentials locally, or a service account
+# key for deployments. See SETUP.md for both flows.
 GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
 VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 
@@ -93,7 +99,12 @@ make seed-costs        # Import costs.jsonl into the database
 make help              # Show all available commands
 ```
 
-You can also run the bot directly: `uv run dev-bot --label <your-label>`
+You can also run the bot directly. `BOT_INSTANCE_ID` is required either as an
+environment variable or as a CLI argument:
+
+```bash
+BOT_INSTANCE_ID=my-local-bot uv run dev-bot --label <your-label>
+```
 
 ## How it works
 
@@ -291,10 +302,16 @@ This launches Chrome on port 9222 with a separate profile. Edit the script to us
   },
   "polling": {
     "intervalSeconds": 300,
-    "idleIntervalSeconds": 3600
+    "idleIntervalSeconds": 300,
+    "idleReminderCooldownSeconds": 172800
   }
 }
 ```
+
+`intervalSeconds` is the default post-work sleep. Preflight skips use
+`idleIntervalSeconds`; skills can write `data/cycle-sleep.json` to request a
+different delay for the next cycle. `claude.cycleTimeoutSeconds` defaults to
+1800 when omitted.
 
 MCP servers are configured in `.mcp.json` (project-level). Remote config repos can provide additional MCP servers via `agent/mcp.json`.
 
@@ -318,7 +335,7 @@ Personas provide domain-specific guidelines for different repo types. They live 
 The bot has built-in skills (Claude Code slash commands) in `.claude/skills/`:
 
 OpenCode-only project skills live in `.agents/skills/` and are not installed
-through Rehor presets.
+through Řehoř presets.
 
 | Skill | Purpose |
 |-------|---------|
@@ -454,7 +471,8 @@ dev-bot/
     merge.py             # Remote config merge engine (protected-key registry)
   config.json            # Model, polling intervals, Jira config
   CLAUDE.md              # Full agent instructions (the bot's brain)
-  .mcp.json              # MCP server connections (Jira, memory, browser)
+  .mcp.json              # Project MCP servers (memory, browser)
+  bot/mcp.json           # Jira MCP server definition
   .env                   # Credentials (not committed)
   Dockerfile             # Bot container image
   Dockerfile.runner      # Runner instance template (used via git submodule)
@@ -462,7 +480,7 @@ dev-bot/
   entrypoint.sh          # Container entrypoint (remote config sync + bot start)
   init.sh                # Installs LSP, downloads BrowserMCP, starts memory server
   costs.sh               # Cost report CLI
-  start-chromium.sh      # Launch Chrome with remote debugging
+  start-chromium.sh      # Launch Chrome with remote debugging (host mode)
   .claude/               # Claude Code config
     settings.json        # Permissions + sandbox config
     hooks/               # Bash validation hooks (security)

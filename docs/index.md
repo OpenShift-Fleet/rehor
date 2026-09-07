@@ -1,14 +1,19 @@
-# Dev Bot (Rehor)
+# What
 
-## What
+Řehoř is an autonomous developer tool. A selected workflow discovers
+work, implements code changes in target repos, opens PRs/MRs, and maintains
+them through CI and review cycles. It runs as a polling loop using the Claude
+Agent SDK, with optional integrations for Jira Cloud, GitHub, GitLab, and
+persistent memory backed by PostgreSQL.
 
-Rehor is an autonomous developer agent that picks groomed Jira tickets, implements code changes in target repos, opens PRs/MRs, and maintains them through CI and review cycles. It runs as a polling loop using the Claude Agent SDK, integrating with Jira Cloud, GitHub, GitLab, and a persistent memory system backed by PostgreSQL.
-
-The bot operates in cycles. Each cycle, lightweight Python preflight scripts check external systems (GitHub PRs, GitLab MRs, Jira sprint) for actionable work. An AI session only starts when there's something to do, so the common "nothing changed" case costs zero tokens.
+The bot operates in workflow-defined cycles. Lightweight Python preflight
+scripts check each workflow's external systems for actionable work. An AI
+session only starts when there's something to do, so the common "nothing
+changed" case costs zero tokens.
 
 ## Why
 
-- **Hands-free ticket implementation** — groomed tickets get picked up, implemented, and PRed without human intervention
+- **Hands-free work execution** — workflow work items get picked up, implemented, and PRed without human intervention
 - **Consistent quality** — every PR follows the same patterns: persona-specific coding standards, test verification, visual checks for UI changes
 - **Scales across repos** — one bot instance handles multiple repos via label-based routing and fork-based PRs
 - **Learns from past work** — completed work is stored as RAG memories, so the bot improves over time
@@ -17,20 +22,20 @@ The bot operates in cycles. Each cycle, lightweight Python preflight scripts che
 ## How
 
 1. **Configure your instance** — select a workflow and env presets using the [Presets Overview](presets/README.md)
-2. **Label tickets** — add your bot's primary label and a `repo:<name>` label to groomed Jira tickets
-3. **Preflight scripts gather data** — each cycle, Python scripts check GitHub PRs, GitLab MRs, and Jira for actionable changes
+2. **Configure the workflow's source** — for `jira-sprint`, add the bot label and a `repo:<name>` label to groomed Jira tickets; custom workflows define their own source
+3. **Preflight scripts gather data** — each cycle, workflow-specific Python scripts check configured external systems for actionable changes
 4. **AI session runs only when needed** — if any preflight script returns "start", Claude receives all gathered data and acts on it
 5. **PR lifecycle is automatic** — the bot handles CI failures, review feedback, merge conflicts, and post-merge cleanup
 
 For the full cycle diagram and state machine, see [Bot Workflow Loop](bot-workflow-loop.md).
 
 ```
-Ticket groomed + labeled
-    → Bot claims ticket (In Progress)
-        → Bot implements on branch bot/KEY
-            → PR opened (Code Review)
+Workflow source reports actionable work
+    → Workflow claims or tracks work item
+        → Agent implements on branch bot/KEY
+            → PR or equivalent artifact opened
                 → CI fix / review feedback loop
-                    → PR merged (Done, learnings stored)
+                    → Work completed, learnings stored
 ```
 
 ## Example
@@ -58,7 +63,7 @@ For more examples (cross-repo features, CVE triage, UI changes with screenshots)
 
 ## Troubleshooting
 
-**Bot isn't picking up tickets:**
+**Jira sprint workflow isn't picking up tickets:**
 
 - Check that tickets have the correct primary label matching your `BOT_LABEL`
 - Tickets must be unassigned — the bot skips assigned tickets
@@ -77,6 +82,9 @@ For more examples (cross-repo features, CVE triage, UI changes with screenshots)
 - Verify there are open PRs with CI failures, review feedback, or unassigned sprint tickets
 - Look for "error" results in preflight output, which indicate API connectivity issues
 
+Custom workflows have their own source and preflight checks. Use their workflow
+documentation instead of applying Jira-specific checks.
+
 For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsights/platform-frontend-ai-dev/blob/master/OPERATIONS.md).
 
 ---
@@ -86,6 +94,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | Section | What you'll find |
 |---------|-----------------|
 | [Onboarding a New Instance](onboarding-new-instance.md) | Step-by-step guide: runner repo, deploy template, Konflux, app-interface, Jira setup |
+| [Instance Configuration](presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Scheduling](scheduling.md) | KEDA cron scaler configuration for business-hours-only operation |
 | [Bot Workflow Loop](bot-workflow-loop.md) | Cycle architecture, preflight system, task state machine with diagrams |
 | [Git Auth Proxy](git-auth-proxy.md) | Credential isolation design for the proxy sidecar |
@@ -98,6 +107,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | [Preset Migration Guide](migrations/preset-migration-guide.md) | Migrating existing instances to the preset system |
 | [OpenCode Migration Design](migrations/opencode-migration.md) | Migrating from Claude Code and Vertex auth to OpenCode and direct OpenAI keys |
 | [Roadmap](roadmap.md) | Planned improvements and new capabilities |
+| [Operations Overview](operations/index.md) | Daily operations and verification runbooks |
 
 ## Contributing to these docs
 

@@ -2,13 +2,11 @@
 
 How to migrate existing bot instances to the preset system. This guide is for teams running instances that were onboarded before the preset system existed.
 
-**RHCLOUD-48670** — Workflow Presets: Multi-config system for bot instances
-
----
-
 ## TL;DR
 
-Your instance works fine today without any changes — backward compatibility is preserved during the transition. However, migrating to `instance.yaml` is **required** to unblock the next phase of development (RHCLOUD-48705: legacy cleanup + new workflow presets). We'll help every team through the process.
+Existing instances remain backward compatible. `instance.yaml` is recommended
+when an instance needs explicit workflow, env-preset, or CLAUDE.md settings,
+but it is not currently required for default `jira-sprint` behavior.
 
 ---
 
@@ -35,7 +33,9 @@ At startup, `run.py`:
 1. Loads `instance.yaml` from your config repo (or falls back to env vars / defaults)
 2. Assembles `CLAUDE.md` from `core` + selected workflow preset
 3. Validates required MCP servers and env vars from workflow and env preset manifests
-4. Runs env preset install scripts (build-time) and entrypoint scripts (runtime)
+4. Runs selected env preset entrypoint scripts at runtime. Image builds run
+   env preset install scripts; `Dockerfile.runner` selects them from
+   `instance.yaml`, while the base image installs bundled presets.
 
 ### What stays the same
 
@@ -46,20 +46,18 @@ At startup, `run.py`:
 
 ### What's new
 
-- `instance.yaml` — a file in your config repo that declares which presets your instance uses
+- `instance.yaml` — an optional file in your config repo that declares which presets your instance uses
 - Startup validation — the bot validates MCP servers and env vars at startup and fails fast with clear errors instead of crashing mid-cycle
 - Env preset manifests — each capability declares what it provides and requires
 
 ---
 
-## Do I Need to Migrate?
+## Do I Need to Add `instance.yaml`?
 
-**Yes.** The migration is required to unblock the next development phase:
-
-- **RHCLOUD-48705** removes hardcoded Dockerfile setup (Chromium, Grype, Caddy installs) and replaces it with the env preset install loop. Once that lands, instances must have `instance.yaml` so the system knows which presets to install.
-- Future workflow presets (reviewer, investigator, GitHub-based) require the preset selection mechanism to exist.
-
-**Right now** your instance works fine without changes — defaults match current behavior. But you need to add `instance.yaml` before RHCLOUD-48705 merges. We'll help every team through it — see [Need Help?](#need-help) below.
+**No**, unless you need explicit preset selection or custom CLAUDE.md
+layering. Without `instance.yaml`, the runner uses `BOT_WORKFLOW_PRESET` and
+`BOT_ENV_PRESETS` when set, otherwise defaults to `jira-sprint` and all
+available env presets. See [Env Var Fallback](#env-var-fallback).
 
 ### What does `instance.yaml` give you?
 
@@ -83,7 +81,8 @@ workflow: jira-sprint
 source: jira
 ```
 
-This is functionally identical to having no `instance.yaml` at all. All env presets are active by default.
+This selects the default workflow and source. Omitted `envs` keeps all available
+env presets active.
 
 ### Explicit env preset selection
 
@@ -165,7 +164,9 @@ These are checked only when no `instance.yaml` is found. If `instance.yaml` exis
 
 ### Workflow: `jira-sprint`
 
-The current (and only) workflow. Jira sprint triage → pick tickets → implement → open PRs → maintain PRs.
+The current built-in workflow. Jira sprint triage → pick tickets → implement
+→ open PRs → maintain PRs. Custom workflows can use different sources and
+decision loops.
 
 **Requires:**
 - MCP servers: `bot-memory`, `mcp-atlassian`
@@ -231,13 +232,10 @@ Env preset validation also warns when a preset's required env vars are missing:
 
 ## FAQ
 
-### What breaks if I don't add `instance.yaml`?
+### What happens if I don't add `instance.yaml`?
 
-Nothing — **today**. The defaults match current behavior. But once RHCLOUD-48705 lands (legacy Dockerfile cleanup), instances without `instance.yaml` won't know which env presets to install. Add it now while everything still works identically.
-
-### When do I need to have it done by?
-
-Before RHCLOUD-48705 merges. We'll communicate the exact date once all teams have been contacted. No one gets surprised — we'll reach out individually.
+Nothing for default behavior. The runner falls back to deployment env vars and
+defaults. Add the file when you want reproducible, reviewable preset selection.
 
 ### What if I reference a preset that doesn't exist?
 
@@ -250,10 +248,6 @@ No. The new env vars (`BOT_WORKFLOW_PRESET`, `BOT_ENV_PRESETS`) are optional fal
 ### What about the `setup.sh` in my runner repo?
 
 Still works. The build chain runs: preset install scripts → instance `setup.sh`. Your instance-specific installs run last and can depend on anything presets installed.
-
-### When will the hardcoded Dockerfile code be removed?
-
-RHCLOUD-48705 is blocked by this migration. Once all active instances have added `instance.yaml`, we'll merge the cleanup. We'll reach out to each team individually before that happens — no surprises.
 
 ### Will new presets be added?
 
@@ -284,10 +278,9 @@ The only new file is `instance.yaml`. Everything else is unchanged.
 
 ## Timeline
 
-1. **Now** — Preset system is live. All instances work unchanged. Backward compatible.
-2. **This sprint** — Teams review this guide and add `instance.yaml` to their config repos. We'll help with any questions.
-3. **After all instances migrate** — RHCLOUD-48705: Remove hardcoded Dockerfile code. Env preset install/entrypoint scripts become the sole mechanism for capabilities like Chromium, Grype, etc.
-4. **Future** — New workflow presets (reviewer, investigator, GitHub-based) become available.
+1. **Current** — Preset system is live and backward compatible.
+2. **Current** — Instances can opt into explicit `instance.yaml` selection.
+3. **Future** — Additional workflow and env presets can be added without changing the runner loop.
 
 ---
 
@@ -299,4 +292,5 @@ We'll help every team through the migration. Options:
 - **Pair on it** — reach out in the team Slack channel and we'll walk through it together
 - **Self-service** — follow the examples above, most instances just need the [minimal config](#minimal-equivalent-to-current-defaults)
 
-Questions or concerns? Comment on [RHCLOUD-48670](https://issues.redhat.com/browse/RHCLOUD-48670) or ping us in Slack.
+Questions or concerns? Contact the Řehoř maintainers through your team Slack
+channel or repository issue tracker.

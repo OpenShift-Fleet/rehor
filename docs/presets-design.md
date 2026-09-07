@@ -2,14 +2,13 @@
 
 Composable configuration system replacing the monolithic CLAUDE.md with layered presets that instances mix and match.
 
-**Epic**: RHCLOUD-48670  
-**Spike**: RHCLOUD-48671
-
----
-
 ## Problem
 
-Today every instance runs the same 432-line `CLAUDE.md` — the full Jira-triage-implement-PR workflow. But not every instance needs that. A "browser" instance that only does visual QA doesn't need the implementation loop. A future "reviewer" instance needs PR review logic but not Jira ticket claiming. The monolith forces all behavior onto every instance.
+Historically, every instance ran the same monolithic `CLAUDE.md` — the full
+Jira-triage-implement-PR workflow. Not every instance needs that. A browser
+instance that only does visual QA does not need the implementation loop. A
+reviewer workflow needs PR review logic but not Jira ticket claiming. Presets
+prevent one source-specific workflow from forcing behavior onto every instance.
 
 Skills are partially decoupled (remote config can add custom skills), but the core workflow is a single file. Personas are per-tech-stack, but the decision engine that uses them is baked into the workflow.
 
@@ -35,7 +34,7 @@ The workflow isn't just CLAUDE.md. It's CLAUDE.md + skills + personas + MCP serv
 ```
 presets/
 ├── workflows/
-│   ├── jira-sprint/                   # Current workflow (Jira sprints → triage → implement → fork PR)
+│   ├── jira-sprint/                   # Built-in workflow (Jira → triage → implement → fork PR)
 │   │   ├── CLAUDE.md                  # Decision loop, priorities, Jira integration
 │   │   ├── skills/                    # Workflow-specific skills only
 │   │   │   ├── triage/

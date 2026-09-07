@@ -115,7 +115,8 @@ presets/workflows/jira-sprint/
     └── 03-jira-sprint.py
 ```
 
-Skills live in `.claude/skills/` (shared across workflows):
+At runtime, selected skills are installed into `.claude/skills/`. Their source
+files are split between workflow and shared preset directories:
 
 ```
 .claude/skills/
