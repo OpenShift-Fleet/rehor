@@ -18,13 +18,13 @@ COPY squid.conf /etc/squid/squid.conf
 
 # gh CLI (renamed to gh-real — thin client takes "gh" in bot container)
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://github.com/cli/cli/releases/download/v2.67.0/gh_2.67.0_linux_${ARCH}.tar.gz" \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local --strip-components=1 \
     && mv /usr/local/bin/gh /usr/local/bin/gh-real
 
 # glab CLI (renamed to glab-real)
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
-    && curl -fSL -o /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/v1.51.0/downloads/glab_1.51.0_linux_${ARCH}.tar.gz" \
+    && curl -fSL -o /tmp/glab.tar.gz "https://gitlab.com/gitlab-org/cli/-/releases/v1.116.0/downloads/glab_1.116.0_linux_${ARCH}.tar.gz" \
     && tar -xzf /tmp/glab.tar.gz -C /usr/local/bin --strip-components=1 bin/glab \
     && rm /tmp/glab.tar.gz \
     && mv /usr/local/bin/glab /usr/local/bin/glab-real
