@@ -96,6 +96,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | [Custom Workflows](presets/custom-workflows.md) | Building your own workflow for specialized automation |
 | [Custom Preflight Scripts](presets/custom-preflight.md) | Writing pre-session data-gathering scripts |
 | [Preset Migration Guide](migrations/preset-migration-guide.md) | Migrating existing instances to the preset system |
+| [OpenCode Migration Design](migrations/opencode-migration.md) | Migrating from Claude Code and Vertex auth to OpenCode and direct OpenAI keys |
 | [Roadmap](roadmap.md) | Planned improvements and new capabilities |
 
 ## Contributing to these docs
