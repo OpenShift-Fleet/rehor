@@ -126,7 +126,7 @@ def is_bot_author(author):
     if not author or author == "?":
         return False
     a = author.lower()
-    return "[bot]" in a or a.endswith("-bot") or a in ("github-actions", "dependabot", "renovate")
+    return "[bot]" in a or a.endswith(("-bot", "-robot")) or a in ("github-actions", "dependabot", "renovate")
 
 
 def fmt_comments(comments, label, since=None, max_comments=30):

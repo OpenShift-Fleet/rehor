@@ -1,15 +1,13 @@
-site_name: Dev Bot (Rehor)
-site_description: Autonomous Jira-driven developer agent documentation
-repo_url: https://github.com/RedHatInsights/platform-frontend-ai-dev
-repo_name: RedHatInsights/platform-frontend-ai-dev
-
+site_name: Řehoř
+site_description: Workflow-driven autonomous developer tool documentation
 theme:
   name: material
+  logo: assets/images/icon.png
+  favicon: assets/images/icon.png
   font:
-    text: Red Hat Text
-    code: Red Hat Mono
+    text: false
+    code: false
   features:
-    - navigation.tabs
     - navigation.sections
     - navigation.expand
     - navigation.top
@@ -19,17 +17,19 @@ theme:
     - content.code.copy
   palette:
     - scheme: default
-      primary: red
-      accent: deep orange
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/brightness-2
+        name: Dark theme
+    - scheme: slate
+      primary: black
+      accent: blue
       toggle:
         icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: red
-      accent: deep orange
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+        name: Light theme
+repo_url: https://github.com/RedHatInsights/platform-frontend-ai-dev
+repo_name: RedHatInsights/platform-frontend-ai-dev
 
 extra_css:
   - stylesheets/extra.css
@@ -58,6 +58,7 @@ nav:
   - Home: index.md
   - Getting Started:
     - Onboarding a New Instance: onboarding-new-instance.md
+    - Instance Configuration: presets/instance-config.md
     - Scheduling: scheduling.md
   - Architecture:
     - Bot Workflow Loop: bot-workflow-loop.md
@@ -69,6 +70,12 @@ nav:
     - Env Presets: presets/envs.md
     - Custom Workflows: presets/custom-workflows.md
     - Custom Preflight Scripts: presets/custom-preflight.md
+  - Operations Runbooks:
+    - Operations Overview: operations/index.md
+    - Branch Protection Rollout: operations/rehor-77-branch-protection-rollout.md
+    - Container Verification: operations/rehor-107-container-verification.md
+    - Container E2E: operations/rehor-62-container-e2e.md
   - Migrations:
     - Preset Migration Guide: migrations/preset-migration-guide.md
+    - OpenCode Migration Design: migrations/opencode-migration.md
   - Roadmap: roadmap.md

@@ -48,7 +48,7 @@ graph TD
     Agg{"5. Aggregate results"}
     Launch["6. Launch Claude session<br/>(preflight content in prompt)"]
     Orphan["7. Record orphan cycle"]
-    SleepNode["Sleep (~1 hour)"]
+    SleepNode["Sleep (default 5 minutes)"]
     Cleanup["8. Cleanup<br/>(costs, transcripts, cache)"]
     LoopBack["9. Loop back to step 1"]
 

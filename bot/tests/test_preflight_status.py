@@ -93,6 +93,7 @@ def test_skip_pushes_idle_status(main_patches):
     main_patches["push_status"].assert_called_once_with(
         "idle", "No work found. Sleeping...", instance_id="test-instance"
     )
+    main_patches["run_cycle"].assert_not_called()
 
 
 def test_preflight_error_pushes_error_status(main_patches):

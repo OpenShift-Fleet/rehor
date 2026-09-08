@@ -1,6 +1,8 @@
 # Architecture
 
-This document describes the system architecture of the Dev Bot (Řehoř) — an autonomous agent that picks Jira tickets, implements them, and maintains PRs through review.
+This document describes system architecture of Řehoř, an
+autonomous tool whose selected workflow discovers work, implements changes, and
+maintains PRs through review.
 
 ## System Overview
 
@@ -12,7 +14,7 @@ graph TB
         Vertex["Vertex AI<br/>(Claude API)"]
     end
 
-    subgraph System["Dev Bot System"]
+    subgraph System["Řehoř System"]
         Runner["Bot Runner<br/>(Python)<br/>bot/run.py"]
         Agent["Claude Code<br/>(Agent)<br/>CLAUDE.md brain"]
         Repos["repos/<br/>(cloned on demand)"]
@@ -26,7 +28,7 @@ graph TB
             Squid["Squid<br/>(port 3128)"]
             Executor["Executor Server<br/>(gRPC)"]
             VertexProxy["Vertex Auth Proxy<br/>(port 8443)"]
-            JiraMCP["mcp-atlassian<br/>(port 8444)"]
+            JiraMCP["mcp-atlassian<br/>(Jira workflow integration)<br/>(port 8444)"]
         end
     end
 
@@ -39,7 +41,7 @@ graph TB
     Runner -- "cost data" --> MemMCP
     Agent <--> MemMCP
     Agent <--> Chrome
-    Agent -- "Jira (streamable HTTP)" --> JiraMCP
+    Agent -- "workflow source (streamable HTTP)" --> JiraMCP
     Agent -- "git push / gh / glab / gpg" --> Executor
     Agent -- "Vertex AI requests" --> VertexProxy
     Agent -- "HTTP/HTTPS" --> Squid
@@ -66,7 +68,7 @@ The Python process that orchestrates the agent loop. It is **not** the brains �
 | `merge.py` | Remote config merge engine — merges remote config repo contents with built-in bot config while protecting security-critical settings |
 
 **Cycle flow:**
-1. Runner calls `run_cycle()` with the primary label and config
+1. Runner calls `run_cycle()` with workflow context and config
 2. Agent SDK spawns a Claude Code subprocess with all MCP servers connected
 3. Claude reads `CLAUDE.md` (its full behavioral instructions) and follows the workflow
 4. The agent streams back messages — the runner logs them and extracts work context
@@ -80,7 +82,7 @@ The actual intelligence. Claude Code is spawned as a subprocess by the Agent SDK
 
 - **Prompt**: `"Your primary label is: <label>. Follow the instructions in CLAUDE.md."`
 - **CLAUDE.md**: detailed behavioral instructions covering the full workflow (priority system, PR maintenance, ticket claiming, implementation guidelines, memory usage, progress tracking)
-- **Tools**: Built-in (Read, Write, Edit, Bash, Grep, Glob, LSP) + MCP tools (Jira, memory, browser)
+- **Tools**: Built-in (Read, Write, Edit, Bash, Grep, Glob, LSP) + workflow and env MCP tools (memory, browser, source integrations)
 - **Persona prompts**: Loaded from `personas/<type>/prompt.md` based on the ticket's nature and repo tech stack
 
 The agent has no persistent state between cycles. All state is stored in the memory server (task records) and reconstructed at the start of each cycle.
@@ -91,7 +93,7 @@ The agent communicates with external systems through [Model Context Protocol](ht
 
 | Server | Transport | Runs in | Purpose |
 |--------|-----------|---------|---------|
-| **mcp-atlassian** | streamable HTTP (port 8444) | **Proxy** | Jira CRUD: search tickets, read/update issues, transitions, comments, sprints |
+| **mcp-atlassian** | streamable HTTP (port 8444) | **Proxy** | Jira source integration for workflows that use Jira |
 | **bot-memory** | streamable HTTP (port 8080) | Memory server | Task tracking (10 concurrent max) + RAG memory (vector search over past learnings) + Slack notifications |
 | **chrome-devtools** | stdio | Bot | Browser automation for visual verification — navigate pages, take screenshots |
 | **hcc-patternfly-data-view** | stdio | Bot | PatternFly component docs (only loaded for frontend persona repos) |
@@ -282,7 +284,11 @@ graph TB
 
 ### Layer 3: Credential Isolation
 
-Most secrets never enter the bot container at all — they live exclusively in the proxy container:
+In OpenShift, credential-bearing secrets are injected only into the proxy. In
+local Compose, `.env` is initially available to the bot container so startup
+can configure local services; `run.py` sanitizes the environment before the
+agent subprocess starts. Credential-bearing operations still execute through
+the proxy:
 
 | Secret | Where it lives | How the bot accesses the capability |
 |--------|---------------|-------------------------------------|
@@ -364,8 +370,10 @@ The proxy:
 ### Layer 5: Container Hardening
 
 - `no-new-privileges` — prevents privilege escalation
-- Resource limits: 4GB RAM, 4 CPUs, 200 PIDs
 - Non-root user (`botuser`)
+- Resource limits are deployment-specific: local Compose sets 8GB RAM, 4 CPUs,
+  and 500 PIDs; the OpenShift template sets 512Mi memory and 300m CPU for the
+  bot container
 
 ## Authentication & Credentials
 
@@ -381,7 +389,9 @@ The proxy:
 
 ## Deployment Considerations (Cluster)
 
-The system is currently designed for single-machine operation. For cluster deployment:
+The repository supports local Compose and OpenShift deployment. Local Compose
+runs the full stack; OpenShift separates bot, proxy, and memory-server pods.
+For cluster deployment:
 
 ### Pod architecture
 
@@ -462,4 +472,5 @@ Chromium headless runs inside each bot pod on port 9222.
 - All instances share the memory server (cross-team learnings are possible).
 - Hard cap of 10 concurrent tasks per bot instance (enforced by memory server).
 - Cycles are sequential within a bot — no concurrency within a single instance.
-- Idle interval (1 hour) keeps costs low when there's no work.
+- Idle interval defaults to 5 minutes; preflight and skill sleep signals avoid
+  launching token-consuming sessions when no work exists.
