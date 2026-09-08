@@ -3,7 +3,7 @@ site_description: Workflow-driven autonomous developer tool documentation
 theme:
   name: material
   logo: assets/images/icon.png
-  favicon: assets/images/icon.png
+  favicon: assets/images/favicon.png
   font:
     text: false
     code: false
