@@ -36,6 +36,8 @@ def _import_run():
 def test_setup_git_adds_gitlab_ssl_ca_config_when_path_set(tmp_path, monkeypatch):
     run_mod = _import_run()
 
+    # Ensure setup_git writes to a test-scoped env var that monkeypatch restores.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "")
     monkeypatch.setenv("GH_USER_NAME", "gh-bot")
     monkeypatch.setenv("GH_USER_EMAIL", "gh-bot@example.com")
     monkeypatch.setenv("GL_USER_NAME", "gl-bot")
@@ -54,6 +56,8 @@ def test_setup_git_adds_gitlab_ssl_ca_config_when_path_set(tmp_path, monkeypatch
 def test_setup_git_keeps_proxy_rewrite_and_adds_tls_config(tmp_path, monkeypatch):
     run_mod = _import_run()
 
+    # Ensure setup_git writes to a test-scoped env var that monkeypatch restores.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "")
     monkeypatch.setenv("GH_USER_NAME", "gh-bot")
     monkeypatch.setenv("GH_USER_EMAIL", "gh-bot@example.com")
     monkeypatch.setenv("GL_USER_NAME", "gl-bot")
