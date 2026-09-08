@@ -1,12 +1,12 @@
-import { useState } from 'react';
-import type { Memory } from '../types';
-import { searchMemories, deleteMemory } from '../api';
-import MemoryCard from '../components/MemoryCard';
-import DetailPanel from '../components/DetailPanel';
-import { SearchInput } from '@patternfly/react-core';
+import { SearchInput } from "@patternfly/react-core";
+import { useState } from "react";
+import { deleteMemory, searchMemories } from "../api";
+import DetailPanel from "../components/DetailPanel";
+import MemoryCard from "../components/MemoryCard";
+import type { Memory } from "../types";
 
 export default function Search() {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState("");
   const [results, setResults] = useState<Memory[]>([]);
   const [searched, setSearched] = useState(false);
   const [selected, setSelected] = useState<Memory | null>(null);
@@ -28,19 +28,17 @@ export default function Search() {
   return (
     <div className="split-layout">
       <div className="split-main">
-        <div style={{ marginBottom: '16px' }}>
+        <div style={{ marginBottom: "16px" }}>
           <SearchInput
             placeholder="Search memories..."
             value={query}
             onChange={(_e, val) => setQuery(val)}
             onSearch={doSearch}
-            onClear={() => setQuery('')}
+            onClear={() => setQuery("")}
           />
         </div>
         <div className="card-grid">
-          {searched && results.length === 0 && (
-            <div className="empty-state">No results found</div>
-          )}
+          {searched && results.length === 0 && <div className="empty-state">No results found</div>}
           {results.map((m) => (
             <MemoryCard
               key={m.id}

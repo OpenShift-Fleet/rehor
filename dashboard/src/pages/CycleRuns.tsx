@@ -1,38 +1,37 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import Markdown from 'react-markdown';
-import type { CycleRun, TaskCycleGroup } from '../types';
-import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from '../api';
-import { useWS } from '../hooks/useWebSocket';
-import CycleRunCard from '../components/CycleRunCard';
-import { timeAgo, formatDuration, formatTokens, sourceUrl, displayKey } from '../utils';
 import {
+  Button,
   Card,
+  CardBody,
   CardHeader,
   CardTitle,
-  CardBody,
+  Content,
+  DescriptionList,
+  DescriptionListDescription,
+  DescriptionListGroup,
+  DescriptionListTerm,
+  Divider,
   Flex,
   FlexItem,
   Label,
   LabelGroup,
-  Button,
-  Content,
-  Divider,
-  DescriptionList,
-  DescriptionListGroup,
-  DescriptionListTerm,
-  DescriptionListDescription,
   SearchInput,
   ToggleGroup,
-  ToggleGroupItem
-} from '@patternfly/react-core';
-import { DownloadIcon, ExpandIcon, CompressIcon, TimesIcon } from '@patternfly/react-icons';
-
-import JSZip from 'jszip';
+  ToggleGroupItem,
+} from "@patternfly/react-core";
+import { CompressIcon, DownloadIcon, ExpandIcon, TimesIcon } from "@patternfly/react-icons";
+import JSZip from "jszip";
+import { useCallback, useEffect, useState } from "react";
+import Markdown from "react-markdown";
+import { useSearchParams } from "react-router-dom";
+import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from "../api";
+import CycleRunCard from "../components/CycleRunCard";
+import { useWS } from "../hooks/useWebSocket";
+import type { CycleRun, TaskCycleGroup } from "../types";
+import { displayKey, formatDuration, formatTokens, sourceUrl, timeAgo } from "../utils";
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const a = document.createElement("a");
   a.href = url;
   a.download = filename;
   a.click();
@@ -40,13 +39,17 @@ function downloadBlob(blob: Blob, filename: string) {
 }
 
 function downloadText(content: string, filename: string) {
-  downloadBlob(new Blob([content], { type: 'application/x-ndjson' }), filename);
+  downloadBlob(new Blob([content], { type: "application/x-ndjson" }), filename);
 }
 
-async function downloadAllTranscripts(taskId: number | null, key: string | null, instanceId?: string) {
-  const params: { task_id?: number | 'none'; instance_id?: string; limit: number } = { limit: 100 };
+async function downloadAllTranscripts(
+  taskId: number | null,
+  key: string | null,
+  instanceId?: string,
+) {
+  const params: { task_id?: number | "none"; instance_id?: string; limit: number } = { limit: 100 };
   if (taskId != null) params.task_id = taskId;
-  else if (!key) params.task_id = 'none';
+  else if (!key) params.task_id = "none";
   if (instanceId) params.instance_id = instanceId;
   const res = await fetchCycleRuns(params);
   const runs: CycleRun[] = res.items || [];
@@ -55,15 +58,15 @@ async function downloadAllTranscripts(taskId: number | null, key: string | null,
   for (const run of runs) {
     try {
       const text = await fetchCycleRunTranscript(run.id);
-      const ts = run.started_at.replace(/[:.]/g, '-').slice(0, 19);
+      const ts = run.started_at.replace(/[:.]/g, "-").slice(0, 19);
       zip.file(`cycle-${run.id}-${run.cycle_type}-${ts}.jsonl`, text);
     } catch {
       // skip cycles without transcript
     }
   }
 
-  const label = key || (taskId != null ? `task-${taskId}` : 'orphan');
-  const blob = await zip.generateAsync({ type: 'blob' });
+  const label = key || (taskId != null ? `task-${taskId}` : "orphan");
+  const blob = await zip.generateAsync({ type: "blob" });
   downloadBlob(blob, `transcripts-${label}.zip`);
 }
 
@@ -77,15 +80,20 @@ interface ParsedEntry {
 
 function parseTranscript(raw: string): ParsedEntry[] {
   const entries: ParsedEntry[] = [];
-  for (const line of raw.trim().split('\n')) {
+  for (const line of raw.trim().split("\n")) {
     let data: any;
     try {
       data = JSON.parse(line);
     } catch {
       continue;
     }
-    const lineType = data.type || '';
-    if (!data.message || lineType === 'queue-operation' || lineType === 'last-prompt' || lineType === 'attachment') {
+    const lineType = data.type || "";
+    if (
+      !data.message ||
+      lineType === "queue-operation" ||
+      lineType === "last-prompt" ||
+      lineType === "attachment"
+    ) {
       continue;
     }
     const msg = data.message;
@@ -93,31 +101,60 @@ function parseTranscript(raw: string): ParsedEntry[] {
     const blocks = Array.isArray(msg.content) ? msg.content : [];
 
     for (const block of blocks) {
-      if (!block || typeof block !== 'object') continue;
-      const bt = block.type || '';
+      if (!block || typeof block !== "object") continue;
+      const bt = block.type || "";
 
-      if (bt === 'text') {
-        const text = block.text || '';
+      if (bt === "text") {
+        const text = block.text || "";
         if (text.trim()) {
-          entries.push({ role, blockType: 'text', label: '', content: text, isLarge: text.length > 500 });
+          entries.push({
+            role,
+            blockType: "text",
+            label: "",
+            content: text,
+            isLarge: text.length > 500,
+          });
         }
-      } else if (bt === 'thinking') {
-        const text = block.thinking || '';
+      } else if (bt === "thinking") {
+        const text = block.thinking || "";
         if (text.trim()) {
-          entries.push({ role: 'thinking', blockType: 'thinking', label: '', content: text, isLarge: text.length > 300 });
+          entries.push({
+            role: "thinking",
+            blockType: "thinking",
+            label: "",
+            content: text,
+            isLarge: text.length > 300,
+          });
         }
-      } else if (bt === 'tool_use') {
-        const name = block.name || '?';
+      } else if (bt === "tool_use") {
+        const name = block.name || "?";
         const input = block.input || {};
-        const summary = Object.entries(input).slice(0, 3).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(', ');
-        entries.push({ role: 'tool', blockType: 'tool_use', label: name, content: summary, isLarge: false });
-      } else if (bt === 'tool_result') {
-        let content = block.content || '';
+        const summary = Object.entries(input)
+          .slice(0, 3)
+          .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
+          .join(", ");
+        entries.push({
+          role: "tool",
+          blockType: "tool_use",
+          label: name,
+          content: summary,
+          isLarge: false,
+        });
+      } else if (bt === "tool_result") {
+        let content = block.content || "";
         if (Array.isArray(content)) {
-          content = content.map((c: any) => typeof c === 'string' ? c : c.text || JSON.stringify(c)).join('\n');
+          content = content
+            .map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c)))
+            .join("\n");
         }
-        const text = typeof content === 'string' ? content : JSON.stringify(content);
-        entries.push({ role: 'result', blockType: 'tool_result', label: '', content: text, isLarge: text.length > 300 });
+        const text = typeof content === "string" ? content : JSON.stringify(content);
+        entries.push({
+          role: "result",
+          blockType: "tool_result",
+          label: "",
+          content: text,
+          isLarge: text.length > 300,
+        });
       }
     }
   }
@@ -128,24 +165,30 @@ const transcriptCache = new Map<number, string>();
 
 function Highlight({ text, search }: { text: string; search: string }) {
   if (!search) return <>{text}</>;
-  const parts = text.split(new RegExp(`(${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
+  const parts = text.split(new RegExp(`(${search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"));
   return (
     <>
       {parts.map((part, i) =>
         part.toLowerCase() === search.toLowerCase() ? (
-          <mark key={i} className="search-highlight">{part}</mark>
+          <mark key={i} className="search-highlight">
+            {part}
+          </mark>
         ) : (
           <span key={i}>{part}</span>
-        )
+        ),
       )}
     </>
   );
 }
 
-function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onRequestFullscreen?: () => void }) {
-  const [transcript, setTranscript] = useState<string | null>(
-    transcriptCache.get(runId) ?? null
-  );
+function TranscriptViewer({
+  runId,
+  onRequestFullscreen,
+}: {
+  runId: number;
+  onRequestFullscreen?: () => void;
+}) {
+  const [transcript, setTranscript] = useState<string | null>(transcriptCache.get(runId) ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rawMode, setRawMode] = useState(false);
@@ -153,13 +196,15 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
     const cached = transcriptCache.get(runId);
     if (cached) {
       const largeIds = new Set<number>();
-      parseTranscript(cached).forEach((e, i) => { if (e.isLarge) largeIds.add(i); });
+      parseTranscript(cached).forEach((e, i) => {
+        if (e.isLarge) largeIds.add(i);
+      });
       return largeIds;
     }
     return new Set();
   });
   const [showThinking, setShowThinking] = useState(false);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState("");
 
   const load = async () => {
     setLoading(true);
@@ -170,10 +215,12 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
       setTranscript(text);
       const parsed = parseTranscript(text);
       const largeIds = new Set<number>();
-      parsed.forEach((e, i) => { if (e.isLarge) largeIds.add(i); });
+      parsed.forEach((e, i) => {
+        if (e.isLarge) largeIds.add(i);
+      });
       setCollapsed(largeIds);
     } catch (e: any) {
-      setError(e.message || 'Failed to load transcript');
+      setError(e.message || "Failed to load transcript");
     } finally {
       setLoading(false);
     }
@@ -181,19 +228,31 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
 
   if (transcript === null && !loading && !error) {
     return (
-      <Button variant="secondary" onClick={load}>Load Transcript</Button>
+      <Button variant="secondary" onClick={load}>
+        Load Transcript
+      </Button>
     );
   }
   if (loading) return <Content component="p">Loading transcript...</Content>;
-  if (error) return <Content component="p" style={{ color: 'var(--pf-t--global--color--status--danger--default)' }}>{error}</Content>;
+  if (error)
+    return (
+      <Content
+        component="p"
+        style={{ color: "var(--pf-t--global--color--status--danger--default)" }}
+      >
+        {error}
+      </Content>
+    );
   if (!transcript) return null;
 
   const entries = parseTranscript(transcript);
   const searchLower = search.toLowerCase();
-  let visible = showThinking ? entries : entries.filter((e) => e.blockType !== 'thinking');
+  let visible = showThinking ? entries : entries.filter((e) => e.blockType !== "thinking");
   if (search) {
     visible = visible.filter(
-      (e) => e.content.toLowerCase().includes(searchLower) || e.label.toLowerCase().includes(searchLower)
+      (e) =>
+        e.content.toLowerCase().includes(searchLower) ||
+        e.label.toLowerCase().includes(searchLower),
     );
   }
 
@@ -208,7 +267,11 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
 
   return (
     <div className="transcript-viewer">
-      <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} style={{ marginBottom: '8px' }}>
+      <Flex
+        alignItems={{ default: "alignItemsCenter" }}
+        gap={{ default: "gapSm" }}
+        style={{ marginBottom: "8px" }}
+      >
         <FlexItem>
           <Label variant="outline">{visible.length} entries</Label>
         </FlexItem>
@@ -217,19 +280,38 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
             placeholder="Search transcript..."
             value={search}
             onChange={(_e, val) => setSearch(val)}
-            onClear={() => setSearch('')}
+            onClear={() => setSearch("")}
             onFocus={() => onRequestFullscreen?.()}
           />
         </FlexItem>
         <FlexItem>
-          <Button variant="plain" size="sm" onClick={() => downloadText(transcript, `cycle-${runId}.jsonl`)} title="Download transcript">
+          <Button
+            variant="plain"
+            size="sm"
+            onClick={() => downloadText(transcript, `cycle-${runId}.jsonl`)}
+            title="Download transcript"
+          >
             <DownloadIcon />
           </Button>
         </FlexItem>
         <FlexItem style={{ flexShrink: 0 }}>
           <ToggleGroup aria-label="View options">
-            <ToggleGroupItem text="Thinking" isSelected={showThinking} onChange={() => { setShowThinking(!showThinking); setRawMode(false); }} />
-            <ToggleGroupItem text="Raw" isSelected={rawMode} onChange={() => { setRawMode(!rawMode); setShowThinking(false); }} />
+            <ToggleGroupItem
+              text="Thinking"
+              isSelected={showThinking}
+              onChange={() => {
+                setShowThinking(!showThinking);
+                setRawMode(false);
+              }}
+            />
+            <ToggleGroupItem
+              text="Raw"
+              isSelected={rawMode}
+              onChange={() => {
+                setRawMode(!rawMode);
+                setShowThinking(false);
+              }}
+            />
           </ToggleGroup>
         </FlexItem>
       </Flex>
@@ -241,7 +323,10 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
             const isCollapsed = collapsed.has(i) && !search;
             return (
               <div key={i} className={`transcript-line role-${entry.role}`}>
-                <div className="transcript-line-header" onClick={() => entry.isLarge && toggleCollapse(i)}>
+                <div
+                  className="transcript-line-header"
+                  onClick={() => entry.isLarge && toggleCollapse(i)}
+                >
                   <span className="transcript-role">{entry.role}</span>
                   {entry.label && (
                     <span className="transcript-tool-name">
@@ -249,11 +334,11 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
                     </span>
                   )}
                   {entry.isLarge && !search && (
-                    <span className="transcript-toggle">{collapsed.has(i) ? '[+]' : '[-]'}</span>
+                    <span className="transcript-toggle">{collapsed.has(i) ? "[+]" : "[-]"}</span>
                   )}
                 </div>
-                {!isCollapsed && (
-                  entry.blockType === 'text' || entry.blockType === 'thinking' ? (
+                {!isCollapsed &&
+                  (entry.blockType === "text" || entry.blockType === "thinking" ? (
                     <div className="transcript-line-md">
                       {search ? (
                         <pre className="transcript-line-content">
@@ -267,8 +352,7 @@ function TranscriptViewer({ runId, onRequestFullscreen }: { runId: number; onReq
                     <pre className="transcript-line-content">
                       <Highlight text={entry.content.slice(0, 3000)} search={search} />
                     </pre>
-                  )
-                )}
+                  ))}
               </div>
             );
           })}
@@ -296,20 +380,28 @@ function CycleRunDetail({
       : null;
 
   return (
-    <Card isGlass className={fullscreen ? 'detail-fullscreen' : ''}>
+    <Card isGlass className={fullscreen ? "detail-fullscreen" : ""}>
       <CardHeader
-        actions={{ actions: (
-          <Flex gap={{ default: 'gapSm' }}>
-            <FlexItem>
-              <Button variant="plain" onClick={onToggleFullscreen} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
-                {fullscreen ? <CompressIcon /> : <ExpandIcon />}
-              </Button>
-            </FlexItem>
-            <FlexItem>
-              <Button variant="plain" onClick={onClose}><TimesIcon /></Button>
-            </FlexItem>
-          </Flex>
-        ) }}
+        actions={{
+          actions: (
+            <Flex gap={{ default: "gapSm" }}>
+              <FlexItem>
+                <Button
+                  variant="plain"
+                  onClick={onToggleFullscreen}
+                  title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+                >
+                  {fullscreen ? <CompressIcon /> : <ExpandIcon />}
+                </Button>
+              </FlexItem>
+              <FlexItem>
+                <Button variant="plain" onClick={onClose}>
+                  <TimesIcon />
+                </Button>
+              </FlexItem>
+            </Flex>
+          ),
+        }}
       >
         <CardTitle>Cycle #{run.id}</CardTitle>
       </CardHeader>
@@ -318,7 +410,7 @@ function CycleRunDetail({
           <DescriptionListGroup>
             <DescriptionListTerm>Type</DescriptionListTerm>
             <DescriptionListDescription>
-              <Label color="blue">{run.cycle_type.replace(/_/g, ' ').toUpperCase()}</Label>
+              <Label color="blue">{run.cycle_type.replace(/_/g, " ").toUpperCase()}</Label>
             </DescriptionListDescription>
           </DescriptionListGroup>
           {run.instance_id && (
@@ -329,7 +421,9 @@ function CycleRunDetail({
           )}
           <DescriptionListGroup>
             <DescriptionListTerm>Started</DescriptionListTerm>
-            <DescriptionListDescription title={run.started_at}>{timeAgo(run.started_at)}</DescriptionListDescription>
+            <DescriptionListDescription title={run.started_at}>
+              {timeAgo(run.started_at)}
+            </DescriptionListDescription>
           </DescriptionListGroup>
           {duration != null && (
             <DescriptionListGroup>
@@ -346,14 +440,16 @@ function CycleRunDetail({
           {run.tokens_used != null && (
             <DescriptionListGroup>
               <DescriptionListTerm>Tokens</DescriptionListTerm>
-              <DescriptionListDescription>{formatTokens(run.tokens_used)}</DescriptionListDescription>
+              <DescriptionListDescription>
+                {formatTokens(run.tokens_used)}
+              </DescriptionListDescription>
             </DescriptionListGroup>
           )}
         </DescriptionList>
 
         {Object.keys(progress).length > 0 && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Progress</Content>
             <DescriptionList isCompact>
               {progress.last_step && (
@@ -385,7 +481,9 @@ function CycleRunDetail({
                   <DescriptionListTerm>Files</DescriptionListTerm>
                   <DescriptionListDescription>
                     {(progress.files_changed as string[]).map((f: string, i: number) => (
-                      <div key={i}><code>{f}</code></div>
+                      <div key={i}>
+                        <code>{f}</code>
+                      </div>
                     ))}
                   </DescriptionListDescription>
                 </DescriptionListGroup>
@@ -408,18 +506,26 @@ function CycleRunDetail({
 
         {run.input_prompt && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Input Prompt</Content>
             <pre className="input-prompt-content">{run.input_prompt}</pre>
           </>
         )}
 
-        <Divider style={{ margin: '16px 0' }} />
+        <Divider style={{ margin: "16px 0" }} />
         <Content component="h4">Transcript</Content>
         {run.has_transcript ? (
-          <TranscriptViewer runId={run.id} onRequestFullscreen={() => { if (!fullscreen) onToggleFullscreen(); }} />
+          <TranscriptViewer
+            runId={run.id}
+            onRequestFullscreen={() => {
+              if (!fullscreen) onToggleFullscreen();
+            }}
+          />
         ) : (
-          <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle, var(--text-dim))' }}>
+          <Content
+            component="p"
+            style={{ color: "var(--pf-t--global--text--color--subtle, var(--text-dim))" }}
+          >
             No transcript available for this cycle run.
           </Content>
         )}
@@ -441,7 +547,7 @@ function TaskGroupCard({
 }) {
   const key = displayKey(group);
   const url = sourceUrl(group);
-  const label = key || (group.task_id != null ? `Task #${group.task_id}` : 'Orphan cycles');
+  const label = key || (group.task_id != null ? `Task #${group.task_id}` : "Orphan cycles");
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async (e: React.MouseEvent) => {
@@ -455,34 +561,47 @@ function TaskGroupCard({
   };
 
   return (
-    <Card isCompact isGlass isSelected={expanded} onClick={onClick} style={{ cursor: 'pointer', marginBottom: '8px' }}>
+    <Card
+      isCompact
+      isGlass
+      isSelected={expanded}
+      onClick={onClick}
+      style={{ cursor: "pointer", marginBottom: "8px" }}
+    >
       <CardHeader
-        actions={{ actions: (
-          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
-            {group.transcript_count > 0 && (
+        actions={{
+          actions: (
+            <Flex alignItems={{ default: "alignItemsCenter" }} gap={{ default: "gapSm" }}>
+              {group.transcript_count > 0 && (
+                <FlexItem>
+                  <Button
+                    variant="plain"
+                    size="sm"
+                    onClick={handleDownload}
+                    isDisabled={downloading}
+                    title="Download all transcripts as ZIP"
+                  >
+                    {downloading ? "..." : <DownloadIcon />}
+                  </Button>
+                </FlexItem>
+              )}
               <FlexItem>
-                <Button
-                  variant="plain"
-                  size="sm"
-                  onClick={handleDownload}
-                  isDisabled={downloading}
-                  title="Download all transcripts as ZIP"
-                >
-                  {downloading ? '...' : <DownloadIcon />}
-                </Button>
+                <Label variant="outline">{group.cycle_count} cycles</Label>
               </FlexItem>
-            )}
-            <FlexItem>
-              <Label variant="outline">{group.cycle_count} cycles</Label>
-            </FlexItem>
-          </Flex>
-        ) }}
+            </Flex>
+          ),
+        }}
       >
         <CardTitle>
-          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+          <Flex alignItems={{ default: "alignItemsCenter" }} gap={{ default: "gapSm" }}>
             <FlexItem>
               {key ? (
-                <a href={url || '#'} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+                <a
+                  href={url || "#"}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   {key}
                 </a>
               ) : (
@@ -498,18 +617,26 @@ function TaskGroupCard({
         </CardTitle>
       </CardHeader>
       <CardBody>
-        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+        <Flex direction={{ default: "column" }} gap={{ default: "gapSm" }}>
           {group.title && (
             <FlexItem>
-              <Content component="p" style={{ margin: 0 }}>{group.title}</Content>
+              <Content component="p" style={{ margin: 0 }}>
+                {group.title}
+              </Content>
             </FlexItem>
           )}
           <FlexItem>
             <LabelGroup>
               {group.repo && <Label variant="outline">{group.repo}</Label>}
-              {group.total_tokens != null && <Label variant="outline">{formatTokens(group.total_tokens)} tokens</Label>}
-              {group.transcript_count > 0 && <Label variant="outline">{group.transcript_count} transcripts</Label>}
-              {group.last_cycle && <Label variant="outline">last {timeAgo(group.last_cycle)}</Label>}
+              {group.total_tokens != null && (
+                <Label variant="outline">{formatTokens(group.total_tokens)} tokens</Label>
+              )}
+              {group.transcript_count > 0 && (
+                <Label variant="outline">{group.transcript_count} transcripts</Label>
+              )}
+              {group.last_cycle && (
+                <Label variant="outline">last {timeAgo(group.last_cycle)}</Label>
+              )}
             </LabelGroup>
           </FlexItem>
         </Flex>
@@ -522,7 +649,7 @@ function groupKey(g: TaskCycleGroup): string {
   if (g.task_id != null) return `t:${g.task_id}`;
   const key = g.external_key;
   if (key) return `k:${key}`;
-  return 'orphan';
+  return "orphan";
 }
 
 export default function CycleRuns({ instanceId }: { instanceId?: string }) {
@@ -537,10 +664,10 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setFullscreen(false);
+      if (e.key === "Escape") setFullscreen(false);
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
   const { onEvent } = useWS();
@@ -550,33 +677,38 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setGroups(data?.items || []);
   }, [instanceId]);
 
-  const loadCyclesForTask = useCallback(async (taskId: number | null, orphan = false, showLoading = true) => {
-    if (showLoading) setLoadingRuns(true);
-    try {
-      const params: { task_id?: number | 'none'; instance_id?: string; limit: number } = { limit: 50 };
-      if (taskId != null) params.task_id = taskId;
-      else if (orphan) params.task_id = 'none';
-      if (instanceId) params.instance_id = instanceId;
-      const res = await fetchCycleRuns(params);
-      setRuns(res.items || []);
-      return res.items || [];
-    } finally {
-      if (showLoading) setLoadingRuns(false);
-    }
-  }, [instanceId]);
+  const loadCyclesForTask = useCallback(
+    async (taskId: number | null, orphan = false, showLoading = true) => {
+      if (showLoading) setLoadingRuns(true);
+      try {
+        const params: { task_id?: number | "none"; instance_id?: string; limit: number } = {
+          limit: 50,
+        };
+        if (taskId != null) params.task_id = taskId;
+        else if (orphan) params.task_id = "none";
+        if (instanceId) params.instance_id = instanceId;
+        const res = await fetchCycleRuns(params);
+        setRuns(res.items || []);
+        return res.items || [];
+      } finally {
+        if (showLoading) setLoadingRuns(false);
+      }
+    },
+    [instanceId],
+  );
 
   useEffect(() => {
     loadGroups();
   }, [loadGroups]);
 
   useEffect(() => {
-    const cycleParam = searchParams.get('cycle');
-    const taskParam = searchParams.get('task_id');
+    const cycleParam = searchParams.get("cycle");
+    const taskParam = searchParams.get("task_id");
     if (cycleParam && groups.length > 0 && !selectedRun) {
       const cycleId = parseInt(cycleParam);
       const tid = taskParam ? parseInt(taskParam) : null;
       const match = groups.find((g) => g.task_id === tid);
-      setExpandedGroupKey(match ? groupKey(match) : tid != null ? `t:${tid}` : 'orphan');
+      setExpandedGroupKey(match ? groupKey(match) : tid != null ? `t:${tid}` : "orphan");
       loadCyclesForTask(tid, tid == null, false).then((items) => {
         const found = items.find((r: CycleRun) => r.id === cycleId);
         if (found) setSelectedRun(found);
@@ -586,7 +718,7 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
 
   useEffect(() => {
     return onEvent((event) => {
-      if (event.type === 'cycle_run_added') {
+      if (event.type === "cycle_run_added") {
         loadGroups();
         if (expandedGroupKey) {
           const expanded = groups.find((g) => groupKey(g) === expandedGroupKey);
@@ -619,9 +751,9 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setSelectedRun(run);
     setFullscreen(false);
     const params = new URLSearchParams(searchParams);
-    params.set('cycle', String(run.id));
-    if (run.task_id != null) params.set('task_id', String(run.task_id));
-    else params.delete('task_id');
+    params.set("cycle", String(run.id));
+    if (run.task_id != null) params.set("task_id", String(run.task_id));
+    else params.delete("task_id");
     setSearchParams(params, { replace: true });
   };
 
@@ -629,8 +761,8 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
     setSelectedRun(null);
     setFullscreen(false);
     const params = new URLSearchParams(searchParams);
-    params.delete('cycle');
-    params.delete('task_id');
+    params.delete("cycle");
+    params.delete("task_id");
     setSearchParams(params, { replace: true });
   };
 

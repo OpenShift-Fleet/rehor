@@ -1,4 +1,4 @@
-import type { WSEvent } from './types';
+import type { WSEvent } from "./types";
 
 declare global {
   interface Window {

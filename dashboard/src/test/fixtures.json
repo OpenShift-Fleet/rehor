@@ -29,10 +29,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": {
         "event_type": "task_started",
@@ -69,10 +66,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": null
     },
@@ -105,10 +99,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": null
     },
@@ -141,10 +132,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": {
         "event_type": "task_started",
@@ -181,10 +169,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": null
     },
@@ -217,10 +202,7 @@
       "instance_id": "dev-bot",
       "metadata": {
         "priority": "high",
-        "labels": [
-          "bug",
-          "p1"
-        ]
+        "labels": ["bug", "p1"]
       },
       "slack_notification": null
     }
@@ -234,10 +216,7 @@
       "source_type": "jira",
       "title": "Login timeout issue",
       "content": "Users experiencing timeout after 5min idle",
-      "tags": [
-        "auth",
-        "timeout"
-      ],
+      "tags": ["auth", "timeout"],
       "created_at": "2026-07-01T10:00:00Z",
       "metadata": {
         "importance": "high"
@@ -251,10 +230,7 @@
       "source_type": null,
       "title": "Auth flow design",
       "content": "New OAuth2 flow with PKCE extension",
-      "tags": [
-        "security",
-        "oauth"
-      ],
+      "tags": ["security", "oauth"],
       "created_at": "2026-07-02T10:00:00Z",
       "metadata": {
         "importance": "high"
@@ -268,10 +244,7 @@
       "source_type": null,
       "title": "Framework choice",
       "content": "Chose React over Vue for better TypeScript support",
-      "tags": [
-        "react",
-        "typescript"
-      ],
+      "tags": ["react", "typescript"],
       "created_at": "2026-07-03T10:00:00Z",
       "metadata": {
         "importance": "high"
@@ -285,10 +258,7 @@
       "source_type": null,
       "title": "Database connection pooling",
       "content": "Increased pool size to 50 to handle load spikes",
-      "tags": [
-        "database",
-        "performance"
-      ],
+      "tags": ["database", "performance"],
       "created_at": "2026-07-04T10:00:00Z",
       "metadata": {
         "importance": "high"
@@ -511,9 +481,7 @@
       "content": "Users timeout after idle",
       "category": "bug",
       "repo": "frontend",
-      "tags": [
-        "auth"
-      ],
+      "tags": ["auth"],
       "x": 0.1,
       "y": 0.2,
       "z": 0.3
@@ -524,9 +492,7 @@
       "content": "OAuth2 with PKCE",
       "category": "architecture",
       "repo": "backend",
-      "tags": [
-        "security"
-      ],
+      "tags": ["security"],
       "x": 0.4,
       "y": 0.5,
       "z": 0.2
@@ -537,9 +503,7 @@
       "content": "React over Vue",
       "category": "decision",
       "repo": "frontend",
-      "tags": [
-        "react"
-      ],
+      "tags": ["react"],
       "x": 0.7,
       "y": 0.1,
       "z": 0.4
