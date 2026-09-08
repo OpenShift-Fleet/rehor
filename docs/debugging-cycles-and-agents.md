@@ -2,7 +2,7 @@
 
 Use this guide when an agent did not act, acted on wrong work, started when it should have slept, repeated itself, or produced a weak change.
 
-The memory server dashboard is the primary inspection tool. Open your team's Rehoř dashboard, select the relevant instance, and use **Cycles**. Dashboard names and URLs differ by deployment; do not assume another team's instance name or address.
+The memory server dashboard is the primary inspection tool. Open your team's Řehoř dashboard, select the relevant instance, and use **Cycles**. Dashboard names and URLs differ by deployment; do not assume another team's instance name or address.
 
 ![Cycle list showing grouped runs and transcript counts](assets/images/cycle-list-light.png)
 
@@ -21,7 +21,7 @@ Use **Tasks** to inspect current task state and metadata. Use **Archive** when t
 
 ### Orphan cycles
 
-An **orphan cycle** is a normal polling cycle where preflight ran, every script returned `skip`, and no Claude session started. It is called orphan because the cycle has no associated task execution or agent session. It is not an orphaned process, failed task, or interrupted implementation.
+An **orphan cycle** is a normal polling cycle where preflight ran, every script returned `skip`, and no agent session started. It is called orphan because the cycle has no associated task execution or agent session. It is not an orphaned process, failed task, or interrupted implementation.
 
 Expected orphan-cycle profile:
 
@@ -137,7 +137,7 @@ For each step, record observed input, decision, and side effect. Avoid replacing
 
 ## Debug False-Positive Cycles
 
-A false positive occurs when preflight returns `start`, Claude launches, and the agent discovers no actionable work. Treat this as a decision bug first, not an instruction-following bug.
+A false positive occurs when preflight returns `start`, an agent session starts, and the agent discovers no actionable work. Treat this as a decision bug first, not an instruction-following bug.
 
 1. Preserve transcript outside repository.
 2. Extract exact preflight output and provider records.
@@ -229,7 +229,7 @@ For agent changes, add a small scenario test when possible. Test both output and
 given exact source fixture
 when preflight runs
 then status == skip
-and no Claude session starts
+and no agent session starts
 ```
 
 ## Report Findings
