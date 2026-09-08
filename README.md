@@ -246,6 +246,19 @@ mkdir -p instance
 docker build -f dev-bot/Dockerfile.runner -t my-bot-instance:local .
 ```
 
+For a runner repo with multiple profiles, select one profile at build time:
+
+```bash
+docker build \
+  --build-arg INSTANCE_CONFIG_PATH=instance/rbac-config \
+  -f dev-bot/Dockerfile.runner \
+  -t my-bot-instance:local .
+```
+
+The selected profile alone controls env-preset installation. Without this build
+arg, the image installs the union of envs from all `instance/*/agent/instance.yaml`
+files. Runtime profile selection still uses `BOT_CONFIG_PATH`.
+
 To update to the latest dev-bot: `git submodule update --remote dev-bot`
 
 ## Running the services

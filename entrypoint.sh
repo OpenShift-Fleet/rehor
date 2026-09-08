@@ -185,7 +185,19 @@ for pf in /etc/profile.d/*.sh; do [ -f "$pf" ] && . "$pf" || true; done
 
 # Run env preset entrypoint scripts — only for installed envs
 INSTALLED_ENVS=""
-for cfg in instance/*/agent/instance.yaml; do
+CONFIG_FILES=()
+if [ -n "${INSTANCE_CONFIG_PATH:-}" ]; then
+    if [[ "$INSTANCE_CONFIG_PATH" == instance/* ]]; then
+        CONFIG_FILES=("$INSTANCE_CONFIG_PATH/agent/instance.yaml")
+    else
+        CONFIG_FILES=("instance/$INSTANCE_CONFIG_PATH/agent/instance.yaml")
+    fi
+else
+    shopt -s nullglob
+    CONFIG_FILES=(instance/*/agent/instance.yaml)
+    shopt -u nullglob
+fi
+for cfg in "${CONFIG_FILES[@]}"; do
     [ -f "$cfg" ] || continue
     INSTALLED_ENVS="$INSTALLED_ENVS $(sed -n '/^envs:/,/^[^ ]/{ s/^  - //p }' "$cfg")"
 done
