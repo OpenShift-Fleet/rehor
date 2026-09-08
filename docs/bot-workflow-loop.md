@@ -73,6 +73,8 @@ graph TD
 
 The common case — "nothing changed since last cycle" — is handled entirely by Python scripts. The AI only wakes up when a preflight script explicitly returns `"start"`.
 
+An **orphan cycle** is the recorded result when all preflight scripts return `skip`. No Claude session starts, so it normally has zero tools, zero tokens, and `$0` model cost. The name does not mean failed or abandoned work; it marks an idle polling check with no task execution.
+
 ---
 
 ## Preflight System
