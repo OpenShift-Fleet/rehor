@@ -3,7 +3,7 @@ site_description: Workflow-driven autonomous developer tool documentation
 theme:
   name: material
   logo: assets/images/icon.png
-  favicon: assets/images/icon.png
+  favicon: assets/images/favicon.png
   font:
     text: false
     code: false
@@ -62,6 +62,7 @@ nav:
     - Scheduling: scheduling.md
   - Architecture:
     - Bot Workflow Loop: bot-workflow-loop.md
+    - Debugging Cycles and Improving Agents: debugging-cycles-and-agents.md
     - Git Auth Proxy: git-auth-proxy.md
     - Preset System Design: presets-design.md
   - Presets:
