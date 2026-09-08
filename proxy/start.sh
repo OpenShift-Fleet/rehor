@@ -31,12 +31,6 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
         export GITLAB_CA_CERT_FILE
     fi
 
-    if [ -n "${GITLAB_CA_CERT_FILE:-}" ]; then
-        export SSL_CERT_FILE="$GITLAB_CA_CERT_FILE"
-        export GIT_SSL_CAINFO="$GITLAB_CA_CERT_FILE"
-        export CURL_CA_BUNDLE="$GITLAB_CA_CERT_FILE"
-    fi
-
     mkdir -p ~/.config/glab-cli
     cat > ~/.config/glab-cli/config.yml <<EOF
 git_protocol: https

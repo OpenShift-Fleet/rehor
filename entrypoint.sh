@@ -47,9 +47,6 @@ if [ -n "${GITLAB_CA_CERT_PEM:-}" ] && [ -z "${GITLAB_CA_CERT_FILE:-}" ]; then
 fi
 
 if [ -n "${GITLAB_CA_CERT_FILE:-}" ]; then
-    export SSL_CERT_FILE="$GITLAB_CA_CERT_FILE"
-    export GIT_SSL_CAINFO="$GITLAB_CA_CERT_FILE"
-    export CURL_CA_BUNDLE="$GITLAB_CA_CERT_FILE"
     git config --global http."https://gitlab.cee.redhat.com/".sslCAInfo "$GITLAB_CA_CERT_FILE"
     git config --global http."https://gitlab.cee.redhat.com/".sslVerify true
 fi

@@ -640,6 +640,21 @@ func TestValidateGitAuthConfig_InvalidCAConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid ca file content", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "invalid-ca.pem")
+		if err := os.WriteFile(path, []byte("not-a-valid-pem-certificate"), 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		t.Setenv("GITLAB_CA_CERT_FILE", path)
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_FILE does not contain valid PEM certificates") {
+			t.Fatalf("expected invalid PEM error, got %v", err)
+		}
+	})
+
 	t.Run("invalid ca pem", func(t *testing.T) {
 		t.Setenv("GITLAB_CA_CERT_FILE", "")
 		t.Setenv("GITLAB_CA_CERT_PEM", "not-a-pem")

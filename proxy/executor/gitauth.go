@@ -215,8 +215,13 @@ func ValidateGitAuthConfig() error {
 	}
 
 	if glCAFile != "" {
-		if _, err := os.ReadFile(glCAFile); err != nil {
+		pemBytes, err := os.ReadFile(glCAFile)
+		if err != nil {
 			return fmt.Errorf("GITLAB_CA_CERT_FILE is not readable: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return fmt.Errorf("GITLAB_CA_CERT_FILE does not contain valid PEM certificates")
 		}
 	}
 
