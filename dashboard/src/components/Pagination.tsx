@@ -1,4 +1,4 @@
-import { Pagination as PFPagination } from '@patternfly/react-core';
+import { Pagination as PFPagination } from "@patternfly/react-core";
 
 interface Props {
   total: number;
@@ -19,7 +19,7 @@ export default function Pagination({ total, limit, offset, onChange }: Props) {
       page={currentPage}
       onSetPage={(_e, page) => onChange((page - 1) * limit)}
       isCompact
-      style={{ marginTop: '16px' }}
+      style={{ marginTop: "16px" }}
     />
   );
 }

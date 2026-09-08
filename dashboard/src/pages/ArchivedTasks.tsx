@@ -1,12 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
-import type { Task } from '../types';
-import { fetchTasks, unarchiveTask } from '../api';
-import { useWS } from '../hooks/useWebSocket';
-import TaskCard from '../components/TaskCard';
-import DetailPanel from '../components/DetailPanel';
-import Pagination from '../components/Pagination';
-import { Label, Content } from '@patternfly/react-core';
-import ConfirmDialog from '../components/ConfirmDialog';
+import { Content, Label } from "@patternfly/react-core";
+import { useCallback, useEffect, useState } from "react";
+import { fetchTasks, unarchiveTask } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog";
+import DetailPanel from "../components/DetailPanel";
+import Pagination from "../components/Pagination";
+import TaskCard from "../components/TaskCard";
+import { useWS } from "../hooks/useWebSocket";
+import type { Task } from "../types";
 
 const LIMIT = 20;
 
@@ -21,7 +21,12 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
   const { onEvent } = useWS();
 
   const load = useCallback(async () => {
-    const res = await fetchTasks({ status: 'archived', limit: LIMIT, offset, instance_id: instanceId });
+    const res = await fetchTasks({
+      status: "archived",
+      limit: LIMIT,
+      offset,
+      instance_id: instanceId,
+    });
     setTasks(res.items || []);
     setTotal(res.total || 0);
   }, [offset, instanceId]);
@@ -32,7 +37,11 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
 
   useEffect(() => {
     return onEvent((event) => {
-      if (event.type === 'task_added' || event.type === 'task_updated' || event.type === 'task_archived') {
+      if (
+        event.type === "task_added" ||
+        event.type === "task_updated" ||
+        event.type === "task_archived"
+      ) {
         load();
       }
     });
@@ -47,7 +56,9 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
       try {
         const body = await res.json();
         if (body?.error) msg = body.error;
-      } catch { /* ignore non-JSON */ }
+      } catch {
+        /* ignore non-JSON */
+      }
       setError(msg);
       return;
     }
@@ -58,12 +69,17 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
   return (
     <div className="split-layout">
       <div className="split-main">
-        <div style={{ marginBottom: '16px' }}>
-          <Label variant="outline">{total} archived task{total !== 1 ? 's' : ''}</Label>
+        <div style={{ marginBottom: "16px" }}>
+          <Label variant="outline">
+            {total} archived task{total !== 1 ? "s" : ""}
+          </Label>
         </div>
         <div className="card-grid">
           {tasks.length === 0 && (
-            <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle, var(--text-dim))' }}>
+            <Content
+              component="p"
+              style={{ color: "var(--pf-t--global--text--color--subtle, var(--text-dim))" }}
+            >
               No archived tasks
             </Content>
           )}
@@ -99,7 +115,7 @@ export default function ArchivedTasks({ instanceId }: { instanceId?: string }) {
       <ConfirmDialog
         open={error !== null}
         title="Error"
-        message={error || ''}
+        message={error || ""}
         confirmLabel="OK"
         onConfirm={() => setError(null)}
         onCancel={() => setError(null)}

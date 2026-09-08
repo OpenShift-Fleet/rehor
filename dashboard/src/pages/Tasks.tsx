@@ -1,40 +1,40 @@
-import { useEffect, useState, useCallback } from 'react';
-import type { Task } from '../types';
-import { fetchTasks, deleteTask, pauseTask, unpauseTask } from '../api';
-import { useWS } from '../hooks/useWebSocket';
-import TaskCard from '../components/TaskCard';
-import DetailPanel from '../components/DetailPanel';
-import Pagination from '../components/Pagination';
 import {
   MenuToggle,
   MenuToggleElement,
   Select,
   SelectList,
-  SelectOption
-} from '@patternfly/react-core';
-import ConfirmDialog from '../components/ConfirmDialog';
+  SelectOption,
+} from "@patternfly/react-core";
+import { useCallback, useEffect, useState } from "react";
+import { deleteTask, fetchTasks, pauseTask, unpauseTask } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog";
+import DetailPanel from "../components/DetailPanel";
+import Pagination from "../components/Pagination";
+import TaskCard from "../components/TaskCard";
+import { useWS } from "../hooks/useWebSocket";
+import type { Task } from "../types";
 
 const STATUS_OPTIONS = [
-  { value: '', label: 'All' },
-  { value: 'in_progress', label: 'In Progress' },
-  { value: 'pr_open', label: 'PR Open' },
-  { value: 'pr_changes', label: 'PR Changes' },
-  { value: 'paused', label: 'Paused' },
-  { value: 'done', label: 'Done' },
+  { value: "", label: "All" },
+  { value: "in_progress", label: "In Progress" },
+  { value: "pr_open", label: "PR Open" },
+  { value: "pr_changes", label: "PR Changes" },
+  { value: "paused", label: "Paused" },
+  { value: "done", label: "Done" },
 ];
 
 const LIMIT = 20;
 
 type DialogState =
-  | { action: 'pause'; key: string }
-  | { action: 'unpause'; key: string }
-  | { action: 'archive'; key: string }
+  | { action: "pause"; key: string }
+  | { action: "unpause"; key: string }
+  | { action: "archive"; key: string }
   | null;
 
 export default function Tasks({ instanceId }: { instanceId?: string }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [total, setTotal] = useState(0);
-  const [status, setStatus] = useState('');
+  const [status, setStatus] = useState("");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<Task | null>(null);
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -46,7 +46,7 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
   const load = useCallback(async () => {
     const res = await fetchTasks({
       status: status || undefined,
-      exclude_status: status ? undefined : 'archived',
+      exclude_status: status ? undefined : "archived",
       limit: LIMIT,
       offset,
       instance_id: instanceId,
@@ -61,7 +61,11 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
 
   useEffect(() => {
     return onEvent((event) => {
-      if (event.type === 'task_added' || event.type === 'task_updated' || event.type === 'task_archived') {
+      if (
+        event.type === "task_added" ||
+        event.type === "task_updated" ||
+        event.type === "task_archived"
+      ) {
         load();
       }
     });
@@ -74,7 +78,9 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
       try {
         const body = await res.json();
         if (body?.error) msg = body.error;
-      } catch { /* ignore non-JSON */ }
+      } catch {
+        /* ignore non-JSON */
+      }
       setError(msg);
       return false;
     }
@@ -85,13 +91,13 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
     if (!dialog) return;
     let ok = false;
     switch (dialog.action) {
-      case 'pause':
+      case "pause":
         ok = await runAction(() => pauseTask(dialog.key, inputValue?.trim() || undefined));
         break;
-      case 'unpause':
+      case "unpause":
         ok = await runAction(() => unpauseTask(dialog.key));
         break;
-      case 'archive':
+      case "archive":
         ok = await runAction(() => deleteTask(dialog.key));
         break;
     }
@@ -103,33 +109,33 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
   };
 
   const dialogProps = () => {
-    if (!dialog) return { title: '', message: '' };
+    if (!dialog) return { title: "", message: "" };
     switch (dialog.action) {
-      case 'pause':
+      case "pause":
         return {
-          title: 'Pause task',
+          title: "Pause task",
           message: `Pause ${dialog.key}? The bot will skip it until unpaused.`,
-          confirmLabel: 'Pause',
-          inputLabel: 'Reason (optional)',
-          inputPlaceholder: 'e.g. Waiting for design review',
+          confirmLabel: "Pause",
+          inputLabel: "Reason (optional)",
+          inputPlaceholder: "e.g. Waiting for design review",
         };
-      case 'unpause':
+      case "unpause":
         return {
-          title: 'Unpause task',
+          title: "Unpause task",
           message: `Unpause ${dialog.key}? The bot may pick it up again.`,
-          confirmLabel: 'Unpause',
+          confirmLabel: "Unpause",
         };
-      case 'archive':
+      case "archive":
         return {
-          title: 'Archive task',
+          title: "Archive task",
           message: `Archive ${dialog.key}? The bot will stop tracking it.`,
-          confirmLabel: 'Archive',
-          variant: 'danger' as const,
+          confirmLabel: "Archive",
+          variant: "danger" as const,
         };
     }
   };
 
-  const currentLabel = STATUS_OPTIONS.find((o) => o.value === status)?.label || 'All';
+  const currentLabel = STATUS_OPTIONS.find((o) => o.value === status)?.label || "All";
 
   return (
     <div className="split-layout">
@@ -138,17 +144,27 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
           <Select
             isOpen={isFilterOpen}
             selected={status}
-            onSelect={(_e, val) => { setStatus(val as string); setOffset(0); setIsFilterOpen(false); }}
+            onSelect={(_e, val) => {
+              setStatus(val as string);
+              setOffset(0);
+              setIsFilterOpen(false);
+            }}
             onOpenChange={setIsFilterOpen}
             toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
-              <MenuToggle ref={toggleRef} onClick={() => setIsFilterOpen(!isFilterOpen)} isExpanded={isFilterOpen}>
+              <MenuToggle
+                ref={toggleRef}
+                onClick={() => setIsFilterOpen(!isFilterOpen)}
+                isExpanded={isFilterOpen}
+              >
                 {currentLabel}
               </MenuToggle>
             )}
           >
             <SelectList>
               {STATUS_OPTIONS.map((o) => (
-                <SelectOption key={o.value} value={o.value}>{o.label}</SelectOption>
+                <SelectOption key={o.value} value={o.value}>
+                  {o.label}
+                </SelectOption>
               ))}
             </SelectList>
           </Select>
@@ -172,9 +188,9 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
             type="task"
             task={selected}
             onClose={() => setSelected(null)}
-            onDelete={(key) => setDialog({ action: 'archive', key })}
-            onPause={(key) => setDialog({ action: 'pause', key })}
-            onUnpause={(key) => setDialog({ action: 'unpause', key })}
+            onDelete={(key) => setDialog({ action: "archive", key })}
+            onPause={(key) => setDialog({ action: "pause", key })}
+            onUnpause={(key) => setDialog({ action: "unpause", key })}
           />
         </div>
       )}
@@ -187,7 +203,7 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
       <ConfirmDialog
         open={error !== null}
         title="Error"
-        message={error || ''}
+        message={error || ""}
         confirmLabel="OK"
         onConfirm={() => setError(null)}
         onCancel={() => setError(null)}
