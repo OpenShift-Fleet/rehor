@@ -1,7 +1,14 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
 
 LABEL ?= hcc-ai-framework
+BIOME_VERSION ?= 2.5.12
 CONTAINER_RT ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+
+ts-verify: ## Check TypeScript formatting and lint with Biome
+	bunx @biomejs/biome@$(BIOME_VERSION) check .
+
+ts-format: ## Format TypeScript files with Biome (local fix)
+	bunx @biomejs/biome@$(BIOME_VERSION) check --write .
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -20,8 +27,10 @@ verify: ## Run all checks (same as CI)
 	cd proxy/executor && go vet ./...
 	@echo "=== Go: tests ==="
 	cd proxy/executor && go test -race ./...
+	@echo "=== TypeScript: Biome ==="
+	$(MAKE) ts-verify
 	@echo "=== Dashboard: type check ==="
-	cd dashboard && npm run lint
+	cd dashboard && npm run typecheck
 	@echo "=== Dashboard: build ==="
 	cd dashboard && npm run build
 	@echo "=== Dashboard: tests ==="

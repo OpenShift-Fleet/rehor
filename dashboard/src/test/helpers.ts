@@ -1,16 +1,16 @@
 import type {
-  Task,
-  CycleRun,
-  TaskCycleGroup,
+  AnalyticsData,
   BotInstance,
   BotStatus,
   CycleEntry,
+  CycleRun,
   DailyAggregate,
-  AnalyticsData,
-} from '../types';
-import fixtures from './fixtures.json';
+  Task,
+  TaskCycleGroup,
+} from "../types";
+import fixtures from "./fixtures.json";
 
-const defaultTask: Task = fixtures.tasks['RHCLOUD-001'] as Task;
+const defaultTask: Task = fixtures.tasks["RHCLOUD-001"] as Task;
 const defaultCycleRun: CycleRun = fixtures.cycleRuns[0] as CycleRun;
 const defaultCycleEntry: CycleEntry = fixtures.costs[0] as CycleEntry;
 const defaultBotStatus: BotStatus = fixtures.botStatus as BotStatus;
@@ -30,8 +30,8 @@ export function makeTaskCycleGroup(overrides: Partial<TaskCycleGroup> = {}): Tas
 
 export function makeBotInstance(overrides: Partial<BotInstance> = {}): BotInstance {
   return {
-    instance_id: defaultBotStatus.instance_id ?? 'dev-bot',
-    state: 'idle',
+    instance_id: defaultBotStatus.instance_id ?? "dev-bot",
+    state: "idle",
     message: defaultBotStatus.message,
     external_key: defaultBotStatus.external_key,
     source_type: defaultBotStatus.source_type,
@@ -55,7 +55,7 @@ export function makeCycleEntry(overrides: Partial<CycleEntry> = {}): CycleEntry 
 
 export function makeDailyAggregate(overrides: Partial<DailyAggregate> = {}): DailyAggregate {
   return {
-    day: '2025-07-01',
+    day: "2025-07-01",
     cycles: 10,
     total_cost: 5.5,
     input_tokens: 10000,
