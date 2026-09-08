@@ -27,6 +27,9 @@ parameters:
   value: "false"
 - name: GITLAB_TLS_SKIP_VERIFY
   value: "false"
+- name: DASHBOARD_URL
+  description: public hostname for the memory server dashboard
+  value: ""
 objects:
 
 # ============================================================================
@@ -54,8 +57,23 @@ objects:
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
+# 4. ServiceAccount "devbot-memory-server" with oauth-redirecturi annotation
+#      (requires DASHBOARD_URL parameter matching the Route hostname)
+# 5. Secret "devbot-oauth-proxy-cookie-secret" with key session_secret
+#      (provision via Vault in app-interface namespace YAML — same path as devbot-secrets)
 #
 # ============================================================================
+
+# --- Memory Server ServiceAccount (OpenShift OAuth client) ---
+- kind: ServiceAccount
+  apiVersion: v1
+  metadata:
+    name: devbot-memory-server
+    labels:
+      app.kubernetes.io/name: memory-server
+      app.kubernetes.io/part-of: devbot
+    annotations:
+      serviceaccounts.openshift.io/oauth-redirecturi.dashboard: 'https://${DASHBOARD_URL}'
 
 # --- Memory Server Deployment ---
 - apiVersion: apps/v1
@@ -81,7 +99,40 @@ objects:
           app.kubernetes.io/name: memory-server
           app.kubernetes.io/part-of: devbot
       spec:
+        serviceAccountName: devbot-memory-server
+        volumes:
+        - name: oauth-proxy-cookie-secret
+          secret:
+            secretName: devbot-oauth-proxy-cookie-secret
         containers:
+        - name: oauth-proxy
+          image: quay.io/openshift/origin-oauth-proxy:4.9
+          ports:
+          - containerPort: 8443
+            name: dashboard
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8443
+          - -upstream=http://localhost:8080
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - '--openshift-sar={"resource": "projects", "verb": "list"}'
+          - '--openshift-delegate-urls={"/": {"verb": "list", "resource": "projects"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-memory-server
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
         - name: memory-server
           image: ${MEMORY_SERVER_IMAGE}:${MEMORY_SERVER_IMAGE_TAG}
           securityContext:
@@ -183,8 +234,12 @@ objects:
       targetPort: metrics
       protocol: TCP
       name: metrics
+    - port: 8443
+      targetPort: 8443
+      protocol: TCP
+      name: dashboard
 
-# --- Memory Server Route (dashboard + health) ---
+# --- Memory Server Route (dashboard behind oauth-proxy SSO) ---
 - apiVersion: route.openshift.io/v1
   kind: Route
   metadata:
@@ -197,7 +252,7 @@ objects:
       kind: Service
       name: devbot-memory-server
     port:
-      targetPort: http
+      targetPort: dashboard
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
@@ -461,7 +516,7 @@ objects:
           matchLabels:
             network.openshift.io/policy-group: ingress
       ports:
-      - port: 8080
+      - port: 8443
         protocol: TCP
     - from:
       - namespaceSelector:
