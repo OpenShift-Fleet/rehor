@@ -1,13 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
   "files": {
-    "includes": [
-      "dashboard/**",
-      "coordinator/**",
-      "!**/node_modules",
-      "!**/dist",
-      "!dashboard/public/**"
-    ]
+    "includes": ["dashboard/**", "!**/node_modules", "!**/dist", "!dashboard/public"]
   },
   "formatter": {
     "enabled": true,
@@ -28,7 +22,22 @@
     }
   },
   "linter": {
-    "enabled": false
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "a11y": {
+        "noStaticElementInteractions": "warn",
+        "useHtmlLang": "warn",
+        "useKeyWithClickEvents": "warn"
+      },
+      "correctness": {
+        "useExhaustiveDependencies": "warn"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "warn",
+        "useIterableCallbackReturn": "warn"
+      }
+    }
   },
   "assist": {
     "actions": {
@@ -40,12 +49,6 @@
   "overrides": [
     {
       "includes": ["dashboard/**"],
-      "javascript": {
-        "globals": []
-      }
-    },
-    {
-      "includes": ["coordinator/**"],
       "javascript": {
         "globals": []
       }

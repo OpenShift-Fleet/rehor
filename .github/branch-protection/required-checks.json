@@ -6,6 +6,13 @@
   "checks": {
     "github_actions": [
       {
+        "name": "TypeScript Lint / Biome",
+        "workflow": "typescript-lint.yml",
+        "scope": "repository-wide TypeScript formatting and linting (Biome)",
+        "required": true,
+        "note": "unfiltered on pull requests so this required check runs for every PR."
+      },
+      {
         "name": "format",
         "workflow": "ruff-format.yml",
         "scope": "python code formatting (ruff)",
@@ -127,8 +134,8 @@
     ]
   },
   "path_scoping_notes": {
-    "description": "All GitHub Actions workflows use path filters. Only the main bot and memory-server Konflux pipelines run on every PR (no path filter in CEL expression). The proxy Konflux pipeline is path-filtered to proxy/** changes.",
-    "required_in_branch_protection": "Only checks that fire on EVERY PR can be hard-required in branch protection. Currently that is the two non-path-filtered Konflux build checks. Path-filtered checks (all GitHub Actions + proxy Konflux) are trusted to pass when they fire, but not enforced as branch protection gates.",
-    "future": "If a lightweight always-running gate workflow is added (e.g. a status-aggregator that reports success/neutral for path-filtered checks that didn't fire), more checks can be promoted to required."
+    "description": "Most GitHub Actions workflows use path filters. The TypeScript Lint workflow intentionally runs on every pull request because its check is required by branch protection. The main bot and memory-server Konflux pipelines also run on every PR (no path filter in CEL expression). The proxy Konflux pipeline is path-filtered to proxy/** changes.",
+    "required_in_branch_protection": "Only checks that fire on EVERY PR can be hard-required in branch protection. That is the TypeScript Lint check plus the two non-path-filtered Konflux build checks. Other path-filtered checks are trusted to pass when they fire, but not enforced as branch protection gates.",
+    "future": "If additional lightweight always-running gate workflows are added (e.g. status aggregators that report success/neutral for path-filtered checks that did not fire), more checks can be promoted to required."
   }
 }
