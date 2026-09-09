@@ -18,7 +18,10 @@ export interface CoordinatorOptions {
   /** Aborts the attempt as interrupted, normally for SIGTERM/SIGINT. */
   shutdownSignal?: AbortSignal;
   projection?: CoordinatorProjection;
+  /** Legacy clock override; also used for elapsed time when monotonicNow is absent. */
   now?: () => number;
+  /** Monotonic clock in milliseconds for duration/timeout accounting. */
+  monotonicNow?: () => number;
 }
 
 export interface CoordinatorResult {
@@ -112,8 +115,9 @@ export async function executeRun(
 ): Promise<CoordinatorResult> {
   const run = parseRehorRun(input);
   const ledger = new EventLedger(run);
-  const now = options.now ?? Date.now;
-  const startedAt = now();
+  const wallClockNow = options.now ?? Date.now;
+  const elapsedNow = options.monotonicNow ?? options.now ?? monotonicClock;
+  const startedAt = elapsedNow();
   const abortState = new AbortState(options.signal, options.shutdownSignal);
   const timeout = setTimeout(
     () =>
@@ -128,6 +132,11 @@ export async function executeRun(
   let failure: unknown;
   let cleanupError: unknown;
   let acceptingEvents = true;
+  let stopPromise: Promise<void> | undefined;
+  const stopRuntime = (): Promise<void> => {
+    stopPromise ??= Promise.resolve().then(() => runtime.stop());
+    return stopPromise;
+  };
 
   try {
     if (abortState.signal.aborted) {
@@ -144,18 +153,25 @@ export async function executeRun(
       }
 
       if (!failure) {
+        const consumePromise = consumeEvents(
+          runtime,
+          run,
+          abortState,
+          ledger,
+          options.projection,
+          () => acceptingEvents,
+        );
         try {
           await raceWithAbort(
-            () =>
-              consumeEvents(
-                runtime,
-                run,
-                abortState,
-                ledger,
-                options.projection,
-                () => acceptingEvents,
-              ),
+            () => consumePromise,
             abortState,
+            async () => {
+              try {
+                await stopRuntime();
+              } finally {
+                await consumePromise.catch(() => undefined);
+              }
+            },
           );
         } catch (error) {
           failure = error;
@@ -179,7 +195,7 @@ export async function executeRun(
     }
 
     try {
-      await runtime.stop();
+      await stopRuntime();
     } catch (error) {
       cleanupError = error;
       if (!failure) failure = error;
@@ -195,8 +211,8 @@ export async function executeRun(
       nextSequence(ledger.events),
       terminalState(abortState.cause, failure),
       terminalReason(abortState.cause, failure),
-      Math.max(0, Math.floor(now() - startedAt)),
-      now,
+      Math.max(0, Math.floor(elapsedNow() - startedAt)),
+      wallClockNow,
     );
     ledger.ingest(terminal);
     try {
@@ -215,7 +231,7 @@ export async function executeRun(
     ...(capabilities ? { capabilities } : {}),
     events: ledger.events,
     terminal,
-    durationMs: Math.max(0, Math.floor(now() - startedAt)),
+    durationMs: Math.max(0, Math.floor(elapsedNow() - startedAt)),
     ...(surfacedError === undefined ? {} : { error: surfacedError }),
   };
 }
@@ -228,16 +244,23 @@ async function consumeEvents(
   projection: CoordinatorProjection | undefined,
   isAccepting: () => boolean,
 ): Promise<void> {
-  for await (const value of runtime.run(run, abortState.signal)) {
-    if (!isAccepting()) return;
+  const iterator = runtime.run(run, abortState.signal)[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const next = await iterator.next();
+      if (next.done) return;
+      if (abortState.signal.aborted || !isAccepting()) return;
 
-    const before = ledger.events.length;
-    const result = ledger.ingest(value);
-    if (!result.accepted) continue;
+      const before = ledger.events.length;
+      const result = ledger.ingest(next.value);
+      if (!result.accepted) continue;
 
-    const event = ledger.events[before];
-    if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
-    await projectEvent(event, run, projection);
+      const event = ledger.events[before];
+      if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
+      await projectEvent(event, run, projection);
+    }
+  } finally {
+    await iterator.return?.();
   }
 }
 
@@ -255,6 +278,7 @@ async function projectEvent(
 async function raceWithAbort<T>(
   operation: () => Promise<T> | T,
   abortState: AbortState,
+  cleanup?: () => Promise<void>,
 ): Promise<T> {
   const operationResult = Promise.resolve()
     .then(operation)
@@ -267,7 +291,10 @@ async function raceWithAbort<T>(
     abortState.abortPromise.then((cause) => ({ kind: "abort" as const, cause })),
   ]);
 
-  if (result.kind === "abort") throw new CoordinatorAbort(result.cause);
+  if (result.kind === "abort") {
+    await cleanup?.().catch(() => undefined);
+    throw new CoordinatorAbort(result.cause);
+  }
   if (result.kind === "error") throw result.error;
   return result.value;
 }
@@ -342,6 +369,12 @@ function abortMessage(cause: AbortCause): string {
     case "failed":
       return String(cause.reason ?? "run failed");
   }
+}
+
+function monotonicClock(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
 
 function describeError(error: unknown): string {

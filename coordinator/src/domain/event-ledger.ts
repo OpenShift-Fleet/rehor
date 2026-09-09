@@ -11,6 +11,8 @@ export interface EventIngestResult {
   accepted: boolean;
   duplicate: boolean;
   outOfOrder: boolean;
+  /** Arrived past the terminal sequence and was dropped rather than recorded. */
+  afterTerminal: boolean;
 }
 
 export interface MissingSequenceRange {
@@ -73,13 +75,24 @@ export class EventLedger {
       if (canonicalJson(existing) !== canonicalJson(event)) {
         throw new RuntimeContractError(`conflicting duplicate event ID: ${event.eventId}`);
       }
-      return { accepted: false, duplicate: true, outOfOrder: false };
+      return { accepted: false, duplicate: true, outOfOrder: false, afterTerminal: false };
+    }
+
+    // Exactly one terminal event per attempt. Leniency below is for trailing
+    // usage records, never for a second terminal: silently keeping either one
+    // would let a finished attempt report the wrong state to the projections.
+    if (this.acceptedTerminalEvent && event.kind === "terminal") {
+      throw new RuntimeContractError(
+        `terminal event already accepted: ${this.acceptedTerminalEvent.eventId}`,
+      );
     }
 
     // Events below the terminal sequence were already in flight when the runtime
-    // finished; dropping them would lose late usage and cost records.
+    // finished; dropping them would lose late usage and cost records. Events past
+    // it are a contract violation, but several SDKs trail a final usage record
+    // after the result message — dropping one must not fail a finished attempt.
     if (this.acceptedTerminalEvent && event.sequence > this.acceptedTerminalEvent.sequence) {
-      throw new RuntimeContractError("event received after terminal event");
+      return { accepted: false, duplicate: false, outOfOrder: false, afterTerminal: true };
     }
 
     const existingSequence = this.receivedBySequence.get(event.sequence);
@@ -99,7 +112,7 @@ export class EventLedger {
       this.acceptedTerminalEvent = event;
     }
 
-    return { accepted: true, duplicate: false, outOfOrder };
+    return { accepted: true, duplicate: false, outOfOrder, afterTerminal: false };
   }
 }
 

@@ -1,7 +1,7 @@
-import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 
 import {
   assembleInstructions,
@@ -43,8 +43,8 @@ function preflight(action: PreflightResult["action"]): PreflightResult {
 class FakeBridge implements PythonBridge {
   constructor(private readonly result: PreflightResult | null) {}
 
-  async prepareConfig(): Promise<ConfigPreparationResult> {
-    return config;
+  async prepareConfig(input: { scriptDir: string }): Promise<ConfigPreparationResult> {
+    return { ...config, claudeMdPath: join(input.scriptDir, "CLAUDE.md") };
   }
 
   async preflight(): Promise<PreflightResult | null> {
@@ -137,6 +137,31 @@ describe("cycle preparation", () => {
     expect(result.prompt).toContain("## Pre-flight Data");
     expect(result.prompt).toContain("work found");
     expect(result.preflightPayloadRef).toMatch(/^preflight:\/\/sha256\/[a-f0-9]{64}$/);
+  });
+
+  it("persists instructionHash content when strategy overrides Python config", async () => {
+    const root = await createCycleRoot();
+    const instanceDir = join(root, "instance");
+    await mkdir(instanceDir, { recursive: true });
+    await writeFile(join(instanceDir, "CLAUDE.md"), "[instance]");
+    const bridge: PythonBridge = {
+      prepareConfig: async () => ({
+        ...config,
+        claudeMdStrategy: "append",
+        remoteAgentDir: instanceDir,
+        claudeMdPath: join(root, "CLAUDE.md"),
+      }),
+      preflight: async () => preflight("start"),
+    };
+
+    const result = await prepareCycleInput(bridge, {
+      scriptDir: root,
+      label: "hcc-ai-framework",
+      strategy: "replace",
+    });
+
+    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("[core][instance]");
+    expect(result.instructionHash.value).toBe(result.instructions.hash.value);
   });
 
   it("keeps the current no-preflight triage prompt", () => {
