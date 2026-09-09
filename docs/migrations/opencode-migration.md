@@ -145,7 +145,7 @@ It does not mean the complete OpenCode stack can be compiled immediately:
 - The scriptc compiler itself requires Node 24 or newer during image build.
 - npm dependencies normally run in scriptc's embedded QuickJS dynamic tier.
 - `@opencode-ai/sdk` must pass `scriptc coverage`; static compilation is not assumed.
-- OpenCode plugins are loaded and executed by OpenCode's supported runtime and may use runtime-specific shell APIs.
+- OpenCode plugins are loaded and executed by OpenCode's Bun runtime and use Bun's `$` shell API.
 - Compiling a plugin as a separate binary does not make it an OpenCode plugin.
 - `--dynamic` removes the Node runtime dependency but embeds a JavaScript engine.
 - Native networking and HTTP are supported, but SDK behavior, streaming, TLS,
