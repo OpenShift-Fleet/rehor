@@ -77,6 +77,23 @@ The coordinator does not write a new event store and does not change the
 Python Claude/Vertex path. A runtime adapter and compatibility projections can
 be selected by the future TypeScript runner without changing this boundary.
 
+## Runtime selection
+
+`RuntimeFactoryRegistry` resolves a `RuntimeSelection.runtimeId` to an
+`AgentRuntimeFactory`. Runtime selection is intentionally separate from
+`RehorRun.provider`: one runtime can support multiple providers, and provider
+selection can change without changing lifecycle orchestration.
+
+Factories receive only a normalized `RehorRun` and return an `AgentRuntime`.
+Provider SDK clients, server processes, and sessions remain private to the
+adapter. `executeSelectedRun()` feeds the selected adapter into the existing
+`executeRun()` lifecycle, preserving event validation, projection, timeout,
+and cleanup behavior.
+
+The coordinator package does not register a production Claude or OpenCode
+adapter yet. The registry is the seam those adapters will use during canary
+migration; the Python runner remains the active production entry point.
+
 ## Cycle input preparation
 
 `prepareCycleInput()` prepares one cycle without starting an agent runtime. It
@@ -165,6 +182,7 @@ cost data when an adapter emits partial usage events.
 - `src/cycle-input.ts` — config, instruction, and preflight preparation facade
 - `src/scheduler.ts` — preflight decisions, backoff, sleep signals, and abortable delay
 - `src/idle.ts` — transport-neutral idle threshold/cooldown state
+- `src/runtime-factory.ts` — runtime registry and provider-independent selection
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
 - `test/contract/` — lifecycle, schema, and compatibility tests
