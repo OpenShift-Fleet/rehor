@@ -4,6 +4,7 @@ export * from "./cycle-input";
 export * from "./domain";
 export * from "./idle";
 export * from "./instructions";
+export * from "./loop";
 export * from "./ports";
 export * from "./projections/compatibility";
 export * from "./runtime-factory";
