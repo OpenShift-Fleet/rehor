@@ -77,6 +77,42 @@ The coordinator does not write a new event store and does not change the
 Python Claude/Vertex path. A runtime adapter and compatibility projections can
 be selected by the future TypeScript runner without changing this boundary.
 
+## Cycle input preparation
+
+`prepareCycleInput()` prepares one cycle without starting an agent runtime. It
+asks the Python bridge to sync and merge the existing config, assembles the
+instruction layers deterministically, and runs the existing Python preflight
+protocol:
+
+```text
+Python config bridge → workflow/instance config + config sync
+                         │
+                         ▼
+                 CLAUDE.md assembly
+                         │
+                         ▼
+                 Python preflight
+                  ├─ start → prompt + audit reference
+                  ├─ skip  → no runtime prompt
+                  └─ error → no runtime prompt
+```
+
+`PythonCoordinatorBridge` communicates through one JSON request/response over a
+child process. It reuses `bot.preflight.run_preflight()` and the config
+preparation functions from `bot.run`, so migration does not fork preflight
+classification or config merge behavior. Python logs remain on stderr; stdout
+is reserved for the versioned bridge response.
+
+Instruction layers match the current runner: core, optional shared, workflow,
+and optional instance instructions. `replace`, `append`, and `ignore` strategies
+retain their existing meanings. The assembled content receives a SHA-256
+`instructionHash`; semantic config inputs receive a separate `configHash`.
+
+Preflight `skip` and `error` actions remain coordinator-owned no-session
+paths. Existing aggregation is preserved: a mixed error/start result is still
+`start`, while an all-error result is `error`. Only a `start` result, or the
+no-preflight pass-through case, produces an agent prompt.
+
 ## Compatibility with the Python Runner
 
 | Current Python behavior | Coordinator representation |
@@ -101,7 +137,10 @@ cost data when an adapter emits partial usage events.
 - `src/index.ts` — public contract entry point and build target
 - `src/coordinator.ts` — one-attempt lifecycle and cancellation orchestration
 - `src/domain/` — run, event, event factory, terminal, usage, and validation contracts
-- `src/ports/` — stable runtime and compatibility projection interfaces
+- `src/bridges/` — process adapters for legacy Python preparation
+- `src/ports/` — stable runtime, preflight, and compatibility interfaces
+- `src/instructions.ts` — deterministic instruction-layer and prompt assembly
+- `src/cycle-input.ts` — config, instruction, and preflight preparation facade
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
 - `test/contract/` — lifecycle, schema, and compatibility tests
