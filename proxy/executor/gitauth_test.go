@@ -3,9 +3,12 @@ package executor
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -573,4 +576,113 @@ func TestGitAuthProxy_GitLabTLSVerificationRemainsStrictWhenDisabled(t *testing.
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", w.Code)
 	}
+}
+
+func TestGitAuthProxy_GitLabTLSVerificationSucceedsWithCustomCA(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	certDER := upstream.TLS.Certificates[0].Certificate[0]
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	registry := map[string]*GitHost{
+		"gitlab.cee.redhat.com": {
+			Scheme:       upstreamURL.Scheme,
+			Host:         upstreamURL.Host,
+			AuthType:     AuthTypeBasic,
+			Token:        func() string { return "token" },
+			Username:     func() string { return "user" },
+			TLSCACertPEM: strings.TrimSpace(string(certPEM)),
+		},
+	}
+
+	handler := newGitAuthProxyWithRegistry(registry)
+	req := httptest.NewRequest("GET", "/gitlab.cee.redhat.com/team/project.git/info/refs", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestLoadSystemCertPoolWithCustomCA_InvalidInputs(t *testing.T) {
+	t.Run("invalid file path", func(t *testing.T) {
+		_, err := loadSystemCertPoolWithCustomCA("/nonexistent/ca.pem", "")
+		if err == nil {
+			t.Fatal("expected error for invalid file path")
+		}
+	})
+
+	t.Run("invalid pem string", func(t *testing.T) {
+		_, err := loadSystemCertPoolWithCustomCA("", "not-a-pem")
+		if err == nil {
+			t.Fatal("expected error for invalid pem")
+		}
+	})
+}
+
+func TestValidateGitAuthConfig_InvalidCAConfig(t *testing.T) {
+	t.Setenv("GH_TOKEN", "gh-token")
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GL_USERNAME", "")
+
+	t.Run("invalid ca file path", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_FILE", "/nonexistent/ca.pem")
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_FILE") {
+			t.Fatalf("expected GITLAB_CA_CERT_FILE error, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca file content", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "invalid-ca.pem")
+		if err := os.WriteFile(path, []byte("not-a-valid-pem-certificate"), 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		t.Setenv("GITLAB_CA_CERT_FILE", path)
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_FILE does not contain valid PEM certificates") {
+			t.Fatalf("expected invalid PEM error, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca pem", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_FILE", "")
+		t.Setenv("GITLAB_CA_CERT_PEM", "not-a-pem")
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_PEM") {
+			t.Fatalf("expected GITLAB_CA_CERT_PEM error, got %v", err)
+		}
+	})
+
+	t.Run("valid ca file", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+		certDER := upstream.TLS.Certificates[0].Certificate[0]
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "ca.pem")
+		if err := os.WriteFile(path, certPEM, 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		t.Setenv("GITLAB_CA_CERT_FILE", path)
+
+		err := ValidateGitAuthConfig()
+		if err != nil {
+			t.Fatalf("expected valid config, got %v", err)
+		}
+	})
 }
