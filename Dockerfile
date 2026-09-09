@@ -46,10 +46,22 @@ RUN dnf install -y --nodocs --allowerasing \
     libXrandr \
     && dnf clean all
 
-# Node.js 22 (official binary tarball)
+# Node.js (official binary tarball, checksum-verified).
+#
+# NODE_VERSION is the single pin for this image: presets/envs/node/install.sh
+# reads the same variable and skips when this version is already present, so
+# the preset can no longer replace this install with a floating one.
+ARG NODE_VERSION="22.23.2"
+ENV NODE_VERSION="${NODE_VERSION}"
 RUN ARCH=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-${ARCH}.tar.gz" \
-    | tar -xz -C /usr/local --strip-components=1
+    && TARBALL="node-v${NODE_VERSION}-linux-${ARCH}.tar.gz" \
+    && cd /tmp \
+    && curl -fsSL -O "https://nodejs.org/dist/v${NODE_VERSION}/${TARBALL}" \
+    && curl -fsSL -O "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep " ${TARBALL}\$" SHASUMS256.txt | sha256sum -c - \
+    && tar -xzf "${TARBALL}" -C /usr/local --strip-components=1 \
+    && rm -f "${TARBALL}" SHASUMS256.txt \
+    && [ "$(node --version)" = "v${NODE_VERSION}" ]
 
 
 # Headless Chromium via Playwright (avoids EPEL/CentOS RPMs)
