@@ -47,6 +47,7 @@ objects:
 #      gh-bot-gpg-private    — GPG private key (base64)
 #      gh-bot-cli-token      — GitHub personal access token
 #      gl-bot-cli-token      — GitLab personal access token
+#      gitlab-ca-cert-b64    — (optional) base64 PEM bundle for internal GitLab CAs
 #      gcp-vertex-claude-sa  — Google service account key (base64)
 #      jira-email            — Jira username/email (unless JIRA_SECRET_NAME overrides)
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
@@ -381,6 +382,12 @@ objects:
             value: ${GIT_AUTH_ENABLED}
           - name: GITLAB_TLS_SKIP_VERIFY
             value: ${GITLAB_TLS_SKIP_VERIFY}
+          - name: GITLAB_CA_CERT_B64
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: gitlab-ca-cert-b64
+                optional: true
           # HTTP /metrics avoids Squid logging TCP kubelet probes as
           # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
