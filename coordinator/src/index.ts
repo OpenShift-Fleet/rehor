@@ -5,4 +5,5 @@ export * from "./domain";
 export * from "./idle";
 export * from "./instructions";
 export * from "./ports";
+export * from "./runtime-factory";
 export * from "./scheduler";
