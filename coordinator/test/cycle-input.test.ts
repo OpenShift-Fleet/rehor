@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,6 +13,8 @@ import {
   PythonCoordinatorBridge,
   prepareCycleInput,
 } from "../src";
+
+const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
 
 const config: ConfigPreparationResult = {
   model: "test-model",
@@ -181,7 +184,7 @@ describe("Python preflight bridge", () => {
       'import json; print(json.dumps({"status": "start", "content": "bridge work"}))\n',
     );
 
-    const bridge = new PythonCoordinatorBridge({ cwd: "/Users/psimon/dev/wt/rehor.rehor-139" });
+    const bridge = new PythonCoordinatorBridge({ cwd: repositoryRoot });
     const result = await bridge.preflight({ scriptDir: root, workflow: "test-workflow" });
 
     expect(result?.action).toBe("start");
