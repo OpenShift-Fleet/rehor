@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -39,6 +40,8 @@ type GitHost struct {
 	Token                 func() string
 	Username              func() string
 	TLSInsecureSkipVerify bool
+	TLSCACertFile         string
+	TLSCACertPEM          string
 }
 
 func defaultHostRegistry() map[string]*GitHost {
@@ -57,6 +60,8 @@ func defaultHostRegistry() map[string]*GitHost {
 			Token:                 func() string { return os.Getenv("GITLAB_TOKEN") },
 			Username:              func() string { return os.Getenv("GL_USERNAME") },
 			TLSInsecureSkipVerify: getEnvAsBool("GITLAB_TLS_SKIP_VERIFY", false),
+			TLSCACertFile:         strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_FILE")),
+			TLSCACertPEM:          strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_PEM")),
 		},
 	}
 }
@@ -191,6 +196,8 @@ func ValidateGitAuthConfig() error {
 	ghToken := os.Getenv("GH_TOKEN")
 	glToken := os.Getenv("GITLAB_TOKEN")
 	glUsername := os.Getenv("GL_USERNAME")
+	glCAFile := strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_FILE"))
+	glCAPEM := strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_PEM"))
 
 	if glToken != "" && glUsername == "" {
 		return fmt.Errorf("GL_USERNAME is required when GITLAB_TOKEN is set")
@@ -205,6 +212,24 @@ func ValidateGitAuthConfig() error {
 
 	if !hasGitHub && !hasGitLab {
 		return fmt.Errorf("at least one git host must be configured: set GH_TOKEN or (GITLAB_TOKEN and GL_USERNAME)")
+	}
+
+	if glCAFile != "" {
+		pemBytes, err := os.ReadFile(glCAFile)
+		if err != nil {
+			return fmt.Errorf("GITLAB_CA_CERT_FILE is not readable: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return fmt.Errorf("GITLAB_CA_CERT_FILE does not contain valid PEM certificates")
+		}
+	}
+
+	if glCAPEM != "" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(glCAPEM)) {
+			return fmt.Errorf("GITLAB_CA_CERT_PEM does not contain valid PEM certificates")
+		}
 	}
 
 	return nil
@@ -263,8 +288,41 @@ func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
 	}
 
 	tlsConfig.InsecureSkipVerify = matchedHost.TLSInsecureSkipVerify
+	if matchedHost.TLSCACertFile != "" || matchedHost.TLSCACertPEM != "" {
+		pool, err := loadSystemCertPoolWithCustomCA(matchedHost.TLSCACertFile, matchedHost.TLSCACertPEM)
+		if err != nil {
+			log.Printf("gitauth: warning: failed loading custom GitLab CA bundle: %v", err)
+			return &tlsConfig
+		}
+		tlsConfig.RootCAs = pool
+	}
 
 	return &tlsConfig
+}
+
+func loadSystemCertPoolWithCustomCA(caFile string, caPEM string) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+
+	if strings.TrimSpace(caFile) != "" {
+		pemBytes, readErr := os.ReadFile(caFile)
+		if readErr != nil {
+			return nil, fmt.Errorf("read ca file: %w", readErr)
+		}
+		if ok := pool.AppendCertsFromPEM(pemBytes); !ok {
+			return nil, fmt.Errorf("ca file does not contain valid PEM certificates")
+		}
+	}
+
+	if strings.TrimSpace(caPEM) != "" {
+		if ok := pool.AppendCertsFromPEM([]byte(caPEM)); !ok {
+			return nil, fmt.Errorf("ca pem does not contain valid PEM certificates")
+		}
+	}
+
+	return pool, nil
 }
 
 func getEnvAsBool(envVar string, defaultValue bool) bool {

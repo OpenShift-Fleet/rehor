@@ -302,6 +302,12 @@ func main() {
 	// Keep Git auth opt-in until deployment exposes 8447 and moves GlitchTip off it.
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_AUTH_ENABLED")), "true") &&
 		(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "") {
+		if err := executor.ValidateGitAuthConfig(); err != nil {
+			log.Fatalf("git auth config: %v", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("GITLAB_TLS_SKIP_VERIFY")), "true") {
+			log.Printf("WARNING: GITLAB_TLS_SKIP_VERIFY=true disables TLS certificate verification for gitlab.cee.redhat.com")
+		}
 		handler := executor.InstrumentHTTPHandler("gitauth", executor.NewGitAuthProxy())
 		gitAuthSrv = &http.Server{Addr: *gitAuthListen, Handler: handler}
 		go func() {

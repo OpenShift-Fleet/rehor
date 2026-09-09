@@ -71,6 +71,7 @@ def setup_git(script_dir: Path) -> None:
     gl_name = os.environ.get("GL_USER_NAME")
     gl_email = os.environ.get("GL_USER_EMAIL")
     git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")
+    gl_ca_cert_file = os.environ.get("GITLAB_CA_CERT_FILE", "").strip()
 
     if not gh_name and not gl_name:
         return
@@ -120,6 +121,15 @@ def setup_git(script_dir: Path) -> None:
                 "\thelper = !/usr/local/bin/gh auth git-credential",
                 '[credential "https://gitlab.cee.redhat.com"]',
                 "\thelper = !/usr/local/bin/glab credential-helper",
+            ]
+        )
+
+    if gl_ca_cert_file:
+        lines.extend(
+            [
+                '[http "https://gitlab.cee.redhat.com/"]',
+                f"\tsslCAInfo = {gl_ca_cert_file}",
+                "\tsslVerify = true",
             ]
         )
 
