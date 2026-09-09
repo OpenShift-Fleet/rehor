@@ -75,6 +75,12 @@ export async function prepareCycleInput(
       : null;
   const configHash = sha256Hash(
     JSON.stringify({
+      model: config.model,
+      maxTurns: config.maxTurns,
+      intervalSeconds: config.intervalSeconds,
+      idleIntervalSeconds: config.idleIntervalSeconds,
+      cycleTimeoutSeconds: config.cycleTimeoutSeconds,
+      idleReminderCooldownSeconds: config.idleReminderCooldownSeconds,
       workflow: config.workflow,
       source: config.source,
       envs: config.envs,

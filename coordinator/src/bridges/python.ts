@@ -144,6 +144,18 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
   }
   const envs = object.envs === null ? null : stringArray(object.envs, "config.envs");
   return {
+    model: stringValue(object.model, "config.model"),
+    maxTurns: positiveInteger(object.maxTurns, "config.maxTurns"),
+    intervalSeconds: nonNegativeNumber(object.intervalSeconds, "config.intervalSeconds"),
+    idleIntervalSeconds: nonNegativeNumber(
+      object.idleIntervalSeconds,
+      "config.idleIntervalSeconds",
+    ),
+    cycleTimeoutSeconds: positiveNumber(object.cycleTimeoutSeconds, "config.cycleTimeoutSeconds"),
+    idleReminderCooldownSeconds: nonNegativeNumber(
+      object.idleReminderCooldownSeconds,
+      "config.idleReminderCooldownSeconds",
+    ),
     workflow: stringValue(object.workflow, "config.workflow"),
     source: stringValue(object.source, "config.source"),
     envs,
@@ -184,11 +196,32 @@ function nullableString(value: unknown, path: string): string | null {
   return stringValue(value, path);
 }
 
+function positiveInteger(value: unknown, path: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new PythonBridgeError(`${path} must be a positive safe integer`);
+  }
+  return value as number;
+}
+
 function nonNegativeInteger(value: unknown, path: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) {
     throw new PythonBridgeError(`${path} must be a non-negative safe integer`);
   }
   return value as number;
+}
+
+function positiveNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new PythonBridgeError(`${path} must be a positive finite number`);
+  }
+  return value;
+}
+
+function nonNegativeNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new PythonBridgeError(`${path} must be a non-negative finite number`);
+  }
+  return value;
 }
 
 function abortError(reason: unknown): Error {

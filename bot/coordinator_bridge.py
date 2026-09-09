@@ -79,7 +79,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     """
 
     from . import run as runner
-    from .config import load_instance_config, resolve_active_envs, resolve_workflow_dir
+    from .config import load_config, load_instance_config, resolve_active_envs, resolve_workflow_dir
     from .merge import apply_merged_config, install_skills
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
@@ -89,6 +89,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         )
 
     label = _required_string(request, "label")
+    runtime_config = load_config(script_dir)
     profile_dir, shared_dir = runner.sync_config_repo(label)
 
     if shared_dir:
@@ -103,6 +104,12 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
 
     return {
+        "model": runtime_config.model,
+        "maxTurns": runtime_config.max_turns,
+        "intervalSeconds": runtime_config.interval,
+        "idleIntervalSeconds": runtime_config.idle_interval,
+        "cycleTimeoutSeconds": runtime_config.cycle_timeout,
+        "idleReminderCooldownSeconds": runtime_config.idle_reminder_cooldown_seconds,
         "workflow": instance_config.workflow,
         "source": instance_config.source,
         "envs": instance_config.envs,
