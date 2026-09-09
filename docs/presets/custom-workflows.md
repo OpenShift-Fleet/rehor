@@ -236,6 +236,8 @@ The merge system (`bot/merge.py` → `apply_merged_config()`) combines persona f
 
 ## Complete Example: Review-Only Workflow
 
+> **Tip:** Use the `scaffold-custom-workflow` shared skill to generate this boilerplate automatically. The example below shows what the generated files look like.
+
 Let's build a workflow that only reviews PRs — no new Jira work, no ticket claiming.
 
 ### 1. Create the directory
