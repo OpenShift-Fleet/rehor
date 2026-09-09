@@ -133,6 +133,12 @@ jobs:
             node --version
           '
 
+      - name: Scan bot image with grype (advisory)
+        uses: ./.github/actions/grype-scan
+        with:
+          image: bot:verify
+          name: bot
+
       - name: Verify Node matches the pinned version
         # REHOR-149: the image installs Node from the pinned tarball in
         # Dockerfile, and presets/envs/node/install.sh used to overwrite it with
@@ -152,12 +158,6 @@ jobs:
             echo "::error::image ships ${actual} but NODE_VERSION pins v${pinned}"
             exit 1
           fi
-
-      - name: Scan bot image with grype (advisory)
-        uses: ./.github/actions/grype-scan
-        with:
-          image: bot:verify
-          name: bot
 
   verify-proxy:
     runs-on: ubuntu-latest
