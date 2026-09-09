@@ -1,0 +1,85 @@
+name: grype-scan
+description: >
+  Advisory vulnerability scan of a locally built container image (REHOR-149).
+  Konflux runs clair-scan, which matches by ecosystem and therefore reports
+  nothing for binaries installed outside a package manager — Node lands in the
+  SBOM as pkg:generic and statically linked binaries do not appear at all.
+  grype adds CPE/NVD matching and closes that gap. Advisory only: this action
+  never fails the job. Gating is a follow-up once the baseline is triaged.
+
+inputs:
+  image:
+    description: Locally built image reference to scan, e.g. bot:verify
+    required: true
+  name:
+    description: Short name used in the job summary heading
+    required: true
+  grype-version:
+    description: grype release tag, kept in step with the version installed in Dockerfile
+    required: false
+    default: v0.118.0
+
+runs:
+  using: composite
+  steps:
+    - name: Run grype
+      shell: bash
+      run: |
+        # GitHub invokes Bash with -e; this scan is intentionally advisory.
+        set -uo pipefail
+        set +e
+        report="grype-${{ inputs.name }}.json"
+
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          "anchore/grype:${{ inputs.grype-version }}" \
+          "docker:${{ inputs.image }}" -o json > "$report" 2>grype-err.txt
+        status=$?
+
+        echo "### grype: ${{ inputs.name }} (\`${{ inputs.image }}\`)" >> "$GITHUB_STEP_SUMMARY"
+        echo >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$status" -ne 0 ] || ! jq -e . "$report" >/dev/null 2>&1; then
+          {
+            echo "Scan did not complete (exit ${status}). Advisory step — not failing the job."
+            echo
+            echo '```'
+            tail -20 grype-err.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        total=$(jq '.matches | length' "$report")
+        {
+          echo "Total findings: **${total}**"
+          echo
+          echo "| Severity | Count |"
+          echo "| --- | --- |"
+          jq -r '
+            {Critical:0, High:1, Medium:2, Low:3, Negligible:4, Unknown:5} as $rank
+            | (.matches // [])
+            | group_by(.vulnerability.severity)
+            | map({sev: .[0].vulnerability.severity, n: length})
+            | sort_by($rank[.sev] // 99)[]
+            | "| \(.sev) | \(.n) |"
+          ' "$report"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        {
+          echo
+          echo "<details><summary>Critical and High findings</summary>"
+          echo
+          echo '```'
+          jq -r '
+            (.matches // [])
+            | map(select(.vulnerability.severity == "Critical" or .vulnerability.severity == "High"))
+            | sort_by(.artifact.name)[]
+            | "\(.vulnerability.severity)\t\(.artifact.name)@\(.artifact.version)\t\(.vulnerability.id)\tfixed-in: \(.vulnerability.fix.versions // [] | join(", ") | if . == "" then "none" else . end)"
+          ' "$report" | head -100
+          echo '```'
+          echo
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        exit 0
