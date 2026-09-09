@@ -94,7 +94,8 @@ Current status: **scaffolding only**. Production continues through
 - event validation, ordering, deduplication, attribution, terminal-state, and
   usage contracts;
 - a fake runtime and contract fixtures for adapter development;
-- Bun test, typecheck, build, audit, pre-push, and CI coverage.
+- Node 22/npm tests, typecheck, a Vite Node bundle with TypeScript
+  declaration emit, audit, pre-push, and CI coverage.
 
 The coordinator owns the complete command for one model attempt: label,
 workflow, assembled prompt, optional task identity, workspace snapshot,
@@ -458,7 +459,7 @@ This keeps the deployment simple — one memory server serves all bot instances,
 
 Both images use Red Hat UBI9 base images:
 
-- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 22 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. All secrets live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README). The coordinator is not copied into or launched by the production image yet; a later runtime-adapter slice will add its supported Bun/OpenCode runtime.
+- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 22 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. All secrets live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README). The coordinator is not copied into or launched by the production image yet; a later runtime-adapter slice will add its supported Node/OpenCode runtime.
 
 - **Memory server** (`memory-server/Dockerfile`) — multi-stage build. Stage 1: `ubi9/nodejs-22` builds the React dashboard. Stage 2: `ubi9/python-312-minimal` runs the FastMCP app with dashboard assets baked in.
 

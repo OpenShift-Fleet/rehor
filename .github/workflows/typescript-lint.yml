@@ -11,6 +11,7 @@ on:
       - master
     paths:
       - "dashboard/**"
+      - "coordinator/**"
       - "biome.json"
       - "Makefile"
       - ".pre-commit-config.yaml"
@@ -28,8 +29,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
 
       - name: Check TypeScript formatting and lint
-        run: bunx @biomejs/biome@2.5.12 check .
+        run: npx --yes @biomejs/biome@2.5.12 check .

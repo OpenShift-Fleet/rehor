@@ -1,4 +1,4 @@
-import Ajv2020, { type ValidateFunction } from "ajv/dist/2020";
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
 import eventSchema from "../../schema/rehor-event.v1.json" with { type: "json" };

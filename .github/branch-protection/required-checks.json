@@ -43,7 +43,7 @@
       {
         "name": "coordinator",
         "workflow": "coordinator-tests.yml",
-        "scope": "coordinator Bun tests, TypeScript check, and production build",
+        "scope": "coordinator Vitest tests, TypeScript check, and Node 22 production build (Vite bundle plus type declarations)",
         "required": false,
         "note": "path-filtered to coordinator/**"
       },
@@ -71,9 +71,9 @@
       {
         "name": "coordinator-audit",
         "workflow": "dependency-audit.yml",
-        "scope": "coordinator dependency vulnerability scan (bun audit)",
+        "scope": "coordinator dependency vulnerability scan (npm audit)",
         "required": false,
-        "note": "path-filtered to coordinator/package.json and coordinator/bun.lock, plus the weekly schedule."
+        "note": "path-filtered to coordinator/package.json and coordinator/package-lock.json, plus the weekly schedule."
       },
       {
         "name": "security",

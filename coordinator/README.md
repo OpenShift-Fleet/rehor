@@ -91,16 +91,19 @@ cost data when an adapter emits partial usage events.
 
 ## Development
 
-Requires Bun 1.3.14.
+Requires Node.js 22 and npm.
 
 ```bash
 cd coordinator
-bun install --frozen-lockfile
-bun test
-bun run typecheck
-bun run build
-bun audit --audit-level high
+npm ci
+npm test
+npm run typecheck
+npm run build
+npm audit --audit-level high
 ```
+
+`npm run build` emits an ESM Node bundle at `dist/index.js` with `ajv` and
+`ajv-formats` left external, then writes type declarations to `dist/index.d.ts`.
 
 From repository root, `make coordinator-verify` runs install, tests, typecheck,
 and build. Coordinator changes run the same checks in pre-push and GitHub CI.

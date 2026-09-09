@@ -145,7 +145,7 @@ It does not mean the complete OpenCode stack can be compiled immediately:
 - The scriptc compiler itself requires Node 24 or newer during image build.
 - npm dependencies normally run in scriptc's embedded QuickJS dynamic tier.
 - `@opencode-ai/sdk` must pass `scriptc coverage`; static compilation is not assumed.
-- OpenCode plugins are loaded and executed by OpenCode's Bun runtime and use Bun's `$` shell API.
+- OpenCode plugins are loaded and executed by OpenCode's supported runtime and may use runtime-specific shell APIs.
 - Compiling a plugin as a separate binary does not make it an OpenCode plugin.
 - `--dynamic` removes the Node runtime dependency but embeds a JavaScript engine.
 - Native networking and HTTP are supported, but SDK behavior, streaming, TLS,
@@ -362,7 +362,8 @@ rollout without changing central routing for existing Claude-based instances.
 - Define versioned `RehorRun` and `RehorEvent` schemas.
 - Validate the same schemas at runtime and in fixture tests.
 - Enforce event identity, sequence, attribution, terminal, and usage invariants.
-- Protect the package with Bun tests, typecheck, build, audit, and CI.
+- Protect the package with Node 22/Vitest tests, typecheck, a Vite Node bundle
+  with declaration emit, npm audit, and CI.
 - Keep production on `bot/run.py` and `bot/agent.py` until an adapter and
   coordinator loop pass parity tests.
 

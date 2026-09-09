@@ -33,8 +33,7 @@ Before setting up the bot, make sure you have the following installed:
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Agent runtime (bundled with the SDK) | `npm install -g @anthropic-ai/claude-code` |
 | [uv](https://docs.astral.sh/uv/) | Python package manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [Podman](https://podman.io/) or Docker | Memory server, target repo dev environments | `brew install podman` or install Docker |
-| [Node.js](https://nodejs.org/) + npm | TypeScript LSP server | `brew install node` or via nvm |
-| [Bun](https://bun.sh/) 1.3.14 | Coordinator development and verification | See [Bun installation](https://bun.sh/docs/installation) |
+| [Node.js](https://nodejs.org/) 22 + npm | TypeScript LSP, coordinator, and dashboard development and verification | `brew install node` or via nvm |
 | [jq](https://jqlang.github.io/jq/) | JSON processing | `brew install jq` |
 | [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` |
 | [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login --hostname gitlab.cee.redhat.com` |
