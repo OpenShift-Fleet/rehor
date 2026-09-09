@@ -505,6 +505,19 @@ def main() -> None:
                     )
                     push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
+                    if instance_config.source == "run_and_exit":
+                        if consecutive_preflight_errors >= 3:
+                            logger.error(
+                                "Scheduled source — giving up after %d preflight errors", consecutive_preflight_errors
+                            )
+                            cleanup_between_cycles(SCRIPT_DIR)
+                            sys.exit(1)
+                        logger.info(
+                            "Scheduled source — retrying in %ds (%d/3)", error_sleep, consecutive_preflight_errors
+                        )
+                        time.sleep(error_sleep)
+                        cleanup_between_cycles(SCRIPT_DIR)
+                        continue
                     _write_sleep_signal(error_sleep, "preflight_error")
                     _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
@@ -528,6 +541,10 @@ def main() -> None:
                         idle_cycle_limit=instance_config.idle_cycle_limit,
                         cooldown_seconds=config.idle_reminder_cooldown_seconds,
                     )
+                    if instance_config.source == "run_and_exit":
+                        logger.info("Scheduled source — exiting after preflight skip")
+                        cleanup_between_cycles(SCRIPT_DIR)
+                        break
                     _write_sleep_signal(config.idle_interval, "preflight_skip")
                     _read_sleep_signal(config)
                     cleanup_between_cycles(SCRIPT_DIR)
@@ -584,6 +601,11 @@ def main() -> None:
                 )
             else:
                 logger.warning("Cycle produced no result")
+
+            if instance_config.source == "run_and_exit":
+                logger.info("Scheduled source — exiting after cycle")
+                cleanup_between_cycles(SCRIPT_DIR)
+                break
 
             _read_sleep_signal(config)
 
