@@ -159,6 +159,20 @@ stay transport-neutral: a future memory-server adapter persists the state and
 a future reminder adapter sends the notification only after
 `shouldSendReminder` is true.
 
+## Signal, admission, and shutdown loop
+
+`runCoordinatorLoop()` owns the outer cycle boundary. It acquires an admission
+lease before preparation, never invokes `run()` for preflight `skip`/`error`,
+releases the lease in `finally`, and waits through the scheduler between
+cycles. `createLoopSignals()` combines normal cancellation with shutdown, while
+`installProcessSignalHandlers()` keeps SIGINT/SIGTERM registration outside the
+loop for testability.
+
+Admission remains a port because deployment can keep using the Python file lock
+during migration. A denied admission exits without config sync, preflight, or
+runtime startup. Shutdown/cancellation interrupts preparation, runtime, and
+sleep through one `AbortSignal`.
+
 ## Compatibility with the Python Runner
 
 | Current Python behavior | Coordinator representation |
@@ -189,6 +203,7 @@ cost data when an adapter emits partial usage events.
 - `src/cycle-input.ts` — config, instruction, and preflight preparation facade
 - `src/scheduler.ts` — preflight decisions, backoff, sleep signals, and abortable delay
 - `src/idle.ts` — transport-neutral idle threshold/cooldown state
+- `src/loop.ts` — admission, signal, shutdown, and cycle-loop orchestration
 - `src/runtime-factory.ts` — runtime registry and provider-independent selection
 - `src/projections/` — legacy compatibility mappings for cycle outputs
 - `src/testing/` — deterministic fake runtime for contract tests
