@@ -46,9 +46,9 @@ func defaultHostRegistry() map[string]*GitHost {
 		"github.com": {
 			Scheme:   "https",
 			Host:     "github.com",
-			AuthType: AuthTypeBearer,
+			AuthType: AuthTypeBasic,
 			Token:    func() string { return os.Getenv("GH_TOKEN") },
-			Username: nil,
+			Username: func() string { return os.Getenv("GH_USERNAME") },
 		},
 		"gitlab.cee.redhat.com": {
 			Scheme:                "https",

@@ -26,9 +26,9 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 		"github.com": {
 			Scheme:   upstreamURL.Scheme,
 			Host:     upstreamURL.Host,
-			AuthType: "bearer",
+			AuthType: "basic",
 			Token:    func() string { return "test-gh-token-123" },
-			Username: nil,
+			Username: func() string { return "github-bot" },
 		},
 	}
 
@@ -41,7 +41,7 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	wantAuth := "Bearer test-gh-token-123"
+	wantAuth := "Basic Z2l0aHViLWJvdDp0ZXN0LWdoLXRva2VuLTEyMw=="
 	if gotAuth != wantAuth {
 		t.Errorf("Authorization = %q, want %q", gotAuth, wantAuth)
 	}
@@ -50,6 +50,22 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 	}
 	if gotQuery != "service=git-upload-pack" {
 		t.Errorf("Query = %q, want service=git-upload-pack", gotQuery)
+	}
+}
+
+func TestDefaultHostRegistry_GitHubUsesBasicAuth(t *testing.T) {
+	t.Setenv("GH_USERNAME", "github-bot")
+	t.Setenv("GH_TOKEN", "token")
+
+	host := defaultHostRegistry()["github.com"]
+	if host.AuthType != AuthTypeBasic {
+		t.Fatalf("AuthType = %q, want %q", host.AuthType, AuthTypeBasic)
+	}
+	if got := host.Username(); got != "github-bot" {
+		t.Errorf("Username() = %q, want github-bot", got)
+	}
+	if got := host.Token(); got != "token" {
+		t.Errorf("Token() = %q, want token", got)
 	}
 }
 
@@ -447,8 +463,9 @@ func TestPerHostTransportManager_TLSConfig(t *testing.T) {
 				"github.com": {
 					Scheme:                "https",
 					Host:                  "github.com",
-					AuthType:              AuthTypeBearer,
+					AuthType:              AuthTypeBasic,
 					Token:                 func() string { return "token" },
+					Username:              func() string { return "github-bot" },
 					TLSInsecureSkipVerify: false,
 				},
 			},
@@ -484,8 +501,9 @@ func TestPerHostTransportManager_CachesTransports(t *testing.T) {
 		"github.com": {
 			Scheme:   "https",
 			Host:     "github.com",
-			AuthType: AuthTypeBearer,
+			AuthType: AuthTypeBasic,
 			Token:    func() string { return "token" },
+			Username: func() string { return "github-bot" },
 		},
 	}
 
