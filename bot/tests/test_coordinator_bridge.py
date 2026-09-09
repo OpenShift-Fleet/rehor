@@ -74,6 +74,11 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "test-model", "maxTurns": 10}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
+        '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
+    )
 
     monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
     monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, shared_dir))
@@ -90,6 +95,12 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         }
     )
 
+    assert result["model"] == "test-model"
+    assert result["maxTurns"] == 10
+    assert result["intervalSeconds"] == 300
+    assert result["idleIntervalSeconds"] == 60
+    assert result["cycleTimeoutSeconds"] == 1800
+    assert result["idleReminderCooldownSeconds"] == 3600
     assert result["workflow"] == "test-workflow"
     assert result["source"] == "github"
     assert result["envs"] == ["github"]

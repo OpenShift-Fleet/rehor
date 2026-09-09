@@ -27,6 +27,12 @@ export interface ConfigPreparationRequest {
 }
 
 export interface ConfigPreparationResult {
+  model: string;
+  maxTurns: number;
+  intervalSeconds: number;
+  idleIntervalSeconds: number;
+  cycleTimeoutSeconds: number;
+  idleReminderCooldownSeconds: number;
   workflow: string;
   source: string;
   envs: readonly string[] | null;

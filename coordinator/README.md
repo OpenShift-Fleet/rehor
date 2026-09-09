@@ -113,6 +113,28 @@ paths. Existing aggregation is preserved: a mixed error/start result is still
 `start`, while an all-error result is `error`. Only a `start` result, or the
 no-preflight pass-through case, produces an agent prompt.
 
+## Cycle scheduling and idle state
+
+`CycleScheduler` is the side-effect-free decision layer for the future loop:
+
+- no preflight or `start` → run an agent attempt;
+- `skip` → idle delay and zero the preflight-error streak;
+- `error` → no attempt, exponential delay (`interval × 2^streak`) capped at
+  300 seconds by default;
+- completed attempt → normal interval unless a valid `data/cycle-sleep.json`
+  signal supplies a delay and reason.
+
+`consumeSleepSignal()` reads and removes the Python-compatible sleep signal,
+including malformed signals, so stale recommendations cannot affect a later
+cycle. `sleep()` accepts an `AbortSignal`, allowing shutdown to interrupt the
+wait rather than delaying process termination.
+
+`recordIdleCycle()` and `recordActiveCycle()` contain the threshold/cooldown
+state machine used by the existing idle reminder behavior. They deliberately
+stay transport-neutral: a future memory-server adapter persists the state and
+a future reminder adapter sends the notification only after
+`shouldSendReminder` is true.
+
 ## Compatibility with the Python Runner
 
 | Current Python behavior | Coordinator representation |
@@ -141,6 +163,8 @@ cost data when an adapter emits partial usage events.
 - `src/ports/` — stable runtime, preflight, and compatibility interfaces
 - `src/instructions.ts` — deterministic instruction-layer and prompt assembly
 - `src/cycle-input.ts` — config, instruction, and preflight preparation facade
+- `src/scheduler.ts` — preflight decisions, backoff, sleep signals, and abortable delay
+- `src/idle.ts` — transport-neutral idle threshold/cooldown state
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
 - `test/contract/` — lifecycle, schema, and compatibility tests

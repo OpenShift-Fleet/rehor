@@ -14,6 +14,12 @@ import {
 } from "../src";
 
 const config: ConfigPreparationResult = {
+  model: "test-model",
+  maxTurns: 10,
+  intervalSeconds: 300,
+  idleIntervalSeconds: 300,
+  cycleTimeoutSeconds: 1800,
+  idleReminderCooldownSeconds: 172800,
   workflow: "test-workflow",
   source: "test",
   envs: null,
