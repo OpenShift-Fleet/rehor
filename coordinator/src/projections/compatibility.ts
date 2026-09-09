@@ -35,13 +35,13 @@ interface UsageTotals {
 /** Maps normalized coordinator events to legacy status/cost/transcript outputs. */
 export class LegacyCompatibilityProjection implements CoordinatorProjection {
   private readonly state = new Map<string, ProjectionState>();
+  private readonly completedAttempts = new Set<string>();
 
-  constructor(
-    private readonly writers: CompatibilityWriters,
-    private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
+  constructor(private readonly writers: CompatibilityWriters) {}
 
   async onEvent(event: RehorEvent, run: RehorRun): Promise<void> {
+    const key = attemptKey(event, run);
+    if (this.completedAttempts.has(key)) return;
     const state = this.stateFor(event, run);
     if (event.runtimeSessionRef) state.runtimeSessionRef = event.runtimeSessionRef;
     if (event.kind === "usage") this.recordUsage(state, event);
@@ -55,56 +55,67 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       event,
       run,
     });
-    await this.writers.metrics?.observe({
-      name: "devbot_events_total",
-      value: 1,
-      labels: { label: run.label, workflow: run.workflowId, kind: event.kind },
-    });
-
     const status = statusForEvent(event, run);
     if (status) await this.writers.status?.write(status);
   }
 
   async onTerminal(event: RehorEvent & { kind: "terminal" }, run: RehorRun): Promise<void> {
+    const key = attemptKey(event, run);
+    if (this.completedAttempts.has(key)) return;
     assertTerminalEvent(event);
     const state = this.stateFor(event, run);
+    this.completedAttempts.add(key);
     const payload = event.payload;
     const context = payload.context;
     const totals = aggregateUsage(state.usages, run);
     const noWork = payload.noWork === true || containsNoWork(payload.resultText ?? "");
     const isError = payload.state !== "completed";
     const durationMs = payload.durationMs ?? elapsedMs(state.startedAt, event.occurredAt);
-    const cycleType = resolveCycleType(context?.workType, isError, noWork);
+    const cycleType = resolveCycleType(context?.workType, isError);
     const status = statusForTerminal(run, payload.state, payload.reason, noWork, context);
 
-    await this.writers.status?.write(status);
-    await this.writers.costs?.write(
-      buildCostRecord(run, event, state, context, totals, noWork, isError, durationMs),
-    );
-    await this.writers.cycleRuns?.write(
-      buildCycleRunRecord(run, event, state, context, cycleType, totals),
-    );
-    await observeTerminalMetrics(
-      this.writers.metrics,
-      run,
-      payload.state,
-      totals,
-      durationMs,
-      noWork,
-    );
-    this.state.delete(run.runId);
+    try {
+      await this.writers.status?.write(status);
+      await this.writers.costs?.write(
+        buildCostRecord(run, event, state, context, totals, noWork, isError, durationMs),
+      );
+      await this.writers.cycleRuns?.write(
+        buildCycleRunRecord(run, event, state, context, cycleType, totals),
+      );
+      await observeTerminalMetrics(
+        this.writers.metrics,
+        run,
+        context?.workType,
+        payload.state,
+        totals,
+        durationMs,
+        noWork,
+      );
+    } finally {
+      this.state.delete(key);
+      this.trimCompletedAttempts();
+    }
   }
 
   private stateFor(event: RehorEvent, run: RehorRun): ProjectionState {
-    const existing = this.state.get(run.runId);
+    const key = attemptKey(event, run);
+    const existing = this.state.get(key);
     if (existing) return existing;
     const state: ProjectionState = {
-      startedAt: event.occurredAt || this.now(),
+      startedAt: event.occurredAt,
       runtimeSessionRef: null,
       usages: new Map(),
     };
-    this.state.set(run.runId, state);
+    this.state.set(key, state);
     return state;
+  }
+
+  private trimCompletedAttempts(): void {
+    while (this.completedAttempts.size > 1024) {
+      const oldest = this.completedAttempts.values().next().value;
+      if (oldest === undefined) return;
+      this.completedAttempts.delete(oldest);
+    }
   }
 
   private recordUsage(state: ProjectionState, event: RehorEvent): void {
@@ -173,7 +184,7 @@ function buildCostRecord(
   durationMs: number,
 ): CostRecord {
   return {
-    timestamp: event.occurredAt || new Date().toISOString(),
+    timestamp: event.occurredAt,
     runId: run.runId,
     attemptId: run.attemptId,
     label: run.label,
@@ -228,6 +239,7 @@ function buildCycleRunRecord(
 async function observeTerminalMetrics(
   writer: CompatibilityWriters["metrics"],
   run: RehorRun,
+  workType: string | undefined,
   state: string,
   totals: UsageTotals,
   durationMs: number,
@@ -235,16 +247,27 @@ async function observeTerminalMetrics(
 ): Promise<void> {
   if (!writer) return;
   const labels = { model: totals.model, label: run.label, workflow: run.workflowId };
+  const metricStatus = state === "completed" ? (noWork ? "idle" : "ok") : "error";
+  // bot/run.py:565 uses `(ctx.work_type if ctx else None) or "unknown"` — an
+  // empty string falls back too, and a no-work cycle is not relabelled "idle".
+  const durationLabels = { label: run.label, work_type: workType || "unknown" };
   const points: MetricPoint[] = [
-    { name: "devbot_cycles_total", value: 1, labels: { ...labels, status: state } },
-    { name: "devbot_cycle_duration_seconds", value: durationMs / 1000, labels },
+    { name: "devbot_cycles_total", value: 1, labels: { ...labels, status: metricStatus } },
+    {
+      name: "devbot_cycle_duration_seconds",
+      value: durationMs / 1000,
+      labels: durationLabels,
+    },
     { name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
     { name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
     { name: "devbot_cycle_output_tokens_total", value: totals.outputTokens, labels },
     { name: "devbot_cycle_cache_read_tokens_total", value: totals.cacheReadTokens, labels },
     { name: "devbot_cycle_cache_write_tokens_total", value: totals.cacheWriteTokens, labels },
   ];
-  if (noWork && totals.inputTokens + totals.outputTokens > 0) {
+  if (
+    metricStatus === "idle" &&
+    totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens > 0
+  ) {
     points.push({
       name: "devbot_idle_with_tokens_total",
       value: 1,
@@ -294,13 +317,24 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
   };
 }
 
-function resolveCycleType(workType: string | undefined, isError: boolean, noWork: boolean): string {
+/** Mirrors bot/transcripts.py::_WORK_TYPE_TO_CYCLE_TYPE. */
+const WORK_TYPE_TO_CYCLE_TYPE = new Map<string, string>([
+  ["new_ticket", "task_work"],
+  ["pr_review", "task_work"],
+  ["ci_fix", "task_work"],
+  ["idle", "idle"],
+  ["memory_housekeeping", "idle"],
+  ["error", "error"],
+]);
+
+/**
+ * Mirrors bot/transcripts.py::_resolve_cycle_type. Deliberately ignores no-work:
+ * Python classifies on work type alone, so a task cycle whose result text merely
+ * mentions "nothing to do" still records as task_work.
+ */
+function resolveCycleType(workType: string | undefined, isError: boolean): string {
   if (isError) return "error";
-  if (noWork) return "idle";
-  if (workType === "new_ticket" || workType === "pr_review" || workType === "ci_fix") {
-    return "task_work";
-  }
-  if (workType === "memory_housekeeping") return "idle";
+  if (workType) return WORK_TYPE_TO_CYCLE_TYPE.get(workType) ?? "task_work";
   return "triage_only";
 }
 
@@ -317,6 +351,10 @@ function containsNoWork(text: string): boolean {
     "no assigned tickets",
     "0 unassigned",
   ].some((pattern) => lower.includes(pattern));
+}
+
+function attemptKey(event: RehorEvent, run: RehorRun): string {
+  return `${run.runId}:${event.attemptId}`;
 }
 
 function stringPayload(payload: Readonly<Record<string, unknown>>, key: string): string | null {

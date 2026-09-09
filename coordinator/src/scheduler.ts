@@ -3,6 +3,7 @@ import { readFile, unlink } from "node:fs/promises";
 import type { PreflightResult } from "./ports/python-bridge";
 
 const DEFAULT_MAX_PREFLIGHT_BACKOFF_MS = 300_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export type CycleDecision = "run" | "idle" | "error";
 
@@ -78,10 +79,9 @@ export class CycleScheduler {
   planAfterRun(signal?: SleepSignal | null): SleepPlan {
     if (signal) {
       assertNonNegative(signal.recommendedSleepSeconds, "recommendedSleepSeconds");
-      return {
-        delayMs: signal.recommendedSleepSeconds * 1000,
-        reason: signal.reason || "cycle_complete",
-      };
+      const delayMs = signal.recommendedSleepSeconds * 1000;
+      assertNonNegative(delayMs, "recommendedSleepSeconds converted to milliseconds");
+      return { delayMs, reason: signal.reason || "cycle_complete" };
     }
     return { delayMs: this.config.intervalMs, reason: "cycle_complete" };
   }
@@ -95,17 +95,17 @@ export async function consumeSleepSignal(path: string): Promise<SleepSignal | nu
   } catch (error) {
     if (isMissingFile(error)) return null;
     throw error;
-  } finally {
-    await unlink(path).catch((error: unknown) => {
-      if (!isMissingFile(error)) throw error;
-    });
   }
 
+  let signal: SleepSignal | null;
   try {
-    return parseSleepSignal(JSON.parse(raw));
+    signal = parseSleepSignal(JSON.parse(raw));
   } catch {
-    return null;
+    signal = null;
   }
+  // A filesystem cleanup failure must not discard an otherwise valid signal.
+  await unlink(path).catch(() => undefined);
+  return signal;
 }
 
 export function parseSleepSignal(value: unknown): SleepSignal | null {
@@ -124,15 +124,28 @@ export function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
-    const timer = setTimeout(() => finish(resolve), delayMs);
+    let remaining = delayMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = (): void => finish(() => reject(abortError(signal?.reason)));
 
     signal?.addEventListener("abort", onAbort, { once: true });
+    schedule();
+
+    function schedule(): void {
+      if (settled) return;
+      if (remaining <= 0) {
+        finish(resolve);
+        return;
+      }
+      const chunk = Math.min(remaining, MAX_TIMER_DELAY_MS);
+      remaining -= chunk;
+      timer = setTimeout(schedule, chunk);
+    }
 
     function finish(callback: () => void): void {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       callback();
     }

@@ -223,6 +223,7 @@ describe("RehorEvent contract", () => {
       accepted: false,
       duplicate: true,
       outOfOrder: false,
+      afterTerminal: false,
     });
   });
 
@@ -265,7 +266,7 @@ describe("RehorEvent contract", () => {
     expect(() => ledger.requireTerminal()).toThrow("terminal event missing");
   });
 
-  it("accepts one terminal event and rejects every later event", () => {
+  it("accepts one terminal event and drops every later event without throwing", () => {
     const ledger = new EventLedger(run);
     ledger.ingest(event());
     const terminal = event({
@@ -278,9 +279,80 @@ describe("RehorEvent contract", () => {
 
     expect(ledger.requireTerminal().eventId).toBe("terminal-01");
     expect(ledger.ingest({ ...terminal }).duplicate).toBe(true);
-    expect(() => ledger.ingest(event({ eventId: "event-03", sequence: 3, kind: "model" }))).toThrow(
-      "event received after terminal event",
+
+    // Several SDKs trail a usage record after the result message. Dropping it is
+    // correct; throwing would turn a finished attempt into a failed one.
+    const trailing = ledger.ingest(event({ eventId: "event-03", sequence: 3, kind: "model" }));
+
+    expect(trailing).toEqual({
+      accepted: false,
+      duplicate: false,
+      outOfOrder: false,
+      afterTerminal: true,
+    });
+  });
+
+  it("rejects a second terminal event at any sequence", () => {
+    const ledger = new EventLedger(run);
+    ledger.ingest(event());
+    ledger.ingest(
+      event({
+        eventId: "terminal-01",
+        sequence: 5,
+        kind: "terminal",
+        payload: { state: "completed" },
+      }),
     );
+
+    // A lower sequence leaves the slot free, so nothing else would catch this
+    // and the attempt would silently report "failed" instead of "completed".
+    expect(() =>
+      ledger.ingest(
+        event({
+          eventId: "terminal-02",
+          sequence: 3,
+          kind: "terminal",
+          payload: { state: "failed" },
+        }),
+      ),
+    ).toThrow(RuntimeContractError);
+
+    expect(() =>
+      ledger.ingest(
+        event({
+          eventId: "terminal-03",
+          sequence: 7,
+          kind: "terminal",
+          payload: { state: "failed" },
+        }),
+      ),
+    ).toThrow("terminal event already accepted: terminal-01");
+
+    expect(ledger.requireTerminal().payload.state).toBe("completed");
+    expect(ledger.events).toHaveLength(2);
+  });
+
+  it("leaves the ledger unchanged after dropping a post-terminal event", () => {
+    const ledger = new EventLedger(run);
+    ledger.ingest(event());
+    ledger.ingest(
+      event({
+        eventId: "terminal-01",
+        sequence: 2,
+        kind: "terminal",
+        payload: { state: "completed" },
+      }),
+    );
+    ledger.ingest(event({ eventId: "event-03", sequence: 3, kind: "model" }));
+
+    expect(ledger.events).toHaveLength(2);
+    expect(ledger.requireTerminal().eventId).toBe("terminal-01");
+    expect(ledger.missingSequenceRanges).toEqual([]);
+
+    // The dropped sequence is not reserved, so it cannot poison a later ingest.
+    expect(
+      ledger.ingest({ ...event({ eventId: "event-03", sequence: 3, kind: "model" }) }),
+    ).toEqual({ accepted: false, duplicate: false, outOfOrder: false, afterTerminal: true });
   });
 
   it("accepts in-flight events below the terminal sequence", () => {
@@ -311,11 +383,16 @@ describe("RehorEvent contract", () => {
       }),
     );
 
-    expect(late).toEqual({ accepted: true, duplicate: false, outOfOrder: true });
+    expect(late).toEqual({
+      accepted: true,
+      duplicate: false,
+      outOfOrder: true,
+      afterTerminal: false,
+    });
     expect(ledger.missingSequenceRanges).toEqual([]);
-    expect(() => ledger.ingest(event({ eventId: "event-04", sequence: 4, kind: "model" }))).toThrow(
-      "event received after terminal event",
-    );
+    expect(
+      ledger.ingest(event({ eventId: "event-04", sequence: 4, kind: "model" })).afterTerminal,
+    ).toBe(true);
   });
 
   it("detaches ingested payloads from adapter-owned buffers", () => {

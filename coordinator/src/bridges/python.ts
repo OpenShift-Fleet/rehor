@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import type { Readable } from "node:stream";
+
 import type {
   ConfigPreparationRequest,
   ConfigPreparationResult,
@@ -31,7 +34,7 @@ export class PythonCoordinatorBridge implements PythonBridge {
   constructor(options: PythonBridgeOptions = {}) {
     this.executable = options.executable ?? "python3";
     this.cwd = options.cwd;
-    this.env = options.env;
+    this.env = options.env ? mergeEnvironment(options.env) : undefined;
   }
 
   async preflight(input: PreflightRequest, signal?: AbortSignal): Promise<PreflightResult | null> {
@@ -56,12 +59,10 @@ export class PythonCoordinatorBridge implements PythonBridge {
   private async request(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (signal?.aborted) throw abortError(signal.reason);
 
-    const child = Bun.spawn([this.executable, "-m", "bot.coordinator_bridge"], {
+    const child = spawn(this.executable, ["-m", "bot.coordinator_bridge"], {
       cwd: this.cwd ?? (typeof request.scriptDir === "string" ? request.scriptDir : undefined),
       env: this.env,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
     let aborted = false;
@@ -75,9 +76,9 @@ export class PythonCoordinatorBridge implements PythonBridge {
       child.stdin.write(`${JSON.stringify(request)}\n`);
       child.stdin.end();
       const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
+        readStream(child.stdout),
+        readStream(child.stderr),
+        waitForExit(child),
       ]);
 
       if (aborted || signal?.aborted) throw abortError(signal?.reason);
@@ -222,6 +223,29 @@ function nonNegativeNumber(value: unknown, path: string): number {
     throw new PythonBridgeError(`${path} must be a non-negative finite number`);
   }
   return value;
+}
+
+async function readStream(stream: Readable): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function waitForExit(child: ReturnType<typeof spawn>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? -1));
+  });
+}
+
+function mergeEnvironment(overrides: Record<string, string>): Record<string, string> {
+  const inherited: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) inherited[key] = value;
+  }
+  return { ...inherited, ...overrides };
 }
 
 function abortError(reason: unknown): Error {

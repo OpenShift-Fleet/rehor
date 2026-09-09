@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 
 import {
   type AgentRuntime,
@@ -131,6 +131,42 @@ describe("coordinator execution", () => {
     expect(result.capabilities?.runtimeId).toBe("fake");
     expect(runtime.stopCalls).toBe(1);
     expect(result.error).toBeUndefined();
+  });
+
+  it("completes normally when the runtime trails a usage event after the terminal", async () => {
+    const projection: CoordinatorProjection & { events: RehorEvent[]; terminals: RehorEvent[] } = {
+      events: [],
+      terminals: [],
+      onEvent(current) {
+        this.events.push(current);
+      },
+      onTerminal(current) {
+        this.terminals.push(current);
+      },
+    };
+    const trailingUsage = event({
+      eventId: "usage-late",
+      sequence: 3,
+      kind: "usage",
+      payload: {
+        requestedModel: run.provider.requestedModel,
+        tokenCounts: { input: 5, output: 1 },
+        partial: false,
+        final: true,
+        estimated: false,
+        incomplete: false,
+      },
+    });
+    const runtime = new FakeAgentRuntime({ events: [event(), terminal(), trailingUsage] });
+
+    const result = await executeRun(runtime, run, { projection });
+
+    // The trailing record is dropped, but the attempt it belongs to still succeeded.
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
+    expect(result.events.map(({ eventId }) => eventId)).toEqual(["event-01", "terminal-01"]);
+    expect(projection.terminals).toHaveLength(1);
+    expect(runtime.stopCalls).toBe(1);
   });
 
   it("preserves partial usage and returns a failed terminal after a stream error", async () => {

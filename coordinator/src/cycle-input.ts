@@ -1,3 +1,5 @@
+import { writeFile } from "node:fs/promises";
+
 import type { ContentHash } from "./domain/run";
 import {
   type AssembledInstructions,
@@ -52,6 +54,9 @@ export async function prepareCycleInput(
     remoteAgentDir: config.remoteAgentDir,
     sharedAgentDir: config.sharedAgentDir,
   });
+  // Python assembles the default strategy; persist the final TS-selected layers
+  // so CLAUDE.md and instructionHash always describe the same content.
+  await writeFile(config.claudeMdPath, instructions.content);
 
   const preflightRequest: PreflightRequest = {
     scriptDir: options.scriptDir,
