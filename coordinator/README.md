@@ -73,6 +73,13 @@ cancellation, and shutdown signals map to `timed_out`, `cancelled`, and
 events for the existing status, transcript, usage, and cost writers; they do
 not receive provider SDK objects.
 
+`LegacyCompatibilityProjection` is the first compatibility mapping. It writes
+through transport-neutral ports for cycle runs, status, costs, transcript
+(events), and metrics. It preserves the current result fields, classifies
+`NO_WORK_FOUND` as idle, and prefers final usage snapshots over earlier partial
+snapshots so token/cost totals are not double-counted. File, HTTP, and
+Prometheus implementations can be supplied without changing coordinator code.
+
 The coordinator does not write a new event store and does not change the
 Python Claude/Vertex path. A runtime adapter and compatibility projections can
 be selected by the future TypeScript runner without changing this boundary.
@@ -183,6 +190,7 @@ cost data when an adapter emits partial usage events.
 - `src/scheduler.ts` — preflight decisions, backoff, sleep signals, and abortable delay
 - `src/idle.ts` — transport-neutral idle threshold/cooldown state
 - `src/runtime-factory.ts` — runtime registry and provider-independent selection
+- `src/projections/` — legacy compatibility mappings for cycle outputs
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
 - `test/contract/` — lifecycle, schema, and compatibility tests
