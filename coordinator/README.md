@@ -6,8 +6,9 @@ Claude path or OpenCode), apply one lifecycle policy, and project normalized
 events into status, transcript, usage, and cost records.
 
 The coordinator is **migration scaffolding**, not the production entry point
-yet. `bot/run.py` and `bot/agent.py` remain active. Runtime selection and cycle
-orchestration will land in later migration slices.
+yet. `bot/run.py` and `bot/agent.py` remain active. The TypeScript attempt loop
+is available to adapters and deterministic tests; production runtime selection
+and process startup remain unchanged until parity validation.
 
 ## Responsibilities
 
@@ -61,6 +62,21 @@ JSON Schemas in `schema/` are the wire contract. Runtime parsers compile those
 same schemas with Ajv, so `additionalProperties`, timestamp formats, and known
 payload shapes cannot drift from TypeScript validation.
 
+## Attempt orchestration
+
+`executeRun()` owns one runtime attempt. It validates the run, starts the
+selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
+stops the runtime exactly once. Runtime failures produce a normalized failed
+terminal event after preserving all accepted partial events. Timeout, caller
+cancellation, and shutdown signals map to `timed_out`, `cancelled`, and
+`interrupted` terminal states respectively. Projection hooks receive normalized
+events for the existing status, transcript, usage, and cost writers; they do
+not receive provider SDK objects.
+
+The coordinator does not write a new event store and does not change the
+Python Claude/Vertex path. A runtime adapter and compatibility projections can
+be selected by the future TypeScript runner without changing this boundary.
+
 ## Compatibility with the Python Runner
 
 | Current Python behavior | Coordinator representation |
@@ -83,8 +99,9 @@ cost data when an adapter emits partial usage events.
 ## Layout
 
 - `src/index.ts` — public contract entry point and build target
+- `src/coordinator.ts` — one-attempt lifecycle and cancellation orchestration
 - `src/domain/` — run, event, event factory, terminal, usage, and validation contracts
-- `src/ports/` — stable runtime interface
+- `src/ports/` — stable runtime and compatibility projection interfaces
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
 - `test/contract/` — lifecycle, schema, and compatibility tests
