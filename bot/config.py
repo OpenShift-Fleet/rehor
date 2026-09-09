@@ -26,6 +26,14 @@ class Config:
     idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
 
 
+def _nonempty_model(value: object) -> str | None:
+    """Return stripped string if non-empty, otherwise None."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 @dataclass
 class InstanceConfig:
     """Per-instance preset selection from instance.yaml or env var fallback."""
@@ -35,6 +43,7 @@ class InstanceConfig:
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
+    model: str | None = None
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -48,6 +57,7 @@ class InstanceConfig:
             envs=data.get("envs"),
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
+            model=_nonempty_model(data.get("model")),
         )
 
     @classmethod
@@ -57,7 +67,8 @@ class InstanceConfig:
         envs: list[str] | None = None
         if envs_str is not None:
             envs = [e.strip() for e in envs_str.split(",") if e.strip()]
-        return cls(workflow=workflow, envs=envs)
+        model = _nonempty_model(os.environ.get("BOT_MODEL"))
+        return cls(workflow=workflow, envs=envs, model=model)
 
 
 def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
@@ -68,15 +79,21 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
         if yaml_path.is_file():
             ic = InstanceConfig.from_yaml(yaml_path)
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, model=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
+                ic.model,
             )
             return ic
 
     ic = InstanceConfig.from_env()
-    logger.info("No instance.yaml — env/defaults: workflow=%s, envs=%s", ic.workflow, ic.envs)
+    logger.info(
+        "No instance.yaml — env/defaults: workflow=%s, envs=%s, model=%s",
+        ic.workflow,
+        ic.envs,
+        ic.model,
+    )
     return ic
 
 
@@ -217,6 +234,34 @@ def load_manifest(
         return None
     with open(path) as f:
         return yaml.safe_load(f)
+
+
+def resolve_cycle_model(
+    script_dir: Path,
+    instance_config: InstanceConfig,
+    global_config: Config,
+    remote_agent_dir: Path | None = None,
+) -> str:
+    """Resolve which model to use for the agent cycle following 4-tier precedence:
+
+    1. instance.yaml `model` (explicit pin)
+    2. BOT_MODEL environment variable (deploy overlay)
+    3. workflow manifest.yaml `default_model`
+    4. global config.json `claude.model` (fallback)
+    """
+    logger = logging.getLogger(__name__)
+    if pinned := _nonempty_model(instance_config.model):
+        logger.info("Resolved cycle model: %s (source=instance.yaml)", pinned)
+        return pinned
+    if pinned := _nonempty_model(os.environ.get("BOT_MODEL")):
+        logger.info("Resolved cycle model: %s (source=BOT_MODEL)", pinned)
+        return pinned
+    manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir) or {}
+    if pinned := _nonempty_model(manifest.get("default_model")):
+        logger.info("Resolved cycle model: %s (source=workflow:%s)", pinned, instance_config.workflow)
+        return pinned
+    logger.info("Resolved cycle model: %s (source=config.json)", global_config.model)
+    return global_config.model
 
 
 def validate_manifest(

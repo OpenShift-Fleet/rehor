@@ -70,6 +70,9 @@ name: my-workflow
 type: workflow
 description: Brief description of what this workflow does
 
+# Optional default model for cycles using this workflow
+default_model: claude-sonnet-4-6
+
 # Preflight scripts (documentation — discovery is filesystem-based)
 preflight:
   - 01-check-service.py
@@ -106,6 +109,7 @@ requires:
 | `name` | Yes | Workflow identifier |
 | `type` | Yes | Must be `workflow` |
 | `description` | Yes | One-line summary |
+| `default_model` | No | Optional default model ID for cycles using this workflow (e.g. `claude-sonnet-4-6`) |
 | `preflight` | No | List of preflight script filenames (documentation only) |
 | `shared_skills` | No | Core skill names to include (from `presets/shared/skills/`) |
 | `provides.claude_md` | No | CLAUDE.md filename (always `CLAUDE.md`) |
@@ -156,6 +160,7 @@ claude_md:
 | `source` | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
 | `envs` | `null` (all) | Env presets to activate. `null` = all available, `[]` = none. |
 | `claude_md.strategy` | `ignore` | How instance CLAUDE.md combines with workflow CLAUDE.md |
+| `model` | `null` | Optional model override for this instance (e.g. `claude-sonnet-4-6`) |
 
 ## CLAUDE.md Assembly Strategies
 

@@ -1,7 +1,11 @@
 """Preflight skip/error POST bot status so the dashboard check-in time is fresh."""
 
+import datetime
 import sys
 from unittest.mock import MagicMock, patch
+
+if not hasattr(datetime, "UTC"):
+    datetime.UTC = datetime.timezone.utc  # noqa: UP017
 
 import pytest
 
@@ -18,6 +22,10 @@ def _mock_sdk():
     for mod_name in list(sys.modules):
         if mod_name.startswith("bot.agent") or mod_name == "bot.run":
             sys.modules.pop(mod_name, None)
+    if "bot" in sys.modules:
+        for attr in ("run", "agent"):
+            if hasattr(sys.modules["bot"], attr):
+                delattr(sys.modules["bot"], attr)
     yield
     if prev is sentinel:
         sys.modules.pop("claude_agent_sdk", None)
@@ -26,6 +34,10 @@ def _mock_sdk():
     for mod_name in list(sys.modules):
         if mod_name.startswith("bot.agent") or mod_name == "bot.run":
             sys.modules.pop(mod_name, None)
+    if "bot" in sys.modules:
+        for attr in ("run", "agent"):
+            if hasattr(sys.modules["bot"], attr):
+                delattr(sys.modules["bot"], attr)
 
 
 def _mock_config():
@@ -107,3 +119,21 @@ def test_preflight_error_pushes_error_status(main_patches):
     main_patches["push_status"].assert_called_once_with(
         "error", "Preflight failed — check bot.log", instance_id="test-instance"
     )
+
+
+def test_start_calls_run_cycle_with_resolved_model(main_patches):
+    async def _mock_run_cycle(*args, **kwargs):
+        return (None, None)
+
+    main_patches["run_cycle"].side_effect = _mock_run_cycle
+    main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="preflight data", scripts=[])
+
+    with patch("bot.run.resolve_cycle_model", return_value="custom-model-id") as mock_resolve:
+        with pytest.raises(SystemExit):
+            _run_main()
+
+        mock_resolve.assert_called_once()
+        assert main_patches["run_cycle"].call_count == 1
+        _, kwargs = main_patches["run_cycle"].call_args
+        assert kwargs["model"] == "custom-model-id"
+        assert kwargs["preflight_prompt"] == "preflight data"

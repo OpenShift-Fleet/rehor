@@ -26,6 +26,7 @@ envs:
 claude_md:
   strategy: ignore
 idle_cycle_limit: 0
+model: claude-sonnet-4-6
 ```
 
 | Field | Default | Meaning |
@@ -35,6 +36,18 @@ idle_cycle_limit: 0
 | `envs` | `null` | `null` enables all env presets; `[]` disables them |
 | `claude_md.strategy` | `ignore` | `ignore`, `append`, or `replace` for instance `CLAUDE.md` |
 | `idle_cycle_limit` | `0` | Optional idle-cycle reminder threshold; `0` disables it |
+| `model` | `null` | Explicit model override for this instance (e.g. `claude-sonnet-4-6`) |
+
+## Model Resolution Order
+
+When a cycle starts, the model used by the Claude Agent SDK is resolved using 4-tier precedence:
+
+1. **Instance pin (highest)**: `model` in `instance.yaml`.
+2. **Deploy overlay**: `BOT_MODEL` environment variable. Unlike `BOT_WORKFLOW_PRESET` (which is only checked when `instance.yaml` is absent), `BOT_MODEL` overlays whenever `instance.yaml` omits `model`.
+3. **Workflow default**: `default_model` in the workflow's `manifest.yaml` (custom or built-in).
+4. **Global default (lowest)**: `claude.model` in `config.json`.
+
+> **Note**: The resolved model must be listed in the proxy's `VERTEX_ALLOWED_MODELS` allowlist; otherwise, model calls will be rejected with HTTP 403.
 
 ## Environment Fallback
 

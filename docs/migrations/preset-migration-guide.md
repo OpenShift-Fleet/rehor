@@ -144,6 +144,7 @@ Your `agent/CLAUDE.md` replaces the workflow's CLAUDE.md entirely. The core CLAU
 | `source` | string | `jira` | Free-form string passed to skills. Currently: `jira`. Future: `github`, `gitlab`. |
 | `envs` | list or null | `null` (all) | Which env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore` (default), `append`, `replace`. |
+| `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). |
 
 ---
 
@@ -155,6 +156,7 @@ Instances without a config repo (or without `instance.yaml`) can configure prese
 |---------|---------|-------------|
 | `BOT_WORKFLOW_PRESET` | `jira-sprint` | Workflow preset name |
 | `BOT_ENV_PRESETS` | _(all available)_ | Comma-separated env preset names. Empty string = none. |
+| `BOT_MODEL` | _(from config.json / workflow default)_ | Model override. Unlike workflow/env presets (which are only checked when `instance.yaml` is missing), `BOT_MODEL` also overlays if `instance.yaml` exists but omits `model`. |
 
 These are checked only when no `instance.yaml` is found. If `instance.yaml` exists, it takes precedence.
 

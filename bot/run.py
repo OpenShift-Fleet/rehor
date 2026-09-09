@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Dev bot main loop — Python Agent SDK version."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import contextlib
@@ -28,6 +30,7 @@ from .config import (
     load_instance_config,
     load_mcp_servers,
     resolve_active_envs,
+    resolve_cycle_model,
     resolve_workflow_dir,
     sanitize_env,
     validate_instance_config,
@@ -551,7 +554,8 @@ def main() -> None:
                 preflight_prompt = preflight_result.prompt
                 logger.info("Preflight start — launching session with pre-fetched data")
 
-            logger.info("Running agent cycle...")
+            cycle_model = resolve_cycle_model(SCRIPT_DIR, instance_config, config, remote_agent_dir)
+            logger.info("Running agent cycle with model %s...", cycle_model)
 
             cycle_start = time.monotonic()
             try:
@@ -565,6 +569,7 @@ def main() -> None:
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
                             preflight_prompt=preflight_prompt,
+                            model=cycle_model,
                         ),
                         timeout=config.cycle_timeout,
                     )
