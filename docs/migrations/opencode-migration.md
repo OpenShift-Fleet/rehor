@@ -79,6 +79,34 @@ OpenCode is an agent runtime, not replacement for every existing proxy. The
 proxy remains credential and egress boundary. OpenCode remains execution
 boundary inside each bot pod.
 
+## Coordinator Boundary
+
+The TypeScript code in `coordinator/` is Rehor's provider-neutral control
+plane. It does not replace the Python runner yet and does not contain an
+OpenCode adapter. It defines the stable boundary that both the current Claude
+runtime and future OpenCode runtime must implement.
+
+The coordinator owns run identity, assembled prompt, workspace and provider
+attribution, limits, cancellation, normalized event ordering, terminal state,
+and usage data. Runtime adapters own SDK-specific server/session lifecycle and
+translate SDK messages into Rehor events. SDK objects never cross the
+`AgentRuntime` port.
+
+The v1 contract intentionally supports current Python behavior:
+
+- a run carries the label, workflow, fully assembled prompt, provider/model,
+  maximum turns, and cycle timeout;
+- `task` is nullable because triage starts before a task is selected;
+- terminal payloads preserve result text, no-work classification, duration,
+  turns, and `CycleContext` fields;
+- usage payloads preserve input, output, reasoning, cache-read, and cache-write
+  tokens plus cost, including partial usage on interruption;
+- preflight `skip` and `error` remain coordinator-owned paths that do not start
+  an agent runtime.
+
+See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
+for invariants, compatibility mapping, and development commands.
+
 ## OpenCode Server Lifecycle
 
 OpenCode supports runner-owned and client-only modes. The following is an API
@@ -329,6 +357,15 @@ rollout without changing central routing for existing Claude-based instances.
 
 ## Runtime Migration
 
+### Preparation: Runtime Contract
+
+- Define versioned `RehorRun` and `RehorEvent` schemas.
+- Validate the same schemas at runtime and in fixture tests.
+- Enforce event identity, sequence, attribution, terminal, and usage invariants.
+- Protect the package with Bun tests, typecheck, build, audit, and CI.
+- Keep production on `bot/run.py` and `bot/agent.py` until an adapter and
+  coordinator loop pass parity tests.
+
 ### Phase 1: Compatibility Canary
 
 - Add OpenCode runtime and TypeScript runner beside Python runner.
@@ -351,8 +388,10 @@ Replace `claude-agent-sdk` usage in `bot/agent.py` with SDK operations:
 - abort session on timeout or shutdown
 - close server during cycle cleanup and process termination
 
-Preserve current `CycleContext`, status updates, transcript storage, cost
-posting, turn limits, and signal handling.
+Project normalized terminal and usage events back into the current
+`CycleContext`, status updates, transcript storage, cost posting, turn limits,
+and signal handling contracts. During canary, compare these projections with
+the Python records for the same fixture scenarios.
 
 ### Phase 3: Config and Persona Port
 
@@ -484,5 +523,6 @@ Rollback:
 - [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)
 - [OpenAI Responses](https://platform.openai.com/docs/api-reference/responses)
 - [Git auth proxy design](../git-auth-proxy.md)
-- [Current architecture](https://github.com/OpenShift-Fleet/rehor/blob/master/ARCHITECTURE.md)
+- [Current and migration architecture](https://github.com/OpenShift-Fleet/rehor/blob/master/ARCHITECTURE.md)
+- [Coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 - [Custom preflight guide](../presets/custom-preflight.md)

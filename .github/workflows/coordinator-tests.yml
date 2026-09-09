@@ -1,0 +1,45 @@
+name: Coordinator Tests
+
+on:
+  pull_request:
+    paths:
+      - 'coordinator/**'
+      - '.github/workflows/coordinator-tests.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'coordinator/**'
+      - '.github/workflows/coordinator-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  coordinator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./coordinator
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run tests
+        run: bun test
+
+      - name: Type check
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+

@@ -1,0 +1,49 @@
+{
+  "events": [
+    {
+      "schemaVersion": "1",
+      "eventId": "event-fixture-01",
+      "runId": "run-fixture-01",
+      "attemptId": "attempt-fixture-01",
+      "sequence": 1,
+      "occurredAt": "2026-09-07T12:00:00.000Z",
+      "kind": "model",
+      "runtimeSessionRef": "rehor-session-ref-01",
+      "workspace": {
+        "worktreePath": "/work/rehor",
+        "repository": "https://github.com/OpenShift-Fleet/rehor.git",
+        "snapshot": "abc123"
+      },
+      "provider": "vertex",
+      "model": "claude-opus-4-6",
+      "policyVersion": "policy-1",
+      "payload": {
+        "text": "partial output"
+      },
+      "rawEventRef": {
+        "reference": "sha256:fixture",
+        "redacted": true
+      }
+    },
+    {
+      "schemaVersion": "1",
+      "eventId": "event-fixture-02",
+      "runId": "run-fixture-01",
+      "attemptId": "attempt-fixture-01",
+      "sequence": 2,
+      "occurredAt": "2026-09-07T12:00:01.000Z",
+      "kind": "runtime.future.v2",
+      "workspace": {
+        "worktreePath": "/work/rehor",
+        "repository": "https://github.com/OpenShift-Fleet/rehor.git",
+        "snapshot": "abc123"
+      },
+      "provider": "vertex",
+      "model": "claude-opus-4-6",
+      "policyVersion": "policy-1",
+      "payload": {
+        "opaque": true
+      }
+    }
+  ]
+}

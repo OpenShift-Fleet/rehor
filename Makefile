@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
@@ -35,8 +35,16 @@ verify: ## Run all checks (same as CI)
 	cd dashboard && npm run build
 	@echo "=== Dashboard: tests ==="
 	cd dashboard && npm test
+	@echo "=== Coordinator ==="
+	$(MAKE) coordinator-verify
 	@echo ""
 	@echo "All checks passed."
+
+coordinator-verify: ## Install and run coordinator tests, type check, and build
+	cd coordinator && bun install --frozen-lockfile
+	cd coordinator && bun test
+	cd coordinator && bun run typecheck
+	cd coordinator && bun run build
 
 precommit-install: ## Install pre-commit hooks
 	pip install pre-commit && pre-commit install

@@ -41,6 +41,13 @@
         "note": "path-filtered. job name collides across ruff-format.yml, go-tests.yml, dashboard-tests.yml, and memory-server-ci.yml."
       },
       {
+        "name": "coordinator",
+        "workflow": "coordinator-tests.yml",
+        "scope": "coordinator Bun tests, TypeScript check, and production build",
+        "required": false,
+        "note": "path-filtered to coordinator/**"
+      },
+      {
         "name": "python-audit",
         "workflow": "dependency-audit.yml",
         "scope": "python dependency vulnerability scan (pip-audit)",
@@ -60,6 +67,13 @@
         "scope": "node dependency vulnerability scan (npm audit)",
         "required": false,
         "note": "path-filtered to dashboard/package-lock.json. currently report-only for findings."
+      },
+      {
+        "name": "coordinator-audit",
+        "workflow": "dependency-audit.yml",
+        "scope": "coordinator dependency vulnerability scan (bun audit)",
+        "required": false,
+        "note": "path-filtered to coordinator/package.json and coordinator/bun.lock, plus the weekly schedule."
       },
       {
         "name": "security",
