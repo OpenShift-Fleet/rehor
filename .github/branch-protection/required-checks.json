@@ -6,7 +6,7 @@
   "checks": {
     "github_actions": [
       {
-        "name": "TypeScript Lint / Biome",
+        "name": "Biome",
         "workflow": "typescript-lint.yml",
         "scope": "repository-wide TypeScript formatting and linting (Biome)",
         "required": true,
