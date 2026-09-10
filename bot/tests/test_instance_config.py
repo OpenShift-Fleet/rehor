@@ -169,6 +169,18 @@ class TestLoadInstanceConfig:
         assert ic.workflow == "reviewer"
         assert ic.model == "claude-sonnet-4-6"
 
+    def test_from_yaml_model_wins_over_bot_model_env(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer", "model": "claude-yaml-pin"}))
+        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
+            ic = load_instance_config(agent_dir)
+        assert ic.model == "claude-yaml-pin"
+
+    def test_from_yaml_omits_model_overlays_bot_model(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer"}))
+        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
+            ic = load_instance_config(agent_dir)
+        assert ic.model == "claude-env-overlay"
+
     def test_no_yaml_falls_back_to_env(self, agent_dir):
         with patch.dict(os.environ, {"BOT_WORKFLOW_PRESET": "kanban", "BOT_MODEL": "claude-opus-4-6"}, clear=True):
             ic = load_instance_config(agent_dir)
@@ -252,39 +264,49 @@ def global_config():
         idle_interval=300,
         cycle_timeout=600,
         board_key="RHCLOUD",
+        model_tiers={"light": "claude-sonnet-4-6", "heavy": "claude-opus-4-6"},
     )
 
 
 class TestResolveCycleModel:
     def test_instance_pin_wins(self, preset_tree, global_config):
-        """Tier 1: instance.yaml model overrides BOT_MODEL, workflow default, and global config."""
+        """Tier 1: instance.yaml model overrides workflow tier and global config."""
         ic = InstanceConfig(workflow="jira-sprint", model="claude-instance-pin")
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
-        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "default_model": "claude-wf-default"}))
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
 
-        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-instance-pin"
 
-    def test_bot_model_overlay_when_yaml_omits_model(self, preset_tree, global_config):
-        """Tier 2: BOT_MODEL overlays when instance.yaml exists but omits model."""
+    def test_workflow_model_tier_resolution(self, preset_tree, global_config):
+        """Tier 3: workflow model_tier is mapped through config.json claude.modelTiers."""
         ic = InstanceConfig(workflow="jira-sprint", model=None)
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
-        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "default_model": "claude-wf-default"}))
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
 
-        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
-        assert resolved == "claude-env-overlay"
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-sonnet-4-6"
 
-    def test_workflow_default_when_no_instance_override(self, preset_tree, global_config):
-        """Tier 3: workflow default_model is used when neither instance model nor BOT_MODEL is set."""
+    def test_workflow_model_tier_heavy(self, preset_tree, global_config):
         ic = InstanceConfig(workflow="jira-sprint", model=None)
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
-        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "default_model": "claude-wf-default"}))
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "heavy"}))
 
-        with patch.dict(os.environ, {}, clear=True):
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-opus-4-6"
+
+    def test_workflow_unknown_tier_logs_error_and_falls_back(self, preset_tree, global_config, caplog):
+        """Unknown tier falls back to global default and logs an error."""
+        import logging
+
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "ultra"}))
+
+        with caplog.at_level(logging.ERROR):
             resolved = resolve_cycle_model(preset_tree, ic, global_config)
-        assert resolved == "claude-wf-default"
+        assert resolved == "claude-global-default"
+        assert "requests model tier 'ultra' not defined in config.json" in caplog.text
 
     def test_global_fallback_when_all_unset(self, preset_tree, global_config):
         """Tier 4: fallback to global config.json claude.model when no overrides exist."""
@@ -292,45 +314,40 @@ class TestResolveCycleModel:
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
         wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
 
-        with patch.dict(os.environ, {}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"
 
-    def test_custom_remote_workflow_default_model(self, tmp_path, global_config):
-        """Custom workflow (./workflows/custom) default_model resolves via remote_agent_dir."""
+    def test_custom_remote_workflow_model_tier(self, tmp_path, global_config):
+        """Custom workflow (./workflows/custom) model_tier resolves via remote_agent_dir."""
         remote_agent_dir = tmp_path / "agent"
         custom_wf = remote_agent_dir / "workflows" / "custom"
         custom_wf.mkdir(parents=True)
-        (custom_wf / "manifest.yaml").write_text(yaml.dump({"name": "custom", "default_model": "claude-custom-wf"}))
+        (custom_wf / "manifest.yaml").write_text(yaml.dump({"name": "custom", "model_tier": "light"}))
 
         ic = InstanceConfig(workflow="./workflows/custom", model=None)
-        with patch.dict(os.environ, {}, clear=True):
-            resolved = resolve_cycle_model(tmp_path, ic, global_config, remote_agent_dir=remote_agent_dir)
-        assert resolved == "claude-custom-wf"
+        resolved = resolve_cycle_model(tmp_path, ic, global_config, remote_agent_dir=remote_agent_dir)
+        assert resolved == "claude-sonnet-4-6"
 
     def test_missing_manifest_falls_back_to_global(self, preset_tree, global_config):
         """When manifest.yaml does not exist, resolve_cycle_model falls back to global config."""
         ic = InstanceConfig(workflow="jira-sprint", model=None)
-        with patch.dict(os.environ, {}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"
 
     def test_empty_or_whitespace_falls_through(self, preset_tree, global_config):
         """Empty strings and whitespace at each tier are treated as unset."""
         ic = InstanceConfig(workflow="jira-sprint", model="   ")
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
-        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "default_model": ""}))
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": ""}))
 
-        with patch.dict(os.environ, {"BOT_MODEL": "\t\n "}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"
 
-    def test_non_string_manifest_model_falls_through(self, preset_tree, global_config):
-        """Non-string default_model in manifest (e.g. YAML boolean) falls through."""
+    def test_non_string_manifest_tier_falls_through(self, preset_tree, global_config):
+        """Non-string model_tier in manifest (e.g. YAML boolean or int) falls through."""
         ic = InstanceConfig(workflow="jira-sprint", model=None)
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
-        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "default_model": True}))
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": 123}))
 
-        with patch.dict(os.environ, {}, clear=True):
-            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"

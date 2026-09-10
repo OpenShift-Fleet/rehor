@@ -443,7 +443,13 @@ def main() -> None:
         resolve_active_envs(SCRIPT_DIR, instance_config),
     )
 
-    validate_manifest(SCRIPT_DIR, instance_config.workflow, mcp_servers, initial_agent_dir)
+    validate_manifest(
+        SCRIPT_DIR,
+        instance_config.workflow,
+        mcp_servers,
+        initial_agent_dir,
+        model_tiers=config.model_tiers,
+    )
     validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
 
     # Remove secrets from env so Bash subprocesses can't leak them.

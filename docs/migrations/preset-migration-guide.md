@@ -156,9 +156,9 @@ Instances without a config repo (or without `instance.yaml`) can configure prese
 |---------|---------|-------------|
 | `BOT_WORKFLOW_PRESET` | `jira-sprint` | Workflow preset name |
 | `BOT_ENV_PRESETS` | _(all available)_ | Comma-separated env preset names. Empty string = none. |
-| `BOT_MODEL` | _(from config.json / workflow default)_ | Model override. Unlike workflow/env presets (which are only checked when `instance.yaml` is missing), `BOT_MODEL` also overlays if `instance.yaml` exists but omits `model`. |
+| `BOT_MODEL` | _(from config.json / workflow tier)_ | Model override. Unlike workflow/env presets (which are only checked when `instance.yaml` is missing), `BOT_MODEL` also overlays if `instance.yaml` exists but omits `model`. |
 
-These are checked only when no `instance.yaml` is found. If `instance.yaml` exists, it takes precedence.
+`BOT_WORKFLOW_PRESET` and `BOT_ENV_PRESETS` are checked only when no `instance.yaml` is found; if `instance.yaml` exists, it takes precedence. `BOT_MODEL` also applies when `instance.yaml` exists but omits `model`.
 
 ---
 
@@ -201,7 +201,7 @@ Slack notifications via webhook.
 
 Custom Caddy reverse proxy for local UI verification against stage environments.
 
-**Requires:** `PROXY_HOST`  
+**Requires:** `PROXY_HOST`
 **Optional:** `PROXY_PORT`
 
 **Provides:** `caddy` CLI tool, `start-dev-proxy.sh` sandbox allowance

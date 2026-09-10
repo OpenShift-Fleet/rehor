@@ -70,8 +70,9 @@ name: my-workflow
 type: workflow
 description: Brief description of what this workflow does
 
-# Optional default model for cycles using this workflow
-default_model: claude-sonnet-4-6
+# Optional model tier for cycles using this workflow. Tier names map to
+# model IDs in config.json `claude.modelTiers`; presets never name a model ID.
+model_tier: light
 
 # Preflight scripts (documentation — discovery is filesystem-based)
 preflight:
@@ -109,7 +110,7 @@ requires:
 | `name` | Yes | Workflow identifier |
 | `type` | Yes | Must be `workflow` |
 | `description` | Yes | One-line summary |
-| `default_model` | No | Optional default model ID for cycles using this workflow (e.g. `claude-sonnet-4-6`) |
+| `model_tier` | No | Optional model tier name for cycles using this workflow (e.g. `light`). Mapped to a concrete model ID via `config.json` `claude.modelTiers`. |
 | `preflight` | No | List of preflight script filenames (documentation only) |
 | `shared_skills` | No | Core skill names to include (from `presets/shared/skills/`) |
 | `provides.claude_md` | No | CLAUDE.md filename (always `CLAUDE.md`) |
