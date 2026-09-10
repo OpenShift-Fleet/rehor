@@ -79,7 +79,13 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     """
 
     from . import run as runner
-    from .config import load_config, load_instance_config, resolve_active_envs, resolve_workflow_dir
+    from .config import (
+        load_config,
+        load_instance_config,
+        resolve_active_envs,
+        resolve_cycle_model,
+        resolve_workflow_dir,
+    )
     from .merge import apply_merged_config, install_skills
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
@@ -102,9 +108,10 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     active_envs = resolve_active_envs(script_dir, instance_config)
     install_skills(script_dir, workflow_dir, active_envs)
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
+    cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
 
     return {
-        "model": runtime_config.model,
+        "model": cycle_model,
         "maxTurns": runtime_config.max_turns,
         "intervalSeconds": runtime_config.interval,
         "idleIntervalSeconds": runtime_config.idle_interval,
