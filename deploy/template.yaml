@@ -29,7 +29,7 @@ parameters:
   value: "false"
 - name: DASHBOARD_URL
   description: public hostname for the memory server dashboard
-  value: ""
+  required: true
 objects:
 
 # ============================================================================
@@ -60,8 +60,8 @@ objects:
 #      jira-token            — Jira API token for this instance
 # 4. ServiceAccount "devbot-memory-server" with oauth-redirecturi annotation
 #      (requires DASHBOARD_URL parameter matching the Route hostname)
-# 5. Secret "devbot-oauth-proxy-cookie-secret" with key session_secret
-#      (provision via Vault in app-interface namespace YAML — same path as devbot-secrets)
+# 5. Secret "devbot-secrets" with key session_secret
+#      (provision via Vault in app-interface namespace YAML)
 #
 # ============================================================================
 
@@ -74,7 +74,7 @@ objects:
       app.kubernetes.io/name: memory-server
       app.kubernetes.io/part-of: devbot
     annotations:
-      serviceaccounts.openshift.io/oauth-redirecturi.dashboard: 'https://${DASHBOARD_URL}'
+      serviceaccounts.openshift.io/oauth-redirecturi.dashboard: 'https://${DASHBOARD_URL}/oauth/callback'
 
 # --- Memory Server Deployment ---
 - apiVersion: apps/v1
@@ -104,7 +104,10 @@ objects:
         volumes:
         - name: oauth-proxy-cookie-secret
           secret:
-            secretName: devbot-oauth-proxy-cookie-secret
+            secretName: devbot-secrets
+            items:
+            - key: session_secret
+              path: session_secret
         containers:
         - name: oauth-proxy
           image: quay.io/openshift/origin-oauth-proxy:4.9
