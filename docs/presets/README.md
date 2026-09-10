@@ -119,6 +119,7 @@ envs:
 ## Related Docs
 
 - [Onboarding a new instance](../onboarding-new-instance.md) — full setup guide including presets
+- [Instance configuration](instance-config.md) — workflow, env-preset, and fallback configuration
 - [Custom workflows](custom-workflows.md) — guide to building your own workflow
 - [Custom preflight scripts](custom-preflight.md) — guide to writing pre-session data-gathering scripts
 - [Presets design doc](../presets-design.md) — architecture decisions and rationale

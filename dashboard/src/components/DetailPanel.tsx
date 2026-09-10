@@ -1,36 +1,36 @@
-import type { Task, Memory } from '../types';
-import { timeAgo, sourceUrl, displayKey } from '../utils';
 import {
+  Button,
   Card,
-  CardHeader,
-  CardTitle,
   CardBody,
   CardFooter,
-  Button,
-  Label,
-  LabelGroup,
-  Flex,
-  FlexItem,
+  CardHeader,
+  CardTitle,
+  CodeBlock,
+  CodeBlockCode,
   Content,
   DescriptionList,
+  DescriptionListDescription,
   DescriptionListGroup,
   DescriptionListTerm,
-  DescriptionListDescription,
   Divider,
-  CodeBlock,
-  CodeBlockCode
-} from '@patternfly/react-core';
-import { TimesIcon } from '@patternfly/react-icons';
+  Flex,
+  FlexItem,
+  Label,
+  LabelGroup,
+} from "@patternfly/react-core";
+import { TimesIcon } from "@patternfly/react-icons";
+import type { Memory, Task } from "../types";
+import { displayKey, sourceUrl, timeAgo } from "../utils";
 
 interface MemoryDetailProps {
-  type: 'memory';
+  type: "memory";
   memory: Memory;
   onClose: () => void;
   onDelete: (id: number) => void;
 }
 
 interface TaskDetailProps {
-  type: 'task';
+  type: "task";
   task: Task;
   onClose: () => void;
   onDelete?: (key: string) => void;
@@ -41,45 +41,51 @@ interface TaskDetailProps {
 
 type Props = MemoryDetailProps | TaskDetailProps;
 
-const categoryColors: Record<string, 'green' | 'orange' | 'blue' | 'grey'> = {
-  learning: 'green',
-  review_feedback: 'orange',
-  codebase_pattern: 'blue',
+const categoryColors: Record<string, "green" | "orange" | "blue" | "grey"> = {
+  learning: "green",
+  review_feedback: "orange",
+  codebase_pattern: "blue",
 };
 
-const statusColors: Record<string, 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'grey'> = {
-  in_progress: 'blue',
-  pr_open: 'green',
-  pr_changes: 'orange',
-  done: 'grey',
-  paused: 'purple',
-  archived: 'grey',
+const statusColors: Record<string, "blue" | "green" | "orange" | "red" | "purple" | "grey"> = {
+  in_progress: "blue",
+  pr_open: "green",
+  pr_changes: "orange",
+  done: "grey",
+  paused: "purple",
+  archived: "grey",
 };
 
 const statusLabels: Record<string, string> = {
-  in_progress: 'In Progress',
-  pr_open: 'PR Open',
-  pr_changes: 'Changes Requested',
-  done: 'Done',
-  paused: 'Paused',
-  archived: 'Archived',
+  in_progress: "In Progress",
+  pr_open: "PR Open",
+  pr_changes: "Changes Requested",
+  done: "Done",
+  paused: "Paused",
+  archived: "Archived",
 };
 
 export default function DetailPanel(props: Props) {
-  if (props.type === 'memory') {
+  if (props.type === "memory") {
     return <MemoryDetail {...props} />;
   }
   return <TaskDetail {...props} />;
 }
 
-function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'type'>) {
-  const badgeColor = categoryColors[memory.category] || 'green';
+function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, "type">) {
+  const badgeColor = categoryColors[memory.category] || "green";
   const prUrl = memory.metadata?.pr_url;
 
   return (
     <Card isGlass>
       <CardHeader
-        actions={{ actions: <Button variant="plain" onClick={onClose}><TimesIcon /></Button> }}
+        actions={{
+          actions: (
+            <Button variant="plain" onClick={onClose}>
+              <TimesIcon />
+            </Button>
+          ),
+        }}
       >
         <CardTitle>{memory.title}</CardTitle>
       </CardHeader>
@@ -88,13 +94,13 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
           <CodeBlockCode>{memory.content}</CodeBlockCode>
         </CodeBlock>
 
-        <Divider style={{ margin: '16px 0' }} />
+        <Divider style={{ margin: "16px 0" }} />
 
         <DescriptionList isHorizontal isCompact>
           <DescriptionListGroup>
             <DescriptionListTerm>Category</DescriptionListTerm>
             <DescriptionListDescription>
-              <Label color={badgeColor}>{memory.category.replace(/_/g, ' ')}</Label>
+              <Label color={badgeColor}>{memory.category.replace(/_/g, " ")}</Label>
             </DescriptionListDescription>
           </DescriptionListGroup>
           {memory.repo && (
@@ -107,7 +113,7 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
             <DescriptionListGroup>
               <DescriptionListTerm>Source</DescriptionListTerm>
               <DescriptionListDescription>
-                <a href={sourceUrl(memory) || '#'} target="_blank" rel="noopener noreferrer">
+                <a href={sourceUrl(memory) || "#"} target="_blank" rel="noopener noreferrer">
                   {displayKey(memory)}
                 </a>
               </DescriptionListDescription>
@@ -117,7 +123,9 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
             <DescriptionListGroup>
               <DescriptionListTerm>PR</DescriptionListTerm>
               <DescriptionListDescription>
-                <a href={prUrl} target="_blank" rel="noopener noreferrer">{prUrl}</a>
+                <a href={prUrl} target="_blank" rel="noopener noreferrer">
+                  {prUrl}
+                </a>
               </DescriptionListDescription>
             </DescriptionListGroup>
           )}
@@ -143,10 +151,12 @@ function MemoryDetail({ memory, onClose, onDelete }: Omit<MemoryDetailProps, 'ty
 
         {memory.tags.length > 0 && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <LabelGroup categoryName="Tags">
               {memory.tags.map((t) => (
-                <Label key={t} variant="outline">{t}</Label>
+                <Label key={t} variant="outline">
+                  {t}
+                </Label>
               ))}
             </LabelGroup>
           </>
@@ -168,29 +178,34 @@ function TaskDetail({
   onUnarchive,
   onPause,
   onUnpause,
-}: Omit<TaskDetailProps, 'type'>) {
+}: Omit<TaskDetailProps, "type">) {
   const meta = task.metadata || {};
-  const prs: Array<{ repo: string; number: number; url: string; host: string }> =
-    meta.prs || [];
+  const prs: Array<{ repo: string; number: number; url: string; host: string }> = meta.prs || [];
   const repos: string[] = meta.repos || [task.repo];
   const key = displayKey(task);
   const url = sourceUrl(task);
   const artifacts = task.artifacts || [];
   const isActive =
-    task.status === 'in_progress' ||
-    task.status === 'pr_open' ||
-    task.status === 'pr_changes';
+    task.status === "in_progress" || task.status === "pr_open" || task.status === "pr_changes";
 
   return (
     <Card isGlass>
       <CardHeader
-        actions={{ actions: <Button variant="plain" onClick={onClose}><TimesIcon /></Button> }}
+        actions={{
+          actions: (
+            <Button variant="plain" onClick={onClose}>
+              <TimesIcon />
+            </Button>
+          ),
+        }}
       >
         <CardTitle>
-          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+          <Flex alignItems={{ default: "alignItemsCenter" }} gap={{ default: "gapSm" }}>
             <FlexItem>
               {url ? (
-                <a href={url} target="_blank" rel="noopener noreferrer">{key}</a>
+                <a href={url} target="_blank" rel="noopener noreferrer">
+                  {key}
+                </a>
               ) : (
                 <span>{key}</span>
               )}
@@ -208,18 +223,20 @@ function TaskDetail({
           <DescriptionListGroup>
             <DescriptionListTerm>Status</DescriptionListTerm>
             <DescriptionListDescription>
-              <Label color={statusColors[task.status] || 'grey'}>
+              <Label color={statusColors[task.status] || "grey"}>
                 {statusLabels[task.status] || task.status}
               </Label>
             </DescriptionListDescription>
           </DescriptionListGroup>
           <DescriptionListGroup>
             <DescriptionListTerm>Repo(s)</DescriptionListTerm>
-            <DescriptionListDescription>{repos.join(', ')}</DescriptionListDescription>
+            <DescriptionListDescription>{repos.join(", ")}</DescriptionListDescription>
           </DescriptionListGroup>
           <DescriptionListGroup>
             <DescriptionListTerm>Branch</DescriptionListTerm>
-            <DescriptionListDescription><code>{task.branch}</code></DescriptionListDescription>
+            <DescriptionListDescription>
+              <code>{task.branch}</code>
+            </DescriptionListDescription>
           </DescriptionListGroup>
 
           {artifacts.length > 0 && (
@@ -228,7 +245,9 @@ function TaskDetail({
               <DescriptionListDescription>
                 {artifacts.map((a, i) => (
                   <div key={i}>
-                    <a href={a.url} target="_blank" rel="noopener noreferrer">{a.name}</a>
+                    <a href={a.url} target="_blank" rel="noopener noreferrer">
+                      {a.name}
+                    </a>
                     {a.type && <span> ({a.type})</span>}
                   </div>
                 ))}
@@ -269,7 +288,7 @@ function TaskDetail({
 
         {task.summary && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Summary</Content>
             <Content component="p">{task.summary}</Content>
           </>
@@ -277,7 +296,7 @@ function TaskDetail({
 
         {task.paused_reason && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Paused Reason</Content>
             <Content component="p">{task.paused_reason}</Content>
           </>
@@ -285,7 +304,7 @@ function TaskDetail({
 
         {meta.last_step && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Progress</Content>
             <DescriptionList isCompact>
               {meta.last_step && (
@@ -305,7 +324,9 @@ function TaskDetail({
                   <DescriptionListTerm>Files changed</DescriptionListTerm>
                   <DescriptionListDescription>
                     {meta.files_changed.map((f: string, i: number) => (
-                      <div key={i}><code>{f}</code></div>
+                      <div key={i}>
+                        <code>{f}</code>
+                      </div>
                     ))}
                   </DescriptionListDescription>
                 </DescriptionListGroup>
@@ -328,7 +349,7 @@ function TaskDetail({
 
         {!meta.last_step && Object.keys(meta).length > 0 && (
           <>
-            <Divider style={{ margin: '16px 0' }} />
+            <Divider style={{ margin: "16px 0" }} />
             <Content component="h4">Metadata</Content>
             <CodeBlock>
               <CodeBlockCode>{JSON.stringify(meta, null, 2)}</CodeBlockCode>
@@ -337,8 +358,8 @@ function TaskDetail({
         )}
       </CardBody>
       <CardFooter>
-        <Flex gap={{ default: 'gapSm' }}>
-          {onUnpause && task.status === 'paused' && (
+        <Flex gap={{ default: "gapSm" }}>
+          {onUnpause && task.status === "paused" && (
             <FlexItem>
               <Button variant="primary" onClick={() => onUnpause(key)}>
                 Unpause Task
@@ -359,7 +380,7 @@ function TaskDetail({
               </Button>
             </FlexItem>
           )}
-          {onDelete && task.status !== 'archived' && (
+          {onDelete && task.status !== "archived" && (
             <FlexItem>
               <Button variant="danger" onClick={() => onDelete(key)}>
                 Archive Task

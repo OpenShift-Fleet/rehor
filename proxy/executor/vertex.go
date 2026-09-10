@@ -51,7 +51,8 @@ func NewVertexProxy(projectID, region string, ts oauth2.TokenSource, policy *Ver
 			}
 			r.Out.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 		},
-		FlushInterval: -1,
+		FlushInterval:  -1,
+		ModifyResponse: stripSensitiveResponseHeaders,
 	}
 
 	mux := http.NewServeMux()

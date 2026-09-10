@@ -1,54 +1,28 @@
-import { useEffect, useState, useCallback } from 'react';
-import type { BotStatus } from '../types';
-import { wakeInstance } from '../api';
-import { useWS } from '../hooks/useWebSocket';
-import { timeAgo, sourceUrl, displayKey, effectiveState, stateLabelColor, stateIconStatus, stateBorderColor } from '../utils';
+import { Card, CardBody, Flex, FlexItem, Icon, Label } from "@patternfly/react-core";
+import { CircleIcon } from "@patternfly/react-icons";
+import { useEffect, useState } from "react";
+import type { BotStatus } from "../types";
 import {
-  Card,
-  CardBody,
-  Flex,
-  FlexItem,
-  Label,
-  Button,
-  Icon
-} from '@patternfly/react-core';
-import { CircleIcon } from '@patternfly/react-icons';
+  displayKey,
+  effectiveState,
+  sourceUrl,
+  stateBorderColor,
+  stateIconStatus,
+  stateLabelColor,
+  timeAgo,
+} from "../utils";
 
 interface Props {
   status: BotStatus;
 }
 
 export default function BotBanner({ status }: Props) {
-  const [elapsed, setElapsed] = useState('');
-  const [waking, setWaking] = useState(false);
-  const { onEvent } = useWS();
+  const [elapsed, setElapsed] = useState("");
   const state = effectiveState(status);
 
-  const handleWake = useCallback(async () => {
-    if (!status.instance_id) return;
-    setWaking(true);
-    try {
-      await wakeInstance(status.instance_id);
-    } catch {
-      setWaking(false);
-    }
-  }, [status.instance_id]);
-
   useEffect(() => {
-    return onEvent((event) => {
-      if (
-        event.type === 'bot_status' &&
-        event.data.instance_id === status.instance_id &&
-        event.data.state === 'working'
-      ) {
-        setWaking(false);
-      }
-    });
-  }, [onEvent, status.instance_id]);
-
-  useEffect(() => {
-    if (status.state !== 'working' || !status.cycle_start) {
-      setElapsed('');
+    if (status.state !== "working" || !status.cycle_start) {
+      setElapsed("");
       return;
     }
 
@@ -71,70 +45,106 @@ export default function BotBanner({ status }: Props) {
     return () => clearInterval(id);
   }, [status.state, status.cycle_start]);
 
-  const message = state === 'sleep' ? "Bot hasn't checked in recently" : status.message;
+  const message = state === "sleep" ? "Bot hasn't checked in recently" : status.message;
 
   return (
-    <Card isCompact isGlass style={{ borderLeft: `3px solid ${stateBorderColor(state)}`, marginBottom: '12px' }}>
+    <Card
+      isCompact
+      isGlass
+      style={{ borderLeft: `3px solid ${stateBorderColor(state)}`, marginBottom: "12px" }}
+    >
       <CardBody>
-      <Flex alignItems={{ default: 'alignItemsCenter' }} justifyContent={{ default: 'justifyContentSpaceBetween' }} flexWrap={{ default: 'nowrap' }}>
-        <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flex: 1, minWidth: 0 }}>
-          <FlexItem>
-            <Icon status={stateIconStatus(state)}>
-              <CircleIcon />
-            </Icon>
-          </FlexItem>
-          <FlexItem>
-            <Label color={stateLabelColor(state)}>
-              {state.toUpperCase()}
-            </Label>
-          </FlexItem>
-          <FlexItem style={{ minWidth: 0, flex: 1 }}>
-            <span style={{ color: 'var(--text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{message}</span>
-          </FlexItem>
-        </Flex>
-        <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }} flexWrap={{ default: 'nowrap' }} style={{ flexShrink: 0 }}>
-          {displayKey(status) && (
+        <Flex
+          alignItems={{ default: "alignItemsCenter" }}
+          justifyContent={{ default: "justifyContentSpaceBetween" }}
+          flexWrap={{ default: "nowrap" }}
+        >
+          <Flex
+            alignItems={{ default: "alignItemsCenter" }}
+            gap={{ default: "gapSm" }}
+            flexWrap={{ default: "nowrap" }}
+            style={{ flex: 1, minWidth: 0 }}
+          >
             <FlexItem>
-              <Label color="blue" href={sourceUrl(status) || '#'}>
-                {displayKey(status)}
-              </Label>
+              <Icon status={stateIconStatus(state)}>
+                <CircleIcon />
+              </Icon>
             </FlexItem>
-          )}
-          {status.repo && (
             <FlexItem>
-              <Label variant="outline" style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{status.repo}</Label>
+              <Label color={stateLabelColor(state)}>{state.toUpperCase()}</Label>
             </FlexItem>
-          )}
-          {status.instance_id && (
-            <FlexItem>
-              <Label variant="outline" style={{ maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{status.instance_id}</Label>
-            </FlexItem>
-          )}
-          {elapsed && (
-            <FlexItem>
-              <Label variant="outline">{elapsed}</Label>
-            </FlexItem>
-          )}
-          <FlexItem>
-            <span style={{ color: 'var(--text-dim)', fontSize: '12px' }} title={status.updated_at}>
-              {timeAgo(status.updated_at)}
-            </span>
-          </FlexItem>
-          {state === 'idle' && status.instance_id && (
-            <FlexItem>
-              <Button
-                variant="plain"
-                size="sm"
-                isDisabled={waking}
-                onClick={handleWake}
-                title="Wake bot \u2014 start next cycle immediately"
+            <FlexItem style={{ minWidth: 0, flex: 1 }}>
+              <span
+                style={{
+                  color: "var(--text)",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  display: "block",
+                }}
               >
-                {waking ? 'Waking\u2026' : '\u25B6'}
-              </Button>
+                {message}
+              </span>
             </FlexItem>
-          )}
+          </Flex>
+          <Flex
+            alignItems={{ default: "alignItemsCenter" }}
+            gap={{ default: "gapSm" }}
+            flexWrap={{ default: "nowrap" }}
+            style={{ flexShrink: 0 }}
+          >
+            {displayKey(status) && (
+              <FlexItem>
+                <Label color="blue" href={sourceUrl(status) || "#"}>
+                  {displayKey(status)}
+                </Label>
+              </FlexItem>
+            )}
+            {status.repo && (
+              <FlexItem>
+                <Label
+                  variant="outline"
+                  style={{
+                    maxWidth: "180px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {status.repo}
+                </Label>
+              </FlexItem>
+            )}
+            {status.instance_id && (
+              <FlexItem>
+                <Label
+                  variant="outline"
+                  style={{
+                    maxWidth: "120px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {status.instance_id}
+                </Label>
+              </FlexItem>
+            )}
+            {elapsed && (
+              <FlexItem>
+                <Label variant="outline">{elapsed}</Label>
+              </FlexItem>
+            )}
+            <FlexItem>
+              <span
+                style={{ color: "var(--text-dim)", fontSize: "12px" }}
+                title={status.updated_at}
+              >
+                {timeAgo(status.updated_at)}
+              </span>
+            </FlexItem>
+          </Flex>
         </Flex>
-      </Flex>
       </CardBody>
     </Card>
   );

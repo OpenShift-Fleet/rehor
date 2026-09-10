@@ -1,7 +1,14 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
 
 LABEL ?= hcc-ai-framework
+BIOME_VERSION ?= 2.5.12
 CONTAINER_RT ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+
+ts-verify: ## Check TypeScript formatting and lint with Biome
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check .
+
+ts-format: ## Format TypeScript files with Biome (local fix)
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check --write .
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -20,14 +27,24 @@ verify: ## Run all checks (same as CI)
 	cd proxy/executor && go vet ./...
 	@echo "=== Go: tests ==="
 	cd proxy/executor && go test -race ./...
+	@echo "=== TypeScript: Biome ==="
+	$(MAKE) ts-verify
 	@echo "=== Dashboard: type check ==="
-	cd dashboard && npm run lint
+	cd dashboard && npm run typecheck
 	@echo "=== Dashboard: build ==="
 	cd dashboard && npm run build
 	@echo "=== Dashboard: tests ==="
 	cd dashboard && npm test
+	@echo "=== Coordinator ==="
+	$(MAKE) coordinator-verify
 	@echo ""
 	@echo "All checks passed."
+
+coordinator-verify: ## Install and run coordinator tests, type check, and build
+	cd coordinator && npm ci
+	cd coordinator && npm test
+	cd coordinator && npm run typecheck
+	cd coordinator && npm run build
 
 precommit-install: ## Install pre-commit hooks
 	pip install pre-commit && pre-commit install
@@ -66,7 +83,7 @@ memory-verify: ## Run memory-server CI-equivalent checks locally
 
 container-verify: ## Run container build + smoke checks locally (CI-equivalent, see .github/workflows/container-verify.yml). Uses --network host; on macOS this needs Docker Desktop's host-networking feature enabled, or run under a Linux VM/CI.
 	@echo "=== bot: build ==="
-	$(CONTAINER_RT) build --build-arg GOVERSIONS="1.24.2 1.25.7" -t bot:verify -f Dockerfile .
+	$(CONTAINER_RT) build --build-arg GOVERSIONS="1.24.13 1.25.13" -t bot:verify -f Dockerfile .
 	@echo "=== bot: tooling presence check ==="
 	@for tool in python3 uv git tini bwrap buildah node go gcc make gh glab gpg; do \
 		$(CONTAINER_RT) run --rm --entrypoint bash bot:verify -c "command -v $$tool" >/dev/null \

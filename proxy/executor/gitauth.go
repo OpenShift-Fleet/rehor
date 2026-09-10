@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,11 +34,14 @@ const (
 )
 
 type GitHost struct {
-	Scheme   string
-	Host     string
-	AuthType string
-	Token    func() string
-	Username func() string
+	Scheme                string
+	Host                  string
+	AuthType              string
+	Token                 func() string
+	Username              func() string
+	TLSInsecureSkipVerify bool
+	TLSCACertFile         string
+	TLSCACertPEM          string
 }
 
 func defaultHostRegistry() map[string]*GitHost {
@@ -43,16 +49,19 @@ func defaultHostRegistry() map[string]*GitHost {
 		"github.com": {
 			Scheme:   "https",
 			Host:     "github.com",
-			AuthType: AuthTypeBearer,
+			AuthType: AuthTypeBasic,
 			Token:    func() string { return os.Getenv("GH_TOKEN") },
-			Username: nil,
+			Username: func() string { return os.Getenv("GH_USERNAME") },
 		},
 		"gitlab.cee.redhat.com": {
-			Scheme:   "https",
-			Host:     "gitlab.cee.redhat.com",
-			AuthType: AuthTypeBasic,
-			Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
-			Username: func() string { return os.Getenv("GL_USERNAME") },
+			Scheme:                "https",
+			Host:                  "gitlab.cee.redhat.com",
+			AuthType:              AuthTypeBasic,
+			Token:                 func() string { return os.Getenv("GITLAB_TOKEN") },
+			Username:              func() string { return os.Getenv("GL_USERNAME") },
+			TLSInsecureSkipVerify: getEnvAsBool("GITLAB_TLS_SKIP_VERIFY", false),
+			TLSCACertFile:         strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_FILE")),
+			TLSCACertPEM:          strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_PEM")),
 		},
 	}
 }
@@ -64,9 +73,10 @@ func NewGitAuthProxy() http.Handler {
 type contextKey string
 
 const (
-	hostConfigKey contextKey = "hostConfig"
+	hostConfigKey    contextKey = "hostConfig"
+	backendHostKey   contextKey = "backendHost"
 	pathRemainderKey contextKey = "pathRemainder"
-	tokenKey contextKey = "token"
+	tokenKey         contextKey = "token"
 )
 
 func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler {
@@ -108,7 +118,9 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 				r.Out.Header.Set("Authorization", basicAuth)
 			}
 		},
-		FlushInterval: DisableFlush,
+		FlushInterval:  DisableFlush,
+		ModifyResponse: stripSensitiveResponseHeaders,
+		Transport:      NewPerHostTransportManager(hostRegistry),
 	}
 
 	// Helper to log requests with consistent format
@@ -169,6 +181,7 @@ func newGitAuthProxyWithRegistry(hostRegistry map[string]*GitHost) http.Handler 
 		}
 
 		ctx := context.WithValue(r.Context(), hostConfigKey, hostConfig)
+		ctx = context.WithValue(ctx, backendHostKey, host)
 		ctx = context.WithValue(ctx, pathRemainderKey, remainder)
 		ctx = context.WithValue(ctx, tokenKey, token)
 		r = r.WithContext(ctx)
@@ -183,6 +196,8 @@ func ValidateGitAuthConfig() error {
 	ghToken := os.Getenv("GH_TOKEN")
 	glToken := os.Getenv("GITLAB_TOKEN")
 	glUsername := os.Getenv("GL_USERNAME")
+	glCAFile := strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_FILE"))
+	glCAPEM := strings.TrimSpace(os.Getenv("GITLAB_CA_CERT_PEM"))
 
 	if glToken != "" && glUsername == "" {
 		return fmt.Errorf("GL_USERNAME is required when GITLAB_TOKEN is set")
@@ -199,5 +214,129 @@ func ValidateGitAuthConfig() error {
 		return fmt.Errorf("at least one git host must be configured: set GH_TOKEN or (GITLAB_TOKEN and GL_USERNAME)")
 	}
 
+	if glCAFile != "" {
+		pemBytes, err := os.ReadFile(glCAFile)
+		if err != nil {
+			return fmt.Errorf("GITLAB_CA_CERT_FILE is not readable: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return fmt.Errorf("GITLAB_CA_CERT_FILE does not contain valid PEM certificates")
+		}
+	}
+
+	if glCAPEM != "" {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM([]byte(glCAPEM)) {
+			return fmt.Errorf("GITLAB_CA_CERT_PEM does not contain valid PEM certificates")
+		}
+	}
+
 	return nil
+}
+
+// PerHostTransportManager caches and manages http.Transport instances per backend host.
+type PerHostTransportManager struct {
+	mu           sync.Mutex
+	transports   map[string]*http.Transport
+	hostRegistry map[string]*GitHost
+}
+
+func NewPerHostTransportManager(hosts map[string]*GitHost) *PerHostTransportManager {
+	return &PerHostTransportManager{
+		transports:   make(map[string]*http.Transport),
+		hostRegistry: hosts,
+	}
+}
+
+// RoundTrip intercepts the request, determines the target host, and routes it
+// through a Transport configured specifically for that host.
+func (m *PerHostTransportManager) RoundTrip(req *http.Request) (*http.Response, error) {
+	host, ok := req.Context().Value(backendHostKey).(string)
+	if !ok {
+		host = req.URL.Host
+	}
+
+	m.mu.Lock()
+	tr, exists := m.transports[host]
+	if !exists {
+		// Build a custom TLS config dynamically based on the target host
+		tlsConfig := m.getTLSConfigForHost(host)
+
+		tr = &http.Transport{
+			TLSClientConfig:     tlsConfig,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+		}
+		m.transports[host] = tr
+	}
+	m.mu.Unlock()
+
+	return tr.RoundTrip(req)
+}
+
+// getTLSConfigForHost defines your custom rules per backend host
+func (m *PerHostTransportManager) getTLSConfigForHost(host string) *tls.Config {
+
+	tlsConfig := tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	matchedHost, exists := m.hostRegistry[host]
+	if !exists {
+		return &tlsConfig
+	}
+
+	tlsConfig.InsecureSkipVerify = matchedHost.TLSInsecureSkipVerify
+	if matchedHost.TLSCACertFile != "" || matchedHost.TLSCACertPEM != "" {
+		pool, err := loadSystemCertPoolWithCustomCA(matchedHost.TLSCACertFile, matchedHost.TLSCACertPEM)
+		if err != nil {
+			log.Printf("gitauth: warning: failed loading custom GitLab CA bundle: %v", err)
+			return &tlsConfig
+		}
+		tlsConfig.RootCAs = pool
+	}
+
+	return &tlsConfig
+}
+
+func loadSystemCertPoolWithCustomCA(caFile string, caPEM string) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+
+	if strings.TrimSpace(caFile) != "" {
+		pemBytes, readErr := os.ReadFile(caFile)
+		if readErr != nil {
+			return nil, fmt.Errorf("read ca file: %w", readErr)
+		}
+		if ok := pool.AppendCertsFromPEM(pemBytes); !ok {
+			return nil, fmt.Errorf("ca file does not contain valid PEM certificates")
+		}
+	}
+
+	if strings.TrimSpace(caPEM) != "" {
+		if ok := pool.AppendCertsFromPEM([]byte(caPEM)); !ok {
+			return nil, fmt.Errorf("ca pem does not contain valid PEM certificates")
+		}
+	}
+
+	return pool, nil
+}
+
+func getEnvAsBool(envVar string, defaultValue bool) bool {
+	valStr := strings.ToLower(strings.TrimSpace(os.Getenv(envVar)))
+	if valStr == "" {
+		return defaultValue
+	}
+
+	switch valStr {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return defaultValue
+	}
 }

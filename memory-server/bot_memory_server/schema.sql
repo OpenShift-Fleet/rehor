@@ -161,14 +161,13 @@ CREATE TABLE IF NOT EXISTS bot_instances (
     cycle_start                 TIMESTAMPTZ,
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     idle_consecutive_cycles     INTEGER NOT NULL DEFAULT 0,
-    last_idle_reminder_sent_at  TIMESTAMPTZ,
-    last_seen                   TIMESTAMPTZ
+    last_idle_reminder_sent_at  TIMESTAMPTZ
 );
 
--- Idempotent column additions for existing databases
+-- Idempotent column changes for existing databases
 ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS idle_consecutive_cycles    INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS last_idle_reminder_sent_at TIMESTAMPTZ;
-ALTER TABLE bot_instances ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ;
+ALTER TABLE bot_instances DROP COLUMN IF EXISTS last_seen;
 
 -- Migrate existing bot_status row into bot_instances (if instance_id is set)
 DO $$ BEGIN

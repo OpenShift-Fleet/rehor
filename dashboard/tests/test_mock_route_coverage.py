@@ -19,7 +19,6 @@ EXACT_PATH_RE = re.compile(r"path == \"([^\"]+)\"")
 OPENAPI_SKIP_GET_PATHS = {
     "/health",
     "/api/instances/{instance_id}",
-    "/api/instances/{instance_id}/wake",
 }
 
 
@@ -51,8 +50,6 @@ def _extract_mock_routes() -> set[tuple[str, str]]:
         routes.add(("/api/tasks/{key}/unpause", "POST"))
     if 'parts[3] == "unarchive"' in post_body:
         routes.add(("/api/tasks/{key}/unarchive", "POST"))
-    if 'parts[3] == "wake"' in post_body:
-        routes.add(("/api/instances/{instance_id}/wake", "POST"))
 
     delete_body = bodies.get("do_DELETE", "")
     if 'parts[1] == "tasks"' in delete_body:

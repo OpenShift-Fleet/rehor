@@ -2,6 +2,12 @@
 
 The bot operates as an autonomous loop: a scheduler triggers cycles, lightweight Python scripts gather data and decide whether there's work to do, and only then does a Claude AI session start. This design ensures AI tokens are spent only when there's real work — the common "nothing to do" case costs zero.
 
+This document describes the active Python/Claude path. The TypeScript
+[coordinator contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
+is migration scaffolding. It preserves this preflight decision loop: `skip` and
+`error` still avoid runtime startup, while `start` becomes a provider-neutral
+run and normalized event stream. See the [OpenCode migration design](migrations/opencode-migration.md).
+
 ## Architecture Overview
 
 ```mermaid
@@ -48,7 +54,7 @@ graph TD
     Agg{"5. Aggregate results"}
     Launch["6. Launch Claude session<br/>(preflight content in prompt)"]
     Orphan["7. Record orphan cycle"]
-    SleepNode["Sleep (~1 hour)"]
+    SleepNode["Sleep (default 5 minutes)"]
     Cleanup["8. Cleanup<br/>(costs, transcripts, cache)"]
     LoopBack["9. Loop back to step 1"]
 
@@ -72,6 +78,8 @@ graph TD
 | All preflight scripts error (API down) | No | $0 (backoff) |
 
 The common case — "nothing changed since last cycle" — is handled entirely by Python scripts. The AI only wakes up when a preflight script explicitly returns `"start"`.
+
+An **orphan cycle** is the recorded result when all preflight scripts return `skip`. No Claude session starts, so it normally has zero tools, zero tokens, and `$0` model cost. The name does not mean failed or abandoned work; it marks an idle polling check with no task execution.
 
 ---
 
@@ -508,6 +516,8 @@ The `last_addressed` timestamp on each task is used to filter out old feedback. 
 ## Related Docs
 
 - [Workflow Presets](presets/workflows.md) — Available workflows and their decision loops
+- [Coordinator Runtime Contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md) — Provider-neutral runtime boundary and compatibility mapping
+- [OpenCode Migration Design](migrations/opencode-migration.md) — Runtime migration and rollout phases
 - [Writing Custom Preflight Scripts](presets/custom-preflight.md) — How to write your own preflight scripts
 - [Creating Custom Workflows](presets/custom-workflows.md) — Building complete custom workflows
 - [Scheduling](scheduling.md) — KEDA cron scaling configuration

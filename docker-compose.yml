@@ -47,6 +47,11 @@ services:
     environment:
       - GH_TOKEN
       - GITLAB_TOKEN
+      - GITLAB_TLS_SKIP_VERIFY
+      - GITLAB_CA_CERT_B64
+      - GITLAB_CA_CERT_FILE
+      - GITLAB_CA_CERT_PEM
+      - GIT_AUTH_ENABLED
       - GH_USERNAME
       - GL_USERNAME
       - GPG_PRIVATE_KEY_B64
@@ -76,7 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        GOVERSIONS: "1.24.2 1.25.7"
+        GOVERSIONS: "1.24.13 1.25.13"
     security_opt:
       - no-new-privileges
     shm_size: 512m
@@ -92,6 +97,9 @@ services:
       - GH_USER_EMAIL
       - GL_USER_NAME
       - GL_USER_EMAIL
+      - GITLAB_CA_CERT_B64
+      - GITLAB_CA_CERT_FILE
+      - GITLAB_CA_CERT_PEM
       - SSO_USERNAME
       - SSO_PASSWORD
       - BOT_LABEL=${BOT_LABEL:-hcc-ai-framework}

@@ -1,13 +1,12 @@
 """Tests for preflight shared modules (presets/shared/preflight/)."""
 
+import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
-
-from unittest.mock import MagicMock
 
 from common import (
     build_repo_lookup,
@@ -16,8 +15,17 @@ from common import (
     upstream_repo,
 )
 from gh_pr_status import classify_gh, gh_pr_comments, has_new_feedback
-from gl_mr_status import classify_gl, gl_mr_notes
-from gl_mr_status import has_new_feedback as gl_has_new_feedback
+from gh_pr_status import main as gh_main
+from gl_mr_status import (
+    ci_failure_needs_session as gl_ci_failure_needs_session,
+)
+from gl_mr_status import (
+    classify_gl,
+    gl_mr_notes,
+)
+from gl_mr_status import (
+    has_new_feedback as gl_has_new_feedback,
+)
 
 # --- upstream_repo ---
 
@@ -88,6 +96,7 @@ def test_is_bot_author_known_bots():
     assert is_bot_author("github-actions") is True
     assert is_bot_author("my-app[bot]") is True
     assert is_bot_author("coderabbit-bot") is True
+    assert is_bot_author("openshift-ci-robot") is True
 
 
 def test_is_bot_author_humans():
@@ -167,10 +176,106 @@ def test_classify_gh_ci_failure():
     assert "test" in issues[0]
 
 
-def test_classify_gh_changes_requested():
+def test_classify_gh_changes_requested_review_old():
+    """Old CHANGES_REQUESTED review (before last_addressed) should not add issues."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T10:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T18:00:00")
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
+
+
+def test_production_cycle_skips_addressed_sticky_review_and_ci_failure(monkeypatch):
+    """Cycle 39824 source data must not launch session for already-addressed work."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39824-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (6, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("RedHatInsights/notifications-frontend", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "CI FAILING" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_production_cycle_skips_automated_ci_robot_comments(monkeypatch):
+    """Cycle 39746 source data must ignore automated CI comments as feedback."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39746-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (9, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("openshift/console", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "FEEDBACK" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_gl_addressed_ci_failure_does_not_need_session():
+    enriched = {
+        "task": {"last_addressed": "2026-09-02T10:09:00+00:00"},
+        "mr_notes": [],
+    }
+
+    assert gl_ci_failure_needs_session(enriched) is False
+
+
+def test_classify_gh_changes_requested_review_new():
+    """New CHANGES_REQUESTED review (after last_addressed) should add review:{author}."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T18:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T10:00:00")
+    assert "review:reviewer" in issues
+
+
+def test_classify_gh_reviewdecision_without_reviews():
+    """reviewDecision alone (no reviews array) should not add issues."""
     pr = {"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED"}
     state, issues = classify_gh(pr)
-    assert "changes_requested" in issues
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
 
 
 def test_classify_gh_review_comment():
@@ -250,6 +355,7 @@ def _make_ci_enriched(last_addressed=None, extra_issues=None, pr_comments=None):
         },
         "prs": [{"repo": "test-repo", "num": 1, "host": "github", "state": "OPEN", "issues": issues, "data": {}}],
         "pr_comments": pr_comments or [],
+        "mr_notes": pr_comments or [],
         "issues": issues,
     }
 
@@ -265,7 +371,7 @@ def _classify_bucket(enriched_list):
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
             ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
-            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+            if ci_only and not gl_ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)
@@ -307,6 +413,14 @@ def test_ci_plus_conflict_is_actionable():
     assert len(result["clean"]) == 0
 
 
+def test_ci_plus_unresolved_discussions_is_actionable():
+    """CI failure combined with unresolved discussions stays actionable."""
+    e = _make_ci_enriched(last_addressed="2026-07-14T17:49", extra_issues=["unresolved_threads"])
+    result = _classify_bucket([e])
+    assert len(result["ci_fail"]) == 1
+    assert len(result["clean"]) == 0
+
+
 def test_ci_only_with_new_feedback_is_actionable():
     """CI-only with last_addressed but new human comment → actionable."""
     e = _make_ci_enriched(
@@ -329,11 +443,27 @@ def test_ci_only_with_old_feedback_is_clean():
     assert len(result["ci_fail"]) == 0
 
 
-def test_ci_plus_changes_requested_is_actionable():
-    """CI failure + changes_requested should not be classified as CI-only."""
+def test_ci_plus_old_changes_requested_is_clean():
+    """CI fail + old CHANGES_REQUESTED review (before last_addressed) → CLEAN.
+
+    This is the main bug fix: sticky reviewDecision no longer causes false positives.
+    The review was addressed (before last_addressed), so should be suppressed.
+    """
     e = _make_ci_enriched(
-        last_addressed="2026-07-14T17:49",
-        extra_issues=["changes_requested"],
+        last_addressed="2026-07-14T18:00",
+        pr_comments=[],
+    )
+    # No "changes_requested" in issues because classify_gh filters old reviews
+    result = _classify_bucket([e])
+    assert len(result["clean"]) == 1
+    assert len(result["ci_fail"]) == 0
+
+
+def test_ci_plus_new_changes_requested_is_actionable():
+    """CI failure + NEW changes_requested review → actionable."""
+    e = _make_ci_enriched(
+        last_addressed="2026-07-14T10:00",
+        extra_issues=["review:reviewer"],  # New review adds review:{author}, not changes_requested
     )
     result = _classify_bucket([e])
     assert len(result["ci_fail"]) == 1

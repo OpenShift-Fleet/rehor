@@ -398,7 +398,7 @@ class TestFormatDigest:
         assert "framework-1" in result
         assert "2026-08-13" in result
         assert "Open PRs (1):" in result
-        assert "PR #42 (https://github.com/org/repo/pull/42) — Fix nav dropdown - RHCLOUD-100 · open for 3d" in result
+        assert "PR #42 — https://github.com/org/repo/pull/42 — Fix nav dropdown - RHCLOUD-100 · open for 3d" in result
 
     def test_format_with_metadata_prs_fallback(self):
         rows = [
@@ -416,7 +416,7 @@ class TestFormatDigest:
 
         result = _format_digest("framework-1", rows, now)
 
-        assert "org/frontend#15 (https://github.com/org/frontend/pull/15)" in result
+        assert "org/frontend#15 — https://github.com/org/frontend/pull/15" in result
         assert "7d" in result
 
     def test_format_no_pr_info(self):
@@ -466,7 +466,7 @@ class TestFormatPrLabel:
                 }
             ],
         )
-        assert _format_pr_label(row) == "PR #42 (https://github.com/org/repo/pull/42)"
+        assert _format_pr_label(row) == "PR #42 — https://github.com/org/repo/pull/42"
 
     def test_from_artifacts_merge_request(self):
         row = _make_task_row(
@@ -478,7 +478,7 @@ class TestFormatPrLabel:
                 }
             ],
         )
-        assert _format_pr_label(row) == "MR #10 (https://gitlab.com/org/repo/-/merge_requests/10)"
+        assert _format_pr_label(row) == "MR #10 — https://gitlab.com/org/repo/-/merge_requests/10"
 
     def test_from_metadata_prs(self):
         row = _make_task_row(
@@ -486,7 +486,7 @@ class TestFormatPrLabel:
             repo="org/repo",
             metadata={"prs": [{"url": "https://github.com/org/repo/pull/42", "number": 42}]},
         )
-        assert _format_pr_label(row) == "org/repo#42 (https://github.com/org/repo/pull/42)"
+        assert _format_pr_label(row) == "org/repo#42 — https://github.com/org/repo/pull/42"
 
     def test_no_info(self):
         row = _make_task_row(artifacts=[], metadata={})
@@ -506,4 +506,4 @@ class TestFormatPrLabel:
                 ]
             ),
         )
-        assert _format_pr_label(row) == "PR #42 (https://github.com/org/repo/pull/42)"
+        assert _format_pr_label(row) == "PR #42 — https://github.com/org/repo/pull/42"

@@ -52,7 +52,7 @@ These secrets are needed for deployment. All live in the **proxy container** (in
 | `GH_TOKEN` | PAT from step 1.3 | **Proxy** | gh CLI + git credential helper (HTTPS) |
 | `GITLAB_TOKEN` | GitLab PAT (api + write_repository) | **Proxy** | glab CLI + git credential helper (HTTPS) |
 | `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | **Proxy** | commit signing |
-| `GOOGLE_SA_KEY_B64` | `base64 < sa-key.json` | **Proxy** | Vertex AI auth (Claude API) |
+| `GOOGLE_SA_KEY_B64` | `base64 -w 0 ~/.config/gcloud/application_default_credentials.json` (or `base64 < sa-key.json`) | **Proxy** | Vertex AI auth (Claude API). See [2.3](#23-vertex-ai-personal-credentials) |
 | `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Proxy** | Model allowlist for Vertex AI |
 
 ### 2.2 Set environment variables
@@ -63,7 +63,7 @@ The proxy container expects secrets as env vars. Set them before running:
 export GH_TOKEN=<pat-token>
 export GITLAB_TOKEN=<gitlab-pat>
 export GPG_PRIVATE_KEY_B64=$(base64 -i .ssh/gpg-private.asc)
-export GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
+export GOOGLE_SA_KEY_B64=$(base64 -w 0 ~/.config/gcloud/application_default_credentials.json)
 export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 ```
 
@@ -73,13 +73,54 @@ For persistent use, add these to a `.env` file (already gitignored):
 GH_TOKEN=<pat-token>
 GITLAB_TOKEN=<gitlab-pat>
 GPG_PRIVATE_KEY_B64=<base64-encoded-gpg-key>
-GOOGLE_SA_KEY_B64=<base64-encoded-sa-key>
+GOOGLE_SA_KEY_B64=<base64-encoded-adc-or-sa-json>
 VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
 ```
 
 The compose file automatically reads `.env` from the project root.
 
 For OpenShift, store these as secrets and inject them as env vars into the pod.
+
+### 2.3 Vertex AI (personal credentials)
+
+You do **not** need a dedicated GCP service account key. Personal Vertex access via gcloud works locally, in podman compose.
+
+1. Log in from a terminal:
+
+```bash
+gcloud auth login
+gcloud auth application-default login
+```
+
+`gcloud auth login` authenticates the gcloud CLI. `gcloud auth application-default login` writes a JSON representation of your user credentials to:
+
+```
+~/.config/gcloud/application_default_credentials.json
+```
+
+2. Point the bot at your GCP project in `.env`:
+
+```bash
+CLAUDE_CODE_USE_VERTEX=1
+ANTHROPIC_VERTEX_PROJECT_ID=<your-gcp-project>
+VERTEX_LOCATION=global
+```
+
+3. **Compose** — the proxy cannot see your home-directory gcloud config. Base64-encode the JSON and set `GOOGLE_SA_KEY_B64`:
+
+```bash
+base64 -w 0 ~/.config/gcloud/application_default_credentials.json
+```
+
+macOS (`base64` has no `-w`):
+
+```bash
+base64 < ~/.config/gcloud/application_default_credentials.json | tr -d '\n'
+```
+
+- **Compose:** put the output in `.env` as `GOOGLE_SA_KEY_B64=<paste-base64-here>`
+
+A downloaded service account key (`sa-key.json`) still works the same way if you have one: `base64 -w 0 sa-key.json`.
 
 ## 3. Local Development (Multiple GitHub Accounts)
 

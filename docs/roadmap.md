@@ -1,6 +1,6 @@
-# Rehor Roadmap
+# Řehoř Roadmap
 
-Planned improvements and new capabilities for the Rehor autonomous development platform.
+Planned improvements and new capabilities for the Řehoř autonomous development tool.
 
 ---
 
@@ -79,7 +79,7 @@ A dedicated bot instance that automates onboarding new teams and repos onto the 
 **Why:** Today, onboarding a new instance requires manual setup — creating config files, Jira labels, Konflux components, and repo permissions. An onboarding agent can handle the mechanical steps while maintaining a conversation with the requester across Jira comments, PR reviews, and other channels to gather requirements and iterate on the configuration.
 
 **How it works:**
-- Triggered by a new Jira issue (e.g., "Onboard repo X to Rehor")
+- Triggered by a new Jira issue (e.g., "Onboard repo X to Řehoř")
 - Engages in a multi-channel dialog with the reporter (Jira comments, PRs) to gather details:
   - Repository URL and hosting platform (GitHub / GitLab)
   - Jira project and board
@@ -136,7 +136,7 @@ Each preset includes its own workflow CLAUDE.md, preflight checks, and default c
 
 Integrate with the [Fleet Engineering Agentic SDLC](https://github.com/OpenShift-Fleet/agentic-sdlc) tooling — a shared skill and command catalog used across the organization.
 
-**Why:** The agentic-sdlc repo provides battle-tested skills (`start-work`, `finish-work`, `pr-review`, `jira-create`, etc.) and SDLC practices that the broader engineering org already uses. Aligning Rehor with these standards means bot instances follow the same workflows human engineers do, and improvements flow both ways.
+**Why:** The agentic-sdlc repo provides battle-tested skills (`start-work`, `finish-work`, `pr-review`, `jira-create`, etc.) and SDLC practices that the broader engineering org already uses. Aligning Řehoř with these standards means bot instances follow the same workflows human engineers do, and improvements flow both ways.
 
 **Integration points:**
 - Install the agentic-sdlc plugin into bot runner images so skills are available at runtime
@@ -225,7 +225,7 @@ Add a stable identifier that links all artifacts produced by a single bot run.
 
 ## 10. Task Blocker Explanation
 
-Show why Rehor did not pick up a task and what an engineer must do next. The task detail view should expose the latest preflight decision, failed checks, stale inputs, retry timing, and a short remediation message.
+Show why Řehoř did not pick up a task and what an engineer must do next. The task detail view should expose the latest preflight decision, failed checks, stale inputs, retry timing, and a short remediation message.
 
 **Why:** Engineers cannot currently ask "why hasn't PROJ-123 been picked up?" Preflight produces free-text skip reasons (e.g., "No eligible work — 3 candidates lack repo: labels"), but these are dumped as a single text blob into idle cycle runs (`progress.summary`, truncated to 2000 chars), not linked to individual tasks. The dashboard shows paused tasks with `paused_reason` and idle cycle run summaries, but candidate tickets that were evaluated and skipped have no representation in the dashboard at all — they only exist in Jira. The Task model has no field for `last_skip_reason` or `last_preflight_result`. Today, engineers must go to the Cycle Runs page, filter for "idle" cycle type, read free-text summaries across multiple cycles, and piece together why their ticket wasn't picked — or read runner logs directly.
 
@@ -244,7 +244,7 @@ Show why Rehor did not pick up a task and what an engineer must do next. The tas
 
 ## 11. Ticket Readiness Doctor
 
-Validate whether a Jira ticket is sufficiently well-specified for Rehor to work on it, and improve it when it isn't.
+Validate whether a Jira ticket is sufficiently well-specified for Řehoř to work on it, and improve it when it isn't.
 
 **Why:** Underspecified tickets are the most common reason bot runs produce wrong or incomplete results. The bot starts work, discovers ambiguity mid-implementation, and either guesses wrong or stalls. Catching specification gaps before execution saves bot cycles and engineer rework.
 

@@ -1,0 +1,46 @@
+name: Coordinator Tests
+
+on:
+  pull_request:
+    paths:
+      - 'coordinator/**'
+      - '.github/workflows/coordinator-tests.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'coordinator/**'
+      - '.github/workflows/coordinator-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  coordinator:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./coordinator
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: coordinator/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build

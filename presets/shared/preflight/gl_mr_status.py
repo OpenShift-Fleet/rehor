@@ -147,6 +147,12 @@ def has_new_feedback(enriched):
     return False
 
 
+def ci_failure_needs_session(enriched):
+    """Return whether an addressed CI failure needs another agent session."""
+    task = enriched["task"]
+    return not task.get("last_addressed") or has_new_feedback(enriched)
+
+
 def fmt_task(enriched):
     """Format a task with GL MR details."""
     lines = fmt_task_header(enriched["task"])
@@ -192,7 +198,11 @@ def main(suppress_terminal_if_addressed=False):
             else:
                 closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_fail.append(e)
+            ci_only = all(i.startswith("ci_fail") for i in issues)
+            if ci_only and not ci_failure_needs_session(e):
+                clean.append(e)
+            else:
+                ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
         elif "unresolved_threads" in issues or has_new_feedback(e):

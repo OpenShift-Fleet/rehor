@@ -17,10 +17,10 @@ func (s *staticTokenSource) Token() (*oauth2.Token, error) {
 
 func TestRewritePath(t *testing.T) {
 	tests := []struct {
-		path      string
-		project   string
-		region    string
-		want      string
+		path    string
+		project string
+		region  string
+		want    string
 	}{
 		{
 			"/v1/projects/dummy-id/locations/global/publishers/anthropic/models/claude-sonnet-4-20250514:rawPredict",

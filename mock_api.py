@@ -120,7 +120,6 @@ class Handler(BaseHTTPRequestHandler):
                         "repo": BOT_STATUS["repo"],
                         "cycle_start": BOT_STATUS["cycle_start"],
                         "updated_at": BOT_STATUS["updated_at"],
-                        "last_seen": BOT_STATUS.get("last_seen"),
                         "active_tasks": sum(1 for t in TASKS.values() if t["status"] in ACTIVE_STATUSES),
                         "max_tasks": MAX_ACTIVE,
                     },
@@ -134,7 +133,6 @@ class Handler(BaseHTTPRequestHandler):
                         "repo": None,
                         "cycle_start": None,
                         "updated_at": "2026-07-20T08:00:00Z",
-                        "last_seen": "2026-07-20T08:00:00Z",
                         "active_tasks": 0,
                         "max_tasks": 5,
                     },
@@ -357,12 +355,6 @@ class Handler(BaseHTTPRequestHandler):
             print(f"  bot-status → state={BOT_STATUS['state']} key={BOT_STATUS['external_key']}")
             return self.send_json({"ok": True})
 
-        if len(parts) == 4 and parts[0] == "api" and parts[1] == "instances" and parts[3] == "wake":
-            print(f"  Wake requested for {parts[2]}")
-            BOT_STATUS["state"] = "working"
-            BOT_STATUS["message"] = "Starting cycle..."
-            return self.send_json({"ok": True})
-
         if len(parts) == 4 and parts[3] == "unarchive":
             key = parts[2]
             if key not in TASKS:
@@ -415,7 +407,6 @@ if __name__ == "__main__":
     print("  POST /api/tasks/:key/pause  - Pause a task")
     print("  POST /api/tasks/:key/unpause - Unpause a task")
     print("  POST /api/tasks/:key/unarchive - Unarchive a task")
-    print("  POST /api/instances/:id/wake - Wake an instance")
     print("  POST /api/bot-status        - Update bot status")
     print("  DELETE /api/tasks/:key      - Archive a task")
     print("  DELETE /api/memories/:id    - Delete a memory")

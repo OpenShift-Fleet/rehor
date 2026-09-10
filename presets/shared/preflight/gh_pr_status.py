@@ -90,8 +90,6 @@ def classify_gh(pr, last_addressed=""):
         konflux_urls = [c.get("detailsUrl", "") for c in failed_checks if "pipelinerun" in c.get("detailsUrl", "")]
         if konflux_urls:
             issues.append(f"konflux_urls:{';'.join(konflux_urls)}")
-    if pr.get("reviewDecision") == "CHANGES_REQUESTED":
-        issues.append("changes_requested")
     last_prefix = last_addressed[:16] if last_addressed else ""
     for rv in pr.get("reviews") or []:
         rstate = rv.get("state", "")
@@ -176,6 +174,12 @@ def has_new_feedback(enriched):
     return False
 
 
+def ci_failure_needs_session(enriched):
+    """Return whether an addressed CI failure needs another agent session."""
+    task = enriched["task"]
+    return not task.get("last_addressed") or has_new_feedback(enriched)
+
+
 def fmt_task(enriched):
     """Format a task with GH PR details."""
     lines = fmt_task_header(enriched["task"])
@@ -226,7 +230,7 @@ def main(suppress_terminal_if_addressed=False):
                 closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
             ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
-            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+            if ci_only and not ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)

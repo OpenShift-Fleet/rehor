@@ -15,9 +15,9 @@ Check names are extracted from real PR runs using `gh pr checks <number> --repo 
 
 ### Path-scoping caveat
 
-GitHub Actions workflows in this repo use path filters. A PR touching only Python code won't trigger Go or Dashboard checks. If branch protection requires a check that doesn't run, the PR will be blocked.
+Most GitHub Actions workflows in this repo use path filters. The TypeScript Lint workflow is intentionally unfiltered on pull requests because its `TypeScript Lint / Biome` check is required by branch protection. The main bot and memory-server Konflux pipelines also run on every PR (no path filter in CEL expression). The proxy Konflux pipeline is path-filtered to proxy/** changes. If branch protection requires a check that doesn't run, the PR will be blocked.
 
-**Current approach:** require only the two Konflux container build checks that always run on every PR (main bot + memory-server). Path-filtered checks (all GitHub Actions workflows + proxy Konflux) are trusted to pass when they fire but not listed as hard requirements in branch protection.
+**Current approach:** require the TypeScript Lint check plus the two Konflux container build checks that always run on every PR (main bot + memory-server). Other path-filtered checks are trusted to pass when they fire but are not listed as hard requirements in branch protection.
 
 ### Updating required checks
 

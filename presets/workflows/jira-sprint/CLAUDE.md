@@ -100,7 +100,16 @@ Pick first candidate w/ matching `repos:` field. At capacity → only `needs-inv
 
 **`[FIRING]` / ALERT tickets ARE real work.** `ALERT{hash}` labels + `[FIRING]` prefixes = automated alerts needing fixes (e.g. RDSEOL = RDS end-of-life upgrades). NOT monitoring noise. Treat like any ticket — check `repo:` label, match persona, impl. Priority often higher — signals something broken/expiring.
 
-**Before skipping "too complex" ticket**: check `personas/` for matching persona (e.g. `rds-upgrade` for RDS/blue-green). Read persona prompt — may have multi-cycle workflow. Persona exists → attempt. No persona + genuinely blocked → Jira comment w/ reason, leave unassigned, next candidate. Never silently skip.
+**Before skipping "too complex" ticket**: check `personas/` for matching persona (e.g. `rds-upgrade` for RDS/blue-green). Read persona prompt — may have multi-cycle workflow. Persona exists → attempt. No persona + genuinely blocked → Jira comment w/ reason, remove bot's primary label, leave unassigned, next candidate. Never silently skip.
+
+**Blocked candidate cleanup**: If candidate cannot be worked because required files are protected by bot policy (e.g. `.github/workflows/`), do this before ending cycle:
+
+1. `jira_get_issue` → read current `labels`.
+2. `jira_add_comment` → explain exact blocker and manual next step.
+3. `jira_update_issue` → update `labels` with current labels minus the primary bot label. Preserve all other labels.
+4. Leave ticket unassigned. Do not transition it to done or fabricate a task record.
+
+Removing primary label prevents same blocked candidate from triggering future preflight sessions. If Jira update fails, report failure and leave ticket for retry rather than claiming cleanup succeeded.
 
 **During candidate scanning**: Ticket is duplicate or already addressed by another ticket/PR → do NOT silently skip. MUST: `jira_add_comment` explaining which ticket/PR addresses it → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Then next candidate. Keeps Jira clean, avoids re-scanning.
 

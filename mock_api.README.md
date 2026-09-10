@@ -49,7 +49,6 @@ See server startup output for full endpoint list.
 - `GET /api/bot-status` - Current bot state
 - `POST /api/bot-status` - Update bot state
 - `GET /api/instances` - List bot instances
-- `POST /api/instances/:id/wake` - Wake a bot instance
 
 ## Data Fixtures
 

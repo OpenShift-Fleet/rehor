@@ -19,7 +19,7 @@ from filelock import FileLock, Timeout
 from prometheus_client import start_http_server
 
 from . import idle_reminder
-from .agent import run_cycle
+from .agent import push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
     Config,
@@ -70,6 +70,8 @@ def setup_git(script_dir: Path) -> None:
     gh_email = os.environ.get("GH_USER_EMAIL")
     gl_name = os.environ.get("GL_USER_NAME")
     gl_email = os.environ.get("GL_USER_EMAIL")
+    git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")
+    gl_ca_cert_file = os.environ.get("GITLAB_CA_CERT_FILE", "").strip()
 
     if not gh_name and not gl_name:
         return
@@ -102,11 +104,34 @@ def setup_git(script_dir: Path) -> None:
         "\tgpgsign = true",
         "[gpg]",
         "\tformat = openpgp",
-        '[credential "https://github.com"]',
-        "\thelper = !/usr/local/bin/gh auth git-credential",
-        '[credential "https://gitlab.cee.redhat.com"]',
-        "\thelper = !/usr/local/bin/glab credential-helper",
     ]
+    if git_proxy_host:
+        lines.extend(
+            [
+                f'[url "http://{git_proxy_host}:8447/github.com/"]',
+                "\tinsteadOf = https://github.com/",
+                f'[url "http://{git_proxy_host}:8447/gitlab.cee.redhat.com/"]',
+                "\tinsteadOf = https://gitlab.cee.redhat.com/",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                '[credential "https://github.com"]',
+                "\thelper = !/usr/local/bin/gh auth git-credential",
+                '[credential "https://gitlab.cee.redhat.com"]',
+                "\thelper = !/usr/local/bin/glab credential-helper",
+            ]
+        )
+
+    if gl_ca_cert_file:
+        lines.extend(
+            [
+                '[http "https://gitlab.cee.redhat.com/"]',
+                f"\tsslCAInfo = {gl_ca_cert_file}",
+                "\tsslVerify = true",
+            ]
+        )
 
     config_path.write_text("\n".join(lines) + "\n")
     os.environ["GIT_CONFIG_GLOBAL"] = str(config_path)
@@ -488,6 +513,7 @@ def main() -> None:
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
                     error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
                     _write_sleep_signal(error_sleep, "preflight_error")
                     _read_sleep_signal(config)
@@ -506,6 +532,7 @@ def main() -> None:
                         preflight_result.transcript,
                         input_prompt=preflight_result.transcript,
                     )
+                    push_status("idle", "No work found. Sleeping...", instance_id=instance_id)
                     idle_reminder.on_preflight_skip(
                         instance_id or args.label,
                         idle_cycle_limit=instance_config.idle_cycle_limit,

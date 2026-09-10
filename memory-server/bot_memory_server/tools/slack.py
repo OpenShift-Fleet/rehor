@@ -244,7 +244,7 @@ def _format_pr_label(row) -> str:
         art_type = art.get("type", "")
         if art_type in ("pull_request", "merge_request") and art.get("url"):
             name = art.get("name", "PR")
-            return f"{name} ({art['url']})"
+            return f"{name} — {art['url']}"
 
     metadata = row.get("metadata")
     if isinstance(metadata, str):
@@ -258,6 +258,6 @@ def _format_pr_label(row) -> str:
             pr = prs[0]
             repo = row.get("repo", "")
             number = pr.get("number", "?")
-            return f"{repo}#{number} ({pr['url']})"
+            return f"{repo}#{number} — {pr['url']}"
 
     return "PR (no link)"

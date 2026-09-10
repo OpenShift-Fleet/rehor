@@ -38,7 +38,8 @@ These checks must pass before a PR can merge:
 These run only when their path filters match. They are not enforced in branch protection to avoid blocking unrelated PRs, but they must pass when they do run:
 
 - `format` / `lint` / `typecheck` / `test` (Python CI, triggered by `**.py`/`pyproject.toml`/`uv.lock`)
-- `python-audit` / `go-audit` / `node-audit` (Dependency audit, triggered by lock/dep files)
+- `python-audit` / `go-audit` / `node-audit` / `coordinator-audit` (Dependency audit, triggered by lock/dep files)
+- `coordinator` (Node 22/Vitest tests, typecheck, and a Vite Node bundle with declaration emit, triggered by `coordinator/**`)
 - `security` / `container-scan` (Memory Server CI, triggered by `memory-server/**`)
 - `Red Hat Konflux / platform-frontend-ai-dev-proxy-on-pull-request` (triggered by `proxy/**`)
 
