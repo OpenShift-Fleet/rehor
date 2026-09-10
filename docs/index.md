@@ -98,6 +98,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | [Scheduling](scheduling.md) | KEDA cron scaler configuration for business-hours-only operation |
 | [Bot Workflow Loop](bot-workflow-loop.md) | Cycle architecture, preflight system, task state machine with diagrams |
 | [Debugging Cycles and Improving Agents](debugging-cycles-and-agents.md) | Find cycle transcripts, diagnose decisions, and improve agent behavior safely |
+| [Coordinator Runtime Contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md) | Provider-neutral runtime boundary, invariants, and Python compatibility |
 | [Git Auth Proxy](git-auth-proxy.md) | Credential isolation design for the proxy sidecar |
 | [Preset System Design](presets-design.md) | Architecture decisions behind the preset composition model |
 | [Presets Overview](presets/README.md) | How workflow and env presets work together |
