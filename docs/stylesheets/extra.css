@@ -1,3 +1,192 @@
+:root {
+  --md-default-bg-color: #f4f4f4;
+  --md-default-bg-color--light: #ffffff;
+  --md-default-fg-color: #151515;
+  --md-default-fg-color--light: #4d4d4d;
+  --md-default-fg-color--lighter: #737373;
+  --md-primary-fg-color: #ffffff;
+  --md-primary-bg-color: #151515;
+  --md-accent-fg-color: #0066cc;
+  --md-typeset-a-color: #0066cc;
+  --md-code-bg-color: #ffffff;
+}
+
+@font-face {
+  font-family: "Red Hat Text";
+  src: url("../assets/images/red-hat-text.woff2") format("woff2");
+  font-weight: 100 900;
+}
+
+@font-face {
+  font-family: "Red Hat Mono";
+  src: url("../assets/images/red-hat-mono.woff2") format("woff2");
+}
+
+body {
+  background: #f4f4f4;
+  color: #151515;
+  font-family: "Red Hat Text", system-ui, sans-serif;
+}
+
+.md-header,
+.md-tabs {
+  background: rgba(255, 255, 255, 0.94) !important;
+  color: #151515;
+}
+
+.md-header__inner {
+  min-height: 56px;
+}
+
+.md-sidebar--secondary {
+  display: none;
+}
+
+.md-main__inner {
+  margin-top: 1rem;
+}
+
+.md-content__inner {
+  padding-top: 0;
+}
+
+.md-typeset h1 {
+  font-size: 2rem;
+  margin-top: 0;
+}
+
+.md-sidebar--primary .md-sidebar__inner {
+  padding: 0.35rem;
+}
+
+.md-nav--primary > .md-nav__title {
+  display: none;
+}
+
+.md-header__button,
+.md-header__title,
+.md-tabs__link,
+.md-source {
+  color: #151515 !important;
+}
+
+.md-header__button.md-icon,
+.md-header__button.md-icon svg,
+.md-header__option .md-icon {
+  color: #151515 !important;
+  fill: #151515 !important;
+}
+
+.md-header__title,
+.md-nav__title {
+  color: #151515;
+}
+
+.md-logo img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+.md-nav__link {
+  border-radius: 8px;
+  margin: 0.1rem 0.25rem;
+  padding: 0.45rem 0.75rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.md-nav__link:hover {
+  background: #e6edf3;
+}
+
+.md-nav__link--active,
+.md-nav--secondary .md-nav__link--active {
+  background: #e6edf3 !important;
+  border-radius: 8px;
+  color: #151515 !important;
+  font-weight: 700;
+}
+
+.md-sidebar--secondary .md-sidebar__scrollwrap,
+.md-nav--secondary,
+.md-nav--secondary .md-nav__title,
+.md-nav--secondary .md-nav__link {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.md-nav--secondary .md-nav__link:hover {
+  background: #e6edf3 !important;
+  border-radius: 8px;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  color: #151515;
+}
+
+.md-typeset code,
+.md-typeset pre > code {
+  font-family: "Red Hat Mono", monospace;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0d1117;
+  --md-default-bg-color--light: #161b22;
+  --md-default-fg-color: #e6edf3;
+  --md-default-fg-color--light: #8b949e;
+  --md-default-fg-color--lighter: #8b949e;
+  --md-primary-fg-color: #161b22;
+  --md-primary-bg-color: #e6edf3;
+  --md-accent-fg-color: #58a6ff;
+  --md-typeset-a-color: #58a6ff;
+  --md-code-bg-color: #161b22;
+}
+
+body[data-md-color-scheme="slate"] {
+  background: #0d1117;
+  color: #e6edf3;
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background: #161b22 !important;
+}
+
+[data-md-color-scheme="slate"] .md-header__title,
+[data-md-color-scheme="slate"] .md-header__button,
+[data-md-color-scheme="slate"] .md-tabs__link,
+[data-md-color-scheme="slate"] .md-source,
+[data-md-color-scheme="slate"] .md-nav__title,
+[data-md-color-scheme="slate"] .md-typeset h1,
+[data-md-color-scheme="slate"] .md-typeset h2,
+[data-md-color-scheme="slate"] .md-typeset h3 {
+  color: #e6edf3 !important;
+}
+
+[data-md-color-scheme="slate"] .md-header__button.md-icon,
+[data-md-color-scheme="slate"] .md-header__button.md-icon svg,
+[data-md-color-scheme="slate"] .md-header__option .md-icon {
+  color: #ffffff !important;
+  fill: #ffffff !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link:hover {
+  background: #21262d;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav--secondary .md-nav__link--active {
+  background: #30363d !important;
+  color: #e6edf3 !important;
+}
+
+[data-md-color-scheme="slate"] .md-nav--secondary .md-nav__link:hover {
+  background: #21262d !important;
+}
+
 .md-typeset {
   font-size: 0.85rem;
   line-height: 1.65;

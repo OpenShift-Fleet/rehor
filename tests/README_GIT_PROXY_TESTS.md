@@ -102,7 +102,11 @@ pytest tests/test_git_proxy_integration.py -v
 
 - Proxy listens on port 8447 for Git auth forwarding.
 - Bot uses `GIT_AUTH_PROXY_HOST` to generate `insteadOf` rewrites.
-- Set `GITLAB_TLS_SKIP_VERIFY=true` only for environments using self-signed GitLab certificates.
+- Prefer CA trust configuration for internal GitLab:
+  - `GITLAB_CA_CERT_B64` (base64 PEM), or
+  - `GITLAB_CA_CERT_PEM` (raw PEM), or
+  - `GITLAB_CA_CERT_FILE` (path to PEM bundle).
+- Use `GITLAB_TLS_SKIP_VERIFY=true` only as temporary break-glass fallback.
 
 ## CI/CD Integration
 

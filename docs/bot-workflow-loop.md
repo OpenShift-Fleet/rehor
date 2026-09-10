@@ -48,7 +48,7 @@ graph TD
     Agg{"5. Aggregate results"}
     Launch["6. Launch Claude session<br/>(preflight content in prompt)"]
     Orphan["7. Record orphan cycle"]
-    SleepNode["Sleep (~1 hour)"]
+    SleepNode["Sleep (default 5 minutes)"]
     Cleanup["8. Cleanup<br/>(costs, transcripts, cache)"]
     LoopBack["9. Loop back to step 1"]
 
@@ -72,6 +72,8 @@ graph TD
 | All preflight scripts error (API down) | No | $0 (backoff) |
 
 The common case — "nothing changed since last cycle" — is handled entirely by Python scripts. The AI only wakes up when a preflight script explicitly returns `"start"`.
+
+An **orphan cycle** is the recorded result when all preflight scripts return `skip`. No Claude session starts, so it normally has zero tools, zero tokens, and `$0` model cost. The name does not mean failed or abandoned work; it marks an idle polling check with no task execution.
 
 ---
 

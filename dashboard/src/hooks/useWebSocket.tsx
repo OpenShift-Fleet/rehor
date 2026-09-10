@@ -1,5 +1,13 @@
-import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
-import type { WSEvent } from '../types';
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { WSEvent } from "../types";
 
 interface WSContextValue {
   connected: boolean;
@@ -21,7 +29,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const connect = useCallback(() => {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${location.host}/ws`);
     wsRef.current = ws;
 
@@ -63,9 +71,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <WSContext.Provider value={{ connected, lastEvent, onEvent }}>
-      {children}
-    </WSContext.Provider>
+    <WSContext.Provider value={{ connected, lastEvent, onEvent }}>{children}</WSContext.Provider>
   );
 }
 

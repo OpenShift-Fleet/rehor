@@ -283,7 +283,9 @@ make costs-week     # Last 7 days
 make costs          # All time
 ```
 
-The bot sleeps for 5 minutes between active cycles and 1 hour when idle (no work found). These intervals are configured in `config.json`.
+The bot sleeps for 5 minutes between cycles by default, including idle cycles. A
+skill can write `data/cycle-sleep.json` to request another delay for the next
+cycle. `config.json` controls default active and idle intervals.
 
 ## Troubleshooting
 

@@ -104,6 +104,29 @@ compare_bool_setting \
   '.required_pull_request_reviews.require_code_owner_reviews // false' \
   '.required_pull_request_reviews.require_code_owner_reviews // false'
 
+policy_bypass_pull_request_allowances=$(jq -c '
+  (.required_pull_request_reviews.bypass_pull_request_allowances // {})
+  | {
+      users: ((.users // []) | sort),
+      teams: ((.teams // []) | sort),
+      apps: ((.apps // []) | sort)
+    }
+' "$POLICY_FILE")
+live_bypass_pull_request_allowances=$(echo "$live_json" | jq -c '
+  (.required_pull_request_reviews.bypass_pull_request_allowances // {})
+  | {
+      users: ((.users // []) | sort),
+      teams: ((.teams // []) | sort),
+      apps: ((.apps // []) | sort)
+    }
+')
+if [ "$policy_bypass_pull_request_allowances" = "$live_bypass_pull_request_allowances" ]; then
+  echo "  OK:      bypass pull request allowances = $live_bypass_pull_request_allowances"
+else
+  echo "  DRIFT:   bypass pull request allowances: policy=$policy_bypass_pull_request_allowances, live=$live_bypass_pull_request_allowances"
+  drift=1
+fi
+
 echo ""
 echo "--- Branch Up-to-Date Requirement ---"
 compare_bool_setting \

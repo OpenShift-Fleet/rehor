@@ -31,6 +31,26 @@ decode_or_raw() {
 git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
 git config --global credential.https://gitlab.cee.redhat.com.helper '!/usr/local/bin/glab credential-helper'
 
+# Optional: internal GitLab CA bundle for strict TLS in bot-side git/curl flows.
+# Supports either raw PEM (GITLAB_CA_CERT_PEM) or base64 PEM (GITLAB_CA_CERT_B64).
+if [ -n "${GITLAB_CA_CERT_B64:-}" ] && [ -z "${GITLAB_CA_CERT_PEM:-}" ]; then
+    GITLAB_CA_CERT_PEM="$(printf '%s' "$GITLAB_CA_CERT_B64" | tr -d '[:space:]' | base64 -d 2>/dev/null || true)"
+    export GITLAB_CA_CERT_PEM
+fi
+
+if [ -n "${GITLAB_CA_CERT_PEM:-}" ] && [ -z "${GITLAB_CA_CERT_FILE:-}" ]; then
+    GITLAB_CA_CERT_FILE="/home/botuser/.config/gitlab-ca-cert.pem"
+    mkdir -p "$(dirname "$GITLAB_CA_CERT_FILE")"
+    printf '%s\n' "$GITLAB_CA_CERT_PEM" > "$GITLAB_CA_CERT_FILE"
+    chmod 600 "$GITLAB_CA_CERT_FILE"
+    export GITLAB_CA_CERT_FILE
+fi
+
+if [ -n "${GITLAB_CA_CERT_FILE:-}" ]; then
+    git config --global http."https://gitlab.cee.redhat.com/".sslCAInfo "$GITLAB_CA_CERT_FILE"
+    git config --global http."https://gitlab.cee.redhat.com/".sslVerify true
+fi
+
 # Write SSO credentials file for stage auth (chrome-devtools)
 if [ -n "${SSO_USERNAME:-}" ] && [ -n "${SSO_PASSWORD:-}" ]; then
     cat > /home/botuser/app/.credentials <<EOF

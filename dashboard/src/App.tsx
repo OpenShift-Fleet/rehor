@@ -1,41 +1,56 @@
-import { lazy, Suspense, useEffect, useState, useCallback } from 'react';
-
-import { HashRouter, Routes, Route, NavLink, Navigate, useParams, useNavigate, useLocation, Link } from 'react-router-dom';
-import { WSProvider, useWS } from './hooks/useWebSocket';
-import type { BotInstance } from './types';
-import { fetchStats, fetchInstances } from './api';
-import { effectiveState } from './utils';
 import {
-  Nav,
-  NavList,
-  NavItem,
+  Label,
   Masthead,
   MastheadMain,
-  Toolbar,
-  ToolbarContent,
-  ToolbarItem,
-  ToolbarGroup,
-  Label,
   MenuToggle,
   MenuToggleElement,
+  Nav,
+  NavItem,
+  NavList,
   Select,
   SelectList,
-  SelectOption
-} from '@patternfly/react-core';
-import BotBanner from './components/BotBanner';
-import ThemeSelector from './components/ThemeSelector';
-import Toasts from './components/Toasts';
+  SelectOption,
+  Toolbar,
+  ToolbarContent,
+  ToolbarGroup,
+  ToolbarItem,
+} from "@patternfly/react-core";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import {
+  HashRouter,
+  Link,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
+import { fetchInstances, fetchStats } from "./api";
+import BotBanner from "./components/BotBanner";
+import ThemeSelector from "./components/ThemeSelector";
+import Toasts from "./components/Toasts";
+import { useWS, WSProvider } from "./hooks/useWebSocket";
+import type { BotInstance } from "./types";
+import { effectiveState } from "./utils";
 
-const Instances = lazy(() => import('./pages/Instances'));
-const Tasks = lazy(() => import('./pages/Tasks'));
-const Memories = lazy(() => import('./pages/Memories'));
-const Search = lazy(() => import('./pages/Search'));
-const Costs = lazy(() => import('./pages/Costs'));
-const EmbeddingMap = lazy(() => import('./pages/EmbeddingMap'));
-const ArchivedTasks = lazy(() => import('./pages/ArchivedTasks'));
-const CycleRuns = lazy(() => import('./pages/CycleRuns'));
+const Instances = lazy(() => import("./pages/Instances"));
+const Tasks = lazy(() => import("./pages/Tasks"));
+const Memories = lazy(() => import("./pages/Memories"));
+const Search = lazy(() => import("./pages/Search"));
+const Costs = lazy(() => import("./pages/Costs"));
+const EmbeddingMap = lazy(() => import("./pages/EmbeddingMap"));
+const ArchivedTasks = lazy(() => import("./pages/ArchivedTasks"));
+const CycleRuns = lazy(() => import("./pages/CycleRuns"));
 
-function InstanceSelector({ instances, currentId }: { instances: BotInstance[]; currentId?: string }) {
+function InstanceSelector({
+  instances,
+  currentId,
+}: {
+  instances: BotInstance[];
+  currentId?: string;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const [isOpen, setIsOpen] = useState(false);
@@ -43,24 +58,24 @@ function InstanceSelector({ instances, currentId }: { instances: BotInstance[]; 
   const handleSelect = (_e: any, val: string | number | undefined) => {
     const value = String(val);
     setIsOpen(false);
-    if (value === '__global__') {
-      navigate('/tasks');
-    } else if (value === '__instances__') {
-      navigate('/instances');
+    if (value === "__global__") {
+      navigate("/tasks");
+    } else if (value === "__instances__") {
+      navigate("/instances");
     } else {
-      const subPath = location.pathname.match(/\/instances\/[^/]+\/(.*)/)?.[1] || 'tasks';
+      const subPath = location.pathname.match(/\/instances\/[^/]+\/(.*)/)?.[1] || "tasks";
       navigate(`/instances/${encodeURIComponent(value)}/${subPath}`);
     }
   };
 
   const currentLabel = currentId
-    ? instances.find(i => i.instance_id === currentId)?.instance_id || currentId
-    : 'All instances';
+    ? instances.find((i) => i.instance_id === currentId)?.instance_id || currentId
+    : "All instances";
 
   return (
     <Select
       isOpen={isOpen}
-      selected={currentId || '__global__'}
+      selected={currentId || "__global__"}
       onSelect={handleSelect}
       onOpenChange={setIsOpen}
       toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
@@ -75,9 +90,9 @@ function InstanceSelector({ instances, currentId }: { instances: BotInstance[]; 
         {instances.map((inst) => {
           const state = effectiveState(inst);
           return (
-          <SelectOption key={inst.instance_id} value={inst.instance_id}>
-            {inst.instance_id} — {state.toUpperCase()}
-          </SelectOption>
+            <SelectOption key={inst.instance_id} value={inst.instance_id}>
+              {inst.instance_id} — {state.toUpperCase()}
+            </SelectOption>
           );
         })}
       </SelectList>
@@ -87,20 +102,34 @@ function InstanceSelector({ instances, currentId }: { instances: BotInstance[]; 
 
 function InstanceScoped() {
   const { id } = useParams<{ id: string }>();
-  const instanceId = decodeURIComponent(id || '');
+  const instanceId = decodeURIComponent(id || "");
   const base = `/instances/${encodeURIComponent(instanceId)}`;
 
   return (
     <>
       <Nav variant="horizontal" aria-label="Instance navigation">
         <NavList>
-          <NavItem><NavLink to={`${base}/tasks`}>Tasks</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/archived`}>Archive</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/memories`}>Memories</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/search`}>Search</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/cycles`}>Cycles</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/costs`}>Costs</NavLink></NavItem>
-          <NavItem><NavLink to={`${base}/viz`}>Viz</NavLink></NavItem>
+          <NavItem>
+            <NavLink to={`${base}/tasks`}>Tasks</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/archived`}>Archive</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/memories`}>Memories</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/search`}>Search</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/cycles`}>Cycles</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/costs`}>Costs</NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to={`${base}/viz`}>Viz</NavLink>
+          </NavItem>
         </NavList>
       </Nav>
       <Suspense fallback={null}>
@@ -120,7 +149,10 @@ function InstanceScoped() {
 }
 
 function AppInner() {
-  const [stats, setStats] = useState<{ tasks: number; memories: number }>({ tasks: 0, memories: 0 });
+  const [stats, setStats] = useState<{ tasks: number; memories: number }>({
+    tasks: 0,
+    memories: 0,
+  });
   const [instances, setInstances] = useState<BotInstance[]>([]);
   const { connected, onEvent } = useWS();
   const location = useLocation();
@@ -132,7 +164,12 @@ function AppInner() {
   const loadStats = useCallback(async () => {
     try {
       const s = await fetchStats();
-      const taskTotal = s.tasks ? Object.values(s.tasks as Record<string, number>).reduce((a: number, b: number) => a + b, 0) : 0;
+      const taskTotal = s.tasks
+        ? Object.values(s.tasks as Record<string, number>).reduce(
+            (a: number, b: number) => a + b,
+            0,
+          )
+        : 0;
       setStats({ tasks: taskTotal, memories: s.memories?.total ?? 0 });
     } catch {
       // ignore
@@ -154,15 +191,15 @@ function AppInner() {
 
   useEffect(() => {
     const unsub = onEvent((event) => {
-      if (event.type === 'bot_status') {
+      if (event.type === "bot_status") {
         loadInstances();
       }
       if (
-        event.type === 'task_added' ||
-        event.type === 'task_removed' ||
-        event.type === 'task_archived' ||
-        event.type === 'memory_stored' ||
-        event.type === 'memory_deleted'
+        event.type === "task_added" ||
+        event.type === "task_removed" ||
+        event.type === "task_archived" ||
+        event.type === "memory_stored" ||
+        event.type === "memory_deleted"
       ) {
         loadStats();
         loadInstances();
@@ -175,18 +212,27 @@ function AppInner() {
     <>
       <Masthead>
         <MastheadMain style={{ flex: 1 }}>
-          <Toolbar style={{ width: '100%' }}>
+          <Toolbar style={{ width: "100%" }}>
             <ToolbarContent>
               <ToolbarItem>
-                <Link to="/instances" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', color: 'inherit' }}>
+                <Link
+                  to="/instances"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    textDecoration: "none",
+                    color: "inherit",
+                  }}
+                >
                   <img src="/static/icon.png" alt="" className="header-icon" />
-                  <span style={{ fontSize: '1.25rem', fontWeight: 700 }}>Řehoř</span>
+                  <span style={{ fontSize: "1.25rem", fontWeight: 700 }}>Řehoř</span>
                 </Link>
               </ToolbarItem>
               <ToolbarItem>
                 <InstanceSelector instances={instances} currentId={currentInstanceId} />
               </ToolbarItem>
-              <ToolbarGroup align={{ default: 'alignEnd' }}>
+              <ToolbarGroup align={{ default: "alignEnd" }}>
                 <ToolbarItem>
                   <ThemeSelector />
                 </ToolbarItem>
@@ -197,7 +243,10 @@ function AppInner() {
                   <Label variant="outline">{stats.memories} memories</Label>
                 </ToolbarItem>
                 <ToolbarItem>
-                  <span className={`ws-dot ${connected ? 'connected' : ''}`} title={connected ? 'Connected' : 'Disconnected'} />
+                  <span
+                    className={`ws-dot ${connected ? "connected" : ""}`}
+                    title={connected ? "Connected" : "Disconnected"}
+                  />
                 </ToolbarItem>
               </ToolbarGroup>
             </ToolbarContent>
@@ -205,52 +254,67 @@ function AppInner() {
         </MastheadMain>
       </Masthead>
       <div className="app">
-
-      {currentInstance && (
-        <BotBanner status={{
-          state: currentInstance.state,
-          message: currentInstance.message,
-          external_key: currentInstance.external_key,
-          source_type: currentInstance.source_type,
-          source_url: currentInstance.source_url,
-          repo: currentInstance.repo,
-          instance_id: currentInstance.instance_id,
-          cycle_start: currentInstance.cycle_start,
-          updated_at: currentInstance.updated_at,
-        }} />
-      )}
-
-      <Toasts />
-
-      <main>
-        {!currentInstanceId && (
-          <Nav variant="horizontal" aria-label="Global navigation">
-            <NavList>
-              <NavItem><NavLink to="/tasks">Tasks</NavLink></NavItem>
-              <NavItem><NavLink to="/archived">Archive</NavLink></NavItem>
-              <NavItem><NavLink to="/cycles">Cycles</NavLink></NavItem>
-              <NavItem><NavLink to="/memories">Memories</NavLink></NavItem>
-              <NavItem><NavLink to="/search">Search</NavLink></NavItem>
-              <NavItem><NavLink to="/costs">Costs</NavLink></NavItem>
-              <NavItem><NavLink to="/viz">Viz</NavLink></NavItem>
-            </NavList>
-          </Nav>
+        {currentInstance && (
+          <BotBanner
+            status={{
+              state: currentInstance.state,
+              message: currentInstance.message,
+              external_key: currentInstance.external_key,
+              source_type: currentInstance.source_type,
+              source_url: currentInstance.source_url,
+              repo: currentInstance.repo,
+              instance_id: currentInstance.instance_id,
+              cycle_start: currentInstance.cycle_start,
+              updated_at: currentInstance.updated_at,
+            }}
+          />
         )}
-        <Suspense fallback={null}>
-          <Routes>
-            <Route path="/instances/:id/*" element={<InstanceScoped />} />
-            <Route path="/instances" element={<Instances />} />
-            <Route path="/tasks" element={<Tasks />} />
-            <Route path="/archived" element={<ArchivedTasks />} />
-            <Route path="/cycles" element={<CycleRuns />} />
-            <Route path="/memories" element={<Memories />} />
-            <Route path="/search" element={<Search />} />
-            <Route path="/costs" element={<Costs />} />
-            <Route path="/viz" element={<EmbeddingMap />} />
-            <Route path="/" element={<Navigate to="/instances" replace />} />
-          </Routes>
-        </Suspense>
-      </main>
+
+        <Toasts />
+
+        <main>
+          {!currentInstanceId && (
+            <Nav variant="horizontal" aria-label="Global navigation">
+              <NavList>
+                <NavItem>
+                  <NavLink to="/tasks">Tasks</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/archived">Archive</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/cycles">Cycles</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/memories">Memories</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/search">Search</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/costs">Costs</NavLink>
+                </NavItem>
+                <NavItem>
+                  <NavLink to="/viz">Viz</NavLink>
+                </NavItem>
+              </NavList>
+            </Nav>
+          )}
+          <Suspense fallback={null}>
+            <Routes>
+              <Route path="/instances/:id/*" element={<InstanceScoped />} />
+              <Route path="/instances" element={<Instances />} />
+              <Route path="/tasks" element={<Tasks />} />
+              <Route path="/archived" element={<ArchivedTasks />} />
+              <Route path="/cycles" element={<CycleRuns />} />
+              <Route path="/memories" element={<Memories />} />
+              <Route path="/search" element={<Search />} />
+              <Route path="/costs" element={<Costs />} />
+              <Route path="/viz" element={<EmbeddingMap />} />
+              <Route path="/" element={<Navigate to="/instances" replace />} />
+            </Routes>
+          </Suspense>
+        </main>
       </div>
     </>
   );
