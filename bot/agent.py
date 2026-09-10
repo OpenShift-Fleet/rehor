@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -20,6 +21,7 @@ from claude_agent_sdk import (
 
 from .config import Config
 from .constants import MEMORY_API_BASE
+from .costs import summarize_result
 from .metrics import MCP_SERVER_STATUS_TOTAL, TURN_BUDGET_EVENT_TOTAL, WORK_TYPE_TOTAL
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,18 @@ def _describe_tool_use(block) -> str:
         return name
 
 
+def _complete_tool(pending: dict[str, tuple[float, str]], tool_use_id: str | None) -> None:
+    """Log duration for a tool if we still have a matching start time."""
+    if not tool_use_id:
+        return
+    start = pending.pop(tool_use_id, None)
+    if start is None:
+        return
+    t0, desc = start
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    logger.info("[tool] %s completed in %dms", desc, elapsed_ms)
+
+
 def _make_turn_budget_hook(max_turns: int, label: str):
     """Create a PostToolUse hook that injects turn budget warnings."""
     turn_count = {"n": 0, "warned": False, "critical": False}
@@ -189,6 +203,13 @@ async def run_cycle(
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     turn_hook = _make_turn_budget_hook(config.max_turns, label)
+    pending_tools: dict[str, tuple[float, str]] = {}
+
+    async def tool_timing_post(input_data, tool_use_id, context):
+        # Live SDK stream usually does not yield ToolResultBlock; PostToolUse does.
+        _complete_tool(pending_tools, tool_use_id or input_data.get("tool_use_id"))
+        return {}
+
     options = ClaudeAgentOptions(
         model=config.model,
         max_turns=config.max_turns,
@@ -198,7 +219,8 @@ async def run_cycle(
         cwd=cwd,
         permission_mode="acceptEdits",
         hooks={
-            "PostToolUse": [HookMatcher(hooks=[turn_hook])],
+            "PostToolUse": [HookMatcher(hooks=[turn_hook, tool_timing_post])],
+            "PostToolUseFailure": [HookMatcher(hooks=[tool_timing_post])],
         },
     )
 
@@ -269,21 +291,39 @@ async def run_cycle(
                                 await _push_status(http, "working", text[:500], instance_id=instance_id)
                         elif isinstance(block, ToolResultBlock):
                             _extract_task_id_from_result(block, ctx)
+                            _complete_tool(pending_tools, block.tool_use_id)
                         elif hasattr(block, "name"):
                             desc = _describe_tool_use(block)
                             logger.info("[tool] %s", desc)
+                            tool_id = getattr(block, "id", None)
+                            if tool_id:
+                                pending_tools[tool_id] = (time.monotonic(), desc)
                             _extract_context(block, ctx)
 
                 elif isinstance(message, ResultMessage):
                     result = message
                     cost = f"${message.total_cost_usd:.4f}" if message.total_cost_usd is not None else "N/A"
+                    summary = summarize_result(message)
                     logger.info(
-                        "Cycle done: %s | turns=%s | cost=%s | duration=%sms",
+                        "Cycle done: %s | model=%s | turns=%s | cost=%s | duration=%sms | "
+                        "tokens in=%s out=%s | cache_read=%s cache_write=%s ratio=%s",
                         message.subtype,
+                        summary["model"] or "unknown",
                         message.num_turns,
                         cost,
                         message.duration_ms,
+                        summary["input_tokens"],
+                        summary["output_tokens"],
+                        summary["cache_read_tokens"],
+                        summary["cache_write_tokens"],
+                        summary["cache_ratio"],
                     )
+
+            if pending_tools:
+                logger.debug(
+                    "Unmatched tool starts at cycle end: %s",
+                    [desc for _, desc in pending_tools.values()],
+                )
 
         except Exception:
             logger.exception("Agent cycle failed")
