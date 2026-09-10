@@ -22,7 +22,7 @@ verify: ## Run all checks (same as CI)
 	@echo "=== Python: type check ==="
 	uv run mypy
 	@echo "=== Python: tests ==="
-	uv run pytest
+	$(MAKE) test-unit
 	@echo "=== Go: vet ==="
 	cd proxy/executor && go vet ./...
 	@echo "=== Go: tests ==="
@@ -133,8 +133,8 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 	@echo ""
 	@echo "All container verification checks passed."
 
-test-unit: ## Run unit tests only (same as CI)
-	uv run pytest
+test-unit: ## Run unit tests (integration excluded; coverage gate matches CI)
+	uv run pytest --cov=bot --cov-report=term-missing --cov-fail-under=50
 
 test-integration: ## Run integration tests (requires docker-compose stack running)
 	uv run pytest tests/integration/ -v -p no:cacheprovider

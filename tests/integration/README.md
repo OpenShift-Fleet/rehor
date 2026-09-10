@@ -34,11 +34,17 @@ pytest tests/integration/test_git_proxy_integration.py::TestGitProxyEndToEnd -v
 ## Adding new integration tests
 
 Place any test that requires Docker, docker-compose, live databases, or
-external network access in this directory. Tests here are automatically
-marked with `@pytest.mark.integration` via the local `conftest.py`.
+external network access in this directory. Tests under this directory are
+marked `@pytest.mark.integration` via the local `conftest.py` (path-filtered
+so mixed `pytest tests/integration tests/...` sessions do not mark unit tests).
 
 Unit tests (mocked, no external deps) belong in `bot/tests/`, `tests/`,
 or the appropriate skill `tests/` directory.
+
+If the docker-compose stack is not running, these tests **skip** rather than
+fail. That is the right laptop default. A scheduled/CI job that must actually
+exercise the stack should treat skips as a problem (for example by requiring
+the proxy health check to pass before invoking `make test-integration`).
 
 ## `test_git_proxy_integration.py`
 
