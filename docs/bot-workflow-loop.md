@@ -2,6 +2,12 @@
 
 The bot operates as an autonomous loop: a scheduler triggers cycles, lightweight Python scripts gather data and decide whether there's work to do, and only then does a Claude AI session start. This design ensures AI tokens are spent only when there's real work — the common "nothing to do" case costs zero.
 
+This document describes the active Python/Claude path. The TypeScript
+[coordinator contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
+is migration scaffolding. It preserves this preflight decision loop: `skip` and
+`error` still avoid runtime startup, while `start` becomes a provider-neutral
+run and normalized event stream. See the [OpenCode migration design](migrations/opencode-migration.md).
+
 ## Architecture Overview
 
 ```mermaid
@@ -510,6 +516,8 @@ The `last_addressed` timestamp on each task is used to filter out old feedback. 
 ## Related Docs
 
 - [Workflow Presets](presets/workflows.md) — Available workflows and their decision loops
+- [Coordinator Runtime Contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md) — Provider-neutral runtime boundary and compatibility mapping
+- [OpenCode Migration Design](migrations/opencode-migration.md) — Runtime migration and rollout phases
 - [Writing Custom Preflight Scripts](presets/custom-preflight.md) — How to write your own preflight scripts
 - [Creating Custom Workflows](presets/custom-workflows.md) — Building complete custom workflows
 - [Scheduling](scheduling.md) — KEDA cron scaling configuration

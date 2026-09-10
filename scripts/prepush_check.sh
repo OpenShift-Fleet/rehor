@@ -111,6 +111,9 @@ for file in "${changed_files[@]:-}"; do
     dashboard/*)
       add_target "dashboard"
       ;;
+    coordinator/*)
+      add_target "coordinator"
+      ;;
     proxy/executor/*)
       add_target "proxy/executor"
       ;;
@@ -132,6 +135,9 @@ for target in "${test_targets[@]}"; do
   case "$target" in
     dashboard)
       (cd dashboard && npm test)
+      ;;
+    coordinator)
+      make coordinator-verify
       ;;
     proxy/executor)
       (cd proxy/executor && go test -race ./...)

@@ -1,14 +1,14 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
 CONTAINER_RT ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 
 ts-verify: ## Check TypeScript formatting and lint with Biome
-	bunx @biomejs/biome@$(BIOME_VERSION) check .
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check .
 
 ts-format: ## Format TypeScript files with Biome (local fix)
-	bunx @biomejs/biome@$(BIOME_VERSION) check --write .
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check --write .
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -35,8 +35,16 @@ verify: ## Run all checks (same as CI)
 	cd dashboard && npm run build
 	@echo "=== Dashboard: tests ==="
 	cd dashboard && npm test
+	@echo "=== Coordinator ==="
+	$(MAKE) coordinator-verify
 	@echo ""
 	@echo "All checks passed."
+
+coordinator-verify: ## Install and run coordinator tests, type check, and build
+	cd coordinator && npm ci
+	cd coordinator && npm test
+	cd coordinator && npm run typecheck
+	cd coordinator && npm run build
 
 precommit-install: ## Install pre-commit hooks
 	pip install pre-commit && pre-commit install
