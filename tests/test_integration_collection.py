@@ -33,3 +33,33 @@ def test_integration_marker_does_not_apply_to_unit_tests_in_mixed_collection():
     assert result.returncode == 0, output
     assert "test_git_proxy_integration.py" in output
     assert "test_merge.py" not in output
+
+
+def test_transcripts_collection_does_not_break_cycle_logging_imports():
+    """tests/test_transcripts.py used to stub claude_agent_sdk in sys.modules at
+    import time. With tests/ on testpaths, that stub was collected first and
+    broke bot/tests/test_cycle_logging.py (missing ToolUseBlock).
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_transcripts.py",
+            "bot/tests/test_cycle_logging.py",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:cov",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "test_cycle_logging.py" in output
+    assert "ERROR" not in output
