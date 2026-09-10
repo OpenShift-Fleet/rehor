@@ -110,6 +110,46 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["sharedAgentDir"] == str(shared_dir)
 
 
+def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
+    """The bridge must hand the coordinator the same model run.py would pass to run_cycle."""
+    import bot.merge as merge
+    import bot.run as runner
+
+    profile_dir = tmp_path / "profile" / "agent"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "instance.yaml").write_text("workflow: test-workflow\n")
+    workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "manifest.yaml").write_text("name: test-workflow\ndefault_model: workflow-model\n")
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "global-model", "maxTurns": 10}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
+        '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
+    )
+
+    monkeypatch.delenv("BOT_MODEL", raising=False)
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, None))
+    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
+    monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
+    monkeypatch.setattr(merge, "install_skills", lambda *args: [])
+
+    request = {
+        "protocolVersion": 1,
+        "operation": "prepare",
+        "scriptDir": str(tmp_path),
+        "label": "hcc-ai-framework",
+    }
+
+    assert handle(request)["model"] == "workflow-model"
+
+    monkeypatch.setenv("BOT_MODEL", "env-model")
+    assert handle(request)["model"] == "env-model"
+
+    (profile_dir / "instance.yaml").write_text("workflow: test-workflow\nmodel: pinned-model\n")
+    assert handle(request)["model"] == "pinned-model"
+
+
 def test_bridge_rejects_unknown_operation():
     try:
         handle({"protocolVersion": 1, "operation": "unknown"})
