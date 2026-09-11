@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 
+import { isInstructionStrategy } from "../instructions";
 import type {
   ConfigPreparationRequest,
   ConfigPreparationResult,
@@ -140,7 +141,7 @@ function parsePreflightResult(value: unknown): PreflightResult | null {
 function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
   const object = record(value, "config preparation result");
   const strategy = stringValue(object.claudeMdStrategy, "config.claudeMdStrategy");
-  if (strategy !== "replace" && strategy !== "append" && strategy !== "ignore") {
+  if (!isInstructionStrategy(strategy)) {
     throw new PythonBridgeError("config.claudeMdStrategy is invalid");
   }
   const envs = object.envs === null ? null : stringArray(object.envs, "config.envs");

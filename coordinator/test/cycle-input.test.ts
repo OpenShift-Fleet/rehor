@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   assembleInstructions,
   buildCyclePrompt,
+  InstructionStrategy,
   type ConfigPreparationResult,
   type PreflightResult,
   type PythonBridge,
@@ -27,7 +28,7 @@ const config: ConfigPreparationResult = {
   source: "test",
   envs: null,
   activeEnvs: [],
-  claudeMdStrategy: "append",
+  claudeMdStrategy: InstructionStrategy.Append,
   idleCycleLimit: 0,
   remoteAgentDir: null,
   sharedAgentDir: null,
@@ -79,7 +80,7 @@ describe("instruction assembly", () => {
     const result = await assembleInstructions({
       scriptDir: root,
       workflow: "test-workflow",
-      strategy: "append",
+      strategy: InstructionStrategy.Append,
       remoteAgentDir: join(root, "instance"),
       sharedAgentDir: join(root, "shared"),
     });
@@ -107,7 +108,7 @@ describe("instruction assembly", () => {
     const result = await assembleInstructions({
       scriptDir: root,
       workflow: "test-workflow",
-      strategy: "replace",
+      strategy: InstructionStrategy.Replace,
       remoteAgentDir: join(root, "instance"),
     });
 
@@ -150,7 +151,7 @@ describe("cycle preparation", () => {
     const bridge: PythonBridge = {
       prepareConfig: async () => ({
         ...config,
-        claudeMdStrategy: "append",
+        claudeMdStrategy: InstructionStrategy.Append,
         remoteAgentDir: instanceDir,
         claudeMdPath: join(root, "CLAUDE.md"),
       }),
@@ -160,7 +161,7 @@ describe("cycle preparation", () => {
     const result = await prepareCycleInput(bridge, {
       scriptDir: root,
       label: "hcc-ai-framework",
-      strategy: "replace",
+      strategy: InstructionStrategy.Replace,
     });
 
     expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("[core][instance]");

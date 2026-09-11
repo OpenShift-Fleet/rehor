@@ -1,3 +1,5 @@
+import type { InstructionStrategy } from "../instructions";
+
 export type PreflightAction = "start" | "skip" | "error";
 export type PreflightScriptStatus = PreflightAction;
 
@@ -37,7 +39,7 @@ export interface ConfigPreparationResult {
   source: string;
   envs: readonly string[] | null;
   activeEnvs: readonly string[];
-  claudeMdStrategy: "replace" | "append" | "ignore";
+  claudeMdStrategy: InstructionStrategy;
   idleCycleLimit: number;
   remoteAgentDir: string | null;
   sharedAgentDir: string | null;
