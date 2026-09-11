@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   CycleScheduler,
   consumeSleepSignal,
+  PreflightAction,
   type IdleCycleState,
   type PreflightResult,
   parseSleepSignal,
@@ -27,21 +28,21 @@ describe("cycle scheduler", () => {
       maxPreflightBackoffMs: 5_000,
     });
 
-    expect(scheduler.planForPreflight(preflight("error"))).toEqual({
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Error))).toEqual({
       decision: "error",
       sleep: { delayMs: 2_000, reason: "preflight_error" },
       consecutivePreflightErrors: 1,
     });
-    expect(scheduler.planForPreflight(preflight("error")).sleep?.delayMs).toBe(4_000);
-    expect(scheduler.planForPreflight(preflight("error")).sleep?.delayMs).toBe(5_000);
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Error)).sleep?.delayMs).toBe(4_000);
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Error)).sleep?.delayMs).toBe(5_000);
     expect(scheduler.consecutivePreflightErrors).toBe(3);
 
-    expect(scheduler.planForPreflight(preflight("skip"))).toEqual({
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Skip))).toEqual({
       decision: "idle",
       sleep: { delayMs: 700, reason: "preflight_skip" },
       consecutivePreflightErrors: 0,
     });
-    expect(scheduler.planForPreflight(preflight("error")).sleep?.delayMs).toBe(2_000);
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Error)).sleep?.delayMs).toBe(2_000);
   });
 
   it("runs when preflight is absent or starts", () => {
@@ -52,7 +53,7 @@ describe("cycle scheduler", () => {
       sleep: null,
       consecutivePreflightErrors: 0,
     });
-    expect(scheduler.planForPreflight(preflight("start")).decision).toBe("run");
+    expect(scheduler.planForPreflight(preflight(PreflightAction.Start)).decision).toBe("run");
   });
 
   it("uses valid skill sleep signals and falls back to the normal interval", () => {

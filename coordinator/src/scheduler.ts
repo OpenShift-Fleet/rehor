@@ -1,12 +1,16 @@
 import { readFile, unlink } from "node:fs/promises";
 
-import type { PreflightResult } from "./ports/python-bridge";
+import { PreflightAction, type PreflightResult } from "./ports/python-bridge";
 import { abortError, assertNonNegative, isMissingFile, isRecord } from "./utils";
 
 const DEFAULT_MAX_PREFLIGHT_BACKOFF_MS = 300_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-export type CycleDecision = "run" | "idle" | "error";
+export enum CycleDecision {
+  Run = "run",
+  Idle = "idle",
+  Error = "error",
+}
 
 export interface CycleSchedulerConfig {
   /** Normal post-cycle delay. */
@@ -51,7 +55,7 @@ export class CycleScheduler {
   }
 
   planForPreflight(preflight: PreflightResult | null): CyclePlan {
-    if (preflight?.action === "error") {
+    if (preflight?.action === PreflightAction.Error) {
       this.consecutiveErrors += 1;
       const exponent = Math.min(this.consecutiveErrors, 30);
       const delayMs = Math.min(
@@ -59,22 +63,22 @@ export class CycleScheduler {
         this.config.maxPreflightBackoffMs,
       );
       return {
-        decision: "error",
+        decision: CycleDecision.Error,
         sleep: { delayMs, reason: "preflight_error" },
         consecutivePreflightErrors: this.consecutiveErrors,
       };
     }
 
     this.consecutiveErrors = 0;
-    if (preflight?.action === "skip") {
+    if (preflight?.action === PreflightAction.Skip) {
       return {
-        decision: "idle",
+        decision: CycleDecision.Idle,
         sleep: { delayMs: this.config.idleIntervalMs, reason: "preflight_skip" },
         consecutivePreflightErrors: 0,
       };
     }
 
-    return { decision: "run", sleep: null, consecutivePreflightErrors: 0 };
+    return { decision: CycleDecision.Run, sleep: null, consecutivePreflightErrors: 0 };
   }
 
   planAfterRun(signal?: SleepSignal | null): SleepPlan {

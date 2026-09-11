@@ -3,13 +3,14 @@ import type { Readable } from "node:stream";
 
 import { isInstructionStrategy } from "../instructions";
 import { abortError, isRecord } from "../utils";
-import type {
-  ConfigPreparationRequest,
-  ConfigPreparationResult,
-  PreflightRequest,
-  PreflightResult,
-  PreflightScriptResult,
-  PythonBridge,
+import {
+  isPreflightAction,
+  type ConfigPreparationRequest,
+  type ConfigPreparationResult,
+  type PreflightRequest,
+  type PreflightResult,
+  type PreflightScriptResult,
+  type PythonBridge,
 } from "../ports/python-bridge";
 
 const PROTOCOL_VERSION = 1;
@@ -117,13 +118,13 @@ function parsePreflightResult(value: unknown): PreflightResult | null {
   if (value === null) return null;
   const object = record(value, "preflight result");
   const action = stringValue(object.action, "preflight.action");
-  if (action !== "start" && action !== "skip" && action !== "error") {
+  if (!isPreflightAction(action)) {
     throw new PythonBridgeError("preflight.action must be start, skip, or error");
   }
   const scripts = arrayValue(object.scripts, "preflight.scripts").map((script, index) => {
     const entry = record(script, `preflight.scripts[${index}]`);
     const status = stringValue(entry.status, `preflight.scripts[${index}].status`);
-    if (status !== "start" && status !== "skip" && status !== "error") {
+    if (!isPreflightAction(status)) {
       throw new PythonBridgeError(`preflight.scripts[${index}].status is invalid`);
     }
     return {

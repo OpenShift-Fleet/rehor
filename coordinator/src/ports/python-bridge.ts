@@ -1,6 +1,17 @@
 import type { InstructionStrategy } from "../instructions";
 
-export type PreflightAction = "start" | "skip" | "error";
+export enum PreflightAction {
+  Start = "start",
+  Skip = "skip",
+  Error = "error",
+}
+
+const SUPPORTED_PREFLIGHT_ACTIONS = Object.values(PreflightAction);
+
+export function isPreflightAction(value: unknown): value is PreflightAction {
+  return typeof value === "string" && SUPPORTED_PREFLIGHT_ACTIONS.includes(value as PreflightAction);
+}
+
 export type PreflightScriptStatus = PreflightAction;
 
 export interface PreflightScriptResult {

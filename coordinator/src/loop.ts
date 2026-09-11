@@ -1,6 +1,13 @@
 import type { PreparedCycleInput } from "./cycle-input";
+import { PreflightAction } from "./ports/python-bridge";
 import type { CycleAdmission, CycleAdmissionLease, LoopWriteResult } from "./ports/loop";
-import { type CyclePlan, type CycleScheduler, type SleepSignal, sleep } from "./scheduler";
+import {
+  CycleDecision,
+  type CyclePlan,
+  type CycleScheduler,
+  type SleepSignal,
+  sleep,
+} from "./scheduler";
 
 export enum LoopStopReason {
   Shutdown = "shutdown",
@@ -159,7 +166,7 @@ export async function runCoordinatorLoop<TResult>(
       const plan = options.scheduler.planForPreflight(prepared.preflight);
       cycles += 1;
       await options.onDecision?.(plan, prepared);
-      if (plan.decision !== "run") {
+      if (plan.decision !== CycleDecision.Run) {
         if (!(await waitForPlan(plan, options, signals.signal))) break;
         continue;
       }
@@ -183,7 +190,7 @@ export async function runCoordinatorLoop<TResult>(
       const sleepPlan = options.scheduler.planAfterRun(signal);
       if (
         !(await waitForPlan(
-          { decision: "run", sleep: sleepPlan, consecutivePreflightErrors: 0 },
+          { decision: CycleDecision.Run, sleep: sleepPlan, consecutivePreflightErrors: 0 },
           options,
           signals.signal,
         ))
@@ -232,7 +239,7 @@ function stopped<TResult>(
 
 function errorPreflight(error: unknown): PreparedCycleInput["preflight"] {
   return {
-    action: "error",
+    action: PreflightAction.Error,
     prompt: "",
     transcript: error instanceof Error ? error.message : String(error),
     scripts: [],
