@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   type CycleAdmission,
-  InstructionStrategy,
-  PreflightAction,
   createLoopSignals,
+  InstructionStrategy,
   installProcessSignalHandlers,
+  PreflightAction,
   type PreparedCycleInput,
   runCoordinatorLoop,
 } from "../src";
@@ -44,8 +44,7 @@ function prepared(action: PreflightAction): PreparedCycleInput {
     ...(action === PreflightAction.Start ? { prompt: "run" } : {}),
     instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
     configHash: { algorithm: "sha256", value: "2".repeat(64) },
-    preflightPayloadRef:
-      action === PreflightAction.Start ? "preflight://sha256/test" : null,
+    preflightPayloadRef: action === PreflightAction.Start ? "preflight://sha256/test" : null,
   };
 }
 

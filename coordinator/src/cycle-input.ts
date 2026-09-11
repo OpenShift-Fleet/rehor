@@ -9,8 +9,8 @@ import {
   sha256Hash,
 } from "./instructions";
 import {
-  PreflightAction,
   type ConfigPreparationResult,
+  PreflightAction,
   type PreflightRequest,
   type PreflightResult,
   type PythonBridge,

@@ -145,9 +145,7 @@ export async function executeRun(
 
   try {
     if (abortState.signal.aborted) {
-      failure = new CoordinatorAbort(
-        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
-      );
+      failure = new CoordinatorAbort(abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled });
     } else {
       try {
         capabilities = await raceWithAbort(() => runtime.start(abortState.signal), abortState);
@@ -189,9 +187,7 @@ export async function executeRun(
     }
 
     if (!failure && abortState.signal.aborted) {
-      failure = new CoordinatorAbort(
-        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
-      );
+      failure = new CoordinatorAbort(abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled });
     }
 
     if (!ledger.terminalEvent && !failure) {
@@ -356,8 +352,7 @@ function terminalState(
 }
 
 function terminalReason(cause: AbortCause | undefined, failure: unknown): string {
-  if (cause?.kind === CoordinatorAbortKind.TimedOut)
-    return String(cause.reason ?? "run timed out");
+  if (cause?.kind === CoordinatorAbortKind.TimedOut) return String(cause.reason ?? "run timed out");
   if (cause?.kind === CoordinatorAbortKind.Shutdown)
     return String(cause.reason ?? "shutdown requested");
   if (cause?.kind === CoordinatorAbortKind.Cancelled)

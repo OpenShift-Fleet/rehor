@@ -2,16 +2,16 @@ import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 
 import { isInstructionStrategy } from "../instructions";
-import { abortError, isRecord } from "../utils";
 import {
-  isPreflightAction,
   type ConfigPreparationRequest,
   type ConfigPreparationResult,
+  isPreflightAction,
   type PreflightRequest,
   type PreflightResult,
   type PreflightScriptResult,
   type PythonBridge,
 } from "../ports/python-bridge";
+import { abortError, isRecord } from "../utils";
 
 const PROTOCOL_VERSION = 1;
 
