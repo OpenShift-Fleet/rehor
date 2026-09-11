@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
@@ -22,7 +22,7 @@ verify: ## Run all checks (same as CI)
 	@echo "=== Python: type check ==="
 	uv run mypy
 	@echo "=== Python: tests ==="
-	uv run pytest
+	$(MAKE) test-unit
 	@echo "=== Go: vet ==="
 	cd proxy/executor && go vet ./...
 	@echo "=== Go: tests ==="
@@ -132,6 +132,12 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 	@$(CONTAINER_RT) rm -f memory-server-verify memory-server-verify-pg
 	@echo ""
 	@echo "All container verification checks passed."
+
+test-unit: ## Run unit tests (integration excluded; coverage gate matches CI)
+	uv run pytest --cov=bot --cov-report=term-missing --cov-fail-under=50
+
+test-integration: ## Run integration tests (requires docker-compose stack running)
+	uv run pytest tests/integration/ -v -p no:cacheprovider
 
 container-e2e: ## Run REHOR-62 multi-container entrypoint/runtime E2E checks locally.
 	bash tests/container-e2e/test-container.sh --fixture $(or $(FIXTURE),minimal)

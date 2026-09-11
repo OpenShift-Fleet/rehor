@@ -2,25 +2,8 @@
 
 import base64
 import json
-import sys
 from dataclasses import dataclass
-from types import ModuleType
-from unittest.mock import MagicMock, patch
-
-# Mock claude_agent_sdk before importing bot modules
-_mock_sdk = ModuleType("claude_agent_sdk")
-for name in [
-    "AssistantMessage",
-    "ClaudeAgentOptions",
-    "HookMatcher",
-    "ResultMessage",
-    "SystemMessage",
-    "TextBlock",
-    "ToolResultBlock",
-    "query",
-]:
-    setattr(_mock_sdk, name, MagicMock)
-sys.modules["claude_agent_sdk"] = _mock_sdk
+from unittest.mock import patch
 
 from bot.agent import CycleContext, _extract_task_id_from_result
 from bot.transcripts import (

@@ -9,7 +9,7 @@ These tests require:
 - GITLAB_TOKEN and GL_USERNAME for GitLab auth
 - Test repositories accessible (public or authenticated)
 
-Run with: pytest tests/test_git_proxy_integration.py -v
+Run with: pytest tests/integration/test_git_proxy_integration.py -v
 """
 
 import os
@@ -35,27 +35,40 @@ def docker_compose_services():
     This doesn't start/stop the stack (assumes it's already running),
     but verifies services are healthy before proceeding.
     """
-    # Check if proxy service is reachable
-    max_retries = int(HEALTHCHECK_TIMEOUT_SECONDS / HEALTHCHECK_RETRY_INTERVAL)
-    for i in range(max_retries):
-        result = subprocess.run(
-            ["docker", "compose", "exec", "-T", "proxy", "curl", "-s", "http://localhost:8447/healthz"],
-            capture_output=True,
-            timeout=DOCKER_EXEC_TIMEOUT,
-        )
-        if result.returncode == 0 and b"ok" in result.stdout:
+    # Check if proxy service is reachable. Uses a monotonic deadline (rather
+    # than a fixed retry count) so slow or hanging `docker` calls can't blow
+    # past HEALTHCHECK_TIMEOUT_SECONDS, and docker-unavailable/timeout errors
+    # are treated as "not healthy yet" instead of crashing the fixture.
+    deadline = time.monotonic() + HEALTHCHECK_TIMEOUT_SECONDS
+    proxy_healthy = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             break
-        if i < max_retries - 1:
-            time.sleep(HEALTHCHECK_RETRY_INTERVAL)
-    else:
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "exec", "-T", "proxy", "curl", "-s", "-f", "http://localhost:8447/healthz"],
+                capture_output=True,
+                timeout=min(DOCKER_EXEC_TIMEOUT, remaining),
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            result = None
+        if result is not None and result.returncode == 0 and result.stdout == b"ok\n":
+            proxy_healthy = True
+            break
+        time.sleep(min(HEALTHCHECK_RETRY_INTERVAL, max(deadline - time.monotonic(), 0)))
+    if not proxy_healthy:
         pytest.skip("Proxy service not healthy - is docker-compose running?")
 
     # Check if bot service is reachable
-    result = subprocess.run(
-        ["docker", "compose", "exec", "-T", "bot", "echo", "healthy"],
-        capture_output=True,
-        timeout=DOCKER_EXEC_TIMEOUT,
-    )
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "exec", "-T", "bot", "echo", "healthy"],
+            capture_output=True,
+            timeout=DOCKER_EXEC_TIMEOUT,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        pytest.skip("Bot service not healthy - is docker-compose running?")
     if result.returncode != 0:
         pytest.skip("Bot service not healthy - is docker-compose running?")
 
@@ -118,10 +131,10 @@ class TestGitProxyEndToEnd:
 
     def test_proxy_healthz_endpoint(self, docker_compose_services, bot_exec):
         """Verify git-auth proxy healthz endpoint is accessible."""
-        result = bot_exec(["curl", "-s", "http://proxy:8447/healthz"])
+        result = bot_exec(["curl", "-s", "-f", "http://proxy:8447/healthz"])
 
         assert result.returncode == 0, f"Health check failed: {result.stderr}"
-        assert "ok" in result.stdout, f"Unexpected healthz response: {result.stdout}"
+        assert result.stdout == "ok\n", f"Unexpected healthz response: {result.stdout!r}"
 
     def test_git_clone_public_repo_through_proxy(self, docker_compose_services, bot_exec, proxy_logs):
         """Clone a small public GitHub repo through the proxy.
