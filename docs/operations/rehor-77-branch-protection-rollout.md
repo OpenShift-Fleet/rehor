@@ -32,6 +32,7 @@ These checks must pass before a PR can merge:
 
 - `Red Hat Konflux / platform-frontend-ai-dev-on-pull-request`
 - `Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request`
+- `Biome`
 
 **Path-filtered (not required in branch protection):**
 
