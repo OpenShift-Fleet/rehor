@@ -1,5 +1,7 @@
 """Core agent cycle — invokes Claude Agent SDK."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -200,6 +202,7 @@ async def run_cycle(
     cwd: str,
     instance_id: str | None = None,
     preflight_prompt: str | None = None,
+    model: str | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     turn_hook = _make_turn_budget_hook(config.max_turns, label)
@@ -211,7 +214,7 @@ async def run_cycle(
         return {}
 
     options = ClaudeAgentOptions(
-        model=config.model,
+        model=model or config.model,
         max_turns=config.max_turns,
         allowed_tools=allowed_tools,
         mcp_servers=mcp_servers,

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -24,6 +24,33 @@ class Config:
     cycle_timeout: int
     board_key: str
     idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
+    model_tiers: dict[str, str] = field(default_factory=dict)
+
+
+def _nonempty_model(value: object) -> str | None:
+    """Return stripped string if non-empty, otherwise None."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _load_model_tiers(raw_tiers: object) -> dict[str, str]:
+    """Parse claude.modelTiers dict, dropping empty or non-string entries with warnings."""
+    logger = logging.getLogger(__name__)
+    if not isinstance(raw_tiers, dict):
+        return {}
+    tiers: dict[str, str] = {}
+    for tier, model in raw_tiers.items():
+        if not isinstance(tier, str) or not tier.strip():
+            continue
+        cleaned_tier = tier.strip()
+        cleaned_model = _nonempty_model(model)
+        if cleaned_model:
+            tiers[cleaned_tier] = cleaned_model
+        else:
+            logger.warning("Dropping invalid or empty model for tier '%s' in claude.modelTiers", tier)
+    return tiers
 
 
 @dataclass
@@ -35,6 +62,7 @@ class InstanceConfig:
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
+    model: str | None = None
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -48,6 +76,7 @@ class InstanceConfig:
             envs=data.get("envs"),
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
+            model=_nonempty_model(data.get("model")),
         )
 
     @classmethod
@@ -57,7 +86,8 @@ class InstanceConfig:
         envs: list[str] | None = None
         if envs_str is not None:
             envs = [e.strip() for e in envs_str.split(",") if e.strip()]
-        return cls(workflow=workflow, envs=envs)
+        model = _nonempty_model(os.environ.get("BOT_MODEL"))
+        return cls(workflow=workflow, envs=envs, model=model)
 
 
 def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
@@ -67,16 +97,24 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
         yaml_path = remote_agent_dir / "instance.yaml"
         if yaml_path.is_file():
             ic = InstanceConfig.from_yaml(yaml_path)
+            if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
+                ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, model=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
+                ic.model,
             )
             return ic
 
     ic = InstanceConfig.from_env()
-    logger.info("No instance.yaml — env/defaults: workflow=%s, envs=%s", ic.workflow, ic.envs)
+    logger.info(
+        "No instance.yaml — env/defaults: workflow=%s, envs=%s, model=%s",
+        ic.workflow,
+        ic.envs,
+        ic.model,
+    )
     return ic
 
 
@@ -142,14 +180,16 @@ def load_config(script_dir: Path) -> Config:
     """Load bot configuration from config.json."""
     with open(script_dir / "config.json") as f:
         raw = json.load(f)
+    claude_cfg = raw.get("claude", {})
     return Config(
-        model=raw["claude"]["model"],
-        max_turns=raw["claude"]["maxTurns"],
+        model=claude_cfg["model"],
+        max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
-        cycle_timeout=raw["claude"].get("cycleTimeoutSeconds", 1800),
+        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 1800),
         board_key=raw["jira"]["boardKey"],
         idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
+        model_tiers=_load_model_tiers(claude_cfg.get("modelTiers")),
     )
 
 
@@ -219,15 +259,50 @@ def load_manifest(
         return yaml.safe_load(f)
 
 
+def resolve_cycle_model(
+    script_dir: Path,
+    instance_config: InstanceConfig,
+    global_config: Config,
+    remote_agent_dir: Path | None = None,
+) -> str:
+    """Resolve which model to use for the agent cycle following 4-tier precedence:
+
+    1. instance.yaml `model` (explicit pin)
+    2. BOT_MODEL environment variable (deploy overlay, applied in load_instance_config)
+    3. workflow manifest.yaml `model_tier`, mapped through config.json `claude.modelTiers`
+    4. global config.json `claude.model` (fallback)
+
+    Presets name a tier, not a model ID, so shared workflows stay provider-neutral;
+    only deployment-owned config (instance.yaml, BOT_MODEL, config.json) carries IDs.
+    """
+    logger = logging.getLogger(__name__)
+    if pinned := _nonempty_model(instance_config.model):
+        logger.info("Resolved cycle model: %s (source=instance)", pinned)
+        return pinned
+    manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir) or {}
+    if tier := _nonempty_model(manifest.get("model_tier")):
+        if pinned := global_config.model_tiers.get(tier):
+            logger.info("Resolved cycle model: %s (source=workflow:%s tier=%s)", pinned, instance_config.workflow, tier)
+            return pinned
+        logger.error(
+            "Workflow '%s' requests model tier '%s' not defined in config.json claude.modelTiers — using default",
+            instance_config.workflow,
+            tier,
+        )
+    logger.info("Resolved cycle model: %s (source=config.json)", global_config.model)
+    return global_config.model
+
+
 def validate_manifest(
     script_dir: Path,
     workflow: str,
     mcp_servers: dict,
     remote_agent_dir: Path | None = None,
+    model_tiers: dict[str, str] | None = None,
 ) -> None:
     """Validate workflow manifest requirements at startup.
 
-    FATAL (sys.exit) on missing required MCP servers or env vars.
+    FATAL (sys.exit) on missing required MCP servers, env vars, or unknown model tier.
     WARNING on missing optional env vars or absent manifest.
     """
     logger = logging.getLogger(__name__)
@@ -255,6 +330,9 @@ def validate_manifest(
     for var in requires.get("env_vars", []):
         if not os.environ.get(var):
             errors.append(f"Required env var '{var}' not set")
+
+    if model_tiers is not None and (tier := _nonempty_model(manifest.get("model_tier"))) and tier not in model_tiers:
+        errors.append(f"Model tier '{tier}' not defined in config.json claude.modelTiers")
 
     if errors:
         for err in errors:

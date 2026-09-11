@@ -107,3 +107,21 @@ def test_preflight_error_pushes_error_status(main_patches):
     main_patches["push_status"].assert_called_once_with(
         "error", "Preflight failed — check bot.log", instance_id="test-instance"
     )
+
+
+def test_start_calls_run_cycle_with_resolved_model(main_patches):
+    async def _mock_run_cycle(*args, **kwargs):
+        return (None, None)
+
+    main_patches["run_cycle"].side_effect = _mock_run_cycle
+    main_patches["run_preflight"].return_value = PreflightResult(action="start", prompt="preflight data", scripts=[])
+
+    with patch("bot.run.resolve_cycle_model", return_value="custom-model-id") as mock_resolve:
+        with pytest.raises(SystemExit):
+            _run_main()
+
+        mock_resolve.assert_called_once()
+        assert main_patches["run_cycle"].call_count == 1
+        _, kwargs = main_patches["run_cycle"].call_args
+        assert kwargs["model"] == "custom-model-id"
+        assert kwargs["preflight_prompt"] == "preflight data"
