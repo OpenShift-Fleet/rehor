@@ -1,6 +1,7 @@
 import { readFile, unlink } from "node:fs/promises";
 
 import type { PreflightResult } from "./ports/python-bridge";
+import { abortError, assertNonNegative, isMissingFile, isRecord } from "./utils";
 
 const DEFAULT_MAX_PREFLIGHT_BACKOFF_MS = 300_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -119,14 +120,15 @@ export function parseSleepSignal(value: unknown): SleepSignal | null {
 /** Delay until the next cycle, while allowing shutdown/cancellation to interrupt it. */
 export function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
   assertNonNegative(delayMs, "delayMs");
-  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+  if (signal?.aborted) return Promise.reject(abortError(signal.reason, "sleep aborted"));
   if (delayMs === 0) return Promise.resolve();
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let remaining = delayMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = (): void => finish(() => reject(abortError(signal?.reason)));
+    const onAbort = (): void =>
+      finish(() => reject(abortError(signal?.reason, "sleep aborted")));
 
     signal?.addEventListener("abort", onAbort, { once: true });
     schedule();
@@ -150,24 +152,4 @@ export function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
       callback();
     }
   });
-}
-
-function assertNonNegative(value: number, name: string): void {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${name} must be a non-negative finite number`);
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissingFile(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function abortError(reason: unknown): Error {
-  const error = new Error(reason === undefined ? "sleep aborted" : String(reason));
-  error.name = "AbortError";
-  return error;
 }

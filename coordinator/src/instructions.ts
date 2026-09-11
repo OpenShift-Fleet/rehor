@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { ContentHash } from "./domain/run";
+import { isMissingFile } from "./utils";
 
 export enum InstructionStrategy {
   Replace = "replace",
@@ -155,8 +156,4 @@ async function optionalFile(path: string): Promise<string | null> {
 
 function optionalLayerPath(directory: string | null | undefined, filename: string): string | null {
   return directory ? join(resolve(directory), filename) : null;
-}
-
-function isMissingFile(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }

@@ -3,6 +3,7 @@ import addFormats from "ajv-formats";
 
 import eventSchema from "../../schema/rehor-event.v1.json" with { type: "json" };
 import runSchema from "../../schema/rehor-run.v1.json" with { type: "json" };
+import { isRecord } from "../utils";
 import {
   assertTerminalPayload,
   assertUsagePayload,
@@ -160,10 +161,6 @@ function parseRawEventReference(value: unknown): RawEventReference {
 function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) throw new RuntimeContractError(`${path} must be an object`);
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requiredString(object: Record<string, unknown>, key: string, path = "value"): string {

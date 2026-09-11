@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 
 import { isInstructionStrategy } from "../instructions";
+import { abortError, isRecord } from "../utils";
 import type {
   ConfigPreparationRequest,
   ConfigPreparationResult,
@@ -58,7 +59,7 @@ export class PythonCoordinatorBridge implements PythonBridge {
   }
 
   private async request(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    if (signal?.aborted) throw abortError(signal.reason);
+    if (signal?.aborted) throw abortError(signal.reason, "Python coordinator bridge aborted");
 
     const child = spawn(this.executable, ["-m", "bot.coordinator_bridge"], {
       cwd: this.cwd ?? (typeof request.scriptDir === "string" ? request.scriptDir : undefined),
@@ -82,7 +83,9 @@ export class PythonCoordinatorBridge implements PythonBridge {
         waitForExit(child),
       ]);
 
-      if (aborted || signal?.aborted) throw abortError(signal?.reason);
+      if (aborted || signal?.aborted) {
+        throw abortError(signal?.reason, "Python coordinator bridge aborted");
+      }
       if (exitCode !== 0) {
         const detail = stderr.trim() || `process exited with code ${exitCode}`;
         throw new PythonBridgeError(`Python coordinator bridge failed: ${detail}`);
@@ -170,10 +173,6 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
   };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) throw new PythonBridgeError(`${path} must be an object`);
   return value;
@@ -247,14 +246,6 @@ function mergeEnvironment(overrides: Record<string, string>): Record<string, str
     if (value !== undefined) inherited[key] = value;
   }
   return { ...inherited, ...overrides };
-}
-
-function abortError(reason: unknown): Error {
-  const error = new Error(
-    reason === undefined ? "Python coordinator bridge aborted" : String(reason),
-  );
-  error.name = "AbortError";
-  return error;
 }
 
 function describe(error: unknown): string {
