@@ -8,11 +8,12 @@ import {
   type InstructionStrategy,
   sha256Hash,
 } from "./instructions";
-import type {
-  ConfigPreparationResult,
-  PreflightRequest,
-  PreflightResult,
-  PythonBridge,
+import {
+  PreflightAction,
+  type ConfigPreparationResult,
+  type PreflightRequest,
+  type PreflightResult,
+  type PythonBridge,
 } from "./ports/python-bridge";
 
 export interface PrepareCycleInputOptions {
@@ -66,7 +67,7 @@ export async function prepareCycleInput(
   };
   const preflight = await bridge.preflight(preflightRequest, options.signal);
   const prompt =
-    preflight === null || preflight.action === "start"
+    preflight === null || preflight.action === PreflightAction.Start
       ? buildCyclePrompt({
           label: options.label,
           instanceId: options.instanceId,
@@ -75,7 +76,7 @@ export async function prepareCycleInput(
       : undefined;
 
   const preflightPayloadRef =
-    preflight?.action === "start"
+    preflight?.action === PreflightAction.Start
       ? `preflight://sha256/${sha256Hash(JSON.stringify(preflight)).value}`
       : null;
   const configHash = sha256Hash(

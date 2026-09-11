@@ -8,6 +8,7 @@ import {
   assembleInstructions,
   buildCyclePrompt,
   InstructionStrategy,
+  PreflightAction,
   type ConfigPreparationResult,
   type PreflightResult,
   type PythonBridge,
@@ -38,8 +39,8 @@ const config: ConfigPreparationResult = {
 function preflight(action: PreflightResult["action"]): PreflightResult {
   return {
     action,
-    prompt: action === "start" ? "work found" : "",
-    transcript: action === "skip" ? "nothing to do" : "",
+    prompt: action === PreflightAction.Start ? "work found" : "",
+    transcript: action === PreflightAction.Skip ? "nothing to do" : "",
     scripts: [{ name: "01-test.py", status: action, content: "content" }],
   };
 }
@@ -119,7 +120,7 @@ describe("instruction assembly", () => {
 describe("cycle preparation", () => {
   it("does not produce a runtime prompt for preflight skip", async () => {
     const root = await createCycleRoot();
-    const result = await prepareCycleInput(new FakeBridge(preflight("skip")), {
+    const result = await prepareCycleInput(new FakeBridge(preflight(PreflightAction.Skip)), {
       scriptDir: root,
       label: "hcc-ai-framework",
       instanceId: "instance-1",
@@ -132,7 +133,7 @@ describe("cycle preparation", () => {
 
   it("builds prompt and audit reference for preflight start", async () => {
     const root = await createCycleRoot();
-    const result = await prepareCycleInput(new FakeBridge(preflight("start")), {
+    const result = await prepareCycleInput(new FakeBridge(preflight(PreflightAction.Start)), {
       scriptDir: root,
       label: "hcc-ai-framework",
       instanceId: "instance-1",
@@ -155,7 +156,7 @@ describe("cycle preparation", () => {
         remoteAgentDir: instanceDir,
         claudeMdPath: join(root, "CLAUDE.md"),
       }),
-      preflight: async () => preflight("start"),
+      preflight: async () => preflight(PreflightAction.Start),
     };
 
     const result = await prepareCycleInput(bridge, {

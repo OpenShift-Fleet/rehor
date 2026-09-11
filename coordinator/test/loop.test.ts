@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   type CycleAdmission,
   InstructionStrategy,
+  PreflightAction,
   createLoopSignals,
   installProcessSignalHandlers,
   type PreparedCycleInput,
@@ -10,7 +11,7 @@ import {
 } from "../src";
 import { CycleScheduler } from "../src/scheduler";
 
-function prepared(action: "start" | "skip" | "error"): PreparedCycleInput {
+function prepared(action: PreflightAction): PreparedCycleInput {
   return {
     config: {
       model: "test-model",
@@ -35,15 +36,16 @@ function prepared(action: "start" | "skip" | "error"): PreparedCycleInput {
       layers: [],
     },
     preflight:
-      action === "error"
+      action === PreflightAction.Error
         ? { action, prompt: "", transcript: "error", scripts: [] }
-        : action === "skip"
+        : action === PreflightAction.Skip
           ? { action, prompt: "", transcript: "idle", scripts: [] }
           : { action, prompt: "work", transcript: "", scripts: [] },
-    ...(action === "start" ? { prompt: "run" } : {}),
+    ...(action === PreflightAction.Start ? { prompt: "run" } : {}),
     instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
     configHash: { algorithm: "sha256", value: "2".repeat(64) },
-    preflightPayloadRef: action === "start" ? "preflight://sha256/test" : null,
+    preflightPayloadRef:
+      action === PreflightAction.Start ? "preflight://sha256/test" : null,
   };
 }
 
@@ -64,7 +66,7 @@ describe("coordinator loop", () => {
     const released = { value: 0 };
     const decisions: string[] = [];
     const sleeps: number[] = [];
-    const preparedInputs = [prepared("skip"), prepared("error")];
+    const preparedInputs = [prepared(PreflightAction.Skip), prepared(PreflightAction.Error)];
     let prepareCalls = 0;
     let runCalls = 0;
 
@@ -107,7 +109,7 @@ describe("coordinator loop", () => {
     const result = await runCoordinatorLoop({
       admission: admission({ value: 0 }),
       scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
-      prepare: async () => prepared("start"),
+      prepare: async () => prepared(PreflightAction.Start),
       run: async () => {
         runCalls += 1;
         return "completed";
@@ -132,7 +134,7 @@ describe("coordinator loop", () => {
       scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
       prepare: async () => {
         prepareCalls += 1;
-        return prepared("start");
+        return prepared(PreflightAction.Start);
       },
       run: async () => "unexpected",
     });

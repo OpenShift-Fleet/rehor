@@ -10,7 +10,12 @@ import {
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
 
-export type CoordinatorAbortKind = "cancelled" | "shutdown" | "timed_out" | "failed";
+export enum CoordinatorAbortKind {
+  Cancelled = "cancelled",
+  Shutdown = "shutdown",
+  TimedOut = "timed_out",
+  Failed = "failed",
+}
 
 export interface CoordinatorOptions {
   /** Aborts the attempt as cancelled. */
@@ -67,7 +72,7 @@ class AbortState {
       this.resolveAbort = resolve;
     });
 
-    this.watch(shutdownSignal, (reason) => ({ kind: "shutdown", reason }));
+    this.watch(shutdownSignal, (reason) => ({ kind: CoordinatorAbortKind.Shutdown, reason }));
     this.watch(signal, (reason) => ({ kind: inferAbortKind(reason), reason }));
   }
 
@@ -122,7 +127,7 @@ export async function executeRun(
   const timeout = setTimeout(
     () =>
       abortState.trigger({
-        kind: "timed_out",
+        kind: CoordinatorAbortKind.TimedOut,
         reason: `run timed out after ${run.limits.timeoutMs}ms`,
       }),
     run.limits.timeoutMs,
@@ -140,7 +145,9 @@ export async function executeRun(
 
   try {
     if (abortState.signal.aborted) {
-      failure = new CoordinatorAbort(abortState.cause ?? { kind: "cancelled" });
+      failure = new CoordinatorAbort(
+        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
+      );
     } else {
       try {
         capabilities = await raceWithAbort(() => runtime.start(abortState.signal), abortState);
@@ -149,7 +156,9 @@ export async function executeRun(
       }
 
       if (!failure && abortState.signal.aborted) {
-        failure = new CoordinatorAbort(abortState.cause ?? { kind: "cancelled" });
+        failure = new CoordinatorAbort(
+          abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
+        );
       }
 
       if (!failure) {
@@ -180,18 +189,26 @@ export async function executeRun(
     }
 
     if (!failure && abortState.signal.aborted) {
-      failure = new CoordinatorAbort(abortState.cause ?? { kind: "cancelled" });
+      failure = new CoordinatorAbort(
+        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
+      );
     }
 
     if (!ledger.terminalEvent && !failure) {
       const missingTerminalError = new CoordinatorError("runtime ended without terminal event");
       failure = missingTerminalError;
-      abortState.trigger({ kind: "failed", reason: missingTerminalError.message });
+      abortState.trigger({
+        kind: CoordinatorAbortKind.Failed,
+        reason: missingTerminalError.message,
+      });
     }
   } finally {
     acceptingEvents = false;
     if (failure && !abortState.signal.aborted) {
-      abortState.trigger({ kind: "failed", reason: describeError(failure) });
+      abortState.trigger({
+        kind: CoordinatorAbortKind.Failed,
+        reason: describeError(failure),
+      });
     }
 
     try {
@@ -331,17 +348,20 @@ function terminalState(
   cause: AbortCause | undefined,
   failure: unknown,
 ): TerminalEventPayload["state"] {
-  if (cause?.kind === "timed_out") return "timed_out";
-  if (cause?.kind === "shutdown") return "interrupted";
-  if (cause?.kind === "cancelled") return "cancelled";
+  if (cause?.kind === CoordinatorAbortKind.TimedOut) return "timed_out";
+  if (cause?.kind === CoordinatorAbortKind.Shutdown) return "interrupted";
+  if (cause?.kind === CoordinatorAbortKind.Cancelled) return "cancelled";
   if (failure) return "failed";
   return "failed";
 }
 
 function terminalReason(cause: AbortCause | undefined, failure: unknown): string {
-  if (cause?.kind === "timed_out") return String(cause.reason ?? "run timed out");
-  if (cause?.kind === "shutdown") return String(cause.reason ?? "shutdown requested");
-  if (cause?.kind === "cancelled") return String(cause.reason ?? "run cancelled");
+  if (cause?.kind === CoordinatorAbortKind.TimedOut)
+    return String(cause.reason ?? "run timed out");
+  if (cause?.kind === CoordinatorAbortKind.Shutdown)
+    return String(cause.reason ?? "shutdown requested");
+  if (cause?.kind === CoordinatorAbortKind.Cancelled)
+    return String(cause.reason ?? "run cancelled");
   return describeError(failure ?? new CoordinatorError("runtime ended without terminal event"));
 }
 
@@ -352,21 +372,25 @@ function nextSequence(events: readonly RehorEvent[]): number {
 }
 
 function inferAbortKind(reason: unknown): CoordinatorAbortKind {
-  if (reason instanceof Error && reason.name === "TimeoutError") return "timed_out";
-  if (reason === "shutdown" || reason === "SIGINT" || reason === "SIGTERM") return "shutdown";
-  if (reason === "timeout" || reason === "timed_out") return "timed_out";
-  return "cancelled";
+  if (reason instanceof Error && reason.name === "TimeoutError") {
+    return CoordinatorAbortKind.TimedOut;
+  }
+  if (reason === "shutdown" || reason === "SIGINT" || reason === "SIGTERM") {
+    return CoordinatorAbortKind.Shutdown;
+  }
+  if (reason === "timeout" || reason === "timed_out") return CoordinatorAbortKind.TimedOut;
+  return CoordinatorAbortKind.Cancelled;
 }
 
 function abortMessage(cause: AbortCause): string {
   switch (cause.kind) {
-    case "timed_out":
+    case CoordinatorAbortKind.TimedOut:
       return String(cause.reason ?? "run timed out");
-    case "shutdown":
+    case CoordinatorAbortKind.Shutdown:
       return String(cause.reason ?? "shutdown requested");
-    case "cancelled":
+    case CoordinatorAbortKind.Cancelled:
       return String(cause.reason ?? "run cancelled");
-    case "failed":
+    case CoordinatorAbortKind.Failed:
       return String(cause.reason ?? "run failed");
   }
 }
@@ -384,6 +408,6 @@ function shouldSurface(error: unknown, cause: AbortCause | undefined): boolean {
   if (error === undefined) return false;
   // Runtime adapters commonly reject with their own abort-shaped error after
   // the coordinator has already classified the external cancellation.
-  if (cause && cause.kind !== "failed") return false;
+  if (cause && cause.kind !== CoordinatorAbortKind.Failed) return false;
   return true;
 }
