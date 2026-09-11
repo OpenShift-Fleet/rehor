@@ -120,9 +120,10 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
     (profile_dir / "instance.yaml").write_text("workflow: test-workflow\n")
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
-    (workflow_dir / "manifest.yaml").write_text("name: test-workflow\ndefault_model: workflow-model\n")
+    (workflow_dir / "manifest.yaml").write_text("name: test-workflow\nmodel_tier: workflow-tier\n")
     (tmp_path / "config.json").write_text(
-        '{"claude": {"model": "global-model", "maxTurns": 10}, '
+        '{"claude": {"model": "global-model", "maxTurns": 10, '
+        '"modelTiers": {"workflow-tier": "workflow-model"}}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )
