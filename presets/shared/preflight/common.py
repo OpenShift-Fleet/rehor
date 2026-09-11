@@ -89,6 +89,15 @@ def build_repo_lookup(repos_dict=None):
     return lookup
 
 
+def match_repo_labels(labels, repo_lookup):
+    """Return canonical repo keys for every repo: label, or [] if any label is unmatched."""
+    repo_labels = [label.replace("repo:", "") for label in labels if label.startswith("repo:")]
+    if not repo_labels:
+        return []
+    matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
+    return matched if len(matched) == len(repo_labels) else []
+
+
 def _parse_repo_path(url):
     """Extract org/repo from a git URL."""
     if ":" in url and "@" in url:
