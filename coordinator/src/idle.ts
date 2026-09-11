@@ -1,3 +1,5 @@
+import { assertFinite, assertNonNegative } from "./utils";
+
 export interface IdleCycleState {
   consecutiveCycles: number;
   lastReminderAtMs: number | null;
@@ -43,14 +45,4 @@ export function recordActiveCycle(): IdleCycleState {
 export function recordReminderSent(state: IdleCycleState, sentAtMs: number): IdleCycleState {
   assertFinite(sentAtMs, "sentAtMs");
   return { ...state, lastReminderAtMs: sentAtMs };
-}
-
-function assertFinite(value: number, name: string): void {
-  if (!Number.isFinite(value)) throw new RangeError(`${name} must be finite`);
-}
-
-function assertNonNegative(value: number, name: string): void {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`${name} must be a non-negative finite number`);
-  }
 }
