@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   type CycleAdmission,
+  InstructionStrategy,
   createLoopSignals,
   installProcessSignalHandlers,
   type PreparedCycleInput,
@@ -22,7 +23,7 @@ function prepared(action: "start" | "skip" | "error"): PreparedCycleInput {
       source: "test",
       envs: null,
       activeEnvs: [],
-      claudeMdStrategy: "ignore",
+      claudeMdStrategy: InstructionStrategy.Ignore,
       idleCycleLimit: 0,
       remoteAgentDir: null,
       sharedAgentDir: null,

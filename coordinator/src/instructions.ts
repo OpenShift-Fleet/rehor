@@ -4,9 +4,21 @@ import { join, resolve } from "node:path";
 
 import type { ContentHash } from "./domain/run";
 
-const SUPPORTED_INSTRUCTION_STRATEGIES = ["replace", "append", "ignore"] as const;
+export enum InstructionStrategy {
+  Replace = "replace",
+  Append = "append",
+  Ignore = "ignore",
+}
 
-export type InstructionStrategy = (typeof SUPPORTED_INSTRUCTION_STRATEGIES)[number];
+const SUPPORTED_INSTRUCTION_STRATEGIES = Object.values(InstructionStrategy);
+
+export function isInstructionStrategy(value: unknown): value is InstructionStrategy {
+  return (
+    typeof value === "string" &&
+    SUPPORTED_INSTRUCTION_STRATEGIES.includes(value as InstructionStrategy)
+  );
+}
+
 export type InstructionLayerName = "core" | "shared" | "workflow" | "instance";
 
 export interface InstructionAssemblyRequest {
@@ -41,8 +53,8 @@ export async function assembleInstructions(
   request: InstructionAssemblyRequest,
 ): Promise<AssembledInstructions> {
   const scriptDir = resolve(request.scriptDir);
-  const strategy = request.strategy ?? "ignore";
-  if (!SUPPORTED_INSTRUCTION_STRATEGIES.includes(strategy)) {
+  const strategy = request.strategy ?? InstructionStrategy.Ignore;
+  if (!isInstructionStrategy(strategy)) {
     throw new InstructionAssemblyError(`unsupported CLAUDE.md strategy '${strategy}'`);
   }
   const corePath = join(scriptDir, "presets", "core", "CLAUDE.md");
@@ -60,12 +72,12 @@ export async function assembleInstructions(
   const workflowDir = resolveWorkflowDir(scriptDir, request.workflow, request.remoteAgentDir);
   const workflowPath = join(workflowDir, "CLAUDE.md");
 
-  if (strategy === "replace" && instancePath && instance !== null) {
+  if (strategy === InstructionStrategy.Replace && instancePath && instance !== null) {
     layers.push({ name: "instance", path: instancePath, content: instance });
   } else {
     const workflow = await optionalFile(workflowPath);
     if (workflow !== null) layers.push({ name: "workflow", path: workflowPath, content: workflow });
-    if (strategy === "append" && instancePath && instance !== null) {
+    if (strategy === InstructionStrategy.Append && instancePath && instance !== null) {
       layers.push({ name: "instance", path: instancePath, content: instance });
     }
   }
