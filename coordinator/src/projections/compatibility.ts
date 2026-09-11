@@ -287,13 +287,9 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
 
   for (const usage of usages.values()) {
     const model = usage.returnedModel ?? usage.requestedModel;
-    const counts = usage.tokenCounts;
+    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 } = usage.tokenCounts;
     const modelCounts = modelUsage[model] ?? {};
     modelUsage[model] = modelCounts;
-    const input = counts.input ?? 0;
-    const output = counts.output ?? 0;
-    const cacheRead = counts.cacheRead ?? 0;
-    const cacheWrite = counts.cacheWrite ?? 0;
     inputTokens += input;
     outputTokens += output;
     cacheReadTokens += cacheRead;
