@@ -372,9 +372,7 @@ function abortMessage(cause: AbortCause): string {
 }
 
 function monotonicClock(): number {
-  return typeof performance !== "undefined" && typeof performance.now === "function"
-    ? performance.now()
-    : Date.now();
+  return performance.now();
 }
 
 function describeError(error: unknown): string {
