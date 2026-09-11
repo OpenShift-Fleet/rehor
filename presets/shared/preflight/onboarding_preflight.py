@@ -30,6 +30,7 @@ BOT_LABEL = os.environ.get("BOT_LABEL", "")
 if BOT_LABEL and not re.match(r"^[a-zA-Z0-9:_-]+$", BOT_LABEL):
     raise ValueError(f"Invalid BOT_LABEL: {BOT_LABEL!r}")
 BOT_JIRA_EMAIL = os.environ.get("BOT_JIRA_EMAIL", "")
+BOT_JIRA_PROJECT = os.environ.get("BOT_JIRA_PROJECT", "REHOR")
 
 # MCP tool returns oldest-first, no pagination: https://github.com/sooperset/mcp-atlassian/issues/1215
 JIRA_COMMENT_LIMIT = 100
@@ -86,7 +87,7 @@ def _get_candidates():
         return []
 
     jql = (
-        f'project = REHOR AND labels = "{BOT_LABEL}" AND status in ("New", "Backlog", "To Do", "Open") '
+        f'project = {BOT_JIRA_PROJECT} AND labels = "{BOT_LABEL}" AND status in ("New", "Backlog", "To Do", "Open") '
         f"AND assignee is EMPTY "
         f"ORDER BY priority DESC, created ASC"
     )
