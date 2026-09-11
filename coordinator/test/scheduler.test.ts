@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   CycleScheduler,
   consumeSleepSignal,
-  PreflightAction,
   type IdleCycleState,
+  PreflightAction,
   type PreflightResult,
   parseSleepSignal,
   recordActiveCycle,

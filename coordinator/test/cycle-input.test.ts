@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 import {
   assembleInstructions,
   buildCyclePrompt,
+  type ConfigPreparationResult,
   InstructionStrategy,
   PreflightAction,
-  type ConfigPreparationResult,
   type PreflightResult,
   type PythonBridge,
   PythonCoordinatorBridge,

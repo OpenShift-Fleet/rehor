@@ -1,6 +1,6 @@
 import type { PreparedCycleInput } from "./cycle-input";
-import { PreflightAction } from "./ports/python-bridge";
 import type { CycleAdmission, CycleAdmissionLease, LoopWriteResult } from "./ports/loop";
+import { PreflightAction } from "./ports/python-bridge";
 import {
   CycleDecision,
   type CyclePlan,

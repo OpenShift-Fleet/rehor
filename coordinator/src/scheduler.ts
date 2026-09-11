@@ -131,8 +131,7 @@ export function sleep(delayMs: number, signal?: AbortSignal): Promise<void> {
     let settled = false;
     let remaining = delayMs;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const onAbort = (): void =>
-      finish(() => reject(abortError(signal?.reason, "sleep aborted")));
+    const onAbort = (): void => finish(() => reject(abortError(signal?.reason, "sleep aborted")));
 
     signal?.addEventListener("abort", onAbort, { once: true });
     schedule();

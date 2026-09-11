@@ -9,7 +9,9 @@ export enum PreflightAction {
 const SUPPORTED_PREFLIGHT_ACTIONS = Object.values(PreflightAction);
 
 export function isPreflightAction(value: unknown): value is PreflightAction {
-  return typeof value === "string" && SUPPORTED_PREFLIGHT_ACTIONS.includes(value as PreflightAction);
+  return (
+    typeof value === "string" && SUPPORTED_PREFLIGHT_ACTIONS.includes(value as PreflightAction)
+  );
 }
 
 export type PreflightScriptStatus = PreflightAction;
