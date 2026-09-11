@@ -70,6 +70,10 @@ name: my-workflow
 type: workflow
 description: Brief description of what this workflow does
 
+# Optional model tier for cycles using this workflow. Tier names map to
+# model IDs in config.json `claude.modelTiers`; presets never name a model ID.
+model_tier: light
+
 # Preflight scripts (documentation — discovery is filesystem-based)
 preflight:
   - 01-check-service.py
@@ -106,6 +110,7 @@ requires:
 | `name` | Yes | Workflow identifier |
 | `type` | Yes | Must be `workflow` |
 | `description` | Yes | One-line summary |
+| `model_tier` | No | Optional model tier name for cycles using this workflow (e.g. `light`). Mapped to a concrete model ID via `config.json` `claude.modelTiers`. |
 | `preflight` | No | List of preflight script filenames (documentation only) |
 | `shared_skills` | No | Core skill names to include (from `presets/shared/skills/`) |
 | `provides.claude_md` | No | CLAUDE.md filename (always `CLAUDE.md`) |
@@ -156,6 +161,7 @@ claude_md:
 | `source` | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
 | `envs` | `null` (all) | Env presets to activate. `null` = all available, `[]` = none. |
 | `claude_md.strategy` | `ignore` | How instance CLAUDE.md combines with workflow CLAUDE.md |
+| `model` | `null` | Optional model override for this instance (e.g. `claude-sonnet-4-6`) |
 
 ## CLAUDE.md Assembly Strategies
 
