@@ -437,7 +437,8 @@ The proxy:
 | GitHub | PAT (`GH_TOKEN`) | **Proxy** | Config file at `~/.config/gh/hosts.yml` in proxy container |
 | GitLab | PAT (`GITLAB_TOKEN`) | **Proxy** | Config file at `~/.config/glab-cli/config.yml` in proxy container |
 | GPG signing | Private key | **Proxy** | Imported from `GPG_PRIVATE_KEY_B64` at proxy startup |
-| Memory server | None (internal network) | — | `http://memory-server:8080` (Docker) or `http://localhost:8080` (host) |
+| Memory server (dashboard) | OpenShift oauth-proxy SSO on Route | — | Route → oauth-proxy :8443 → memory-server :8080 |
+| Memory server (MCP/API) | None (cluster-internal) | — | `http://devbot-memory-server:8080` (OpenShift) or `http://memory-server:8080` (Docker) |
 | Chrome DevTools | None (localhost) | Bot | `http://127.0.0.1:9222` |
 
 ## Deployment Considerations (Cluster)
