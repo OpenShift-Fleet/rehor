@@ -104,22 +104,20 @@ compare_bool_setting \
   '.required_pull_request_reviews.require_code_owner_reviews // false' \
   '.required_pull_request_reviews.require_code_owner_reviews // false'
 
-policy_bypass_pull_request_allowances=$(jq -c '
+# the PUT API accepts bypass allowances as slug/login strings, which is how the
+# policy file stores them, but the GET API returns them as full objects. compare
+# names on both sides, otherwise every run reports drift that cannot be fixed.
+normalize_bypass_allowances='
+  def to_names: [.[]? | if type == "object" then (.slug // .login) else . end] | sort;
   (.required_pull_request_reviews.bypass_pull_request_allowances // {})
   | {
-      users: ((.users // []) | sort),
-      teams: ((.teams // []) | sort),
-      apps: ((.apps // []) | sort)
+      users: ((.users // []) | to_names),
+      teams: ((.teams // []) | to_names),
+      apps: ((.apps // []) | to_names)
     }
-' "$POLICY_FILE")
-live_bypass_pull_request_allowances=$(echo "$live_json" | jq -c '
-  (.required_pull_request_reviews.bypass_pull_request_allowances // {})
-  | {
-      users: ((.users // []) | sort),
-      teams: ((.teams // []) | sort),
-      apps: ((.apps // []) | sort)
-    }
-')
+'
+policy_bypass_pull_request_allowances=$(jq -c "$normalize_bypass_allowances" "$POLICY_FILE")
+live_bypass_pull_request_allowances=$(echo "$live_json" | jq -c "$normalize_bypass_allowances")
 if [ "$policy_bypass_pull_request_allowances" = "$live_bypass_pull_request_allowances" ]; then
   echo "  OK:      bypass pull request allowances = $live_bypass_pull_request_allowances"
 else
