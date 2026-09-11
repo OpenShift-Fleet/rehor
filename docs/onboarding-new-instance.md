@@ -104,6 +104,7 @@ envs:
 |--------|-----------------|
 | `node` | nvm + Node.js 24 LTS + npm/npx |
 | `go` | goenv + Go 1.24/1.25 + golangci-lint |
+| `python` | pyenv + Python 3.12.8 + ruff + mypy |
 | `patternfly-mcp` | PatternFly component guidance MCP server (requires `node`) |
 | `browser` | Chromium + chrome-devtools MCP for visual verification |
 | `container-scan` | Grype + Buildah for CVE scanning |

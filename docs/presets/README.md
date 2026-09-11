@@ -12,6 +12,7 @@ source: jira                 # Ticket source
 envs:                        # Tools and runtimes to install (pick what you need)
   - node                     # Node.js via nvm (version switching)
   - go                       # Go via goenv (version switching)
+  - python                   # Python via pyenv (version switching) + ruff + mypy
   - browser                  # Chromium for visual verification
   - slack                    # Slack notifications
   - container-scan           # Grype + Buildah for CVE scanning
@@ -61,7 +62,8 @@ List only the presets your instance actually needs:
 
 - **Frontend repos** (React/TypeScript): `node`, `browser`, `patternfly-mcp`, `slack`
 - **Backend repos** (Go): `go`, `container-scan`, `slack`
-- **Mixed repos**: `node`, `go`, `browser`, `slack`, `container-scan`
+- **Backend repos** (Python): `python`, `container-scan`, `slack`
+- **Mixed repos**: `node`, `go`, `python`, `browser`, `slack`, `container-scan`
 - **Config-only repos** (app-interface): `slack`
 
 Unused presets waste Docker build time and image size. The `node` and `go` presets install version managers and compilers — skip them if your repos don't need them.
@@ -72,6 +74,7 @@ Unused presets waste Docker build time and image size. The `node` and `go` prese
 |------------|-----------------|------------------|
 | [`node`](envs.md#node) | nvm + Node.js 24 LTS + npm/npx | Frontend repos, any repo with `package.json` |
 | [`go`](envs.md#go) | goenv + Go 1.24/1.25 + golangci-lint | Go repos, any repo with `go.mod` |
+| [`python`](envs.md#python) | pyenv + Python 3.12.8 + ruff + mypy | Python repos with `pyproject.toml`, `requirements.txt`, or `Pipfile` |
 | [`patternfly-mcp`](envs.md#patternfly-mcp) | PatternFly component guidance MCP server | Frontend repos using PatternFly (requires `node`) |
 | [`browser`](envs.md#browser) | Chromium + chrome-devtools MCP | UI repos needing visual verification/screenshots |
 | [`container-scan`](envs.md#container-scan) | Grype + Buildah | CVE scanning, container image analysis |
