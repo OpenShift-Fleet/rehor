@@ -23,6 +23,7 @@ on:
   pull_request:
     paths:
       # bot image inputs
+      - "Dockerfile"
       - "Dockerfile.runner"
       - "entrypoint.sh"
       - "config.json"
@@ -41,11 +42,13 @@ on:
       # shared
       - "docker-compose.yml"
       - ".github/workflows/container-verify.yml"
+      - ".github/actions/grype-scan/**"
   push:
     branches:
       - master
     paths:
       # bot image inputs
+      - "Dockerfile"
       - "Dockerfile.runner"
       - "entrypoint.sh"
       - "config.json"
@@ -64,6 +67,7 @@ on:
       # shared
       - "docker-compose.yml"
       - ".github/workflows/container-verify.yml"
+      - ".github/actions/grype-scan/**"
 
 permissions:
   contents: read
@@ -129,6 +133,32 @@ jobs:
             node --version
           '
 
+      - name: Scan bot image with grype (advisory)
+        uses: ./.github/actions/grype-scan
+        with:
+          image: bot:verify
+          name: bot
+
+      - name: Verify Node matches the pinned version
+        # REHOR-149: the image installs Node from the pinned tarball in
+        # Dockerfile, and presets/envs/node/install.sh used to overwrite it with
+        # whatever `nvm install 22` resolved to. This asserts the two agree, so
+        # the shadowing cannot come back unnoticed.
+        run: |
+          set -euo pipefail
+          pinned="$(grep -m1 '^ARG NODE_VERSION=' Dockerfile | cut -d'"' -f2 || true)"
+          runner_pinned="$(grep -m1 '^ARG NODE_VERSION=' Dockerfile.runner | cut -d'"' -f2 || true)"
+          actual="$(docker run --rm --entrypoint bash bot:verify -c 'node --version')"
+          echo "Dockerfile pin=v${pinned} Dockerfile.runner pin=v${runner_pinned} image=${actual}"
+          if [ "${pinned}" != "${runner_pinned}" ]; then
+            echo "::error::NODE_VERSION differs between Dockerfile and Dockerfile.runner"
+            exit 1
+          fi
+          if [ "${actual}" != "v${pinned}" ]; then
+            echo "::error::image ships ${actual} but NODE_VERSION pins v${pinned}"
+            exit 1
+          fi
+
   verify-proxy:
     runs-on: ubuntu-latest
     steps:
@@ -139,6 +169,12 @@ jobs:
       - name: Build proxy image
         run: |
           docker build -t proxy:verify ./proxy
+
+      - name: Scan proxy image with grype (advisory)
+        uses: ./.github/actions/grype-scan
+        with:
+          image: proxy:verify
+          name: proxy
 
       - name: Start proxy container
         run: |
@@ -198,6 +234,12 @@ jobs:
       - name: Build memory-server image
         run: |
           docker build -f memory-server/Dockerfile -t memory-server:verify .
+
+      - name: Scan memory-server image with grype (advisory)
+        uses: ./.github/actions/grype-scan
+        with:
+          image: memory-server:verify
+          name: memory-server
 
       - name: Start memory-server container
         run: |

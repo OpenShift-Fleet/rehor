@@ -91,6 +91,10 @@ COPY instance/ /home/botuser/app/instance/
 COPY dev-bot/presets/ presets/
 ARG GOVERSIONS="1.24.13 1.25.13"
 ENV GOVERSIONS="${GOVERSIONS}"
+# Keep in step with the NODE_VERSION pin in Dockerfile — presets/envs/node
+# installs exactly this version rather than floating on latest 22.x.
+ARG NODE_VERSION="22.23.2"
+ENV NODE_VERSION="${NODE_VERSION}"
 RUN bash presets/install-envs.sh
 
 ENV HOME=/home/botuser
