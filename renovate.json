@@ -1,11 +1,37 @@
 {
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["github>RedHatInsights/shared-workflows//renovate/backend"],
+  "schedule": ["* 0-6 * * 1"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 0,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes bypass the weekly window and open immediately",
+    "schedule": ["at any time"],
+    "prCreation": "immediate",
+    "minimumReleaseAge": null,
+    "labels": ["security"]
+  },
+  "lockFileMaintenance": {
+    "schedule": ["* 0-6 * * 1"]
+  },
+  "tekton": {
+    "schedule": ["* 0-6 * * 1"]
+  },
   "packageRules": [
     {
-      "description": "Automatically merge minor and patch dependency updates",
-      "matchUpdateTypes": ["minor", "patch"],
+      "description": "Batch every non-major update into a single weekly PR",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "weekly dependency batch",
+      "groupSlug": "weekly-deps",
+      "schedule": ["* 0-6 * * 1"],
       "automerge": true,
       "automergeType": "pr"
+    },
+    {
+      "description": "Majors stay in their own PRs and are reviewed by hand",
+      "matchUpdateTypes": ["major"],
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": false
     }
   ]
 }
