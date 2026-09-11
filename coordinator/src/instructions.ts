@@ -4,7 +4,9 @@ import { join, resolve } from "node:path";
 
 import type { ContentHash } from "./domain/run";
 
-export type InstructionStrategy = "replace" | "append" | "ignore";
+const SUPPORTED_INSTRUCTION_STRATEGIES = ["replace", "append", "ignore"] as const;
+
+export type InstructionStrategy = (typeof SUPPORTED_INSTRUCTION_STRATEGIES)[number];
 export type InstructionLayerName = "core" | "shared" | "workflow" | "instance";
 
 export interface InstructionAssemblyRequest {
@@ -40,9 +42,7 @@ export async function assembleInstructions(
 ): Promise<AssembledInstructions> {
   const scriptDir = resolve(request.scriptDir);
   const strategy = request.strategy ?? "ignore";
-  const isUnsupportedInstructionStrategy =
-    strategy !== "replace" && strategy !== "append" && strategy !== "ignore";
-  if (isUnsupportedInstructionStrategy) {
+  if (!SUPPORTED_INSTRUCTION_STRATEGIES.includes(strategy)) {
     throw new InstructionAssemblyError(`unsupported CLAUDE.md strategy '${strategy}'`);
   }
   const corePath = join(scriptDir, "presets", "core", "CLAUDE.md");
