@@ -8,27 +8,12 @@ import {
   type TokenCounts,
   type Usage,
 } from "../domain";
-import type { AgentRuntime } from "../ports";
+import type { AgentRuntime, McpServerConfig } from "../ports";
+import type { AgentRuntimeFactory } from "../runtime-factory";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
-
-export type ClaudeMcpServer =
-  | {
-      type?: "stdio";
-      command: string;
-      args?: readonly string[];
-      env?: Readonly<Record<string, string>>;
-      timeout?: number;
-      alwaysLoad?: boolean;
-    }
-  | {
-      type: "http" | "sse";
-      url: string;
-      headers?: Readonly<Record<string, string>>;
-      timeout?: number;
-      alwaysLoad?: boolean;
-    };
+export type ClaudeMcpServer = McpServerConfig;
 
 /** Configuration owned by the adapter; Claude SDK types do not cross this boundary. */
 export interface ClaudeAgentRuntimeOptions {
@@ -354,6 +339,18 @@ export class ClaudeAgentRuntime implements AgentRuntime {
   }
 }
 
+export const CLAUDE_RUNTIME_ID = "claude";
+
+/** Factory used by the coordinator registry for the production Claude path. */
+export function createClaudeAgentRuntimeFactory(
+  options: ClaudeAgentRuntimeOptions = {},
+): AgentRuntimeFactory {
+  return {
+    runtimeId: CLAUDE_RUNTIME_ID,
+    create: () => new ClaudeAgentRuntime(options),
+  };
+}
+
 function createHooks(
   maxTurns: number,
   label: string,
@@ -479,6 +476,7 @@ function translateMessage(
             "tool",
             {
               state: "started",
+              name,
               toolName: name,
               ...(id ? { toolUseId: id } : {}),
               ...(value?.input === undefined ? {} : { input: jsonValue(value.input) }),
@@ -616,6 +614,13 @@ function extractToolContext(
   if (typeof input.jira_key === "string") context.externalKey = input.jira_key;
   if (typeof input.repo === "string") context.repository = input.repo;
   if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
+  if (name === "Bash" && typeof input.command === "string") {
+    if (input.command.includes("gh pr checks") || input.command.includes("glab ci view")) {
+      context.workType = context.workType ?? "ci_fix";
+    } else if (input.command.includes("gh pr view") || input.command.includes("glab mr view")) {
+      context.workType = context.workType ?? "pr_review";
+    }
+  }
   if (name.endsWith("task_add")) context.workType = context.workType ?? "new_ticket";
   if (name.endsWith("task_update")) {
     if (input.status === "pr_open") context.workType = "new_ticket";

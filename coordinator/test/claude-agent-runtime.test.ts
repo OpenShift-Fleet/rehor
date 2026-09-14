@@ -5,6 +5,8 @@ const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
 
 import type { RehorEvent, RehorRun } from "../src/domain";
+import { LegacyCompatibilityProjection } from "../src/projections/compatibility";
+import { createDefaultRuntimeRegistry, executeSelectedRun } from "../src/runtime-factory";
 import { ClaudeAgentRuntime } from "../src/runtimes/claude-agent";
 
 const run: RehorRun = {
@@ -125,15 +127,19 @@ describe("ClaudeAgentRuntime", () => {
       return sdkQuery(sdkMessages());
     });
 
-    const runtime = new ClaudeAgentRuntime({
+    const registry = createDefaultRuntimeRegistry({
       sdkVersion: "0.3.270",
       allowedTools: ["Bash", "Read", "Edit"],
       mcpServers: {
         "mcp-atlassian": { type: "http", url: "http://jira-mcp" },
       },
     });
-    await runtime.start(new AbortController().signal);
-    const events = await collect(runtime.run(run, new AbortController().signal));
+    const costs: Array<Record<string, unknown>> = [];
+    const projection = new LegacyCompatibilityProjection({
+      costs: { write: (record) => void costs.push(record as unknown as Record<string, unknown>) },
+    });
+    const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run, { projection });
+    const events = [...result.events];
 
     expect(captured).toMatchObject({
       cwd: "/work/rehor",
@@ -166,7 +172,17 @@ describe("ClaudeAgentRuntime", () => {
       turns: 3,
       context: { taskId: 42 },
     });
-    expect((await runtime.start(new AbortController().signal)).runtimeVersion).toBe("0.3.270");
+    expect(result.capabilities?.runtimeVersion).toBe("0.3.270");
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({
+      sessionId: "claude-agent-sdk:session-01",
+      model: "claude-opus-4-6",
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+      costUsd: 0.42,
+    });
   });
 
   it("turns SDK failures into a failed terminal event and closes the query", async () => {
