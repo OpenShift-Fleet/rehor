@@ -225,12 +225,16 @@ if [ "${CHECK_GO:-0}" = "1" ]; then
   bash "$SCRIPT_DIR/checks/61-env-go.sh" "$BOT_CHECK_CONTAINER" "$RUNTIME"
 fi
 if [ "${CHECK_CONTAINER_SCAN:-0}" = "1" ]; then
+  # Passes both containers: CHECK_CONTAINER for binary exec, BOT_CONTAINER for docker cp
+  # of entrypoint.d filesystem state (storage.conf written to botuser home at startup).
   log "Running env check: container-scan"
-  bash "$SCRIPT_DIR/checks/62-env-container-scan.sh" "$BOT_CHECK_CONTAINER" "$RUNTIME"
+  bash "$SCRIPT_DIR/checks/62-env-container-scan.sh" "$BOT_CHECK_CONTAINER" "$RUNTIME" "$BOT_CONTAINER"
 fi
 if [ "${CHECK_BROWSER:-0}" = "1" ]; then
+  # Passes both containers: CHECK_CONTAINER for binary/env exec, BOT_CONTAINER for
+  # docker logs check of "Chromium ready." from entrypoint.d/10-chromium.sh.
   log "Running env check: browser"
-  bash "$SCRIPT_DIR/checks/63-env-browser.sh" "$BOT_CHECK_CONTAINER" "$RUNTIME"
+  bash "$SCRIPT_DIR/checks/63-env-browser.sh" "$BOT_CHECK_CONTAINER" "$RUNTIME" "$BOT_CONTAINER"
 fi
 
 log "Container E2E checks passed for fixture: $FIXTURE"

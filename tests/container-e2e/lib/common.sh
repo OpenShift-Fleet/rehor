@@ -60,12 +60,27 @@ wait_for_container_log() {
   local timeout_s="${4:-120}"
   local interval_s="${5:-2}"
   local elapsed=0
+  local logs
 
   while true; do
-    if "$runtime" logs "$container" 2>&1 | grep -qE "$needle"; then
+    # Capture logs first so pipefail + grep -q cannot miss a match via SIGPIPE.
+    logs=$("$runtime" logs "$container" 2>&1) || true
+    if grep -qE "$needle" <<<"$logs"; then
       return 0
     fi
-    if ! "$runtime" ps --format '{{.Names}}' | grep -qE "^${container}$"; then
+    # Same capture pattern for ps: avoids SIGPIPE when grep exits early.
+    local running
+    running=$("$runtime" ps --format '{{.Names}}') || true
+    if ! grep -qE "^${container}$" <<<"$running"; then
+      # Container exited — Docker Desktop can flush logs after the container is
+      # gone from `ps`. Retry briefly before giving up (fast-exiting bot).
+      for _ in 1 2 3 4 5; do
+        logs=$("$runtime" logs "$container" 2>&1) || true
+        if grep -qE "$needle" <<<"$logs"; then
+          return 0
+        fi
+        sleep 1
+      done
       return 1
     fi
     elapsed=$((elapsed + interval_s))
