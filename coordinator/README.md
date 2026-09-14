@@ -103,9 +103,18 @@ adapter. `executeSelectedRun()` feeds the selected adapter into the existing
 `executeRun()` lifecycle, preserving event validation, projection, timeout,
 and cleanup behavior.
 
-The coordinator package does not register a production Claude or OpenCode
-adapter yet. The registry is the seam those adapters will use during canary
-migration; the Python runner remains the active production entry point.
+`createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
+runtime ID `claude`. Pass the `config` returned by `prepareCycleInput()` to
+forward the legacy allowed-tool and additional MCP-server configuration:
+
+```ts
+const prepared = await prepareCycleInput(bridge, cycleOptions);
+const registry = createDefaultRuntimeRegistry(prepared.config);
+const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
+```
+
+The Python runner remains the active production entry point until a TypeScript
+runner canary is enabled.
 
 ## Cycle input preparation
 

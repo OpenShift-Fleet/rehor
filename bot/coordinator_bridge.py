@@ -80,8 +80,10 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     from . import run as runner
     from .config import (
+        ALLOWED_TOOLS,
         load_config,
         load_instance_config,
+        load_mcp_servers,
         resolve_active_envs,
         resolve_cycle_model,
         resolve_workflow_dir,
@@ -109,6 +111,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     install_skills(script_dir, workflow_dir, active_envs)
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
+    mcp_servers = load_mcp_servers(script_dir)
 
     return {
         "model": cycle_model,
@@ -126,6 +129,8 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "remoteAgentDir": str(profile_dir) if profile_dir else None,
         "sharedAgentDir": str(shared_dir) if shared_dir else None,
         "claudeMdPath": str(script_dir / "CLAUDE.md"),
+        "mcpServers": mcp_servers,
+        "allowedTools": ALLOWED_TOOLS,
     }
 
 

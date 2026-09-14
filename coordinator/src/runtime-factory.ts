@@ -1,6 +1,10 @@
 import { type CoordinatorOptions, type CoordinatorResult, executeRun } from "./coordinator";
 import { parseRehorRun, type RehorRun } from "./domain";
 import type { AgentRuntime } from "./ports/agent-runtime";
+import {
+  type ClaudeAgentRuntimeOptions,
+  createClaudeAgentRuntimeFactory,
+} from "./runtimes/claude-agent";
 
 export const DEFAULT_RUNTIME_ID = "claude";
 
@@ -65,6 +69,13 @@ export class RuntimeFactoryRegistry {
       throw new RuntimeFactoryError(`runtime factory returned no runtime: ${selection.runtimeId}`);
     return runtime;
   }
+}
+
+/** Builds the production registry for the current Claude/Vertex runtime path. */
+export function createDefaultRuntimeRegistry(
+  claudeOptions: ClaudeAgentRuntimeOptions = {},
+): RuntimeFactoryRegistry {
+  return new RuntimeFactoryRegistry([createClaudeAgentRuntimeFactory(claudeOptions)]);
 }
 
 export function resolveRuntimeSelection(runtimeId?: string | null): RuntimeSelection {
