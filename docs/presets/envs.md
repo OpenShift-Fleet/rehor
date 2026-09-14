@@ -13,6 +13,7 @@ source: jira
 envs:
   - node          # nvm + Node.js
   - go            # goenv + Go
+  - python        # pyenv + ruff + mypy
   - browser       # Chromium + chrome-devtools MCP
   - slack         # Slack notifications
 ```
@@ -64,6 +65,34 @@ Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.
 ```bash
 goenv install 1.23.0    # install a specific version
 goenv global 1.23.0     # set as default
+```
+
+**Depends on**: nothing
+
+---
+
+## python
+
+**Path**: `presets/envs/python/`
+
+Installs [pyenv](https://github.com/pyenv/pyenv) (Python version manager) with Python 3.12.8 as the default, plus ruff and mypy for linting and type checking.
+
+**What gets installed**:
+- pyenv at `/usr/local/pyenv`
+- Python 3.12.8 (default; override with `PYTHONVERSIONS` build arg)
+- ruff and mypy (installed into pyenv's default Python)
+- `pyenv`, `ruff`, `mypy` symlinked to `/usr/local/bin/`
+- Shell init via `/etc/profile.d/pyenv.sh`
+
+**When to use**: Any instance working on Python repos — backends, data pipelines, ML services, operators with Python components.
+
+**System Python unchanged**: The bot runtime uses system Python 3.12 via uv (`.venv/bin` is first on `PATH`). This preset does **not** symlink `python` or `python3` to `/usr/local/bin/` — repo work uses pyenv for version switching without affecting the bot itself.
+
+**Version switching**:
+```bash
+pyenv install 3.11.11    # install a specific version
+pyenv global 3.11.11     # set as default
+pyenv local 3.11.11      # pin version in a repo directory
 ```
 
 **Depends on**: nothing
