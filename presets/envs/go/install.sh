@@ -34,7 +34,9 @@ cat > /etc/profile.d/goenv.sh << 'PROFILE'
 export GOENV_ROOT="/usr/local/goenv"
 export GOENV_PATH_ORDER=front
 export PATH="$GOENV_ROOT/bin:$PATH"
-eval "$(goenv init -)"
+# || true: goenv rehash inside init output can exit non-zero (e.g. in containers).
+# This is benign — PATH, shims, and the goenv function are set up before rehash runs.
+eval "$(goenv init -)" || true
 PROFILE
 
 # Symlink go to /usr/local/bin for non-interactive shells
