@@ -36,10 +36,10 @@ func unreachableUpstream(t *testing.T) http.Handler {
 	})
 }
 
-const chatBody = `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`
+const chatBody = `{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"hi"}]}`
 
 func TestOpenAIHealthz(t *testing.T) {
-	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-5.6-luna"})
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -51,7 +51,7 @@ func TestOpenAIHealthz(t *testing.T) {
 }
 
 func TestOpenAIBlockedModel(t *testing.T) {
-	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-5.6-luna"})
 
 	body := `{"model":"not-allowed","messages":[{"role":"user","content":"hi"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -76,7 +76,7 @@ func TestOpenAIBadBody(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-4o-mini"})
+			handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-5.6-luna"})
 
 			req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(tc.body))
 			w := httptest.NewRecorder()
@@ -104,7 +104,7 @@ func TestOpenAIRejectsUnknownRoutes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-4o-mini"})
+			handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-5.6-luna"})
 
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(chatBody))
 			w := httptest.NewRecorder()
@@ -129,7 +129,7 @@ func TestOpenAIAllowedModelForwarded(t *testing.T) {
 		gotBody = string(b)
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := newTestOpenAI(t, upstream, []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, upstream, []string{"gpt-5.6-luna"})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions?debug=1", strings.NewReader(chatBody))
 	w := httptest.NewRecorder()
@@ -159,7 +159,7 @@ func TestOpenAIStolenAuthNotForwarded(t *testing.T) {
 		gotProject = r.Header.Get("OpenAI-Project")
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := newTestOpenAI(t, upstream, []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, upstream, []string{"gpt-5.6-luna"})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody))
 	req.Header.Set("Authorization", "Bearer steal-me")
@@ -193,7 +193,7 @@ func TestOpenAIOrgAndProjectInjected(t *testing.T) {
 	}
 	handler := newOpenAIProxy(openaiProxyConfig{
 		APIKey:    "proxy-key-abc",
-		Policy:    NewOpenAIPolicy([]string{"gpt-4o-mini"}),
+		Policy:    NewOpenAIPolicy([]string{"gpt-5.6-luna"}),
 		Upstream:  u,
 		Transport: srv.Client().Transport,
 		Org:       "org-rehor",
@@ -226,7 +226,7 @@ func TestOpenAISpoofedHostIgnored(t *testing.T) {
 	}
 	handler := newOpenAIProxy(openaiProxyConfig{
 		APIKey:    "proxy-key-abc",
-		Policy:    NewOpenAIPolicy([]string{"gpt-4o-mini"}),
+		Policy:    NewOpenAIPolicy([]string{"gpt-5.6-luna"}),
 		Upstream:  u,
 		Transport: srv.Client().Transport,
 	})
@@ -251,7 +251,7 @@ func TestOpenAIStripsSensitiveResponseHeaders(t *testing.T) {
 		w.Header().Set("X-Request-Id", "req-123")
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := newTestOpenAI(t, upstream, []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, upstream, []string{"gpt-5.6-luna"})
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody))
 	w := httptest.NewRecorder()
@@ -291,9 +291,9 @@ func TestOpenAIStreamingToolCallsPassthrough(t *testing.T) {
 			w.(http.Flusher).Flush()
 		}
 	})
-	handler := newTestOpenAI(t, upstream, []string{"gpt-4o-mini"})
+	handler := newTestOpenAI(t, upstream, []string{"gpt-5.6-luna"})
 
-	body := `{"model":"gpt-4o-mini","stream":true,"stream_options":{"include_usage":true},` +
+	body := `{"model":"gpt-5.6-luna","stream":true,"stream_options":{"include_usage":true},` +
 		`"tools":[{"type":"function","function":{"name":"get_time"}}],` +
 		`"messages":[{"role":"user","content":"call get_time"}]}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
@@ -333,10 +333,10 @@ func TestOpenAIStreamingFlushesThroughMetricsWrapper(t *testing.T) {
 		io.WriteString(w, "data: {\"choices\":[]}\n\n")
 		w.(http.Flusher).Flush()
 	})
-	handler := InstrumentHTTPHandler("openai", newTestOpenAI(t, upstream, []string{"gpt-4o-mini"}))
+	handler := InstrumentHTTPHandler("openai", newTestOpenAI(t, upstream, []string{"gpt-5.6-luna"}))
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions",
-		strings.NewReader(`{"model":"gpt-4o-mini","stream":true}`))
+		strings.NewReader(`{"model":"gpt-5.6-luna","stream":true}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -346,7 +346,7 @@ func TestOpenAIStreamingFlushesThroughMetricsWrapper(t *testing.T) {
 }
 
 func TestOpenAIModelsListedLocally(t *testing.T) {
-	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-4o-mini", "gpt-4o"})
+	handler := newTestOpenAI(t, unreachableUpstream(t), []string{"gpt-5.6-luna", "gpt-5.6-terra"})
 
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -359,7 +359,7 @@ func TestOpenAIModelsListedLocally(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`"object":"list"`, `"gpt-4o-mini"`, `"gpt-4o"`} {
+	for _, want := range []string{`"object":"list"`, `"gpt-5.6-luna"`, `"gpt-5.6-terra"`} {
 		if !contains(body, want) {
 			t.Errorf("body = %q, want it to contain %s", body, want)
 		}
@@ -380,7 +380,7 @@ func TestOpenAIUpstreamErrorIsGeneric(t *testing.T) {
 
 	handler := newOpenAIProxy(openaiProxyConfig{
 		APIKey:   "proxy-key-abc",
-		Policy:   NewOpenAIPolicy([]string{"gpt-4o-mini"}),
+		Policy:   NewOpenAIPolicy([]string{"gpt-5.6-luna"}),
 		Upstream: u,
 	})
 

@@ -29,7 +29,7 @@ graph TB
             Squid["Squid<br/>(port 3128)"]
             Executor["Executor Server<br/>(gRPC)"]
             VertexProxy["Vertex Auth Proxy<br/>(port 8443)"]
-            OpenAIProxy["OpenAI Auth Proxy<br/>(port 8450, optional)"]
+            OpenAIProxy["OpenAI Auth Proxy<br/>(port 8450)"]
             JiraMCP["mcp-atlassian<br/>(Jira workflow integration)<br/>(port 8444)"]
         end
     end
@@ -472,7 +472,7 @@ The proxy:
 | Service | Auth Method | Runs in | Config |
 |---------|-------------|---------|--------|
 | Claude (Vertex AI) | GCP service account → OAuth2 Bearer | **Proxy** | SA key decoded from `GOOGLE_SA_KEY_B64`, Vertex auth proxy on port 8443 injects tokens |
-| OpenAI (optional) | API key → Bearer | **Proxy** | `OPENAI_API_KEY` + `OPENAI_ALLOWED_MODELS`, OpenAI-compatible auth proxy on port 8450 injects the Bearer token |
+| OpenAI | API key → Bearer | **Proxy** | `OPENAI_API_KEY` + `OPENAI_ALLOWED_MODELS`, OpenAI-compatible auth proxy on port 8450 injects the Bearer token |
 | Jira | API token | **Proxy** | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` → mcp-atlassian on port 8444; bot connects via `JIRA_MCP_URL` |
 | GitHub | PAT (`GH_TOKEN`) | **Proxy** | Config file at `~/.config/gh/hosts.yml` in proxy container |
 | GitLab | PAT (`GITLAB_TOKEN`) | **Proxy** | Config file at `~/.config/glab-cli/config.yml` in proxy container |

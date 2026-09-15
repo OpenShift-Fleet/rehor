@@ -10,16 +10,16 @@ func TestOpenAIPolicyFromEnv(t *testing.T) {
 		t.Error("empty OPENAI_ALLOWED_MODELS should return nil policy")
 	}
 
-	t.Setenv("OPENAI_ALLOWED_MODELS", " gpt-4o-mini , gpt-4o ,")
+	t.Setenv("OPENAI_ALLOWED_MODELS", " gpt-5.6-luna , gpt-5.6-terra ,")
 	p := OpenAIPolicyFromEnv()
 	if p == nil {
 		t.Fatal("non-empty OPENAI_ALLOWED_MODELS returned nil policy")
 	}
-	if err := p.Check("gpt-4o-mini"); err != nil {
-		t.Errorf("gpt-4o-mini should be allowed: %v", err)
+	if err := p.Check("gpt-5.6-luna"); err != nil {
+		t.Errorf("gpt-5.6-luna should be allowed: %v", err)
 	}
-	if err := p.Check("gpt-4o"); err != nil {
-		t.Errorf("gpt-4o should be allowed: %v", err)
+	if err := p.Check("gpt-5.6-terra"); err != nil {
+		t.Errorf("gpt-5.6-terra should be allowed: %v", err)
 	}
 	if got := p.Models(); len(got) != 2 {
 		t.Errorf("Models() = %v, want 2 entries (blank entry must be skipped)", got)
@@ -27,12 +27,12 @@ func TestOpenAIPolicyFromEnv(t *testing.T) {
 }
 
 func TestOpenAIPolicyCheck(t *testing.T) {
-	p := NewOpenAIPolicy([]string{"gpt-4o-mini"})
+	p := NewOpenAIPolicy([]string{"gpt-5.6-luna"})
 
-	if err := p.Check("gpt-4o-mini"); err != nil {
+	if err := p.Check("gpt-5.6-luna"); err != nil {
 		t.Errorf("allowed model returned error: %v", err)
 	}
-	err := p.Check("gpt-4o")
+	err := p.Check("gpt-5.6-terra")
 	if err == nil {
 		t.Fatal("blocked model should return an error")
 	}
@@ -45,15 +45,15 @@ func TestOpenAIPolicyCheck(t *testing.T) {
 
 	// A nil policy must fail closed, not panic.
 	var nilPolicy *OpenAIPolicy
-	if err := nilPolicy.Check("gpt-4o-mini"); err == nil {
+	if err := nilPolicy.Check("gpt-5.6-luna"); err == nil {
 		t.Error("nil policy should deny every model")
 	}
 }
 
 func TestOpenAIPolicyModelsSorted(t *testing.T) {
-	p := NewOpenAIPolicy([]string{"gpt-4o", "gpt-4o-mini", "o3-mini"})
+	p := NewOpenAIPolicy([]string{"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"})
 	got := p.Models()
-	want := []string{"gpt-4o", "gpt-4o-mini", "o3-mini"}
+	want := []string{"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"}
 	if len(got) != len(want) {
 		t.Fatalf("Models() = %v, want %v", got, want)
 	}
@@ -66,7 +66,7 @@ func TestOpenAIPolicyModelsSorted(t *testing.T) {
 
 func TestExtractChatModel(t *testing.T) {
 	body := []byte(`{
-		"model": "gpt-4o-mini",
+		"model": "gpt-5.6-luna",
 		"stream": true,
 		"messages": [{"role": "user", "content": "hi"}],
 		"tools": [{"type": "function", "function": {"name": "get_time"}}]
@@ -75,8 +75,8 @@ func TestExtractChatModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExtractChatModel returned error: %v", err)
 	}
-	if model != "gpt-4o-mini" {
-		t.Errorf("model = %q, want gpt-4o-mini", model)
+	if model != "gpt-5.6-luna" {
+		t.Errorf("model = %q, want gpt-5.6-luna", model)
 	}
 
 	cases := []struct {
@@ -86,7 +86,7 @@ func TestExtractChatModel(t *testing.T) {
 		{"invalid JSON", `{"model":`},
 		{"missing model", `{"messages":[]}`},
 		{"blank model", `{"model":""}`},
-		{"JSON array", `[{"model":"gpt-4o-mini"}]`},
+		{"JSON array", `[{"model":"gpt-5.6-luna"}]`},
 		{"empty body", ``},
 	}
 	for _, tc := range cases {
@@ -99,7 +99,7 @@ func TestExtractChatModel(t *testing.T) {
 }
 
 func TestValidateOpenAIConfig(t *testing.T) {
-	good := NewOpenAIPolicy([]string{"gpt-4o-mini"})
+	good := NewOpenAIPolicy([]string{"gpt-5.6-luna"})
 	if err := ValidateOpenAIConfig("sk-test", good); err != nil {
 		t.Errorf("valid config returned error: %v", err)
 	}

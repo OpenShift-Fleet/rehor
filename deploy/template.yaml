@@ -59,7 +59,7 @@ objects:
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
 #      glitchtip-url         — GlitchTip instance URL (e.g. https://glitchtip.devshift.net)
 #      glitchtip-token       — GlitchTip API token for error tracking
-#      openai-api-key        — (optional) OpenAI API key for the :8450 gateway.
+#      openai-api-key        — OpenAI API key for the :8450 gateway.
 #                              Proxy-only; the :8450 listener stays off until it exists.
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
@@ -368,9 +368,6 @@ objects:
             value: ${GCP_REGION}
           - name: VERTEX_ALLOWED_MODELS
             value: ${VERTEX_ALLOWED_MODELS}
-          # OpenAI-compatible gateway (:8450). Proxy container only — the bot
-          # never receives this key. optional: true so the pod still starts
-          # before Vault has the secret; an empty key keeps the listener off.
           - name: OPENAI_API_KEY
             valueFrom:
               secretKeyRef:

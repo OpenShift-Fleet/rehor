@@ -54,8 +54,8 @@ These secrets are needed for deployment. All live in the **proxy container** (in
 | `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | **Proxy** | commit signing |
 | `GOOGLE_SA_KEY_B64` | `base64 -w 0 ~/.config/gcloud/application_default_credentials.json` (or `base64 < sa-key.json`) | **Proxy** | Vertex AI auth (Claude API). See [2.3](#23-vertex-ai-personal-credentials) |
 | `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Proxy** | Model allowlist for Vertex AI |
-| `OPENAI_API_KEY` | API key from the OpenAI dashboard (Vault key `openai-api-key`) | **Proxy** | OpenAI-compatible gateway on port 8450. Optional — the listener stays off when unset. Never set on the bot; rotate by updating Vault/`.env` and restarting the **proxy** (no bot image rebuild) |
-| `OPENAI_ALLOWED_MODELS` | Comma-separated model IDs (e.g. `gpt-4o-mini`) | **Proxy** | Model allowlist for the OpenAI gateway. Required whenever `OPENAI_API_KEY` is set |
+| `OPENAI_API_KEY` | API key from the OpenAI dashboard (Vault key `openai-api-key`) | **Proxy** | OpenAI-compatible gateway on port 8450. Never set on the bot; rotate by updating Vault/`.env` and restarting the **proxy** (no bot image rebuild) |
+| `OPENAI_ALLOWED_MODELS` | Comma-separated model IDs (e.g. `gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol`) | **Proxy** | Model allowlist for the OpenAI gateway. Required whenever `OPENAI_API_KEY` is set |
 
 ### 2.2 Set environment variables
 
@@ -67,8 +67,6 @@ export GITLAB_TOKEN=<gitlab-pat>
 export GPG_PRIVATE_KEY_B64=$(base64 -i .ssh/gpg-private.asc)
 export GOOGLE_SA_KEY_B64=$(base64 -w 0 ~/.config/gcloud/application_default_credentials.json)
 export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
-# OPENAI_API_KEY=sk-...          # proxy only; compose clobbers this on the bot
-# OPENAI_ALLOWED_MODELS=gpt-4o-mini
 ```
 
 For persistent use, add these to a `.env` file (already gitignored):
@@ -79,8 +77,6 @@ GITLAB_TOKEN=<gitlab-pat>
 GPG_PRIVATE_KEY_B64=<base64-encoded-gpg-key>
 GOOGLE_SA_KEY_B64=<base64-encoded-adc-or-sa-json>
 VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
-# OPENAI_API_KEY=sk-...          # proxy only; compose clobbers this on the bot
-# OPENAI_ALLOWED_MODELS=gpt-4o-mini
 ```
 
 The compose file automatically reads `.env` from the project root.
