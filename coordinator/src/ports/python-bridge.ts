@@ -1,4 +1,5 @@
 import type { InstructionStrategy } from "../instructions";
+import type { McpServerConfig } from "./runtime-config";
 
 export enum PreflightAction {
   Start = "start",
@@ -57,6 +58,10 @@ export interface ConfigPreparationResult {
   remoteAgentDir: string | null;
   sharedAgentDir: string | null;
   claudeMdPath: string;
+  /** Additional MCP servers loaded from bot/persona config. */
+  mcpServers?: Readonly<Record<string, McpServerConfig>>;
+  /** Same allowed tool list used by the legacy Claude runner. */
+  allowedTools?: readonly string[];
 }
 
 /** Stable boundary for the existing Python preflight/config implementation. */
