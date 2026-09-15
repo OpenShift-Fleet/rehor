@@ -54,6 +54,20 @@ const NO_WORK_PATTERNS = [
   "0 unassigned",
 ];
 
+const SANITIZED_ENV_VARS = new Set([
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
+  "GPG_PRIVATE_KEY_B64",
+  "GPG_SIGNING_KEY",
+  "SSO_USERNAME",
+  "SSO_PASSWORD",
+  "GIT_AUTHOR_NAME",
+  "GIT_AUTHOR_EMAIL",
+  "GIT_COMMITTER_NAME",
+  "GIT_COMMITTER_EMAIL",
+]);
+
 type JsonObject = Record<string, unknown>;
 type RuntimeQuery = { close(): void };
 type RuntimeState = {
@@ -227,7 +241,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
               ? {}
               : { allowedTools: [...runtime.options.allowedTools] }),
             persistSession: runtime.options.persistSession ?? true,
-            ...(runtime.options.env === undefined ? {} : { env: { ...runtime.options.env } }),
+            env: sanitizedSdkEnvironment(runtime.options.env),
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
@@ -236,6 +250,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
               input.label,
               pendingPolicyEvents,
               createEvent,
+              toolStarts,
             ),
           },
         });
@@ -259,6 +274,9 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
             turns = numberValue(result?.num_turns) ?? turns;
             const resultText = stringValue(result?.result);
+            if (!context.summary && resultText) {
+              context.summary = lastMeaningfulLine(resultText);
+            }
             const successful = result?.subtype === "success" && result?.is_error !== true;
             yield terminal(
               successful ? "completed" : "failed",
@@ -313,9 +331,11 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
-        if (state.query) {
+        const query = state.query;
+        state.query = undefined;
+        if (query) {
           try {
-            state.query.close();
+            query.close();
           } catch {
             // Query cleanup is best effort; the SDK owns subprocess teardown.
           }
@@ -331,8 +351,10 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     if (!this.active) return;
     this.active.stopped = true;
     if (!this.active.controller.signal.aborted) this.active.controller.abort("runtime stopped");
+    const query = this.active.query;
+    this.active.query = undefined;
     try {
-      this.active.query?.close();
+      query?.close();
     } catch {
       // Stop remains idempotent even when the SDK query has already closed.
     }
@@ -356,6 +378,7 @@ function createHooks(
   label: string,
   pendingEvents: RehorEvent[],
   createEvent: ReturnType<typeof createEventFactory>,
+  toolStarts: Map<string, number>,
 ): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
   let count = 0;
   let warned = false;
@@ -365,6 +388,7 @@ function createHooks(
 
   const hook = async (): Promise<JsonObject> => {
     count += 1;
+    const remaining = Math.max(0, maxTurns - count);
     if (count >= criticalAt && !critical) {
       critical = true;
       pendingEvents.push(
@@ -373,11 +397,19 @@ function createHooks(
           label,
           usedTurns: count,
           maxTurns,
-          message: `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used. Save progress and wrap up.`,
+          message:
+            `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
+            `~${remaining} remaining. You MUST save progress NOW via ` +
+            "task_update with current summary, last_step, files_changed, and next_step. " +
+            "Then wrap up or stop.",
         }),
       );
       return {
-        systemMessage: `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used. Save progress NOW, then wrap up or stop.`,
+        systemMessage:
+          `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
+          `~${remaining} remaining. You MUST save progress NOW via ` +
+          "task_update with current summary, last_step, files_changed, and next_step. " +
+          "Then wrap up or stop.",
       };
     }
     if (count >= warningAt && !warned) {
@@ -388,19 +420,36 @@ function createHooks(
           label,
           usedTurns: count,
           maxTurns,
-          message: `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used. Save progress soon.`,
+          message:
+            `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
+            `~${remaining} remaining. Save progress via task_update soon ` +
+            "(summary + metadata with last_step, files_changed, next_step). " +
+            "Prioritize completing current step and saving state.",
         }),
       );
       return {
-        systemMessage: `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used. Save progress soon.`,
+        systemMessage:
+          `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
+          `~${remaining} remaining. Save progress via task_update soon ` +
+          "(summary + metadata with last_step, files_changed, next_step). " +
+          "Prioritize completing current step and saving state.",
       };
     }
     return {};
   };
 
+  const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {
+    const input = asObject(args[0]);
+    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
+    if (toolUseId) toolStarts.delete(toolUseId);
+    return {};
+  };
+
   return {
+    // Match Python: failed tool calls clean up timing state but do not consume
+    // a turn-budget count.
     PostToolUse: [{ hooks: [hook] }],
-    PostToolUseFailure: [{ hooks: [hook] }],
+    PostToolUseFailure: [{ hooks: [failedToolCleanup] }],
   };
 }
 
@@ -530,10 +579,10 @@ function collectResultUsage(
 ): UsageSnapshot[] {
   if (!record) return [];
   const modelUsage = asObject(record.modelUsage);
-  if (modelUsage) {
-    const entries = Object.entries(modelUsage);
+  const entries = modelUsage ? Object.entries(modelUsage) : [];
+  if (entries.length > 0) {
     const totalCost = numberValue(record.total_cost_usd);
-    return entries
+    const snapshots = entries
       .map(([model, value]) => {
         const modelRecord = asObject(value);
         const cost =
@@ -541,6 +590,7 @@ function collectResultUsage(
         return usageFromRecord(model, modelRecord, cost);
       })
       .filter((value): value is UsageSnapshot => value !== undefined);
+    if (snapshots.length > 0) return snapshots;
   }
   const usage = usageFromRecord(
     requestedModel,
@@ -568,6 +618,14 @@ function usageFromRecord(
   );
   if (Object.keys(counts).length === 0 && cost === undefined) return undefined;
   return { model, counts, ...(cost === undefined ? {} : { cost }) };
+}
+
+function sanitizedSdkEnvironment(
+  overrides?: Readonly<Record<string, string | undefined>>,
+): Record<string, string | undefined> {
+  const environment = { ...(overrides ?? process.env) };
+  for (const variable of SANITIZED_ENV_VARS) delete environment[variable];
+  return environment;
 }
 
 function addCount(counts: TokenCounts, key: keyof TokenCounts, value: unknown): void {
@@ -669,6 +727,16 @@ function isResultMessage(message: unknown): boolean {
   return stringValue(asObject(message)?.type) === "result";
 }
 
+function lastMeaningfulLine(text: string): string | undefined {
+  const lines = text
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const last = lines.at(-1);
+  return last ? last.slice(0, 200) : undefined;
+}
+
 function isNoWork(text: string): boolean {
   const lower = text.toLowerCase();
   return NO_WORK_PATTERNS.some((pattern) => lower.includes(pattern.toLowerCase()));
@@ -679,7 +747,7 @@ function isAbortError(value: unknown): boolean {
 }
 
 function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
-  const text = errorMessage(reason).toLowerCase();
+  const text = errorMessage(abortCauseReason(reason)).toLowerCase();
   if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out"))
     return "timed_out";
   if (text.includes("interrupt")) return "interrupted";
@@ -687,7 +755,12 @@ function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" 
 }
 
 function abortReason(reason: unknown): string {
-  return errorMessage(reason) || "runtime aborted";
+  return errorMessage(abortCauseReason(reason)) || "runtime aborted";
+}
+
+function abortCauseReason(reason: unknown): unknown {
+  const record = asObject(reason);
+  return record && "reason" in record ? record.reason : reason;
 }
 
 function abortError(reason: unknown): Error {

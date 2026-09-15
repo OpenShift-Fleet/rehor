@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 
@@ -112,6 +112,13 @@ function sdkMessages(): unknown[] {
           cacheCreationInputTokens: 5,
           costUSD: 0.42,
         },
+        "claude-haiku-4-5": {
+          inputTokens: 30,
+          outputTokens: 4,
+          cacheReadInputTokens: 2,
+          cacheCreationInputTokens: 1,
+          costUSD: 0.08,
+        },
       },
       session_id: "session-01",
       uuid: "sdk-04",
@@ -120,6 +127,11 @@ function sdkMessages(): unknown[] {
 }
 
 describe("ClaudeAgentRuntime", () => {
+  afterEach(() => {
+    queryMock.mockReset();
+    vi.unstubAllEnvs();
+  });
+
   it("configures the SDK and normalizes representative Claude cycles", async () => {
     let captured: Record<string, unknown> | undefined;
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
@@ -156,13 +168,24 @@ describe("ClaudeAgentRuntime", () => {
       "tool",
       "tool",
       "usage",
+      "usage",
       "terminal",
     ]);
-    expect(events.find(({ kind }) => kind === "model")).not.toHaveProperty("message");
-    expect(events.find(({ kind }) => kind === "usage")?.payload).toMatchObject({
+    const modelEvent = events.find(({ kind }) => kind === "model");
+    expect(modelEvent?.payload).not.toHaveProperty("message");
+    const usageEvents = events.filter(({ kind }) => kind === "usage");
+    expect(usageEvents).toHaveLength(2);
+    expect(usageEvents[0]?.payload).toMatchObject({
       requestedModel: "claude-opus-4-6",
       returnedModel: "claude-opus-4-6",
       tokenCounts: { input: 100, output: 20, reasoning: 4, cacheRead: 10, cacheWrite: 5 },
+      final: true,
+      estimated: true,
+    });
+    expect(usageEvents[1]?.payload).toMatchObject({
+      requestedModel: "claude-opus-4-6",
+      returnedModel: "claude-haiku-4-5",
+      tokenCounts: { input: 30, output: 4, cacheRead: 2, cacheWrite: 1 },
       final: true,
       estimated: true,
     });
@@ -170,18 +193,105 @@ describe("ClaudeAgentRuntime", () => {
       state: "completed",
       resultText: "Opened PR for REHOR-140",
       turns: 3,
-      context: { taskId: 42 },
+      context: { taskId: 42, summary: "Opened PR for REHOR-140" },
     });
     expect(result.capabilities?.runtimeVersion).toBe("0.3.270");
     expect(costs).toHaveLength(1);
     expect(costs[0]).toMatchObject({
       sessionId: "claude-agent-sdk:session-01",
       model: "claude-opus-4-6",
-      inputTokens: 100,
-      outputTokens: 20,
-      cacheReadTokens: 10,
-      cacheWriteTokens: 5,
-      costUsd: 0.42,
+      inputTokens: 130,
+      outputTokens: 24,
+      cacheReadTokens: 12,
+      cacheWriteTokens: 6,
+      costUsd: 0.5,
+      modelUsage: {
+        "claude-opus-4-6": {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 5,
+        },
+        "claude-haiku-4-5": {
+          input_tokens: 30,
+          output_tokens: 4,
+          cache_read_input_tokens: 2,
+          cache_creation_input_tokens: 1,
+        },
+      },
+    });
+  });
+
+  it("sanitizes inherited SDK environment variables", async () => {
+    const sensitiveValues = {
+      GH_TOKEN: "gh-secret",
+      GITHUB_TOKEN: "github-secret",
+      GITLAB_TOKEN: "gitlab-secret",
+      GPG_PRIVATE_KEY_B64: "private-key",
+      GPG_SIGNING_KEY: "signing-key",
+      SSO_USERNAME: "sso-user",
+      SSO_PASSWORD: "sso-password",
+      GIT_AUTHOR_NAME: "author",
+      GIT_AUTHOR_EMAIL: "author@example.com",
+      GIT_COMMITTER_NAME: "committer",
+      GIT_COMMITTER_EMAIL: "committer@example.com",
+    };
+    for (const [name, value] of Object.entries(sensitiveValues)) vi.stubEnv(name, value);
+    vi.stubEnv("PATH", "/safe/path");
+
+    let captured: Record<string, unknown> | undefined;
+    queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      captured = options;
+      return sdkQuery([
+        {
+          type: "result",
+          subtype: "success",
+          result: "done",
+          session_id: "session-sanitized",
+          uuid: "sdk-sanitized",
+        },
+      ]);
+    });
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    await collect(runtime.run(run, new AbortController().signal));
+
+    const environment = captured?.env as Record<string, string | undefined>;
+    expect(environment).toMatchObject({ PATH: "/safe/path" });
+    for (const name of Object.keys(sensitiveValues)) {
+      expect(environment).not.toHaveProperty(name);
+    }
+  });
+
+  it("falls back to top-level usage when modelUsage is empty", async () => {
+    queryMock.mockReturnValue(
+      sdkQuery([
+        {
+          type: "result",
+          subtype: "success",
+          result: "done",
+          usage: { input_tokens: 11, output_tokens: 7 },
+          modelUsage: {},
+          total_cost_usd: 0.15,
+          session_id: "session-usage-fallback",
+          uuid: "sdk-usage-fallback",
+        },
+      ]),
+    );
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(run, new AbortController().signal));
+    const usageEvents = events.filter(({ kind }) => kind === "usage");
+
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]?.payload).toMatchObject({
+      requestedModel: "claude-opus-4-6",
+      returnedModel: "claude-opus-4-6",
+      tokenCounts: { input: 11, output: 7 },
+      cost: { amount: 0.15, currency: "USD" },
+      final: true,
     });
   });
 
@@ -201,8 +311,78 @@ describe("ClaudeAgentRuntime", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("preserves partial usage and maps timeout aborts", async () => {
-    let sdkSignal!: AbortSignal;
+  it("counts successful tools for detailed turn-budget policy events", async () => {
+    type TestHook = (...args: unknown[]) => Promise<Record<string, unknown>>;
+    type TestSdkOptions = {
+      hooks: Record<string, Array<{ hooks: TestHook[] }>>;
+    };
+    const metrics: Array<Record<string, unknown>> = [];
+    queryMock.mockImplementation(({ options }: { options: TestSdkOptions }) => {
+      const postToolUse = options.hooks.PostToolUse?.[0]?.hooks[0];
+      const postToolUseFailure = options.hooks.PostToolUseFailure?.[0]?.hooks[0];
+      if (!postToolUse || !postToolUseFailure) throw new Error("turn-budget hooks not configured");
+      const hookResults: Array<Promise<Record<string, unknown>>> = [];
+      for (let index = 0; index < 5; index += 1) {
+        hookResults.push(postToolUse({}, `success-${index}`, {}));
+      }
+      hookResults.push(postToolUseFailure({}, "failure-1", {}));
+      hookResults.push(postToolUse({}, "success-5", {}));
+      const close = vi.fn();
+      const iterator = (async function* (): AsyncGenerator<unknown> {
+        await Promise.all(hookResults);
+        yield {
+          type: "result",
+          subtype: "success",
+          result: "Saved progress",
+          num_turns: 6,
+          session_id: "session-budget",
+          uuid: "sdk-budget",
+        };
+      })();
+      return Object.assign(iterator, { close });
+    });
+
+    const projection = new LegacyCompatibilityProjection({
+      metrics: {
+        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
+      },
+    });
+    const budgetRun = {
+      ...run,
+      runId: "run-budget",
+      attemptId: "attempt-budget",
+      limits: { ...run.limits, maxTurns: 8 },
+    };
+    const result = await executeSelectedRun(
+      createDefaultRuntimeRegistry(),
+      { runtimeId: "claude" },
+      budgetRun,
+      { projection },
+    );
+    const policies = result.events.filter(({ kind }) => kind === "policy");
+
+    expect(policies).toHaveLength(1);
+    expect(policies[0]?.payload).toMatchObject({
+      state: "warning",
+      usedTurns: 6,
+      maxTurns: 8,
+      message: expect.stringContaining(
+        "Save progress via task_update soon (summary + metadata with last_step, files_changed, next_step)",
+      ),
+    });
+    expect(metrics).toContainEqual({
+      name: "devbot_turn_budget_event_total",
+      value: 1,
+      labels: { label: run.label, level: "warning" },
+    });
+  });
+
+  it("preserves partial usage through coordinator timeout handling", async () => {
+    let sdkSignal: AbortSignal | undefined;
+    let resolveAbortListenerReady!: () => void;
+    const abortListenerReady = new Promise<void>((resolve) => {
+      resolveAbortListenerReady = resolve;
+    });
     const close = vi.fn();
     const iterator = (async function* (): AsyncGenerator<unknown> {
       yield {
@@ -215,9 +395,12 @@ describe("ClaudeAgentRuntime", () => {
         session_id: "session-03",
         uuid: "sdk-partial",
       };
-      await new Promise<void>((resolve) =>
-        sdkSignal.addEventListener("abort", () => resolve(), { once: true }),
-      );
+      const signal = sdkSignal;
+      if (!signal) throw new Error("SDK signal not initialized");
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+        resolveAbortListenerReady();
+      });
       throw new Error("aborted by SDK");
     })();
     queryMock.mockImplementation(
@@ -227,21 +410,31 @@ describe("ClaudeAgentRuntime", () => {
       },
     );
 
-    const runtime = new ClaudeAgentRuntime();
-    await runtime.start(new AbortController().signal);
+    const costs: Array<Record<string, unknown>> = [];
+    const projection = new LegacyCompatibilityProjection({
+      costs: { write: (record) => void costs.push(record as unknown as Record<string, unknown>) },
+    });
     const controller = new AbortController();
-    const promise = collect(runtime.run(run, controller.signal));
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    const promise = executeSelectedRun(
+      createDefaultRuntimeRegistry(),
+      { runtimeId: "claude" },
+      run,
+      { signal: controller.signal, projection },
+    );
+    await abortListenerReady;
     controller.abort("timeout");
-    const events = await promise;
+    const result = await promise;
+    const usage = result.events.find(({ kind }) => kind === "usage");
 
-    expect(events.find(({ kind }) => kind === "usage")?.payload).toMatchObject({
+    expect(usage?.payload).toMatchObject({
       partial: true,
       final: false,
       incomplete: true,
       tokenCounts: { input: 7, output: 3 },
     });
-    expect(events.at(-1)?.payload).toMatchObject({ state: "timed_out", reason: "timeout" });
+    expect(result.terminal.payload).toMatchObject({ state: "timed_out", reason: "timeout" });
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     expect(close).toHaveBeenCalledOnce();
   });
 });
