@@ -19,6 +19,10 @@ parameters:
   required: true
 - name: VERTEX_ALLOWED_MODELS
   required: true
+# Empty default: existing deploys keep working before the Vault key exists.
+# The API key itself is never a parameter — secret only.
+- name: OPENAI_ALLOWED_MODELS
+  value: ""
 - name: PROXY_NAME
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
@@ -55,6 +59,8 @@ objects:
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
 #      glitchtip-url         — GlitchTip instance URL (e.g. https://glitchtip.devshift.net)
 #      glitchtip-token       — GlitchTip API token for error tracking
+#      openai-api-key        — OpenAI API key for the :8450 gateway.
+#                              Proxy-only; the :8450 listener stays off until it exists.
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
@@ -317,6 +323,9 @@ objects:
           - containerPort: 8448
             name: glitchtip
             protocol: TCP
+          - containerPort: 8450
+            name: openai-auth
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -359,6 +368,14 @@ objects:
             value: ${GCP_REGION}
           - name: VERTEX_ALLOWED_MODELS
             value: ${VERTEX_ALLOWED_MODELS}
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: openai-api-key
+                optional: true
+          - name: OPENAI_ALLOWED_MODELS
+            value: ${OPENAI_ALLOWED_MODELS}
           - name: JIRA_URL
             value: https://redhat.atlassian.net
           - name: JIRA_USERNAME
@@ -454,6 +471,10 @@ objects:
       targetPort: glitchtip
       protocol: TCP
       name: glitchtip
+    - port: 8450
+      targetPort: openai-auth
+      protocol: TCP
+      name: openai-auth
     - port: 9091
       targetPort: metrics
       protocol: TCP
@@ -491,6 +512,8 @@ objects:
       - port: 8447
         protocol: TCP
       - port: 8448
+        protocol: TCP
+      - port: 8450
         protocol: TCP
     - from:
       - namespaceSelector:

@@ -436,6 +436,11 @@ The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_
 
 The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
 
+`devbot-secrets` also carries an optional `openai-api-key` for the OpenAI-compatible
+gateway on proxy port 8450. It is read only by the proxy container and is not required:
+until the key exists, the gateway listener stays off and Claude via Vertex is unaffected.
+See the prerequisites comment in `deploy/template.yaml` for the full key list.
+
 ### Reference: Existing app-interface config
 
 Use the framework instance ([`hcc-ui-agent-dev`](https://github.com/RedHatInsights/hcc-ui-agent-dev)) as your reference — it always has the latest configuration. Its app-interface directory (`data/services/insights/platform-frontend-ai-dev/`) contains:

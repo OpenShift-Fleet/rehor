@@ -12,6 +12,7 @@ graph TB
         Jira["Jira Cloud<br/>(RHCLOUD project)"]
         GHGL["GitHub / GitLab<br/>(target repos)"]
         Vertex["Vertex AI<br/>(Claude API)"]
+        OpenAI["OpenAI API"]
     end
 
     subgraph System["Řehoř System"]
@@ -28,6 +29,7 @@ graph TB
             Squid["Squid<br/>(port 3128)"]
             Executor["Executor Server<br/>(gRPC)"]
             VertexProxy["Vertex Auth Proxy<br/>(port 8443)"]
+            OpenAIProxy["OpenAI Auth Proxy<br/>(port 8450)"]
             JiraMCP["mcp-atlassian<br/>(Jira workflow integration)<br/>(port 8444)"]
         end
     end
@@ -44,6 +46,7 @@ graph TB
     Agent -- "workflow source (streamable HTTP)" --> JiraMCP
     Agent -- "git push / gh / glab / gpg" --> Executor
     Agent -- "Vertex AI requests" --> VertexProxy
+    Agent -- "OpenAI Chat Completions" --> OpenAIProxy
     Agent -- "HTTP/HTTPS" --> Squid
     Agent --> Repos
     Repos --> GHGL
@@ -51,6 +54,7 @@ graph TB
     MemMCP --> PG
     Squid --> GHGL
     VertexProxy --> Vertex
+    OpenAIProxy --> OpenAI
 ```
 
 This diagram shows the active production path. The TypeScript coordinator is
@@ -420,6 +424,41 @@ The proxy:
 - Logs model, method, status, and duration for every request
 - Runs inside the same `executor-server` binary (no separate process)
 
+### OpenAI-Compatible Auth Proxy
+
+A sibling listener on port 8450 does the same job for the OpenAI Chat Completions
+API, so an OpenCode runtime can use OpenAI without `OPENAI_API_KEY` ever entering
+the bot container. Vertex on 8443 is unchanged and remains the Claude path.
+
+```mermaid
+sequenceDiagram
+    participant Client as OpenAI-compatible client<br/>(OpenCode)
+    participant Proxy as OpenAI Auth Proxy<br/>(port 8450)
+    participant OpenAI as api.openai.com
+
+    Client->>Proxy: POST /v1/chat/completions<br/>(dummy/placeholder Authorization)
+    Proxy->>Proxy: Read body.model → check allowlist
+    Proxy->>Proxy: Overwrite Authorization with the real key
+    Proxy->>OpenAI: POST /v1/chat/completions<br/>(authenticated, path unchanged)
+    OpenAI-->>Proxy: Streaming SSE response
+    Proxy-->>Client: Streaming SSE response (passthrough)
+```
+
+The proxy:
+- Starts only when `OPENAI_API_KEY` is set; a missing allowlist is a fatal config error
+- Serves exactly three routes — `GET /healthz`, `GET /v1/models`, `POST /v1/chat/completions`.
+  Everything else (embeddings, responses, completions) returns 404
+- Answers `GET /v1/models` from `OPENAI_ALLOWED_MODELS` locally instead of proxying,
+  so OpenAI's full catalog is never exposed
+- Reads `model` from the JSON request body (unlike Vertex, which reads it from the URL)
+  and returns 403 for models outside the allowlist
+- Overwrites any inbound `Authorization`, `OpenAI-Organization`, and `OpenAI-Project`
+  headers, so a stolen or placeholder client key is never forwarded
+- Forwards the request path unchanged — the client already sends `/v1/...`
+- Streams SSE unbuffered so tool-call deltas and the final usage chunk pass through
+- Logs model, stream flag, status, request ID, and duration — never the body or key
+- Runs inside the same `executor-server` binary (no separate process)
+
 ### Layer 5: Container Hardening
 
 - `no-new-privileges` — prevents privilege escalation
@@ -433,6 +472,7 @@ The proxy:
 | Service | Auth Method | Runs in | Config |
 |---------|-------------|---------|--------|
 | Claude (Vertex AI) | GCP service account → OAuth2 Bearer | **Proxy** | SA key decoded from `GOOGLE_SA_KEY_B64`, Vertex auth proxy on port 8443 injects tokens |
+| OpenAI | API key → Bearer | **Proxy** | `OPENAI_API_KEY` + `OPENAI_ALLOWED_MODELS`, OpenAI-compatible auth proxy on port 8450 injects the Bearer token |
 | Jira | API token | **Proxy** | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_API_TOKEN` → mcp-atlassian on port 8444; bot connects via `JIRA_MCP_URL` |
 | GitHub | PAT (`GH_TOKEN`) | **Proxy** | Config file at `~/.config/gh/hosts.yml` in proxy container |
 | GitLab | PAT (`GITLAB_TOKEN`) | **Proxy** | Config file at `~/.config/glab-cli/config.yml` in proxy container |

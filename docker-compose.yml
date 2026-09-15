@@ -59,6 +59,9 @@ services:
       - GCP_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-}
       - GCP_REGION=${VERTEX_LOCATION:-us-east5}
       - VERTEX_ALLOWED_MODELS=${VERTEX_ALLOWED_MODELS:-}
+      - OPENAI_API_KEY
+      - OPENAI_ALLOWED_MODELS=${OPENAI_ALLOWED_MODELS:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
       - JIRA_USERNAME
       - JIRA_API_TOKEN
@@ -66,6 +69,8 @@ services:
       - GLITCHTIP_TOKEN
     volumes:
       - executor-sock:/var/run/devbot
+    ports:
+      - "8450:8450"
     healthcheck:
       test: ["CMD-SHELL", "squidclient -h 127.0.0.1 -p 3128 mgr:info > /dev/null 2>&1 || exit 1"]
       interval: 5s
@@ -110,6 +115,8 @@ services:
       - COSTS_API_URL=http://memory-server:8080/api/costs
       - BOT_DASHBOARD_URL=http://memory-server:8080/api/bot-status
       - CLAUDE_CODE_SKIP_VERTEX_AUTH=true
+      # Empty so .env's OPENAI_API_KEY does not leak into the bot.
+      - OPENAI_API_KEY=
       - ANTHROPIC_VERTEX_BASE_URL=http://proxy:8443
       - ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-dummy-project}
       - CLOUD_ML_REGION=global
