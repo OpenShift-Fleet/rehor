@@ -262,7 +262,11 @@ async function consumeEvents(
     while (true) {
       const next = await iterator.next();
       if (next.done) return;
-      if (abortState.signal.aborted || !isAccepting()) return;
+      // Runtime adapters may emit a final partial usage snapshot and terminal
+      // event while draining an SDK query after cancellation or timeout.
+      // Keep accepting that bounded drain; stop accepting only once the
+      // coordinator cleanup has completed.
+      if (!isAccepting()) return;
 
       const before = ledger.events.length;
       const result = ledger.ingest(next.value);

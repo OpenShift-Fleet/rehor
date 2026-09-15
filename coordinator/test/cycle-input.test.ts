@@ -195,4 +195,59 @@ describe("Python preflight bridge", () => {
       { name: "01-test.py", status: "start", content: "bridge work" },
     ]);
   });
+
+  it("parses MCP transports and allowed tools from config preparation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rehor-python-config-"));
+    const executable = join(root, "bridge-fixture");
+    const response = {
+      protocolVersion: 1,
+      ok: true,
+      result: {
+        model: "test-model",
+        maxTurns: 10,
+        intervalSeconds: 300,
+        idleIntervalSeconds: 300,
+        cycleTimeoutSeconds: 1_800,
+        idleReminderCooldownSeconds: 1_728_000,
+        workflow: "test-workflow",
+        source: "test",
+        envs: null,
+        activeEnvs: ["github"],
+        claudeMdStrategy: "append",
+        idleCycleLimit: 0,
+        remoteAgentDir: null,
+        sharedAgentDir: null,
+        claudeMdPath: join(root, "CLAUDE.md"),
+        mcpServers: {
+          "stdio-server": {
+            command: "node",
+            args: ["server.js"],
+            env: { TOKEN: "secret" },
+            timeout: 250,
+            alwaysLoad: true,
+          },
+          "http-server": {
+            type: "http",
+            url: "http://mcp.example",
+            headers: { Authorization: "Bearer token" },
+            timeout: 500,
+            alwaysLoad: false,
+          },
+          "sse-server": { type: "sse", url: "https://mcp.example/events" },
+        },
+        allowedTools: ["Bash", "mcp__mcp-atlassian__jira_get_issue"],
+      },
+    };
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringify(response))}));\n`,
+      { mode: 0o755 },
+    );
+
+    const bridge = new PythonCoordinatorBridge({ executable, cwd: root });
+    const result = await bridge.prepareConfig({ scriptDir: root, label: "test-label" });
+
+    expect(result.mcpServers).toEqual(response.result.mcpServers);
+    expect(result.allowedTools).toEqual(response.result.allowedTools);
+  });
 });
