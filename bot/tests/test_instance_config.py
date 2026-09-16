@@ -6,7 +6,14 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from bot.config import InstanceConfig, load_instance_config, resolve_active_envs, validate_instance_config
+from bot.config import (
+    Config,
+    InstanceConfig,
+    load_instance_config,
+    resolve_active_envs,
+    resolve_cycle_model,
+    validate_instance_config,
+)
 
 
 @pytest.fixture
@@ -62,6 +69,30 @@ class TestInstanceConfigFromYaml:
         assert ic.envs is None
         assert ic.claude_md_strategy == "ignore"
         assert ic.idle_cycle_limit == 0
+        assert ic.model is None
+
+    def test_with_model(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": "claude-sonnet-4-6"}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.model == "claude-sonnet-4-6"
+
+    def test_model_empty_and_whitespace(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": "   "}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.model is None
+
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": ""}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.model is None
+
+    def test_model_non_string(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": True}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.model is None
+
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": 123}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.model is None
 
     def test_idle_cycle_limit(self, agent_dir):
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "idle_cycle_limit": 10}))
@@ -91,6 +122,7 @@ class TestInstanceConfigFromEnv:
             ic = InstanceConfig.from_env()
         assert ic.workflow == "jira-sprint"
         assert ic.envs is None
+        assert ic.model is None
 
     def test_custom_workflow(self):
         with patch.dict(os.environ, {"BOT_WORKFLOW_PRESET": "reviewer"}, clear=True):
@@ -112,6 +144,16 @@ class TestInstanceConfigFromEnv:
             ic = InstanceConfig.from_env()
         assert ic.envs == ["browser", "slack"]
 
+    def test_bot_model_env(self):
+        with patch.dict(os.environ, {"BOT_MODEL": "claude-haiku-4-5"}, clear=True):
+            ic = InstanceConfig.from_env()
+        assert ic.model == "claude-haiku-4-5"
+
+    def test_bot_model_empty_and_whitespace(self):
+        with patch.dict(os.environ, {"BOT_MODEL": "   "}, clear=True):
+            ic = InstanceConfig.from_env()
+        assert ic.model is None
+
 
 class TestLoadInstanceConfig:
     def test_from_yaml(self, agent_dir):
@@ -119,17 +161,38 @@ class TestLoadInstanceConfig:
         ic = load_instance_config(agent_dir)
         assert ic.workflow == "reviewer"
         assert ic.envs == ["browser"]
+        assert ic.model is None
+
+    def test_from_yaml_with_model(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer", "model": "claude-sonnet-4-6"}))
+        ic = load_instance_config(agent_dir)
+        assert ic.workflow == "reviewer"
+        assert ic.model == "claude-sonnet-4-6"
+
+    def test_from_yaml_model_wins_over_bot_model_env(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer", "model": "claude-yaml-pin"}))
+        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
+            ic = load_instance_config(agent_dir)
+        assert ic.model == "claude-yaml-pin"
+
+    def test_from_yaml_omits_model_overlays_bot_model(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer"}))
+        with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
+            ic = load_instance_config(agent_dir)
+        assert ic.model == "claude-env-overlay"
 
     def test_no_yaml_falls_back_to_env(self, agent_dir):
-        with patch.dict(os.environ, {"BOT_WORKFLOW_PRESET": "kanban"}, clear=True):
+        with patch.dict(os.environ, {"BOT_WORKFLOW_PRESET": "kanban", "BOT_MODEL": "claude-opus-4-6"}, clear=True):
             ic = load_instance_config(agent_dir)
         assert ic.workflow == "kanban"
+        assert ic.model == "claude-opus-4-6"
 
     def test_no_agent_dir(self):
         with patch.dict(os.environ, {}, clear=True):
             ic = load_instance_config(None)
         assert ic.workflow == "jira-sprint"
         assert ic.envs is None
+        assert ic.model is None
 
 
 class TestResolveActiveEnvs:
@@ -190,3 +253,101 @@ class TestValidateInstanceConfig:
             validate_instance_config(preset_tree, ic)
         assert "browser" in caplog.text
         assert "container-scan" in caplog.text
+
+
+@pytest.fixture
+def global_config():
+    return Config(
+        model="claude-global-default",
+        max_turns=10,
+        interval=300,
+        idle_interval=300,
+        cycle_timeout=600,
+        board_key="RHCLOUD",
+        model_tiers={"light": "claude-sonnet-4-6", "heavy": "claude-opus-4-6"},
+    )
+
+
+class TestResolveCycleModel:
+    def test_instance_pin_wins(self, preset_tree, global_config):
+        """Tier 1: instance.yaml model overrides workflow tier and global config."""
+        ic = InstanceConfig(workflow="jira-sprint", model="claude-instance-pin")
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-instance-pin"
+
+    def test_workflow_model_tier_resolution(self, preset_tree, global_config):
+        """Tier 3: workflow model_tier is mapped through config.json claude.modelTiers."""
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-sonnet-4-6"
+
+    def test_workflow_model_tier_heavy(self, preset_tree, global_config):
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "heavy"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-opus-4-6"
+
+    def test_workflow_unknown_tier_logs_error_and_falls_back(self, preset_tree, global_config, caplog):
+        """Unknown tier falls back to global default and logs an error."""
+        import logging
+
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "ultra"}))
+
+        with caplog.at_level(logging.ERROR):
+            resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"
+        assert "requests model tier 'ultra' not defined in config.json" in caplog.text
+
+    def test_global_fallback_when_all_unset(self, preset_tree, global_config):
+        """Tier 4: fallback to global config.json claude.model when no overrides exist."""
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"
+
+    def test_custom_remote_workflow_model_tier(self, tmp_path, global_config):
+        """Custom workflow (./workflows/custom) model_tier resolves via remote_agent_dir."""
+        remote_agent_dir = tmp_path / "agent"
+        custom_wf = remote_agent_dir / "workflows" / "custom"
+        custom_wf.mkdir(parents=True)
+        (custom_wf / "manifest.yaml").write_text(yaml.dump({"name": "custom", "model_tier": "light"}))
+
+        ic = InstanceConfig(workflow="./workflows/custom", model=None)
+        resolved = resolve_cycle_model(tmp_path, ic, global_config, remote_agent_dir=remote_agent_dir)
+        assert resolved == "claude-sonnet-4-6"
+
+    def test_missing_manifest_falls_back_to_global(self, preset_tree, global_config):
+        """When manifest.yaml does not exist, resolve_cycle_model falls back to global config."""
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"
+
+    def test_empty_or_whitespace_falls_through(self, preset_tree, global_config):
+        """Empty strings and whitespace at each tier are treated as unset."""
+        ic = InstanceConfig(workflow="jira-sprint", model="   ")
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": ""}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"
+
+    def test_non_string_manifest_tier_falls_through(self, preset_tree, global_config):
+        """Non-string model_tier in manifest (e.g. YAML boolean or int) falls through."""
+        ic = InstanceConfig(workflow="jira-sprint", model=None)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": 123}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"

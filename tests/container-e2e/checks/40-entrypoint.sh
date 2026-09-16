@@ -4,14 +4,20 @@ set -euo pipefail
 CONTAINER="$1"
 RUNTIME="$2"
 
-if ! "$RUNTIME" logs "$CONTAINER" 2>&1 | grep -qE "Credentials configured\\. Starting bot with label:"; then
+logs=$("$RUNTIME" logs "$CONTAINER" 2>&1) || {
+  echo "::error::could not read container logs"
+  printf '%s\n' "$logs"
+  exit 1
+}
+
+if ! grep -qE "Credentials configured\\. Starting bot with label:" <<<"$logs"; then
   echo "::error::entrypoint did not reach final startup stage"
-  "$RUNTIME" logs "$CONTAINER" || true
+  printf '%s\n' "$logs"
   exit 1
 fi
 
-if ! "$RUNTIME" logs "$CONTAINER" 2>&1 | grep -qE "Executor ready\\."; then
+if ! grep -qE "Executor ready\\." <<<"$logs"; then
   echo "::error::entrypoint did not report executor readiness"
-  "$RUNTIME" logs "$CONTAINER" || true
+  printf '%s\n' "$logs"
   exit 1
 fi

@@ -92,7 +92,9 @@ type GitHost struct {
     AuthType string            // "bearer" or "basic"
     Token    func() string     // token getter (reads env at call time)
     Username func() string     // for basic auth only
-    TLSInsecureSkipVerify bool  // explicitly disable TLS verification for this host
+    TLSInsecureSkipVerify bool  // break-glass only, defaults to false
+    TLSCACertFile string        // optional PEM bundle path for custom CAs
+    TLSCACertPEM string         // optional PEM content for custom CAs
 }
 
 var hosts = map[string]GitHost{
@@ -111,6 +113,13 @@ var hosts = map[string]GitHost{
 ```
 
 Requests to unregistered hosts are rejected with 403. This is a security boundary — the proxy only forwards to explicitly configured git providers.
+
+TLS verification is strict by default. For internal GitLab certificate chains, provide a CA bundle via one of:
+- `GITLAB_CA_CERT_B64` (base64 PEM; decoded by proxy startup)
+- `GITLAB_CA_CERT_PEM` (raw PEM)
+- `GITLAB_CA_CERT_FILE` (path to PEM bundle)
+
+`GITLAB_TLS_SKIP_VERIFY=true` remains available only as a temporary break-glass fallback and should not be used in normal operation.
 
 ### Request Flow
 

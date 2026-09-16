@@ -103,3 +103,61 @@ class TestValidateManifest:
         mcp_servers = {}
         with patch.dict(os.environ, {}, clear=True), pytest.raises(SystemExit):
             validate_manifest(tmp_preset_dir, "jira-sprint", mcp_servers)
+
+    def test_valid_model_tier_passes(self, tmp_preset_dir):
+        wf_dir = tmp_preset_dir / "presets" / "workflows" / "jira-sprint"
+        manifest = yaml.safe_load((wf_dir / "manifest.yaml").read_text())
+        manifest["model_tier"] = "light"
+        (wf_dir / "manifest.yaml").write_text(yaml.dump(manifest))
+
+        mcp_servers = {"mcp-atlassian": {"type": "stdio"}}
+        env = {
+            "BOT_LABEL": "hcc-ai-bot",
+            "BOT_INSTANCE_ID": "test-1",
+            "BOT_JIRA_EMAIL": "bot@example.com",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            validate_manifest(
+                tmp_preset_dir,
+                "jira-sprint",
+                mcp_servers,
+                model_tiers={"light": "claude-sonnet-4-6"},
+            )
+
+    def test_unknown_model_tier_exits(self, tmp_preset_dir, caplog):
+        wf_dir = tmp_preset_dir / "presets" / "workflows" / "jira-sprint"
+        manifest = yaml.safe_load((wf_dir / "manifest.yaml").read_text())
+        manifest["model_tier"] = "unsupported"
+        (wf_dir / "manifest.yaml").write_text(yaml.dump(manifest))
+
+        mcp_servers = {"mcp-atlassian": {"type": "stdio"}}
+        env = {
+            "BOT_LABEL": "hcc-ai-bot",
+            "BOT_INSTANCE_ID": "test-1",
+            "BOT_JIRA_EMAIL": "bot@example.com",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with pytest.raises(SystemExit) as exc_info:
+                validate_manifest(
+                    tmp_preset_dir,
+                    "jira-sprint",
+                    mcp_servers,
+                    model_tiers={"light": "claude-sonnet-4-6"},
+                )
+            assert exc_info.value.code == 1
+        assert "Model tier 'unsupported' not defined in config.json claude.modelTiers" in caplog.text
+
+    def test_unknown_model_tier_ignored_when_model_tiers_none(self, tmp_preset_dir):
+        wf_dir = tmp_preset_dir / "presets" / "workflows" / "jira-sprint"
+        manifest = yaml.safe_load((wf_dir / "manifest.yaml").read_text())
+        manifest["model_tier"] = "unsupported"
+        (wf_dir / "manifest.yaml").write_text(yaml.dump(manifest))
+
+        mcp_servers = {"mcp-atlassian": {"type": "stdio"}}
+        env = {
+            "BOT_LABEL": "hcc-ai-bot",
+            "BOT_INSTANCE_ID": "test-1",
+            "BOT_JIRA_EMAIL": "bot@example.com",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            validate_manifest(tmp_preset_dir, "jira-sprint", mcp_servers, model_tiers=None)

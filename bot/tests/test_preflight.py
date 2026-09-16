@@ -1,6 +1,11 @@
 """Tests for preflight runner (bot/preflight.py)."""
 
+import logging
+import re
 import stat
+import subprocess
+import time
+from unittest.mock import patch
 
 import pytest
 
@@ -87,15 +92,18 @@ def test_discover_ignores_non_py(preset_dir):
 # --- _run_script ---
 
 
-def test_run_script_start(preset_dir):
+def test_run_script_start(preset_dir, caplog):
     wf_dir = preset_dir / "presets" / "workflows" / "test-wf" / "preflight"
     script = wf_dir / "01-test.py"
     _write_script(script, status="start", content="work found")
 
+    caplog.set_level(logging.INFO)
     result = _run_script(script, preset_dir)
     assert result.status == "start"
     assert result.content == "work found"
     assert result.name == "01-test.py"
+    assert "Preflight 01-test.py starting" in caplog.text
+    assert re.search(r"Preflight 01-test.py → start \(\d+ chars\) in [0-9.]+s", caplog.text)
 
 
 def test_run_script_skip(preset_dir):
@@ -128,14 +136,51 @@ def test_run_script_invalid_json(preset_dir):
     assert "invalid JSON" in result.content
 
 
-def test_run_script_nonzero_exit(preset_dir):
+def test_run_script_nonzero_exit(preset_dir, caplog):
     wf_dir = preset_dir / "presets" / "workflows" / "test-wf" / "preflight"
     script = wf_dir / "01-test.py"
     script.write_text("import sys; sys.exit(1)\n")
 
+    caplog.set_level(logging.ERROR)
     result = _run_script(script, preset_dir)
     assert result.status == "error"
     assert "exited with code 1" in result.content
+    assert re.search(r"Preflight 01-test.py failed \(exit 1\) in [0-9.]+s:", caplog.text)
+
+
+def test_run_script_elapsed_reflects_runtime(preset_dir, caplog):
+    wf_dir = preset_dir / "presets" / "workflows" / "test-wf" / "preflight"
+    script = wf_dir / "01-sleep.py"
+    script.write_text(
+        'import json, time; time.sleep(0.05); print(json.dumps({"status": "skip", "content": "slept"}))\n'
+    )
+
+    caplog.set_level(logging.INFO)
+    wall0 = time.monotonic()
+    result = _run_script(script, preset_dir)
+    wall = time.monotonic() - wall0
+    assert result.status == "skip"
+    match = re.search(r"Preflight 01-sleep.py → skip \(\d+ chars\) in ([0-9.]+)s", caplog.text)
+    assert match, caplog.text
+    elapsed = float(match.group(1))
+    assert elapsed >= 0.05
+    assert elapsed <= wall + 0.5
+
+
+def test_run_script_timeout_logs_elapsed(preset_dir, caplog):
+    wf_dir = preset_dir / "presets" / "workflows" / "test-wf" / "preflight"
+    script = wf_dir / "01-test.py"
+    _write_script(script)
+
+    caplog.set_level(logging.ERROR)
+    with patch(
+        "bot.preflight.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="python3", timeout=120),
+    ):
+        result = _run_script(script, preset_dir)
+    assert result.status == "error"
+    assert "timed out after 120s" in result.content
+    assert re.search(r"Preflight 01-test.py timed out after 120s \(elapsed [0-9.]+s\)", caplog.text)
 
 
 def test_run_script_unknown_status(preset_dir):

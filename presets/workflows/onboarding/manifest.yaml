@@ -10,20 +10,20 @@ preflight:
 shared_skills:
   - push-and-pr
   - auto-fork
+  - generate-konflux
+  - detect-tech-stack
+  - create-phase-tickets
+  - claim-onboarding
+  - post-konflux-instructions
+  - generate-app-interface
 
 provides:
   claude_md: CLAUDE.md
   skills:
     - generate-instance
-    - generate-konflux
-    - generate-app-interface
-    - detect-tech-stack
-    - create-phase-tickets
-    - claim-onboarding
     - post-intake
     - post-plan
     - post-konflux-questions
-    - post-konflux-instructions
     - post-manual-steps
 
 requires:

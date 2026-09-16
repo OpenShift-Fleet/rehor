@@ -22,6 +22,7 @@ from common import (
     get_task_prs,
     get_tasks,
     load_project_repos,
+    match_repo_labels,
     output_result,
     save_state,
 )
@@ -127,20 +128,12 @@ def _jira_search(jql, limit=10):
     return data if isinstance(data, list) else data.get("issues", [])
 
 
-def _match_repo_labels(labels, repo_lookup):
-    repo_labels = [label.replace("repo:", "") for label in labels if label.startswith("repo:")]
-    if not repo_labels:
-        return []
-    matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
-    return matched if len(matched) == len(repo_labels) else []
-
-
 def _format_candidates(issues, repo_lookup):
     results = []
     for issue in issues:
         fields = issue.get("fields") or issue
         labels = fields.get("labels", [])
-        repos = _match_repo_labels(labels, repo_lookup)
+        repos = match_repo_labels(labels, repo_lookup)
         comment_data = fields.get("comment", {})
         comments = (comment_data.get("comments") or [])[-5:] if isinstance(comment_data, dict) else []
         status = fields.get("status", {})

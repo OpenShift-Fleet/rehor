@@ -5,7 +5,7 @@
     "contexts": [
       "Red Hat Konflux / platform-frontend-ai-dev-on-pull-request",
       "Red Hat Konflux / platform-frontend-ai-dev-memory-server-on-pull-request",
-      "TypeScript Lint / Biome"
+      "Biome"
     ]
   },
   "enforce_admins": true,

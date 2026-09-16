@@ -13,7 +13,8 @@ memory integrations.
 
 | Document | Description |
 |----------|-------------|
-| [Architecture](ARCHITECTURE.md) | System design, credential isolation, component overview |
+| [Architecture](ARCHITECTURE.md) | Current system, coordinator migration boundary, credential isolation |
+| [Coordinator](coordinator/README.md) | Provider-neutral runtime contract, invariants, and Python compatibility |
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
@@ -32,7 +33,7 @@ Before setting up the bot, make sure you have the following installed:
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Agent runtime (bundled with the SDK) | `npm install -g @anthropic-ai/claude-code` |
 | [uv](https://docs.astral.sh/uv/) | Python package manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [Podman](https://podman.io/) or Docker | Memory server, target repo dev environments | `brew install podman` or install Docker |
-| [Node.js](https://nodejs.org/) + npm | TypeScript LSP server | `brew install node` or via nvm |
+| [Node.js](https://nodejs.org/) 22 + npm | TypeScript LSP, coordinator, and dashboard development and verification | `brew install node` or via nvm |
 | [jq](https://jqlang.github.io/jq/) | JSON processing | `brew install jq` |
 | [gh](https://cli.github.com/) | GitHub CLI | `brew install gh` then `gh auth login` |
 | [glab](https://gitlab.com/gitlab-org/cli) | GitLab CLI (only for GitLab repos) | `brew install glab` then `glab auth login --hostname gitlab.cee.redhat.com` |
@@ -92,6 +93,7 @@ make logs              # Tail bot log
 make memory-server     # Start memory server + postgres (standalone)
 make memory-server-stop # Stop standalone memory server
 make dashboard         # Build the dashboard UI
+make coordinator-verify # Test, typecheck, and build coordinator scaffold
 make costs             # Show all cost data
 make costs-today       # Show today's costs
 make costs-week        # Show this week's costs
@@ -107,6 +109,8 @@ BOT_INSTANCE_ID=my-local-bot uv run dev-bot --label <your-label>
 ```
 
 ## How it works
+
+The production bot currently operates through the Python runner and Claude Agent SDK. The TypeScript [coordinator](coordinator/README.md) is a tested migration boundary and is not on the production execution path yet.
 
 The bot operates in **cycles**. Each cycle, it evaluates all of its tracked work and acts on exactly one item, following a strict priority order:
 

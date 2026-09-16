@@ -94,6 +94,7 @@ envs:
 | `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
+| `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). Must be in `VERTEX_ALLOWED_MODELS`. |
 
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 

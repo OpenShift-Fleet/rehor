@@ -1,11 +1,11 @@
 # Dev proxy — build custom Caddy from source on UBI (passes EC)
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:8d2d83261cbc8854b8c93b1237d7d4aa0069bdb93e2974d980bc7788db56f8f4 AS dev-proxy-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:5e68f09a652ac6627a83c57655e42e24575efb278b54336039c9308607fc6b21 AS dev-proxy-builder
 COPY dev-proxy/ /tmp/dev-proxy/
 RUN cd /tmp/dev-proxy \
     && go build -o /tmp/caddy .
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:8d2d83261cbc8854b8c93b1237d7d4aa0069bdb93e2974d980bc7788db56f8f4 AS executor-client-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:5e68f09a652ac6627a83c57655e42e24575efb278b54336039c9308607fc6b21 AS executor-client-builder
 WORKDIR /build
 COPY proxy/executor/ .
 RUN go mod download \

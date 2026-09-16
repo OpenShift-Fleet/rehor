@@ -108,7 +108,7 @@ def test_cost_push_http_error_now_detected(tmp_costs_file, mock_result, caplog):
 # --- Test 2: Status push failures are completely silent ---
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_status_push_failure_now_logged(caplog):
     """FIXED: _push_status logs DEBUG per failure, WARNING once at threshold, then silent."""
     caplog.set_level(logging.DEBUG)

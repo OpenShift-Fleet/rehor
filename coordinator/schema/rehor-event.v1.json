@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehor.dev/schema/event.v1.json",
+  "title": "Rehor event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "runId",
+    "attemptId",
+    "sequence",
+    "occurredAt",
+    "kind",
+    "workspace",
+    "provider",
+    "model",
+    "policyVersion",
+    "payload"
+  ],
+  "$defs": {
+    "terminalContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "taskId": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "externalKey": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "workType": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string" }
+      }
+    },
+    "terminalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "enum": ["completed", "failed", "interrupted", "cancelled", "timed_out"]
+        },
+        "reason": { "type": "string" },
+        "resultText": { "type": "string" },
+        "noWork": { "type": "boolean" },
+        "turns": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "context": { "$ref": "#/$defs/terminalContext" }
+      }
+    },
+    "tokenCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "output": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "reasoning": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "cacheRead": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+        "cacheWrite": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      }
+    },
+    "usageCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount", "currency", "source"],
+      "properties": {
+        "amount": { "type": "number", "minimum": 0 },
+        "currency": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["provider", "estimated", "unknown"] }
+      }
+    },
+    "usagePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requestedModel", "tokenCounts", "partial", "final", "estimated", "incomplete"],
+      "properties": {
+        "requestedModel": { "type": "string", "minLength": 1 },
+        "returnedModel": { "type": "string", "minLength": 1 },
+        "tokenCounts": { "$ref": "#/$defs/tokenCounts" },
+        "partial": { "type": "boolean" },
+        "final": { "type": "boolean" },
+        "estimated": { "type": "boolean" },
+        "incomplete": { "type": "boolean" },
+        "cost": { "$ref": "#/$defs/usageCost" }
+      }
+    }
+  },
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "eventId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "kind": { "type": "string", "minLength": 1 },
+    "runtimeSessionRef": { "type": "string", "minLength": 1 },
+    "parentEventId": { "type": "string", "minLength": 1 },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worktreePath", "repository", "snapshot"],
+      "properties": {
+        "worktreePath": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "snapshot": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provider": { "type": "string", "minLength": 1 },
+    "model": { "type": "string", "minLength": 1 },
+    "policyVersion": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" },
+    "rawEventRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "redacted"],
+      "properties": {
+        "reference": { "type": "string", "minLength": 1 },
+        "redacted": { "const": true }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "terminal" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "#/$defs/terminalPayload" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "usage" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": {
+          "payload": { "$ref": "#/$defs/usagePayload" }
+        }
+      }
+    }
+  ]
+}

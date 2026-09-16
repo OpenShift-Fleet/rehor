@@ -14,6 +14,7 @@ sys.path.insert(0, str(SKILLS_DIR))
 from onboarding_preflight import (
     _any_pr_mr_merged,
     _comments_may_be_truncated,
+    _get_candidates,
     _get_comments,
     _get_onboarding_label,
     _has_new_jira_feedback,
@@ -275,6 +276,20 @@ def test_no_active_no_candidates_returns_skip(env_vars, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out.strip())
     assert out["status"] == "skip"
     assert "No active tasks and no new candidates" in out["content"]
+
+
+def test_candidates_use_configured_jira_project(monkeypatch):
+    monkeypatch.setattr("onboarding_preflight.BOT_LABEL", "hcc-ai-frontend-onboarding")
+    monkeypatch.setattr("onboarding_preflight.BOT_JIRA_PROJECT", "RHCLOUD")
+    captured = {}
+
+    def fake_search(jql, limit=10):
+        captured["jql"] = jql
+        return {"issues": []}
+
+    monkeypatch.setattr("onboarding_preflight._jira_search", fake_search)
+    assert _get_candidates() == []
+    assert "project = RHCLOUD" in captured["jql"]
 
 
 def test_blocked_task_skipped(env_vars, monkeypatch, capsys):

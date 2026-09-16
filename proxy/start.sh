@@ -13,6 +13,24 @@ chmod 600 ~/.config/gh/hosts.yml
 
 # Configure glab auth (token from env)
 if [ -n "${GITLAB_TOKEN:-}" ]; then
+    GITLAB_TLS_SKIP_VERIFY_VALUE="false"
+    case "$(echo "${GITLAB_TLS_SKIP_VERIFY:-false}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) GITLAB_TLS_SKIP_VERIFY_VALUE="true" ;;
+    esac
+
+    # Optional: base64-encoded PEM bundle from secret/env for internal GitLab CAs.
+    if [ -n "${GITLAB_CA_CERT_B64:-}" ] && [ -z "${GITLAB_CA_CERT_PEM:-}" ]; then
+        GITLAB_CA_CERT_PEM="$(printf '%s' "$GITLAB_CA_CERT_B64" | tr -d '[:space:]' | base64 -d 2>/dev/null || true)"
+        export GITLAB_CA_CERT_PEM
+    fi
+
+    if [ -n "${GITLAB_CA_CERT_PEM:-}" ] && [ -z "${GITLAB_CA_CERT_FILE:-}" ]; then
+        GITLAB_CA_CERT_FILE="/tmp/gitlab-ca-cert.pem"
+        printf '%s\n' "$GITLAB_CA_CERT_PEM" > "$GITLAB_CA_CERT_FILE"
+        chmod 600 "$GITLAB_CA_CERT_FILE"
+        export GITLAB_CA_CERT_FILE
+    fi
+
     mkdir -p ~/.config/glab-cli
     cat > ~/.config/glab-cli/config.yml <<EOF
 git_protocol: https
@@ -25,8 +43,13 @@ hosts:
         api_protocol: https
         api_host: gitlab.cee.redhat.com
         git_protocol: https
-        skip_tls_verify: true
+        skip_tls_verify: ${GITLAB_TLS_SKIP_VERIFY_VALUE}
 EOF
+    if [ -n "${GITLAB_CA_CERT_FILE:-}" ]; then
+        cat >> ~/.config/glab-cli/config.yml <<EOF
+        ca_cert: ${GITLAB_CA_CERT_FILE}
+EOF
+    fi
     chmod 600 ~/.config/glab-cli/config.yml
 fi
 

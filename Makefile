@@ -1,14 +1,14 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser
+.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
 CONTAINER_RT ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 
 ts-verify: ## Check TypeScript formatting and lint with Biome
-	bunx @biomejs/biome@$(BIOME_VERSION) check .
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check .
 
 ts-format: ## Format TypeScript files with Biome (local fix)
-	bunx @biomejs/biome@$(BIOME_VERSION) check --write .
+	npx --yes @biomejs/biome@$(BIOME_VERSION) check --write .
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -22,7 +22,7 @@ verify: ## Run all checks (same as CI)
 	@echo "=== Python: type check ==="
 	uv run mypy
 	@echo "=== Python: tests ==="
-	uv run pytest
+	$(MAKE) test-unit
 	@echo "=== Go: vet ==="
 	cd proxy/executor && go vet ./...
 	@echo "=== Go: tests ==="
@@ -35,8 +35,16 @@ verify: ## Run all checks (same as CI)
 	cd dashboard && npm run build
 	@echo "=== Dashboard: tests ==="
 	cd dashboard && npm test
+	@echo "=== Coordinator ==="
+	$(MAKE) coordinator-verify
 	@echo ""
 	@echo "All checks passed."
+
+coordinator-verify: ## Install and run coordinator tests, type check, and build
+	cd coordinator && npm ci
+	cd coordinator && npm test
+	cd coordinator && npm run typecheck
+	cd coordinator && npm run build
 
 precommit-install: ## Install pre-commit hooks
 	pip install pre-commit && pre-commit install
@@ -124,6 +132,12 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 	@$(CONTAINER_RT) rm -f memory-server-verify memory-server-verify-pg
 	@echo ""
 	@echo "All container verification checks passed."
+
+test-unit: ## Run unit tests (integration excluded; coverage gate matches CI)
+	uv run pytest --cov=bot --cov-report=term-missing --cov-fail-under=50
+
+test-integration: ## Run integration tests (requires docker-compose stack running)
+	uv run pytest tests/integration/ -v -p no:cacheprovider
 
 container-e2e: ## Run REHOR-62 multi-container entrypoint/runtime E2E checks locally.
 	bash tests/container-e2e/test-container.sh --fixture $(or $(FIXTURE),minimal)

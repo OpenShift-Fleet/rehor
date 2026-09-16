@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rehor.dev/schema/run.v1.json",
+  "title": "Rehor run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "attemptId",
+    "instanceId",
+    "label",
+    "workflowId",
+    "prompt",
+    "task",
+    "worktree",
+    "instructionHash",
+    "configHash",
+    "policyHash",
+    "provider",
+    "limits",
+    "preflightPayloadRef"
+  ],
+  "$defs": {
+    "hash": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "value": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "key": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "runId": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1 },
+    "instanceId": { "type": "string", "minLength": 1 },
+    "label": { "type": "string", "minLength": 1 },
+    "workflowId": { "type": "string", "minLength": 1 },
+    "prompt": { "type": "string", "minLength": 1 },
+    "task": {
+      "anyOf": [{ "$ref": "#/$defs/task" }, { "type": "null" }]
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "repository", "snapshot"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "minLength": 1 },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ref", "commitSha", "dirty"],
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "commitSha": { "type": "string", "minLength": 1 },
+            "dirty": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "instructionHash": { "$ref": "#/$defs/hash" },
+    "configHash": { "$ref": "#/$defs/hash" },
+    "policyHash": { "$ref": "#/$defs/hash" },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "requestedModel"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "requestedModel": { "type": "string", "minLength": 1 },
+        "reasoningEffort": { "type": "string", "minLength": 1 }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeoutMs", "maxTurns"],
+      "properties": {
+        "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "maxTurns": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "preflightPayloadRef": {
+      "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    }
+  }
+}

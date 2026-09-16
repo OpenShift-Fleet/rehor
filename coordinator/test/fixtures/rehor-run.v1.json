@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1",
+  "runId": "run-fixture-01",
+  "attemptId": "attempt-fixture-01",
+  "instanceId": "instance-fixture-01",
+  "label": "hcc-ai-framework",
+  "workflowId": "jira-sprint",
+  "prompt": "Follow the instructions and handle the preflight data.",
+  "task": {
+    "id": "task-fixture-01",
+    "key": "REHOR-138"
+  },
+  "worktree": {
+    "path": "/work/rehor",
+    "repository": "https://github.com/OpenShift-Fleet/rehor.git",
+    "snapshot": {
+      "ref": "refs/heads/rehor-138",
+      "commitSha": "abc123",
+      "dirty": false
+    }
+  },
+  "instructionHash": {
+    "algorithm": "sha256",
+    "value": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "configHash": {
+    "algorithm": "sha256",
+    "value": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "policyHash": {
+    "algorithm": "sha256",
+    "value": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "provider": {
+    "id": "vertex",
+    "requestedModel": "claude-opus-4-6"
+  },
+  "limits": {
+    "timeoutMs": 60000,
+    "maxTurns": 20
+  },
+  "preflightPayloadRef": "memory://preflight/run-fixture-01"
+}
