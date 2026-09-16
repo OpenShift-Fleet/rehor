@@ -74,6 +74,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "mcp.json").write_text('{"mcpServers": {"mcp-atlassian": {"type": "http", "url": "http://jira-mcp"}}}')
     (tmp_path / "config.json").write_text(
         '{"claude": {"model": "test-model", "maxTurns": 10}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
@@ -108,6 +111,10 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)
     assert result["sharedAgentDir"] == str(shared_dir)
+    assert result["mcpServers"] == {
+        "mcp-atlassian": {"type": "http", "url": "http://jira-mcp"},
+    }
+    assert "Bash" in result["allowedTools"]
 
 
 def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):

@@ -55,6 +55,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       event,
       run,
     });
+    await observePolicyMetric(this.writers.metrics, event, run);
     const status = statusForEvent(event, run);
     if (status) await this.writers.status?.write(status);
   }
@@ -121,12 +122,30 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
   private recordUsage(state: ProjectionState, event: RehorEvent): void {
     assertUsagePayload(event.payload);
     const usage = event.payload as Usage;
-    const previous = state.usages.get(usage.requestedModel);
-    // Usage events are snapshots: final wins over partial, latest partial replaces old partial.
+    const model = usage.returnedModel ?? usage.requestedModel;
+    const previous = state.usages.get(model);
+    // Usage events are snapshots per returned model: final wins over partial,
+    // latest partial replaces old partial. Returned model keeps subagent and
+    // compaction usage from collapsing into the requested model entry.
     if (!previous || usage.final || !previous.final) {
-      state.usages.set(usage.requestedModel, usage);
+      state.usages.set(model, usage);
     }
   }
+}
+
+async function observePolicyMetric(
+  writer: CompatibilityWriters["metrics"],
+  event: RehorEvent,
+  run: RehorRun,
+): Promise<void> {
+  if (!writer || event.kind !== "policy") return;
+  const level = stringPayload(event.payload, "state");
+  if (level !== "warning" && level !== "critical") return;
+  await writer.observe({
+    name: "devbot_turn_budget_event_total",
+    value: 1,
+    labels: { label: run.label, level },
+  });
 }
 
 function statusForEvent(event: RehorEvent, run: RehorRun): StatusUpdate | null {

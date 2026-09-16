@@ -11,6 +11,7 @@ import {
   type PreflightScriptResult,
   type PythonBridge,
 } from "../ports/python-bridge";
+import type { McpServerConfig } from "../ports/runtime-config";
 import { abortError, isRecord } from "../utils";
 
 const PROTOCOL_VERSION = 1;
@@ -171,6 +172,8 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     remoteAgentDir: nullableString(object.remoteAgentDir, "config.remoteAgentDir"),
     sharedAgentDir: nullableString(object.sharedAgentDir, "config.sharedAgentDir"),
     claudeMdPath: stringValue(object.claudeMdPath, "config.claudeMdPath"),
+    mcpServers: parseMcpServers(object.mcpServers ?? {}, "config.mcpServers"),
+    allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
   };
 }
 
@@ -186,6 +189,74 @@ function arrayValue(value: unknown, path: string): unknown[] {
 
 function stringArray(value: unknown, path: string): string[] {
   return arrayValue(value, path).map((entry, index) => stringValue(entry, `${path}[${index}]`));
+}
+
+function parseMcpServers(value: unknown, path: string): Record<string, McpServerConfig> {
+  const servers = record(value, path);
+  return Object.fromEntries(
+    Object.entries(servers).map(([name, config]) => [
+      name,
+      parseMcpServer(config, `${path}.${name}`),
+    ]),
+  );
+}
+
+function parseMcpServer(value: unknown, path: string): McpServerConfig {
+  const config = record(value, path);
+  if (typeof config.command === "string") {
+    const type = config.type;
+    if (type !== undefined && type !== "stdio") {
+      throw new PythonBridgeError(`${path}.type must be stdio when command is provided`);
+    }
+    return {
+      ...(type === undefined ? {} : { type }),
+      command: config.command,
+      ...(config.args === undefined ? {} : { args: stringArray(config.args, `${path}.args`) }),
+      ...(config.env === undefined ? {} : { env: stringRecord(config.env, `${path}.env`) }),
+      ...(config.timeout === undefined
+        ? {}
+        : { timeout: finiteNumber(config.timeout, `${path}.timeout`) }),
+      ...(config.alwaysLoad === undefined
+        ? {}
+        : { alwaysLoad: booleanValue(config.alwaysLoad, `${path}.alwaysLoad`) }),
+    };
+  }
+
+  if (config.type !== "http" && config.type !== "sse") {
+    throw new PythonBridgeError(`${path}.type must be http or sse`);
+  }
+  return {
+    type: config.type,
+    url: stringValue(config.url, `${path}.url`),
+    ...(config.headers === undefined
+      ? {}
+      : { headers: stringRecord(config.headers, `${path}.headers`) }),
+    ...(config.timeout === undefined
+      ? {}
+      : { timeout: finiteNumber(config.timeout, `${path}.timeout`) }),
+    ...(config.alwaysLoad === undefined
+      ? {}
+      : { alwaysLoad: booleanValue(config.alwaysLoad, `${path}.alwaysLoad`) }),
+  };
+}
+
+function stringRecord(value: unknown, path: string): Record<string, string> {
+  const object = record(value, path);
+  return Object.fromEntries(
+    Object.entries(object).map(([key, entry]) => [key, stringValue(entry, `${path}.${key}`)]),
+  );
+}
+
+function booleanValue(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") throw new PythonBridgeError(`${path} must be a boolean`);
+  return value;
+}
+
+function finiteNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new PythonBridgeError(`${path} must be a finite number`);
+  }
+  return value;
 }
 
 function stringValue(value: unknown, path: string): string {
