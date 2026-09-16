@@ -8,8 +8,31 @@ set -e
 
 ENVS=""
 FOUND_CONFIG=false
-for cfg in instance/*/agent/instance.yaml; do
-    [ -f "$cfg" ] || continue
+
+CONFIG_FILES=()
+if [ -n "${INSTANCE_CONFIG_PATH:-}" ]; then
+    case "$INSTANCE_CONFIG_PATH" in
+        /*|*..*)
+            echo "[install-envs] Invalid INSTANCE_CONFIG_PATH: $INSTANCE_CONFIG_PATH" >&2
+            exit 1
+            ;;
+    esac
+    if [[ "$INSTANCE_CONFIG_PATH" == instance/* ]]; then
+        CONFIG_FILES=("$INSTANCE_CONFIG_PATH/agent/instance.yaml")
+    else
+        CONFIG_FILES=("instance/$INSTANCE_CONFIG_PATH/agent/instance.yaml")
+    fi
+    if [ ! -f "${CONFIG_FILES[0]}" ]; then
+        echo "[install-envs] Config not found: ${CONFIG_FILES[0]}" >&2
+        exit 1
+    fi
+else
+    shopt -s nullglob
+    CONFIG_FILES=(instance/*/agent/instance.yaml)
+    shopt -u nullglob
+fi
+
+for cfg in "${CONFIG_FILES[@]}"; do
     FOUND_CONFIG=true
     ENVS="$ENVS $(sed -n '/^envs:/,/^[^ ]/{ s/^  - //p }' "$cfg")"
 done

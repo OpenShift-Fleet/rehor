@@ -87,10 +87,14 @@ COPY dev-bot/dev-proxy/ dev-proxy/
 # Instance files — COPY early so install-envs.sh can read instance.yaml
 COPY instance/ /home/botuser/app/instance/
 
-# Env presets — selective install based on instance.yaml envs list
+# Env presets — selective install based on selected instance.yaml envs list.
+# Set INSTANCE_CONFIG_PATH to one profile (for example instance/rbac-config).
+# Empty value keeps multi-profile union behavior.
 COPY dev-bot/presets/ presets/
 ARG GOVERSIONS="1.24.13 1.25.13"
 ENV GOVERSIONS="${GOVERSIONS}"
+ARG INSTANCE_CONFIG_PATH=""
+ENV INSTANCE_CONFIG_PATH="${INSTANCE_CONFIG_PATH}"
 RUN bash presets/install-envs.sh
 
 ENV HOME=/home/botuser
