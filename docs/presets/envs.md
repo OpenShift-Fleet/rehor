@@ -25,11 +25,11 @@ Presets are installed during `docker build` — their `install.sh` scripts run a
 
 **Path**: `presets/envs/node/`
 
-Installs [nvm](https://github.com/nvm-sh/nvm) (Node Version Manager) with Node.js 22 LTS as the default. The bot can switch versions per-repo at runtime.
+Installs [nvm](https://github.com/nvm-sh/nvm) (Node Version Manager) with Node.js 24 LTS as the default. The bot can switch versions per-repo at runtime.
 
 **What gets installed**:
 - nvm v0.40.3 at `/usr/local/nvm`
-- Node.js 22 (LTS) as default
+- Node.js 24 (LTS) as default
 - `node`, `npm`, `npx` symlinked to `/usr/local/bin/`
 - Shell init via `/etc/profile.d/nvm.sh`
 

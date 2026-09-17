@@ -1,5 +1,5 @@
 #!/bin/bash
-# Node.js env preset — nvm + Node.js 22 LTS
+# Node.js env preset — nvm + Node.js 24 LTS
 set -e
 
 export NVM_DIR="${NVM_DIR:-/usr/local/nvm}"
@@ -10,8 +10,8 @@ curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bas
 
 # Source nvm and install default Node version
 . "$NVM_DIR/nvm.sh"
-nvm install 22
-nvm alias default 22
+nvm install 24.21.0
+nvm alias default 24.21.0
 nvm use default
 
 # Make node/npm available system-wide (symlink for non-interactive shells)

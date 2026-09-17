@@ -102,7 +102,7 @@ envs:
 
 | Preset | What it provides |
 |--------|-----------------|
-| `node` | nvm + Node.js 22 LTS + npm/npx |
+| `node` | nvm + Node.js 24 LTS + npm/npx |
 | `go` | goenv + Go 1.24/1.25 + golangci-lint |
 | `patternfly-mcp` | PatternFly component guidance MCP server (requires `node`) |
 | `browser` | Chromium + chrome-devtools MCP for visual verification |
