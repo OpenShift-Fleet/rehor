@@ -3,7 +3,17 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { isAbsolute } from "node:path";
 
-import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
+import {
+  buildOpenCodeEnvironment,
+  createOpenCodeFetch,
+  type OpenCodeEnvironmentOptions,
+  type OpenCodeFetch,
+} from "./environment";
+
+export const OPENCODE_VERSION = "1.18.29" as const;
+
+/** Capabilities provided by the pinned server/SDK protocol, not /global/health. */
+export const OPENCODE_V1_CAPABILITIES = ["sse", "sessions"] as const;
 
 export interface OpenCodeHealth {
   healthy: boolean;
@@ -31,9 +41,14 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   expectedVersion?: string | RegExp;
   expectedConfigHash?: string;
   requiredCapabilities?: readonly string[];
+  /** Probe the process group belonging to the child PID. */
+  processGroupExists?: (pid: number) => boolean;
+  /** Bound verification after SIGKILL when a group ignores the grace signal. */
+  killVerificationTimeoutMs?: number;
   config?: Record<string, unknown>;
   readiness?: OpenCodeReadiness;
-  fetch?: typeof fetch;
+  /** Trusted direct-loopback transport override for readiness checks. */
+  fetch?: OpenCodeFetch;
   spawnProcess?: OpenCodeSpawn;
   signalProcess?: OpenCodeSignalProcess;
   allocatePort?: () => Promise<number>;
@@ -51,7 +66,8 @@ type RequiredOpenCodeSupervisorOption =
   | "command"
   | "hostname"
   | "startupTimeoutMs"
-  | "shutdownTimeoutMs";
+  | "shutdownTimeoutMs"
+  | "killVerificationTimeoutMs";
 
 export class OpenCodeReadinessError extends Error {
   constructor(message: string) {
@@ -78,6 +94,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private stopping = false;
   private stopPromise?: Promise<void>;
   private exited = false;
+  private termSent = false;
   private _crashError?: Error;
   private crashController = new AbortController();
   private outputCleanup?: () => void;
@@ -89,9 +106,15 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       hostname: options.hostname ?? "127.0.0.1",
       startupTimeoutMs: options.startupTimeoutMs ?? 10_000,
       shutdownTimeoutMs: options.shutdownTimeoutMs ?? 5_000,
+      expectedVersion: options.expectedVersion ?? OPENCODE_VERSION,
+      killVerificationTimeoutMs:
+        options.killVerificationTimeoutMs ?? Math.min(options.shutdownTimeoutMs ?? 5_000, 1_000),
     };
     assertConfiguredBinary(this.options.command);
     assertApprovedHostname(this.options.hostname);
+    assertPositiveInteger(this.options.startupTimeoutMs, "startupTimeoutMs");
+    assertPositiveInteger(this.options.shutdownTimeoutMs, "shutdownTimeoutMs");
+    assertPositiveInteger(this.options.killVerificationTimeoutMs, "killVerificationTimeoutMs");
   }
 
   get info(): OpenCodeServerInfo | undefined {
@@ -138,16 +161,17 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     });
     this.child = child;
     this.exited = false;
+    this.termSent = false;
     this._crashError = undefined;
     this.crashController = new AbortController();
 
     const exitPromise = this.observeExit(child);
     const startupSignal = AbortSignal.any([signal, this.crashSignal]);
     try {
-      const baseUrl = await this.waitForListening(child, startupSignal);
-      const health = await this.waitForReadiness(baseUrl, directory, startupSignal);
+      const baseUrl = await this.waitForListening(child, startupSignal, port);
+      const health = await this.waitForReadiness(baseUrl, directory, startupSignal, environment);
       const missingCapabilities = (this.options.requiredCapabilities ?? []).filter(
-        (capability) => !health.capabilities?.includes(capability),
+        (capability) => !(OPENCODE_V1_CAPABILITIES as readonly string[]).includes(capability),
       );
       if (missingCapabilities.length > 0) {
         throw new OpenCodeReadinessError(
@@ -195,11 +219,18 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     this.stopping = true;
     const child = this.child;
     try {
-      const exitPromise = waitForExit(child, this.options.shutdownTimeoutMs, () => {
-        this.signalChild(child, "SIGKILL");
-      });
-      if (!this.exited || this._crashError) this.signalChild(child, "SIGTERM");
-      await exitPromise;
+      const groupExists = (): boolean => this.processGroupExists(child);
+      if (!this.exited || (groupExists() && !this.termSent)) {
+        this.signalChild(child, "SIGTERM");
+      }
+      await waitForExit(
+        child,
+        this.options.shutdownTimeoutMs,
+        () => this.signalChild(child, "SIGKILL"),
+        this.exited,
+        groupExists,
+        this.options.killVerificationTimeoutMs,
+      );
     } finally {
       this.outputCleanup?.();
       this.child = undefined;
@@ -209,7 +240,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   }
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
+    if (signal === "SIGTERM") this.termSent = true;
     signalProcessTree(child, signal, this.options.signalProcess);
+  }
+
+  private processGroupExists(child: ChildProcess): boolean {
+    if (process.platform === "win32" || !child.pid) return false;
+    return (this.options.processGroupExists ?? defaultProcessGroupExists)(child.pid);
   }
 
   private observeExit(child: ChildProcess): Promise<void> {
@@ -239,7 +276,11 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     });
   }
 
-  private waitForListening(child: ChildProcess, signal: AbortSignal): Promise<string> {
+  private waitForListening(
+    child: ChildProcess,
+    signal: AbortSignal,
+    expectedPort: number,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       let output = "";
       let timer: NodeJS.Timeout | undefined;
@@ -266,10 +307,26 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
           if (match) {
             try {
               const url = new URL(match[1]);
+              if (url.protocol !== "http:") {
+                finish(
+                  new OpenCodeReadinessError(
+                    `OpenCode server advertised unapproved protocol ${url.protocol}`,
+                  ),
+                );
+                return;
+              }
               if (url.hostname !== this.options.hostname) {
                 finish(
                   new OpenCodeReadinessError(
                     `OpenCode server advertised unapproved host ${url.hostname}`,
+                  ),
+                );
+                return;
+              }
+              if (url.port !== String(expectedPort)) {
+                finish(
+                  new OpenCodeReadinessError(
+                    `OpenCode server advertised unapproved port ${url.port || "default"}; expected ${expectedPort}`,
                   ),
                 );
                 return;
@@ -320,15 +377,21 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     baseUrl: string,
     directory: string,
     signal: AbortSignal,
+    environment: Readonly<Record<string, string>>,
   ): Promise<OpenCodeHealth> {
-    const readiness = this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch);
+    const readiness =
+      this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch, environment);
     const deadline = Date.now() + this.options.startupTimeoutMs;
     let lastError: unknown;
 
     while (Date.now() < deadline) {
       if (signal.aborted) throw abortReason(signal);
       try {
-        const health = await readiness.check(baseUrl, directory, signal);
+        const health = await boundedReadiness(
+          (requestSignal) => readiness.check(baseUrl, directory, requestSignal),
+          signal,
+          deadline,
+        );
         if (
           this.options.expectedVersion &&
           !matchesVersion(health.version, this.options.expectedVersion)
@@ -340,7 +403,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         return health;
       } catch (error) {
         lastError = error;
-        await delay(50, signal);
+        if (Date.now() < deadline) await delay(50, signal);
       }
     }
 
@@ -357,7 +420,13 @@ export function appendBoundedOpenCodeOutput(output: string, chunk: Buffer | stri
 }
 
 export class HttpOpenCodeReadiness implements OpenCodeReadiness {
-  constructor(private readonly fetchImpl: typeof fetch = globalThis.fetch) {}
+  private readonly fetchImpl: OpenCodeFetch;
+
+  constructor(fetchImpl?: OpenCodeFetch, environment?: Readonly<Record<string, string>>) {
+    this.fetchImpl = environment
+      ? createOpenCodeFetch(environment, fetchImpl)
+      : (fetchImpl ?? globalThis.fetch);
+  }
 
   async check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth> {
     const healthResponse = await this.fetchImpl(`${baseUrl}/global/health`, { signal });
@@ -454,6 +523,21 @@ function signalProcess(pid: number, signal: NodeJS.Signals): void {
   process.kill(pid, signal);
 }
 
+function defaultProcessGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if (isNoSuchProcess(error)) return false;
+    if (isPermissionDenied(error)) return true;
+    throw error;
+  }
+}
+
+function isPermissionDenied(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EPERM";
+}
+
 function isNoSuchProcess(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
@@ -483,7 +567,9 @@ function parseCapabilities(value: unknown): readonly string[] | undefined {
 }
 
 function matchesVersion(version: string, expected: string | RegExp): boolean {
-  return typeof expected === "string" ? version === expected : expected.test(version);
+  if (typeof expected === "string") return version === expected;
+  expected.lastIndex = 0;
+  return expected.test(version);
 }
 
 async function readJson(response: Response, name: string): Promise<Record<string, unknown>> {
@@ -520,36 +606,141 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function boundedReadiness<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  signal: AbortSignal,
+  deadline: number,
+): Promise<T> {
+  const deadlineController = new AbortController();
+  const operationSignal = AbortSignal.any([signal, deadlineController.signal]);
+  const deadlineError = new OpenCodeReadinessError("OpenCode readiness deadline exceeded");
+  const remaining = deadline - Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  if (remaining > 0) {
+    timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
+  } else {
+    deadlineController.abort(deadlineError);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let pending: Promise<T> | undefined;
+    let settled = false;
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      operationSignal.removeEventListener("abort", onAbort);
+    };
+    const settle = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = (): void => settle(() => reject(abortReason(operationSignal)));
+
+    if (operationSignal.aborted) onAbort();
+    else {
+      operationSignal.addEventListener("abort", onAbort, { once: true });
+      pending = Promise.resolve().then(() => operation(operationSignal));
+      void pending.catch(() => undefined);
+      pending.then(
+        (value) => settle(() => resolve(value)),
+        (error) => settle(() => reject(error)),
+      );
+    }
+  });
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`OpenCode ${name} must be a positive safe integer`);
+  }
+}
+
 function waitForExit(
   child: ChildProcess,
   timeoutMs: number,
   onTimeout: () => void,
   alreadyExited = false,
+  processGroupExists: () => boolean = () => false,
+  killVerificationTimeoutMs = timeoutMs,
 ): Promise<void> {
-  return new Promise((resolve) => {
-    if (alreadyExited) {
-      resolve();
-      return;
-    }
+  return new Promise((resolve, reject) => {
     let settled = false;
-    let timer: NodeJS.Timeout | undefined;
+    let leaderExited = alreadyExited;
+    let graceTimer: NodeJS.Timeout | undefined;
+    let verificationTimer: NodeJS.Timeout | undefined;
+    let pollTimer: NodeJS.Timeout | undefined;
+
+    const cleanup = (): void => {
+      if (graceTimer) clearTimeout(graceTimer);
+      if (verificationTimer) clearTimeout(verificationTimer);
+      if (pollTimer) clearInterval(pollTimer);
+      child.removeListener("close", onExit);
+      child.removeListener("exit", onExit);
+      child.removeListener("error", onError);
+    };
     const finish = (): void => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
-      child.removeListener("close", finish);
-      child.removeListener("exit", finish);
-      child.removeListener("error", finish);
+      cleanup();
       resolve();
     };
-    child.once("close", finish);
-    child.once("exit", finish);
-    child.once("error", finish);
-    timer = setTimeout(() => {
-      onTimeout();
-      // A child can fail to emit close when a test double does not model a
-      // signal. Resolve so cleanup never retains a stale supervisor forever.
-      setTimeout(finish, 25);
-    }, timeoutMs);
+    const fail = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const groupGone = (): boolean => leaderExited && !processGroupExists();
+    const check = (): void => {
+      if (settled) return;
+      try {
+        if (groupGone()) finish();
+      } catch (error) {
+        fail(error);
+      }
+    };
+    const onExit = (): void => {
+      leaderExited = true;
+      check();
+    };
+    const onError = (error: Error): void => {
+      leaderExited = true;
+      // An error means the leader cannot be waited on. Descendants still get
+      // the same group grace period and liveness check.
+      check();
+      if (settled) return;
+      try {
+        if (!processGroupExists()) fail(error);
+      } catch (probeError) {
+        fail(probeError);
+      }
+    };
+    const forceKill = (): void => {
+      if (settled) return;
+      try {
+        onTimeout();
+        check();
+      } catch (error) {
+        fail(error);
+        return;
+      }
+      if (settled) return;
+      verificationTimer = setTimeout(() => {
+        check();
+        if (!settled) {
+          fail(new Error("OpenCode process group remained alive after SIGKILL"));
+        }
+      }, killVerificationTimeoutMs);
+    };
+
+    if (!alreadyExited) {
+      child.once("close", onExit);
+      child.once("exit", onExit);
+      child.once("error", onError);
+    }
+    pollTimer = setInterval(check, 10);
+    graceTimer = setTimeout(forceKill, timeoutMs);
+    check();
   });
 }

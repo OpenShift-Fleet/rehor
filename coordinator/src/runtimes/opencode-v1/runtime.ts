@@ -6,11 +6,16 @@ import {
 
 import { createEventFactory, type RehorEvent, type RehorRun } from "../../domain";
 import type { RuntimeCapabilities } from "../../domain/capabilities";
-import type { TerminalState } from "../../domain/terminal-state";
+import type { TerminalState, TerminalWorkContext } from "../../domain/terminal-state";
 import type { AgentRuntime } from "../../ports";
 import type { ProxyEnvironment } from "./environment";
-import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
 import {
+  buildOpenCodeEnvironment,
+  createOpenCodeFetch,
+  type OpenCodeEnvironmentOptions,
+} from "./environment";
+import {
+  OPENCODE_VERSION,
   type OpenCodeServerController,
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
@@ -21,6 +26,8 @@ export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   policyVersion?: string;
   reconciliationTimeoutMs?: number;
   reconciliationMessageLimit?: number;
+  requestTimeoutMs?: number;
+  cleanupTimeoutMs?: number;
   server?: OpenCodeSupervisorOptions;
   supervisor?: OpenCodeServerController;
   clientFactory?: OpenCodeClientFactory;
@@ -47,7 +54,7 @@ interface RuntimeOutcome {
 
 const CAPABILITIES: RuntimeCapabilities = {
   runtimeId: "opencode-v1",
-  runtimeVersion: "1",
+  runtimeVersion: OPENCODE_VERSION,
   configVersion: "1",
   streaming: true,
   interruption: true,
@@ -68,6 +75,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   private readonly clientEnvironment: Record<string, string>;
   private readonly reconciliationTimeoutMs: number;
   private readonly reconciliationMessageLimit: number;
+  private readonly requestTimeoutMs: number;
+  private readonly cleanupTimeoutMs: number;
   private readonly clientFactory: OpenCodeClientFactory;
   private started = false;
   private stopped = false;
@@ -79,8 +88,12 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     this.clientEnvironment = buildOpenCodeEnvironment(options);
     this.reconciliationTimeoutMs = options.reconciliationTimeoutMs ?? 1_000;
     this.reconciliationMessageLimit = options.reconciliationMessageLimit ?? 100;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? this.reconciliationTimeoutMs;
+    this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? this.reconciliationTimeoutMs;
     assertPositiveInteger(this.reconciliationTimeoutMs, "reconciliationTimeoutMs");
     assertPositiveInteger(this.reconciliationMessageLimit, "reconciliationMessageLimit");
+    assertPositiveInteger(this.requestTimeoutMs, "requestTimeoutMs");
+    assertPositiveInteger(this.cleanupTimeoutMs, "cleanupTimeoutMs");
     this.supervisor =
       options.supervisor ??
       new OpenCodeServerSupervisor({
@@ -99,7 +112,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           directory,
           // Do not mutate process.env. The client receives the same explicit
           // proxy environment used to launch the child process.
-          fetch: (request) => fetchWithEnvironment(request, environment),
+          fetch: createOpenCodeFetch(environment),
         }));
   }
 
@@ -130,6 +143,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let detachCrash = (): void => undefined;
     this.active = active;
     const startedAt = Date.now();
+    const requestDeadline = startedAt + input.limits.timeoutMs;
     let outcome: RuntimeOutcome | undefined;
     let failure: unknown;
     let resultText = "";
@@ -143,7 +157,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     const seenMessages = new Set<string>();
     const seenParts = new Set<string>();
     const completedMessages = new Set<string>();
+    const seenLiveEvents = new Set<string>();
     const sessionIds = new Set<string>();
+    const workContext = initialTerminalContext(input);
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     const timeout = setTimeout(() => active.controller.abort("timeout"), input.limits.timeoutMs);
@@ -154,24 +170,41 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       const client = this.clientFactory(server, input.worktree.path, this.clientEnvironment);
       active.client = client;
       active.directory = input.worktree.path;
-      await assertClientReady(client, input.worktree.path);
+      await assertClientReady(
+        client,
+        input.worktree.path,
+        active.controller.signal,
+        this.requestTimeoutMs,
+      );
 
-      const subscription = await client.event.subscribe({
-        query: { directory: input.worktree.path },
-        signal: active.controller.signal,
-        sseMaxRetryAttempts: 0,
-      });
+      const subscription = await boundedOperation(
+        (requestSignal) =>
+          client.event.subscribe({
+            query: { directory: input.worktree.path },
+            signal: requestSignal,
+            sseMaxRetryAttempts: 0,
+          }),
+        active.controller.signal,
+        requestDeadline,
+        "event subscription",
+      );
       stream = subscription.stream;
       active.stream = stream;
       const iterator = stream[Symbol.asyncIterator]();
 
-      const sessionResponse = await client.session.create({
-        query: { directory: input.worktree.path },
-        body: { title: `Rehor ${input.runId}` },
-        signal: active.controller.signal,
-        responseStyle: "data",
-        throwOnError: true,
-      });
+      const sessionResponse = await boundedOperation(
+        (requestSignal) =>
+          client.session.create({
+            query: { directory: input.worktree.path },
+            body: { title: `Rehor ${input.runId}` },
+            signal: requestSignal,
+            responseStyle: "data",
+            throwOnError: true,
+          }),
+        active.controller.signal,
+        requestDeadline,
+        "session creation",
+      );
       const session = record(unwrapSdkResponse(sessionResponse, "OpenCode session creation"));
       const sessionId = stringValue(session.id, "");
       if (!sessionId) throw new Error("OpenCode session creation returned no session");
@@ -180,37 +213,53 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       normalization = {
         rootSessionId: sessionId,
         requestedModel: input.provider.requestedModel,
+        workContext,
         resultTextParts,
         messageRoles,
         countedMessages,
+        toolPhases: new Map(),
         modelEventIds: new Map(),
         usageSnapshots: new Map(),
       };
 
       yield factory("run", { state: "started" }, { runtimeSessionRef: sessionId });
       unwrapSdkResponse(
-        await client.session.promptAsync({
-          path: { id: sessionId },
-          query: { directory: input.worktree.path },
-          body: {
-            model: resolveModel(input),
-            parts: [{ type: "text", text: input.prompt }],
-          },
-          signal: active.controller.signal,
-          responseStyle: "data",
-          throwOnError: true,
-        }),
+        await boundedOperation(
+          (requestSignal) =>
+            client.session.promptAsync({
+              path: { id: sessionId },
+              query: { directory: input.worktree.path },
+              body: {
+                model: resolveModel(input),
+                parts: [{ type: "text", text: input.prompt }],
+              },
+              signal: requestSignal,
+              responseStyle: "data",
+              throwOnError: true,
+            }),
+          active.controller.signal,
+          requestDeadline,
+          "session prompt",
+        ),
         "OpenCode session prompt",
       );
       promptSubmitted = true;
 
       for (;;) {
-        const next = await iterator.next();
+        const next = await boundedOperation(
+          () => iterator.next(),
+          active.controller.signal,
+          requestDeadline,
+          "event stream",
+        );
         if (next.done) {
           streamLost = true;
           break;
         }
         if (!isSessionEvent(next.value, sessionIds, sessionId)) continue;
+        const liveEventKey = openCodeEventKey(next.value);
+        if (liveEventKey && seenLiveEvents.has(liveEventKey)) continue;
+        if (liveEventKey) seenLiveEvents.add(liveEventKey);
         if (maxTurnsReached && beginsNewTurn(next.value, seenMessages)) {
           active.controller.abort("max_turns");
           throw abortReason(active.controller.signal);
@@ -245,7 +294,12 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       }
     } catch (error) {
       failure = error;
-      if (promptSubmitted && !signal.aborted && shouldReconcile(active.controller.signal.reason)) {
+      if (
+        promptSubmitted &&
+        !signal.aborted &&
+        !this.supervisor.crashError &&
+        shouldReconcile(active.controller.signal.reason)
+      ) {
         streamLost = true;
         const reconciled = await reconcileSession(
           active,
@@ -289,6 +343,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         reason: errorMessage(failure) ?? "OpenCode runtime failed",
       };
     }
+    if (!workContext.summary && resultText) {
+      const summary = lastMeaningfulLine(resultText);
+      if (summary) workContext.summary = summary;
+    }
 
     if (outcome.state !== "completed") {
       yield factory(
@@ -323,7 +381,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         noWork: isNoWork(resultText),
         turns,
         durationMs: Date.now() - startedAt,
-        ...(terminalContext(input) ? { context: terminalContext(input) } : {}),
+        ...(Object.keys(workContext).length > 0 ? { context: workContext } : {}),
       },
       { runtimeSessionRef: active.sessionId },
     );
@@ -338,47 +396,77 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
   private async cleanup(active: ActiveRun, outcome?: RuntimeOutcome): Promise<Error | undefined> {
     const failures: Error[] = [];
-    if (active.stream) {
-      try {
-        await active.stream.return(undefined);
-      } catch (error) {
-        failures.push(toError(error));
+    const deadline = Date.now() + this.cleanupTimeoutMs;
+    const deadlineController = new AbortController();
+    const deadlineTimer = setTimeout(
+      () => deadlineController.abort(new Error("OpenCode cleanup deadline exceeded")),
+      this.cleanupTimeoutMs,
+    );
+    const cleanupSignal = deadlineController.signal;
+    const runCleanup = async <T>(
+      operation: (signal: AbortSignal) => Promise<T>,
+      name: string,
+    ): Promise<T> => boundedOperation(operation, cleanupSignal, deadline, name);
+
+    try {
+      if (active.stream) {
+        const stream = active.stream;
+        try {
+          await runCleanup(() => stream.return(undefined), "stream return");
+        } catch (error) {
+          failures.push(toError(error));
+        }
       }
-    }
-    if (active.client && active.sessionId && active.directory) {
-      if (outcome?.state !== "completed") {
+      if (active.client && active.sessionId && active.directory) {
+        const client = active.client;
+        const sessionId = active.sessionId;
+        const directory = active.directory;
+        if (outcome?.state !== "completed") {
+          try {
+            unwrapSdkResponse(
+              await runCleanup(
+                (requestSignal) =>
+                  client.session.abort({
+                    path: { id: sessionId },
+                    query: { directory },
+                    signal: requestSignal,
+                    responseStyle: "data",
+                    throwOnError: true,
+                  }),
+                "session abort",
+              ),
+              "OpenCode session abort",
+            );
+          } catch (error) {
+            failures.push(toError(error));
+          }
+        }
         try {
           unwrapSdkResponse(
-            await active.client.session.abort({
-              path: { id: active.sessionId },
-              query: { directory: active.directory },
-              responseStyle: "data",
-              throwOnError: true,
-            }),
-            "OpenCode session abort",
+            await runCleanup(
+              (requestSignal) =>
+                client.session.delete({
+                  path: { id: sessionId },
+                  query: { directory },
+                  signal: requestSignal,
+                  responseStyle: "data",
+                  throwOnError: true,
+                }),
+              "session delete",
+            ),
+            "OpenCode session delete",
           );
         } catch (error) {
           failures.push(toError(error));
         }
       }
+    } finally {
+      clearTimeout(deadlineTimer);
       try {
-        unwrapSdkResponse(
-          await active.client.session.delete({
-            path: { id: active.sessionId },
-            query: { directory: active.directory },
-            responseStyle: "data",
-            throwOnError: true,
-          }),
-          "OpenCode session delete",
-        );
+        await this.supervisor.stop();
       } catch (error) {
         failures.push(toError(error));
       }
-    }
-    try {
-      await this.supervisor.stop();
-    } catch (error) {
-      failures.push(toError(error));
     }
     return failures[0];
   }
@@ -409,9 +497,11 @@ interface UsageSnapshot {
 interface NormalizationContext {
   rootSessionId: string;
   requestedModel: string;
+  workContext: TerminalWorkContext;
   resultTextParts: Map<string, string>;
   messageRoles: Map<string, string>;
   countedMessages: Set<string>;
+  toolPhases: Map<string, "started" | "completed">;
   modelEventIds: Map<string, string>;
   usageSnapshots: Map<string, UsageSnapshot>;
   rootAssistantError?: string;
@@ -476,18 +566,26 @@ async function reconcileSession(
   const client = active.client;
 
   const controller = new AbortController();
+  const signal = AbortSignal.any([active.controller.signal, controller.signal]);
   const timer = setTimeout(() => controller.abort("reconciliation timeout"), timeoutMs);
   const events: RehorEvent[] = [];
   let turns = 0;
 
   try {
-    const response = await client.session.messages({
-      path: { id: sessionId },
-      query: { directory, limit: messageLimit },
-      signal: controller.signal,
-      responseStyle: "data",
-      throwOnError: true,
-    });
+    const reconciliationDeadline = Date.now() + timeoutMs;
+    const response = await boundedOperation(
+      (requestSignal) =>
+        client.session.messages({
+          path: { id: sessionId },
+          query: { directory, limit: messageLimit },
+          signal: requestSignal,
+          responseStyle: "data",
+          throwOnError: true,
+        }),
+      signal,
+      reconciliationDeadline,
+      "session messages reconciliation",
+    );
     const data: unknown = unwrapSdkResponse(response, "OpenCode session messages");
     if (!Array.isArray(data)) {
       return {
@@ -539,7 +637,12 @@ async function reconcileSession(
       for (const value of parts) {
         const part = record(value);
         const partId = typeof part.id === "string" ? part.id : undefined;
-        if (!partId || seenParts.has(partId)) continue;
+        if (!partId) continue;
+        const toolKey = partKey(part);
+        const toolCompleted =
+          part.type === "tool" && normalization.toolPhases.get(toolKey) === "completed";
+        const seenPart = seenParts.has(partId);
+        if ((seenPart && part.type !== "tool") || (seenPart && toolCompleted)) continue;
         const normalized = normalizeOpenCodeEvent(
           {
             type: "message.part.updated",
@@ -553,12 +656,18 @@ async function reconcileSession(
       }
     }
 
-    const statusResponse = await client.session.status({
-      query: { directory },
-      signal: controller.signal,
-      responseStyle: "data",
-      throwOnError: true,
-    });
+    const statusResponse = await boundedOperation(
+      (requestSignal) =>
+        client.session.status({
+          query: { directory },
+          signal: requestSignal,
+          responseStyle: "data",
+          throwOnError: true,
+        }),
+      signal,
+      reconciliationDeadline,
+      "session status reconciliation",
+    );
     const statuses = record(unwrapSdkResponse(statusResponse, "OpenCode session status"));
     const rootStatus = statuses[sessionId];
     const rootIsIdle = rootStatus === undefined || record(rootStatus).type === "idle";
@@ -597,7 +706,7 @@ async function reconcileSession(
 }
 
 function shouldReconcile(reason: unknown): boolean {
-  const message = errorMessage(reason)?.toLowerCase() ?? "";
+  const message = abortReasonText(reason).toLowerCase();
   return (
     !message.includes("timeout") &&
     !message.includes("shutdown") &&
@@ -735,18 +844,34 @@ function normalizeOpenCodeEvent(
       }
       if (part.type === "tool") {
         const state = record(part.state);
+        const name = stringValue(part.tool, "unknown");
+        const input = recordOrUndefined(state.input);
+        const finished = state.status === "completed" || state.status === "error";
+        extractOpenCodeToolContext(name, input, context.workContext);
+        if (state.status === "completed") extractTaskResult(state.output, context.workContext);
+        const start = numberValue(recordOrUndefined(state.time)?.start);
+        const end = numberValue(recordOrUndefined(state.time)?.end);
+        const phase = finished ? "completed" : "started";
+        const key = partKey(part);
+        if (context.toolPhases.get(key) === phase) return { events: [], turns: 0 };
+        context.toolPhases.set(key, phase);
         return {
           events: [
             factory(
               "tool",
               {
                 partId,
-                tool: stringValue(part.tool, "unknown"),
-                callId: stringValue(part.callID, "unknown"),
-                state: state.status,
-                ...(state.input ? { input: state.input } : {}),
-                ...(state.output ? { output: state.output } : {}),
-                ...(state.error ? { error: state.error } : {}),
+                state: finished ? "completed" : "started",
+                name,
+                toolName: name,
+                ...(typeof part.callID === "string" ? { toolUseId: part.callID } : {}),
+                ...(input ? { input } : {}),
+                ...(finished && start !== undefined && end !== undefined
+                  ? { durationMs: Math.max(0, end - start) }
+                  : {}),
+                ...(state.status === "error" ? { isError: true } : {}),
+                ...(typeof state.output === "string" ? { content: state.output } : {}),
+                ...(typeof state.error === "string" ? { content: state.error } : {}),
               },
               withSession,
             ),
@@ -861,12 +986,25 @@ function assistantUsage(
   );
 }
 
-async function assertClientReady(client: OpencodeClient, directory: string): Promise<void> {
-  const result = await client.path.get({
-    query: { directory },
-    responseStyle: "data",
-    throwOnError: true,
-  });
+async function assertClientReady(
+  client: OpencodeClient,
+  directory: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const result = await boundedOperation(
+    (requestSignal) =>
+      client.path.get({
+        query: { directory },
+        signal: requestSignal,
+        responseStyle: "data",
+        throwOnError: true,
+      }),
+    signal,
+    deadline,
+    "path readiness",
+  );
   const path = record(unwrapSdkResponse(result, "OpenCode path readiness"));
   if (path.directory !== directory) {
     throw new Error(`OpenCode client readiness resolved wrong worktree for ${directory}`);
@@ -958,8 +1096,8 @@ function eventSessionId(event: OpenCodeEvent): string | undefined {
   return undefined;
 }
 
-function terminalContext(input: RehorRun): Record<string, unknown> | undefined {
-  if (!input.task) return undefined;
+function initialTerminalContext(input: RehorRun): TerminalWorkContext {
+  if (!input.task) return {};
   const taskId = Number(input.task.id);
   return {
     ...(Number.isSafeInteger(taskId) && taskId > 0 ? { taskId } : {}),
@@ -967,8 +1105,93 @@ function terminalContext(input: RehorRun): Record<string, unknown> | undefined {
   };
 }
 
+function openCodeEventKey(event: OpenCodeEvent): string {
+  return `${event.type}:${stableJson(event.properties)}`;
+}
+
+function partKey(part: JsonRecord): string {
+  return `${stringValue(part.sessionID, "unknown-session")}:${stringValue(part.id, "unknown-part")}`;
+}
+
+function extractOpenCodeToolContext(
+  name: string,
+  input: JsonRecord | undefined,
+  context: TerminalWorkContext,
+): void {
+  if (!input) return;
+  if (typeof input.jira_key === "string" && input.jira_key) context.externalKey = input.jira_key;
+  if (typeof input.repo === "string" && input.repo) context.repository = input.repo;
+  if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
+
+  if (name.endsWith("task_add")) {
+    context.workType = context.workType ?? "new_ticket";
+  } else if (name.endsWith("task_update")) {
+    if (input.status === "pr_open") context.workType = "new_ticket";
+    if (input.status === "pr_changes") context.workType = "pr_review";
+    if (input.status === "done") context.workType = context.workType ?? "pr_review";
+  } else if (name === "Bash" || name.toLowerCase() === "bash") {
+    const command = typeof input.command === "string" ? input.command : "";
+    if (command.includes("gh pr checks") || command.includes("glab ci view")) {
+      context.workType = context.workType ?? "ci_fix";
+    } else if (command.includes("gh pr view") || command.includes("glab mr view")) {
+      context.workType = context.workType ?? "pr_review";
+    }
+  } else if (name.includes("jira_transition_issue")) {
+    context.workType = context.workType ?? "new_ticket";
+  } else if (name.endsWith("memory_delete")) {
+    context.workType = context.workType ?? "memory_housekeeping";
+  }
+
+  const progress = recordOrUndefined(input.progress);
+  if (progress) {
+    if (typeof progress.jira_key === "string" && progress.jira_key) {
+      context.externalKey ??= progress.jira_key;
+    }
+    if (typeof progress.repo === "string" && progress.repo) context.repository ??= progress.repo;
+  }
+}
+
+function extractTaskResult(value: unknown, context: TerminalWorkContext): void {
+  const texts: string[] = [];
+  if (typeof value === "string") texts.push(value);
+  if (Array.isArray(value)) {
+    for (const part of value) {
+      const record = recordOrUndefined(part);
+      if (typeof record?.text === "string") texts.push(record.text);
+    }
+  }
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      const object = recordOrUndefined(parsed);
+      if (!object) continue;
+      if (
+        typeof object.id === "number" &&
+        object.id > 0 &&
+        ("external_key" in object || "jira_key" in object)
+      ) {
+        context.taskId = object.id;
+      } else if (typeof object.task_id === "number" && object.task_id > 0) {
+        context.taskId = object.task_id;
+      }
+    } catch {
+      // Tool output is not required to be JSON.
+    }
+  }
+}
+
+function lastMeaningfulLine(text: string): string | undefined {
+  const lines = text
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const last = lines.at(-1);
+  return last ? last.slice(0, 200) : undefined;
+}
+
 function isNoWork(resultText: string): boolean {
-  return /\b(no actionable work|no work found|nothing actionable)\b/i.test(resultText);
+  return /\b(no actionable work|no[ _]work[ _]found|nothing actionable)\b/i.test(resultText);
 }
 
 function classifyAbort(
@@ -979,12 +1202,13 @@ function classifyAbort(
   streamLost: boolean,
 ): TerminalState {
   if (signal.aborted || controllerReason !== undefined || failure instanceof Error) {
-    const reason =
-      errorMessage(signal.aborted ? signal.reason : (controllerReason ?? failure))?.toLowerCase() ??
-      "";
+    const reason = abortReasonText(
+      signal.aborted ? signal.reason : (controllerReason ?? failure),
+    ).toLowerCase();
     if (
       reason.includes("timeout") ||
       reason.includes("timed_out") ||
+      reason.includes("deadline") ||
       reason.includes("max_turns")
     ) {
       return "timed_out";
@@ -1003,34 +1227,18 @@ function linkAbort(source: AbortSignal, target: AbortController): () => void {
   return () => source.removeEventListener("abort", onAbort);
 }
 
-function fetchWithEnvironment(
-  request: Request,
-  environment: Readonly<Record<string, string>>,
-): Promise<Response> {
-  // Node's built-in fetch does not consume proxy variables. The client is
-  // loopback-scoped, so enforce the explicit NO_PROXY contract here rather than
-  // mutating process.env; a proxy-aware fetch can replace this wrapper later.
-  const hostname = new URL(request.url).hostname;
-  const noProxy = environment.NO_PROXY ?? environment.no_proxy ?? "";
-  if (!noProxy.split(",").some((entry) => matchesNoProxy(hostname, entry.trim()))) {
-    return Promise.reject(
-      new Error(`OpenCode client URL ${hostname} is absent from explicit NO_PROXY configuration`),
-    );
-  }
-  return globalThis.fetch(request);
-}
-
-function matchesNoProxy(hostname: string, entry: string): boolean {
-  if (!entry) return false;
-  if (entry === "*") return true;
-  const normalized = entry.toLowerCase();
-  const value = hostname.toLowerCase();
-  return normalized.startsWith(".")
-    ? value.endsWith(normalized)
-    : value === normalized || value.endsWith(`.${normalized}`);
-}
-
 type JsonRecord = Record<string, unknown>;
+
+function stableJson(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  const object = value as JsonRecord;
+  return `{${Object.keys(object)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+    .join(",")}}`;
+}
 
 function record(value: unknown): JsonRecord {
   return recordOrUndefined(value) ?? {};
@@ -1049,6 +1257,10 @@ function stringValue(value: unknown, fallback: string): string {
 function boundedString(value: unknown, fallback: string, maxLength = 128): string {
   const text = stringValue(value, fallback);
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function nonNegativeInteger(value: unknown): number {
@@ -1074,17 +1286,70 @@ function toError(value: unknown): Error {
     : new Error(errorMessage(value) ?? "OpenCode cleanup failed");
 }
 
+function boundedOperation<T>(
+  operation: (signal: AbortSignal) => Promise<T> | T,
+  signal: AbortSignal,
+  deadline: number,
+  name: string,
+): Promise<T> {
+  const deadlineController = new AbortController();
+  const operationSignal = AbortSignal.any([signal, deadlineController.signal]);
+  const deadlineError = new Error(`OpenCode ${name} exceeded deadline`);
+  const remaining = deadline - Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  if (remaining > 0) {
+    timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
+  } else {
+    deadlineController.abort(deadlineError);
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let pending: Promise<T> | undefined;
+    let settled = false;
+    const cleanup = (): void => {
+      if (timer) clearTimeout(timer);
+      operationSignal.removeEventListener("abort", onAbort);
+    };
+    const settle = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onAbort = (): void => settle(() => reject(abortReason(operationSignal)));
+
+    if (operationSignal.aborted) {
+      onAbort();
+    } else {
+      operationSignal.addEventListener("abort", onAbort, { once: true });
+      pending = Promise.resolve().then(() => operation(operationSignal));
+      void pending.catch(() => undefined);
+      pending.then(
+        (value) => settle(() => resolve(value)),
+        (error) => settle(() => reject(error)),
+      );
+    }
+  });
+}
+
 function assertPositiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`OpenCode ${name} must be a positive safe integer`);
   }
 }
 
+function abortReasonText(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  const object = recordOrUndefined(reason);
+  if (!object) return "OpenCode runtime aborted";
+  const kind = typeof object.kind === "string" ? object.kind : "";
+  const detail = "reason" in object ? abortReasonText(object.reason) : "";
+  return [kind, detail].filter(Boolean).join(": ") || "OpenCode runtime aborted";
+}
+
 function abortReason(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  return reason instanceof Error
-    ? reason
-    : new Error(typeof reason === "string" ? reason : "OpenCode runtime aborted");
+  return signal.reason instanceof Error ? signal.reason : new Error(abortReasonText(signal.reason));
 }
 
 export type { ProxyEnvironment };

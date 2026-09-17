@@ -1,11 +1,18 @@
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { PassThrough } from "node:stream";
-import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
+import {
+  createOpencodeClient,
+  type Event as OpenCodeEvent,
+  type OpencodeClient,
+} from "@opencode-ai/sdk";
 import { describe, expect, it } from "vitest";
+import { executeRun, LegacyCompatibilityProjection } from "../src";
 import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
 import {
   appendBoundedOpenCodeOutput,
   buildOpenCodeEnvironment,
+  createOpenCodeFetch,
   HttpOpenCodeReadiness,
   hashOpenCodeConfig,
   type OpenCodeClientFactory,
@@ -60,9 +67,16 @@ function asOpenCodeEvent(value: unknown): OpenCodeEvent {
 async function* streamEvents(
   events: OpenCodeEvent[],
   error?: Error,
+  beforeError?: () => void,
+  returnGate?: Promise<unknown>,
 ): AsyncGenerator<OpenCodeEvent> {
-  yield* events;
-  if (error) throw error;
+  try {
+    yield* events;
+    if (beforeError) beforeError();
+    if (error) throw error;
+  } finally {
+    await returnGate;
+  }
 }
 
 interface FakeRuntimeOptions {
@@ -73,6 +87,14 @@ interface FakeRuntimeOptions {
   omitConfigHash?: boolean;
   deleteError?: Error;
   abortError?: Error;
+  promptGate?: Promise<unknown>;
+  pathGate?: Promise<unknown>;
+  requestTimeoutMs?: number;
+  streamReturnGate?: Promise<unknown>;
+  abortGate?: Promise<unknown>;
+  deleteGate?: Promise<unknown>;
+  cleanupTimeoutMs?: number;
+  crashError?: Error;
 }
 
 interface FactoryCall {
@@ -88,6 +110,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     messages: 0,
     stop: 0,
     pathGet: [] as unknown[],
+    pathAborted: 0,
     subscribe: [] as unknown[],
     create: [] as unknown[],
     prompt: [] as unknown[],
@@ -108,12 +131,20 @@ function fakeRuntime(options: FakeRuntimeOptions) {
   };
   let activeServer: OpenCodeServerInfo | undefined;
   const crashController = new AbortController();
+  let crashError: Error | undefined;
+  crashController.signal.addEventListener("abort", () => {
+    if (crashController.signal.reason instanceof Error) {
+      crashError = crashController.signal.reason;
+    }
+  });
   const supervisor: OpenCodeServerController = {
     crashSignal: crashController.signal,
     get info() {
       return activeServer;
     },
-    crashError: undefined,
+    get crashError() {
+      return crashError;
+    },
     async start() {
       activeServer = server;
       return server;
@@ -127,13 +158,36 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     path: {
       get: async (request: unknown) => {
         calls.pathGet.push(request);
+        const signal = (request as { signal?: AbortSignal }).signal;
+        if (options.pathGate && signal) {
+          signal.addEventListener(
+            "abort",
+            () => {
+              calls.pathAborted += 1;
+            },
+            { once: true },
+          );
+          await Promise.race([
+            options.pathGate,
+            new Promise<never>((_resolve, reject) =>
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+            ),
+          ]);
+        }
         return { data: { directory: runtimeRun.worktree.path } };
       },
     },
     event: {
       subscribe: async (request: unknown) => {
         calls.subscribe.push(request);
-        return { stream: streamEvents(options.events, options.streamError) };
+        return {
+          stream: streamEvents(
+            options.events,
+            options.streamError,
+            options.crashError ? () => crashController.abort(options.crashError) : undefined,
+            options.streamReturnGate,
+          ),
+        };
       },
     },
     session: {
@@ -143,6 +197,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
       },
       promptAsync: async (request: unknown) => {
         calls.prompt.push(request);
+        await options.promptGate;
         return { data: {} };
       },
       messages: async (request: unknown) => {
@@ -157,14 +212,18 @@ function fakeRuntime(options: FakeRuntimeOptions) {
         };
       },
       abort: async (request: unknown) => {
+        assertCleanupRequestSignal(request);
         calls.abort += 1;
         calls.abortRequests.push(request);
+        await options.abortGate;
         if (options.abortError) throw options.abortError;
         return { data: {} };
       },
       delete: async (request: unknown) => {
+        assertCleanupRequestSignal(request);
         calls.delete += 1;
         calls.deleteRequests.push(request);
+        await options.deleteGate;
         if (options.deleteError) throw options.deleteError;
         return { data: {} };
       },
@@ -174,8 +233,22 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     calls.factory.push({ server, directory, environment });
     return client;
   };
-  const runtime = new OpenCodeV1Runtime({ supervisor, clientFactory });
-  return { calls, runtime };
+  const runtime = new OpenCodeV1Runtime({
+    supervisor,
+    clientFactory,
+    ...(options.requestTimeoutMs === undefined
+      ? {}
+      : { requestTimeoutMs: options.requestTimeoutMs }),
+    ...(options.cleanupTimeoutMs === undefined
+      ? {}
+      : { cleanupTimeoutMs: options.cleanupTimeoutMs }),
+  });
+  return { calls, runtime, crashController, supervisor };
+}
+
+function assertCleanupRequestSignal(request: unknown): void {
+  const signal = (request as { signal?: AbortSignal }).signal;
+  if (!signal || signal.aborted) throw new Error("cleanup request was pre-aborted");
 }
 
 async function collect(events: AsyncIterable<RehorEvent>): Promise<RehorEvent[]> {
@@ -200,6 +273,14 @@ async function collect(events: AsyncIterable<RehorEvent>): Promise<RehorEvent[]>
   expect(new Set(sequences).size).toBe(sequences.length);
   expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
   return collected;
+}
+
+async function waitForCondition(condition: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error("test condition was not reached");
 }
 
 describe("OpenCode environment", () => {
@@ -282,6 +363,126 @@ describe("OpenCode readiness", () => {
       readiness.check("http://127.0.0.1:4096", "/worktree", new AbortController().signal),
     ).rejects.toThrow(OpenCodeReadinessError);
   });
+
+  it("honors an injected direct transport with explicit environment validation", async () => {
+    const requests: string[] = [];
+    const readiness = new HttpOpenCodeReadiness(
+      async (request) => {
+        const url = request instanceof Request ? request.url : String(request);
+        requests.push(url);
+        return url.includes("/global/health")
+          ? new Response(JSON.stringify({ healthy: true, version: "1.18.29" }))
+          : new Response(JSON.stringify({ directory: "/worktree" }));
+      },
+      { NO_PROXY: "127.0.0.1" },
+    );
+
+    await expect(
+      readiness.check("http://127.0.0.1:4096", "/worktree", new AbortController().signal),
+    ).resolves.toEqual({ healthy: true, version: "1.18.29" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toContain("directory=%2Fworktree");
+  });
+
+  it("rejects loopback readiness when explicit NO_PROXY omits loopback", async () => {
+    let fetchCalls = 0;
+    const readiness = new HttpOpenCodeReadiness(
+      async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ healthy: true, version: "1.18.29" }));
+      },
+      { NO_PROXY: "model-gateway" },
+    );
+
+    await expect(
+      readiness.check("http://127.0.0.1:4096", "/worktree", new AbortController().signal),
+    ).rejects.toThrow("absent from explicit NO_PROXY configuration");
+    expect(fetchCalls).toBe(0);
+  });
+
+  it("accepts a 204 promptAsync response through the actual OpenCode SDK", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(204);
+      response.end();
+    });
+    const listen = (): Promise<number> =>
+      new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          if (!address || typeof address === "string") reject(new Error("missing test port"));
+          else resolve(address.port);
+        });
+      });
+    const close = (): Promise<void> =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+
+    try {
+      const port = await listen();
+      const client = createOpencodeClient({
+        baseUrl: `http://127.0.0.1:${port}`,
+        fetch: createOpenCodeFetch({ NO_PROXY: "127.0.0.1" }),
+      });
+      const result = await client.session.promptAsync({
+        path: { id: "session" },
+        query: { directory: "/worktree" },
+        body: {
+          model: { providerID: "provider", modelID: "model" },
+          parts: [{ type: "text", text: "hello" }],
+        },
+        responseStyle: "data",
+        throwOnError: true,
+      });
+
+      expect(result).toEqual({});
+    } finally {
+      await close();
+    }
+  });
+
+  it("uses direct loopback transport instead of a configured proxy", async () => {
+    let proxyCalls = 0;
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ healthy: true, version: "1.18.29" }));
+    });
+    const proxy = createServer((_request, response) => {
+      proxyCalls += 1;
+      response.writeHead(502);
+      response.end();
+    });
+    const listen = (server: ReturnType<typeof createServer>): Promise<number> =>
+      new Promise((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          if (!address || typeof address === "string") reject(new Error("missing test port"));
+          else resolve(address.port);
+        });
+      });
+    const close = (server: ReturnType<typeof createServer>): Promise<void> =>
+      new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+
+    try {
+      const upstreamPort = await listen(upstream);
+      const proxyPort = await listen(proxy);
+      const fetch = createOpenCodeFetch({
+        HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+        NO_PROXY: "127.0.0.1",
+      });
+      const response = await fetch(`http://127.0.0.1:${upstreamPort}/global/health`);
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ healthy: true, version: "1.18.29" });
+      expect(proxyCalls).toBe(0);
+    } finally {
+      await Promise.all([close(upstream), close(proxy)]);
+    }
+  });
 });
 
 describe("OpenCode runtime", () => {
@@ -322,6 +523,7 @@ describe("OpenCode runtime", () => {
 
     await expect(runtime.start(new AbortController().signal)).resolves.toMatchObject({
       runtimeId: "opencode-v1",
+      runtimeVersion: "1.18.29",
       streaming: true,
     });
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
@@ -334,6 +536,7 @@ describe("OpenCode runtime", () => {
     expect(calls.factory[0]?.environment).toEqual(runtime.environment);
     expect(calls.pathGet[0]).toMatchObject({
       query: { directory: runtimeRun.worktree.path },
+      signal: expect.any(AbortSignal),
       responseStyle: "data",
       throwOnError: true,
     });
@@ -361,9 +564,11 @@ describe("OpenCode runtime", () => {
       throwOnError: true,
     });
     const runSignal = (calls.subscribe[0] as { signal: AbortSignal }).signal;
-    expect((calls.create[0] as { signal: AbortSignal }).signal).toBe(runSignal);
-    expect((calls.prompt[0] as { signal: AbortSignal }).signal).toBe(runSignal);
+    expect((calls.create[0] as { signal: AbortSignal }).signal).not.toBe(runSignal);
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal).not.toBe(runSignal);
     expect(runSignal.aborted).toBe(false);
+    expect((calls.create[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls.deleteRequests[0]).toMatchObject({
       path: { id: "session-opencode" },
       query: { directory: runtimeRun.worktree.path },
@@ -373,6 +578,182 @@ describe("OpenCode runtime", () => {
     expect(events.map((event) => event.kind)).toEqual(["run", "model", "model", "run", "terminal"]);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
+  });
+
+  it("aborts a stalled path request when its request deadline expires", async () => {
+    const pathGate = new Promise<never>(() => undefined);
+    const { calls, runtime } = fakeRuntime({
+      events: [],
+      pathGate,
+      requestTimeoutMs: 10,
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(events.at(-1)?.payload).toMatchObject({ state: "timed_out" });
+    expect(calls.pathAborted).toBe(1);
+  });
+
+  it("normalizes OpenCode tools and preserves legacy work context", async () => {
+    const statuses: unknown[] = [];
+    const costs: unknown[] = [];
+    const cycleRuns: unknown[] = [];
+    const { runtime } = fakeRuntime({
+      events: [
+        asOpenCodeEvent({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "assistant-message",
+              sessionID: "session-opencode",
+              role: "assistant",
+              modelID: "gpt-5.6-luna",
+              time: { created: 1 },
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "assistant-message",
+              sessionID: "session-opencode",
+              role: "assistant",
+              modelID: "gpt-5.6-luna",
+              time: { created: 1 },
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part",
+              sessionID: "session-opencode",
+              messageID: "assistant-message",
+              type: "tool",
+              tool: "mcp__bot-memory__task_add",
+              callID: "call-1",
+              state: {
+                status: "completed",
+                input: {
+                  jira_key: "REHOR-143",
+                  repo: "rehor",
+                  summary: "Fix OpenCode parity",
+                },
+                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                title: "task created",
+                metadata: {},
+                time: { start: 10, end: 30 },
+              },
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part",
+              sessionID: "session-opencode",
+              messageID: "assistant-message",
+              type: "tool",
+              tool: "mcp__bot-memory__task_add",
+              callID: "call-1",
+              state: {
+                status: "completed",
+                input: {
+                  jira_key: "REHOR-143",
+                  repo: "rehor",
+                  summary: "Fix OpenCode parity",
+                },
+                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                title: "task created",
+                metadata: {},
+                time: { start: 10, end: 30 },
+              },
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "answer-part",
+              sessionID: "session-opencode",
+              messageID: "assistant-message",
+              type: "text",
+              text: "Completed parity work.",
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+    const projection = new LegacyCompatibilityProjection({
+      status: {
+        write: (record) => {
+          statuses.push(record);
+        },
+      },
+      costs: {
+        write: (record) => {
+          costs.push(record);
+        },
+      },
+      cycleRuns: {
+        write: (record) => {
+          cycleRuns.push(record);
+        },
+      },
+    });
+
+    const result = await executeRun(runtime, runtimeRun, { projection });
+    const toolEvents = result.events.filter((event) => event.kind === "tool");
+    const tool = toolEvents[0];
+
+    expect(toolEvents).toHaveLength(1);
+    expect(tool?.payload).toMatchObject({
+      state: "completed",
+      name: "mcp__bot-memory__task_add",
+      toolName: "mcp__bot-memory__task_add",
+      toolUseId: "call-1",
+      content: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+      durationMs: 20,
+    });
+    expect(tool?.payload).not.toHaveProperty("tool");
+    expect(tool?.payload).not.toHaveProperty("callId");
+    expect(tool?.payload).not.toHaveProperty("output");
+    expect(result.terminal.payload).toMatchObject({
+      context: {
+        taskId: 143,
+        externalKey: "REHOR-143",
+        repository: "rehor",
+        workType: "new_ticket",
+        summary: "Fix OpenCode parity",
+      },
+    });
+    expect(statuses).toContainEqual(
+      expect.objectContaining({ message: "Tool: mcp__bot-memory__task_add" }),
+    );
+    expect(costs[0]).toMatchObject({
+      repository: "rehor",
+      workType: "new_ticket",
+      summary: "Fix OpenCode parity",
+      externalKey: "REHOR-143",
+    });
+    expect(cycleRuns[0]).toMatchObject({
+      taskId: 143,
+      cycleType: "task_work",
+      progress: {
+        repository: "rehor",
+        workType: "new_ticket",
+        summary: "Fix OpenCode parity",
+      },
+    });
   });
 
   it("fails the run when completed-session cleanup reports an SDK error", async () => {
@@ -393,6 +774,28 @@ describe("OpenCode runtime", () => {
       message: "delete rejected",
     });
     expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
+  });
+
+  it("bounds a stalled stream return before stopping the server", async () => {
+    const streamReturnGate = new Promise<void>(() => undefined);
+    const { calls, runtime } = fakeRuntime({
+      streamReturnGate,
+      cleanupTimeoutMs: 20,
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    const startedAt = Date.now();
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
+    expect(calls).toMatchObject({ delete: 0, stop: 1 });
   });
 
   it("counts each assistant message once, not each update or step", async () => {
@@ -574,6 +977,44 @@ describe("OpenCode runtime", () => {
       turns: 1,
     });
     expect(calls.abort).toBe(1);
+  });
+
+  it("passes external cancellation to an active prompt and still stops the server", async () => {
+    const promptGate = new Promise<void>(() => undefined);
+    const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
+    const signalController = new AbortController();
+
+    await runtime.start(new AbortController().signal);
+    const pending = collect(runtime.run(runtimeRun, signalController.signal));
+    await waitForCondition(() => calls.prompt.length === 1);
+    signalController.abort("cancelled");
+    const events = await pending;
+
+    expect(events.at(-1)?.payload).toMatchObject({ state: "cancelled" });
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
+    expect((calls.abortRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect(calls).toMatchObject({ abort: 1, delete: 1, stop: 1 });
+  });
+
+  it("passes the runtime timeout to an active prompt and still stops the server", async () => {
+    const promptGate = new Promise<void>(() => undefined);
+    const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
+
+    await runtime.start(new AbortController().signal);
+    const pending = collect(
+      runtime.run(
+        { ...runtimeRun, limits: { ...runtimeRun.limits, timeoutMs: 20 } },
+        new AbortController().signal,
+      ),
+    );
+    await waitForCondition(() => calls.prompt.length === 1);
+    const events = await pending;
+    expect(events.at(-1)?.payload).toMatchObject({ state: "timed_out" });
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
+    expect((calls.abortRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect(calls).toMatchObject({ abort: 1, delete: 1, stop: 1 });
   });
 
   it("keeps user prompts and reasoning out of terminal result text", async () => {
@@ -1010,6 +1451,54 @@ describe("OpenCode runtime", () => {
     expect(events.at(-1)?.payload).toMatchObject({ turns: 2 });
   });
 
+  it("preserves partial evidence and interrupts when the server crashes", async () => {
+    const crash = new Error("server process crashed");
+    const { runtime } = fakeRuntime({
+      events: [
+        asOpenCodeEvent({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "partial-message",
+              sessionID: "session-opencode",
+              role: "assistant",
+              modelID: "gpt-5.6-luna",
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "partial-answer",
+              sessionID: "session-opencode",
+              messageID: "partial-message",
+              type: "text",
+              text: "partial answer",
+            },
+          },
+        }),
+      ],
+      streamError: new Error("SSE closed after crash"),
+      crashError: crash,
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(events.at(-1)?.payload).toMatchObject({
+      state: "interrupted",
+      resultText: "partial answer",
+    });
+    expect(events.find((event) => event.kind === "persistence")?.payload).toMatchObject({
+      action: "partial-state",
+      reason: "server process crashed",
+    });
+    expect(events.find((event) => event.kind === "error")?.payload).toMatchObject({
+      message: "server process crashed",
+    });
+  });
+
   it("marks an unreconciled stream loss interrupted and persists partial state", async () => {
     const { calls, runtime } = fakeRuntime({
       events: [],
@@ -1059,7 +1548,7 @@ describe("OpenCode process supervisor", () => {
     const output = appendBoundedOpenCodeOutput("prefix", "diagnostic output ".repeat(2_000));
 
     expect(output).toHaveLength(16_384);
-    expect(output).toBe(("prefix" + "diagnostic output ".repeat(2_000)).slice(-16_384));
+    expect(output).toBe(`prefix${"diagnostic output ".repeat(2_000)}`.slice(-16_384));
   });
 
   it("starts one loopback server with explicit cwd and environment, then reaps it", async () => {
@@ -1091,11 +1580,8 @@ describe("OpenCode process supervisor", () => {
       },
       spawnProcess,
       readiness: {
-        check: async () => ({
-          healthy: true,
-          version: "1.18.29",
-          capabilities: ["sse", "sessions"],
-        }),
+        // /global/health on the pinned server exposes only health and version.
+        check: async () => ({ healthy: true, version: "1.18.29" }),
       },
     });
 
@@ -1106,7 +1592,6 @@ describe("OpenCode process supervisor", () => {
       hostname: "127.0.0.1",
       port: 41234,
       configHash: hashOpenCodeConfig(config),
-      capabilities: ["sse", "sessions"],
     });
     expect(child.stdout.listenerCount("data")).toBe(1);
     expect(child.stderr.listenerCount("data")).toBe(1);
@@ -1130,6 +1615,119 @@ describe("OpenCode process supervisor", () => {
     expect(supervisor.info).toBeUndefined();
     expect(child.stdout.listenerCount("data")).toBe(0);
     expect(child.stderr.listenerCount("data")).toBe(0);
+  });
+
+  it("aborts an in-flight readiness check when startup deadline expires", async () => {
+    const child = new FakeChild();
+    const readinessSignals: AbortSignal[] = [];
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41240,
+      startupTimeoutMs: 20,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: (_command, _args, _options) => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on http://127.0.0.1:41240\\n"),
+        );
+        return child as never;
+      },
+      readiness: {
+        check: async (_baseUrl, _directory, signal) => {
+          readinessSignals.push(signal);
+          return await new Promise<never>((_resolve, reject) =>
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+          );
+        },
+      },
+    });
+
+    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+      "readiness failed",
+    );
+    expect(readinessSignals).toHaveLength(1);
+    expect(readinessSignals[0].aborted).toBe(true);
+  });
+
+  it("rejects a listener announcement on a different loopback port", async () => {
+    const child = new FakeChild();
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41241,
+      startupTimeoutMs: 100,
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: (_command, _args, _options) => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on http://127.0.0.1:41242\\n"),
+        );
+        return child as never;
+      },
+      readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
+    });
+
+    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+      "unapproved port 41242; expected 41241",
+    );
+  });
+
+  it("rejects a non-http listener announcement", async () => {
+    const child = new FakeChild();
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41243,
+      startupTimeoutMs: 100,
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: (_command, _args, _options) => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on https://127.0.0.1:41243\\n"),
+        );
+        return child as never;
+      },
+      readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
+    });
+
+    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+      "unapproved protocol https:",
+    );
+  });
+
+  it("kills a surviving descendant after the leader exits and verifies the group is gone", async () => {
+    const child = new FakeChild();
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    let groupAlive = true;
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41239,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 50,
+      processGroupExists: () => groupAlive,
+      signalProcess: (pid, signal) => {
+        signals.push({ pid, signal });
+        if (signal === "SIGTERM") {
+          child.emit("exit", 0, null);
+          child.emit("close", 0, null);
+        } else {
+          groupAlive = false;
+        }
+      },
+      spawnProcess: (_command, _args, _options) => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on http://127.0.0.1:41239\n"),
+        );
+        return child as never;
+      },
+      readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
+    });
+
+    await supervisor.start("/worktree", new AbortController().signal);
+    await supervisor.stop();
+
+    expect(signals).toEqual([
+      { pid: -1234, signal: "SIGTERM" },
+      { pid: -1234, signal: "SIGKILL" },
+    ]);
+    expect(supervisor.info).toBeUndefined();
   });
 
   it("aborts and signals the process group when the server crashes", async () => {
@@ -1157,10 +1755,7 @@ describe("OpenCode process supervisor", () => {
     expect(supervisor.crashSignal.aborted).toBe(true);
     expect(supervisor.crashError?.message).toContain("exited unexpectedly");
     await supervisor.stop();
-    expect(signals).toEqual([
-      { pid: -1234, signal: "SIGTERM" },
-      { pid: -1234, signal: "SIGTERM" },
-    ]);
+    expect(signals).toEqual([{ pid: -1234, signal: "SIGTERM" }]);
   });
 
   it("rejects a relative binary path before spawning a child", () => {
@@ -1187,12 +1782,34 @@ describe("OpenCode process supervisor", () => {
     expect(spawned).toBe(false);
   });
 
+  it("rejects a server whose health version differs from the pinned runtime", async () => {
+    const child = new FakeChild();
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41238,
+      startupTimeoutMs: 100,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      spawnProcess: (_command, _args, _options) => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on http://127.0.0.1:41238\n"),
+        );
+        return child as never;
+      },
+      readiness: { check: async () => ({ healthy: true, version: "1.18.28" }) },
+    });
+
+    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+      "does not satisfy expected version 1.18.29",
+    );
+  });
+
   it("rejects missing server capabilities during readiness admission", async () => {
     const child = new FakeChild();
     const supervisor = new OpenCodeServerSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41235,
-      requiredCapabilities: ["sse"],
+      requiredCapabilities: ["unsupported"],
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
           child.stdout.write("opencode server listening on http://127.0.0.1:41235\n"),
@@ -1203,7 +1820,7 @@ describe("OpenCode process supervisor", () => {
     });
 
     await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
-      "missing capabilities: sse",
+      "missing capabilities: unsupported",
     );
   });
 
