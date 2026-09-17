@@ -201,10 +201,11 @@ into the proxy deployment.
 ```text
 OpenCode in bot pod
   → http://devbot-proxy:8450/v1/chat/completions
+     or http://devbot-proxy:8450/v1/responses
   → proxy authenticates bot request
   → proxy validates provider/model
   → proxy adds Authorization: Bearer <OpenAI key>
-  → https://api.openai.com/v1/chat/completions
+  → https://api.openai.com (same path, unchanged)
   → streaming response back to OpenCode
 ```
 
@@ -260,9 +261,12 @@ silently rewriting arbitrary JSON.
 ### Proxy Endpoint Contract
 
 Initial OpenAI route should support the Chat Completions contract because it is
-widely supported by OpenCode's `@ai-sdk/openai-compatible` provider:
+widely supported by OpenCode's `@ai-sdk/openai-compatible` provider, and the
+Responses contract because OpenCode's native `@ai-sdk/openai` provider (default
+for reasoning models) sends `POST /v1/responses`:
 
 - `POST /v1/chat/completions`
+- `POST /v1/responses`
 - `GET /v1/models`
 - streaming responses using SSE
 - tool calls and tool results
@@ -317,10 +321,11 @@ until OpenAI account access, pricing, tool support, and regional requirements
 are confirmed.
 
 Provider selection remains independent from runtime selection. During canary,
-OpenCode may select either the existing Vertex route or the OpenAI Chat
-Completions route. If a selected model requires OpenAI Responses API semantics,
-use OpenCode's native `@ai-sdk/openai` provider and add a separately tested
-Responses route; do not translate request schemas inside header injection.
+OpenCode may select either the existing Vertex route or the OpenAI gateway
+(`@ai-sdk/openai-compatible` → Chat Completions, `@ai-sdk/openai` → Responses).
+The proxy serves both `POST /v1/chat/completions` and `POST /v1/responses` with
+the same header-injection handler; do not translate request schemas inside the
+proxy.
 
 ## Vertex-to-OpenAI Migration
 
@@ -506,7 +511,7 @@ Rollback:
 - Does selected OpenAI model support required tool-call and vision behavior?
 - Is OpenAI data retention policy acceptable for Rehor ticket and source-code data?
 - Do regional or organizational restrictions require a different OpenAI endpoint?
-- Should proxy support Responses API later, or standardize on Chat Completions first?
+- ~~Should proxy support Responses API later, or standardize on Chat Completions first?~~ Served: both `POST /v1/chat/completions` and `POST /v1/responses`.
 - Which existing cost fields map reliably to OpenAI usage fields?
 - Should a future persistent-volume design support server reuse across cycles?
 

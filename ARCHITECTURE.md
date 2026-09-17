@@ -427,8 +427,8 @@ The proxy:
 ### OpenAI-Compatible Auth Proxy
 
 A sibling listener on port 8450 does the same job for the OpenAI Chat Completions
-API, so an OpenCode runtime can use OpenAI without `OPENAI_API_KEY` ever entering
-the bot container. Vertex on 8443 is unchanged and remains the Claude path.
+and Responses APIs, so an OpenCode runtime can use OpenAI without `OPENAI_API_KEY`
+ever entering the bot container. Vertex on 8443 is unchanged and remains the Claude path.
 
 ```mermaid
 sequenceDiagram
@@ -436,18 +436,18 @@ sequenceDiagram
     participant Proxy as OpenAI Auth Proxy<br/>(port 8450)
     participant OpenAI as api.openai.com
 
-    Client->>Proxy: POST /v1/chat/completions<br/>(dummy/placeholder Authorization)
+    Client->>Proxy: POST /v1/chat/completions or /v1/responses<br/>(dummy/placeholder Authorization)
     Proxy->>Proxy: Read body.model → check allowlist
     Proxy->>Proxy: Overwrite Authorization with the real key
-    Proxy->>OpenAI: POST /v1/chat/completions<br/>(authenticated, path unchanged)
+    Proxy->>OpenAI: same path<br/>(authenticated, path unchanged)
     OpenAI-->>Proxy: Streaming SSE response
     Proxy-->>Client: Streaming SSE response (passthrough)
 ```
 
 The proxy:
 - Starts only when `OPENAI_API_KEY` is set; a missing allowlist is a fatal config error
-- Serves exactly three routes — `GET /healthz`, `GET /v1/models`, `POST /v1/chat/completions`.
-  Everything else (embeddings, responses, completions) returns 404
+- Serves `GET /healthz`, `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`.
+  Everything else (embeddings, completions, wrong methods) returns 404
 - Answers `GET /v1/models` from `OPENAI_ALLOWED_MODELS` locally instead of proxying,
   so OpenAI's full catalog is never exposed
 - Reads `model` from the JSON request body (unlike Vertex, which reads it from the URL)

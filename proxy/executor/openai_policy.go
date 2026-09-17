@@ -53,8 +53,8 @@ func (p *OpenAIPolicy) Models() []string {
 	return out
 }
 
-// ExtractChatModel reads the "model" field from a Chat Completions request
-// body. It never logs or returns any other part of the payload.
+// ExtractChatModel reads the "model" field from a Chat Completions or
+// Responses request body. It never logs or returns any other part of the payload.
 func ExtractChatModel(body []byte) (string, error) {
 	var payload struct {
 		Model string `json:"model"`

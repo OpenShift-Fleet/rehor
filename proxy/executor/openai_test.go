@@ -95,8 +95,9 @@ func TestOpenAIRejectsUnknownRoutes(t *testing.T) {
 		path   string
 	}{
 		{"POST", "/v1/embeddings"},
-		{"POST", "/v1/responses"},
 		{"POST", "/v1/completions"},
+		{"GET", "/v1/responses"},
+		{"DELETE", "/v1/responses"},
 		{"POST", "/v1/models"},
 		{"GET", "/v1/chat/completions"},
 		{"DELETE", "/v1/chat/completions"},

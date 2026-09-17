@@ -19,7 +19,7 @@ import (
 
 const (
 	// defaultOpenAIBaseURL has no /v1 suffix: clients already send
-	// /v1/chat/completions and the path is forwarded unchanged.
+	// /v1/chat/completions or /v1/responses and the path is forwarded unchanged.
 	defaultOpenAIBaseURL = "https://api.openai.com"
 	openAIUpstreamHost   = "api.openai.com"
 
@@ -127,7 +127,7 @@ func newOpenAIProxy(cfg openaiProxyConfig) http.Handler {
 			log.Printf("openai: models encode error: %v", err)
 		}
 	})
-	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+	handleOpenAIRequest := func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		r.Body = http.MaxBytesReader(w, r.Body, maxChatRequestBytes)
@@ -172,7 +172,9 @@ func newOpenAIProxy(cfg openaiProxyConfig) http.Handler {
 		log.Printf("openai: model=%s stream=%t status=%d req_id=%s size=%d dur=%s",
 			model, stream, rec.status, w.Header().Get("X-Request-Id"), len(buf),
 			time.Since(start).Round(time.Millisecond))
-	})
+	}
+	mux.HandleFunc("POST /v1/chat/completions", handleOpenAIRequest)
+	mux.HandleFunc("POST /v1/responses", handleOpenAIRequest)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"path not allowed"}`, http.StatusNotFound)
 		log.Printf("openai: path-not-allowed method=%s path=%s", r.Method, r.URL.Path)
@@ -205,7 +207,7 @@ func recordOpenAIUsage(resp *http.Response) {
 	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
 		return
 	}
-	if resp.ContentLength <= 0 || resp.ContentLength > maxUsageScrapeBytes {
+	if resp.ContentLength > maxUsageScrapeBytes {
 		return
 	}
 
@@ -220,16 +222,26 @@ func recordOpenAIUsage(resp *http.Response) {
 		Usage struct {
 			PromptTokens     float64 `json:"prompt_tokens"`
 			CompletionTokens float64 `json:"completion_tokens"`
+			InputTokens      float64 `json:"input_tokens"`
+			OutputTokens     float64 `json:"output_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return
 	}
-	if payload.Usage.PromptTokens > 0 {
-		OpenAITokensTotal.WithLabelValues(model, "prompt").Add(payload.Usage.PromptTokens)
+	prompt := payload.Usage.PromptTokens
+	if prompt == 0 {
+		prompt = payload.Usage.InputTokens
 	}
-	if payload.Usage.CompletionTokens > 0 {
-		OpenAITokensTotal.WithLabelValues(model, "completion").Add(payload.Usage.CompletionTokens)
+	completion := payload.Usage.CompletionTokens
+	if completion == 0 {
+		completion = payload.Usage.OutputTokens
+	}
+	if prompt > 0 {
+		OpenAITokensTotal.WithLabelValues(model, "prompt").Add(prompt)
+	}
+	if completion > 0 {
+		OpenAITokensTotal.WithLabelValues(model, "completion").Add(completion)
 	}
 }
 
