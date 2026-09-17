@@ -26,6 +26,12 @@ Runtime adapters own SDK-specific server/session setup, event translation, and
 cleanup. Provider SDK objects must not cross `AgentRuntime`; raw provider data
 may only be retained behind a redacted `rawEventRef`.
 
+`ClaudeAgentRuntime` is the compatibility adapter for the current TypeScript
+Claude Agent SDK path. It loads project instructions, forwards configured MCP
+servers, tools, and permission policy, streams normalized model and tool events,
+preserves partial and final usage, and closes the SDK query on completion,
+abort, timeout, or runtime shutdown.
+
 Adapters should use `createEventFactory(run, policyVersion)` to stamp the
 self-describing event envelope. The factory owns run, attempt, workspace,
 provider, sequence, and timestamp fields while allowing legitimate per-event
@@ -97,9 +103,18 @@ adapter. `executeSelectedRun()` feeds the selected adapter into the existing
 `executeRun()` lifecycle, preserving event validation, projection, timeout,
 and cleanup behavior.
 
-The coordinator package does not register a production Claude or OpenCode
-adapter yet. The registry is the seam those adapters will use during canary
-migration; the Python runner remains the active production entry point.
+`createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
+runtime ID `claude`. Pass the `config` returned by `prepareCycleInput()` to
+forward the legacy allowed-tool and additional MCP-server configuration:
+
+```ts
+const prepared = await prepareCycleInput(bridge, cycleOptions);
+const registry = createDefaultRuntimeRegistry(prepared.config);
+const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
+```
+
+The Python runner remains the active production entry point until a TypeScript
+runner canary is enabled.
 
 ## Cycle input preparation
 
