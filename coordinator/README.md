@@ -104,17 +104,43 @@ adapter. `executeSelectedRun()` feeds the selected adapter into the existing
 and cleanup behavior.
 
 `createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
-runtime ID `claude`. Pass the `config` returned by `prepareCycleInput()` to
-forward the legacy allowed-tool and additional MCP-server configuration:
+runtime ID `claude` and remains the production default. Its options are
+Claude-specific; the reference-preserving `ConfigPreparationResult` is not
+passed directly to it because the legacy Python runner still owns resolved
+MCP credentials.
+
+OpenCode is available as an explicit adapter, but is not added to the default
+registry or selected by production configuration yet. A future TypeScript
+runner must copy the prepared cycle view into the OpenCode runtime options while
+keeping deployment-owned provider/plugin fields separate:
 
 ```ts
 const prepared = await prepareCycleInput(bridge, cycleOptions);
-const registry = createDefaultRuntimeRegistry(prepared.config);
-const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
+const registry = new RuntimeFactoryRegistry([
+  createOpenCodeV1RuntimeFactory({
+    config: {
+      ...deploymentOpenCodeConfig,
+      model: prepared.config.model,
+      providerId: "rehor-openai",
+      mcpServers: prepared.config.openCodeMcpServers ?? {},
+      allowedTools: prepared.config.allowedTools ?? [],
+      optionalMcpServers: prepared.config.optionalMcpServers ?? [],
+    },
+  }),
+]);
+const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
 ```
 
-The Python runner remains the active production entry point until a TypeScript
-runner canary is enabled.
+`renderOpenCodeV1ConfigForCycle()` is the lower-level equivalent for callers
+that need the deterministic artifact before constructing a runtime. It consumes
+the reference-only `openCodeMcpServers` view from preparation. The bridge's
+`optionalMcpServers` list is explicit: missing grants for those persona-specific
+servers are omitted, while a missing MCP server referenced by any other grant
+fails configuration validation.
+`OpenCodeV1Runtime` validates the rendered snapshot before its supervisor starts
+a child; provider/plugin package versions must be exact and are emitted in the
+per-cycle lockfile artifact. The Python runner remains the active production
+entry point until a TypeScript runner canary is enabled.
 
 ## Cycle input preparation
 

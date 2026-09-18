@@ -77,6 +77,10 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     bot_dir = tmp_path / "bot"
     bot_dir.mkdir()
     (bot_dir / "mcp.json").write_text('{"mcpServers": {"mcp-atlassian": {"type": "http", "url": "http://jira-mcp"}}}')
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers": {"bot-memory": {"type": "http", "url": "http://memory-server/mcp"}, '
+        '"chrome-devtools": {"command": "chrome-devtools-mcp"}}}'
+    )
     (tmp_path / "config.json").write_text(
         '{"claude": {"model": "test-model", "maxTurns": 10}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
@@ -111,9 +115,14 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)
     assert result["sharedAgentDir"] == str(shared_dir)
-    assert result["mcpServers"] == {
+    expected_mcp = {
         "mcp-atlassian": {"type": "http", "url": "http://jira-mcp"},
+        "bot-memory": {"type": "http", "url": "http://memory-server/mcp"},
+        "chrome-devtools": {"command": "chrome-devtools-mcp"},
     }
+    assert result["mcpServers"] == expected_mcp
+    assert result["openCodeMcpServers"] == expected_mcp
+    assert result["optionalMcpServers"] == ["hcc-patternfly-data-view"]
     assert "Bash" in result["allowedTools"]
 
 
@@ -156,6 +165,27 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
 
     (profile_dir / "instance.yaml").write_text("workflow: test-workflow\nmodel: pinned-model\n")
     assert handle(request)["model"] == "pinned-model"
+
+
+def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
+    from bot.config import load_mcp_servers
+
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "mcp.json").write_text(
+        '{"mcpServers": {"jira": {"type": "http", "url": "${JIRA_URL}", '
+        '"headers": {"Authorization": "Bearer ${JIRA_TOKEN}"}}}}'
+    )
+    monkeypatch.setenv("JIRA_URL", "https://jira.example/mcp")
+    monkeypatch.setenv("JIRA_TOKEN", "secret-value")
+
+    resolved = load_mcp_servers(tmp_path)
+    references = load_mcp_servers(tmp_path, resolve_env=False)
+
+    assert resolved["jira"]["url"] == "https://jira.example/mcp"
+    assert resolved["jira"]["headers"]["Authorization"] == "Bearer secret-value"
+    assert references["jira"]["url"] == "${JIRA_URL}"
+    assert references["jira"]["headers"]["Authorization"] == "Bearer ${JIRA_TOKEN}"
 
 
 def test_bridge_rejects_unknown_operation():

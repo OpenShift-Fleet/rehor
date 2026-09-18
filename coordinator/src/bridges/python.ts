@@ -173,7 +173,12 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     sharedAgentDir: nullableString(object.sharedAgentDir, "config.sharedAgentDir"),
     claudeMdPath: stringValue(object.claudeMdPath, "config.claudeMdPath"),
     mcpServers: parseMcpServers(object.mcpServers ?? {}, "config.mcpServers"),
+    openCodeMcpServers: parseMcpServers(
+      object.openCodeMcpServers ?? object.mcpServers ?? {},
+      "config.openCodeMcpServers",
+    ),
     allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
+    optionalMcpServers: stringArray(object.optionalMcpServers ?? [], "config.optionalMcpServers"),
   };
 }
 

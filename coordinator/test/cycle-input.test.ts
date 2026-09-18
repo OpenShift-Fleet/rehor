@@ -269,6 +269,7 @@ describe("Python preflight bridge", () => {
           "sse-server": { type: "sse", url: "https://mcp.example/events" },
         },
         allowedTools: ["Bash", "mcp__mcp-atlassian__jira_get_issue"],
+        optionalMcpServers: ["hcc-patternfly-data-view"],
       },
     };
     await writeFile(
@@ -282,5 +283,6 @@ describe("Python preflight bridge", () => {
 
     expect(result.mcpServers).toEqual(response.result.mcpServers);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
+    expect(result.optionalMcpServers).toEqual(response.result.optionalMcpServers);
   });
 });
