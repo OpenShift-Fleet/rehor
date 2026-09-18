@@ -8,6 +8,16 @@ import { createEventFactory, type RehorEvent, type RehorRun } from "../../domain
 import type { RuntimeCapabilities } from "../../domain/capabilities";
 import type { TerminalState, TerminalWorkContext } from "../../domain/terminal-state";
 import type { AgentRuntime } from "../../ports";
+import {
+  abortKind,
+  abortReason,
+  assertPositiveInteger,
+  boundedOperation,
+  extractTaskResult,
+  extractToolContext,
+  isNoWork,
+  lastMeaningfulLine,
+} from "../shared";
 import type { ProxyEnvironment } from "./environment";
 import {
   buildOpenCodeEnvironment,
@@ -52,6 +62,8 @@ interface RuntimeOutcome {
   reason?: string;
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
 const CAPABILITIES: RuntimeCapabilities = {
   runtimeId: "opencode-v1",
   runtimeVersion: OPENCODE_VERSION,
@@ -88,32 +100,38 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     this.clientEnvironment = buildOpenCodeEnvironment(options);
     this.reconciliationTimeoutMs = options.reconciliationTimeoutMs ?? 1_000;
     this.reconciliationMessageLimit = options.reconciliationMessageLimit ?? 100;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? this.reconciliationTimeoutMs;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? this.reconciliationTimeoutMs;
-    assertPositiveInteger(this.reconciliationTimeoutMs, "reconciliationTimeoutMs");
-    assertPositiveInteger(this.reconciliationMessageLimit, "reconciliationMessageLimit");
-    assertPositiveInteger(this.requestTimeoutMs, "requestTimeoutMs");
-    assertPositiveInteger(this.cleanupTimeoutMs, "cleanupTimeoutMs");
+    assertPositiveInteger(this.reconciliationTimeoutMs, "reconciliationTimeoutMs", "OpenCode");
+    assertPositiveInteger(
+      this.reconciliationMessageLimit,
+      "reconciliationMessageLimit",
+      "OpenCode",
+    );
+    assertPositiveInteger(this.requestTimeoutMs, "requestTimeoutMs", "OpenCode");
+    assertPositiveInteger(this.cleanupTimeoutMs, "cleanupTimeoutMs", "OpenCode");
     this.supervisor =
       options.supervisor ??
       new OpenCodeServerSupervisor({
-        ...options,
         ...(options.server ?? {}),
-        base: options.base,
-        proxy: options.proxy,
-        passthrough: options.passthrough,
-        noProxyHosts: options.noProxyHosts,
+        ...(options.base === undefined ? {} : { base: options.base }),
+        ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
+        ...(options.passthrough === undefined ? {} : { passthrough: options.passthrough }),
+        ...(options.noProxyHosts === undefined ? {} : { noProxyHosts: options.noProxyHosts }),
       });
-    this.clientFactory =
-      options.clientFactory ??
-      ((server, directory, environment) =>
+    if (options.clientFactory) {
+      this.clientFactory = options.clientFactory;
+    } else {
+      const clientFetch = createOpenCodeFetch();
+      this.clientFactory = (server, directory) =>
         createOpencodeClient({
           baseUrl: server.baseUrl,
           directory,
-          // Do not mutate process.env. The client receives the same explicit
-          // proxy environment used to launch the child process.
-          fetch: createOpenCodeFetch(environment),
-        }));
+          // Do not mutate process.env. Client requests stay on the OpenCode
+          // loopback server; the child receives explicit proxy settings.
+          fetch: clientFetch,
+        });
+    }
   }
 
   get serverInfo(): OpenCodeServerInfo | undefined {
@@ -143,7 +161,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let detachCrash = (): void => undefined;
     this.active = active;
     const startedAt = Date.now();
-    const requestDeadline = startedAt + input.limits.timeoutMs;
     let outcome: RuntimeOutcome | undefined;
     let failure: unknown;
     let resultText = "";
@@ -151,18 +168,13 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let promptSubmitted = false;
     let streamLost = false;
     let maxTurnsReached = false;
-    const resultTextParts = new Map<string, string>();
-    const messageRoles = new Map<string, string>();
-    const countedMessages = new Set<string>();
-    const seenMessages = new Set<string>();
-    const seenParts = new Set<string>();
-    const completedMessages = new Set<string>();
-    const seenLiveEvents = new Set<string>();
-    const sessionIds = new Set<string>();
     const workContext = initialTerminalContext(input);
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
-    const timeout = setTimeout(() => active.controller.abort("timeout"), input.limits.timeoutMs);
+    const timeout = setTimeout(
+      () => active.controller.abort({ kind: "timeout", reason: "run timeout" }),
+      input.limits.timeoutMs,
+    );
 
     try {
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
@@ -170,12 +182,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       const client = this.clientFactory(server, input.worktree.path, this.clientEnvironment);
       active.client = client;
       active.directory = input.worktree.path;
-      await assertClientReady(
-        client,
-        input.worktree.path,
-        active.controller.signal,
-        this.requestTimeoutMs,
-      );
 
       const subscription = await boundedOperation(
         (requestSignal) =>
@@ -185,12 +191,21 @@ export class OpenCodeV1Runtime implements AgentRuntime {
             sseMaxRetryAttempts: 0,
           }),
         active.controller.signal,
-        requestDeadline,
-        "event subscription",
+        Date.now() + this.requestTimeoutMs,
+        "OpenCode event subscription",
       );
       stream = subscription.stream;
       active.stream = stream;
       const iterator = stream[Symbol.asyncIterator]();
+      const connected = await boundedOperation(
+        () => iterator.next(),
+        active.controller.signal,
+        Date.now() + this.requestTimeoutMs,
+        "OpenCode event connection",
+      );
+      if (connected.done || connected.value.type !== "server.connected") {
+        throw new Error("OpenCode event stream did not begin with server.connected");
+      }
 
       const sessionResponse = await boundedOperation(
         (requestSignal) =>
@@ -202,21 +217,24 @@ export class OpenCodeV1Runtime implements AgentRuntime {
             throwOnError: true,
           }),
         active.controller.signal,
-        requestDeadline,
-        "session creation",
+        Date.now() + this.requestTimeoutMs,
+        "OpenCode session creation",
       );
       const session = record(unwrapSdkResponse(sessionResponse, "OpenCode session creation"));
       const sessionId = stringValue(session.id, "");
       if (!sessionId) throw new Error("OpenCode session creation returned no session");
       active.sessionId = sessionId;
-      sessionIds.add(sessionId);
       normalization = {
         rootSessionId: sessionId,
         requestedModel: input.provider.requestedModel,
         workContext,
-        resultTextParts,
-        messageRoles,
-        countedMessages,
+        resultTextParts: new Map(),
+        messageRoles: new Map(),
+        countedMessages: new Set(),
+        completedMessages: new Set(),
+        seenMessages: new Set(),
+        seenParts: new Set(),
+        sessionIds: new Set([sessionId]),
         toolPhases: new Map(),
         modelEventIds: new Map(),
         usageSnapshots: new Map(),
@@ -238,8 +256,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
               throwOnError: true,
             }),
           active.controller.signal,
-          requestDeadline,
-          "session prompt",
+          Date.now() + this.requestTimeoutMs,
+          "OpenCode session prompt",
         ),
         "OpenCode session prompt",
       );
@@ -249,29 +267,21 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         const next = await boundedOperation(
           () => iterator.next(),
           active.controller.signal,
-          requestDeadline,
-          "event stream",
+          undefined,
+          "OpenCode event stream",
         );
         if (next.done) {
           streamLost = true;
           break;
         }
-        if (!isSessionEvent(next.value, sessionIds, sessionId)) continue;
-        const liveEventKey = openCodeEventKey(next.value);
-        if (liveEventKey && seenLiveEvents.has(liveEventKey)) continue;
-        if (liveEventKey) seenLiveEvents.add(liveEventKey);
-        if (maxTurnsReached && beginsNewTurn(next.value, seenMessages)) {
-          active.controller.abort("max_turns");
+        if (!isSessionEvent(next.value, normalization)) continue;
+        if (maxTurnsReached && beginsNewTurn(next.value, normalization)) {
+          active.controller.abort({
+            kind: "max_turns",
+            reason: "maximum turn limit reached",
+          });
           throw abortReason(active.controller.signal);
         }
-        observeOpenCodeEvent(
-          next.value,
-          sessionIds,
-          seenMessages,
-          seenParts,
-          completedMessages,
-          messageRoles,
-        );
 
         const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
         if (normalized.turns > 0) turns += normalized.turns;
@@ -305,9 +315,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           active,
           factory,
           normalization,
-          seenMessages,
-          seenParts,
-          completedMessages,
           this.reconciliationTimeoutMs,
           this.reconciliationMessageLimit,
         );
@@ -323,11 +330,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       clearTimeout(timeout);
       detachAbort();
       detachCrash();
-      const cleanupFailure = await this.cleanup(active, outcome);
+      const cleanupFailure = await this.cleanup(active);
       if (!failure && cleanupFailure) failure = cleanupFailure;
-      if (cleanupFailure && outcome?.state === "completed") {
-        outcome = { state: "failed", reason: cleanupFailure.message };
-      }
       if (this.active === active) this.active = undefined;
     }
 
@@ -335,7 +339,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       outcome = {
         state: classifyAbort(
           signal,
-          failure,
           this.supervisor.crashError,
           active.controller.signal.reason,
           streamLost,
@@ -353,7 +356,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         "persistence",
         {
           action: "partial-state",
-          state: "persisted",
+          state: "not_resumable",
           reason:
             this.supervisor.crashError?.message ??
             errorMessage(failure) ??
@@ -390,11 +393,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    this.active?.controller.abort("shutdown");
+    this.active?.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
     await this.supervisor.stop();
   }
 
-  private async cleanup(active: ActiveRun, outcome?: RuntimeOutcome): Promise<Error | undefined> {
+  private async cleanup(active: ActiveRun): Promise<Error | undefined> {
     const failures: Error[] = [];
     const deadline = Date.now() + this.cleanupTimeoutMs;
     const deadlineController = new AbortController();
@@ -421,26 +424,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         const client = active.client;
         const sessionId = active.sessionId;
         const directory = active.directory;
-        if (outcome?.state !== "completed") {
-          try {
-            unwrapSdkResponse(
-              await runCleanup(
-                (requestSignal) =>
-                  client.session.abort({
-                    path: { id: sessionId },
-                    query: { directory },
-                    signal: requestSignal,
-                    responseStyle: "data",
-                    throwOnError: true,
-                  }),
-                "session abort",
-              ),
-              "OpenCode session abort",
-            );
-          } catch (error) {
-            failures.push(toError(error));
-          }
-        }
         try {
           unwrapSdkResponse(
             await runCleanup(
@@ -480,8 +463,13 @@ interface NormalizedEvents {
   turns: number;
 }
 
+interface NormalizeOptions {
+  suppressModel?: boolean;
+}
+
 interface UsageSnapshot {
   requestedModel: string;
+  bucketModel: string;
   tokenCounts: {
     input: number;
     output: number;
@@ -501,60 +489,21 @@ interface NormalizationContext {
   resultTextParts: Map<string, string>;
   messageRoles: Map<string, string>;
   countedMessages: Set<string>;
+  completedMessages: Set<string>;
+  seenMessages: Set<string>;
+  seenParts: Set<string>;
+  sessionIds: Set<string>;
   toolPhases: Map<string, "started" | "completed">;
   modelEventIds: Map<string, string>;
   usageSnapshots: Map<string, UsageSnapshot>;
   rootAssistantError?: string;
-}
-
-function observeOpenCodeEvent(
-  event: OpenCodeEvent,
-  sessionIds: Set<string>,
-  seenMessages: Set<string>,
-  seenParts: Set<string>,
-  completedMessages: Set<string>,
-  messageRoles: Map<string, string>,
-): void {
-  const properties = event.properties as Record<string, unknown>;
-  if (event.type === "session.created" || event.type === "session.updated") {
-    const info = record(properties.info);
-    const sessionId = typeof info.id === "string" ? info.id : undefined;
-    const parentId = typeof info.parentID === "string" ? info.parentID : undefined;
-    if (sessionId && (sessionIds.has(sessionId) || sessionIds.has(parentId ?? ""))) {
-      sessionIds.add(sessionId);
-    }
-    return;
-  }
-  if (event.type === "message.updated") {
-    const info = record(properties.info);
-    const messageId = typeof info.id === "string" ? info.id : undefined;
-    if (!messageId) return;
-    seenMessages.add(messageId);
-    if (typeof info.role === "string") messageRoles.set(messageId, info.role);
-    if (recordOrUndefined(info.time)?.completed) completedMessages.add(messageId);
-    return;
-  }
-  if (event.type === "message.part.updated") {
-    const part = record(properties.part);
-    const partId = part.id;
-    const messageId = part.messageID;
-    if (
-      typeof partId === "string" &&
-      typeof messageId === "string" &&
-      messageRoles.get(messageId) === "assistant"
-    ) {
-      seenParts.add(partId);
-    }
-  }
+  rootSessionError?: string;
 }
 
 async function reconcileSession(
   active: ActiveRun,
   factory: ReturnType<typeof createEventFactory>,
   normalization: NormalizationContext,
-  seenMessages: Set<string>,
-  seenParts: Set<string>,
-  completedMessages: Set<string>,
   timeoutMs: number,
   messageLimit: number,
 ): Promise<NormalizedEvents> {
@@ -609,28 +558,22 @@ async function reconcileSession(
       if (messageId && typeof info.role === "string") {
         normalization.messageRoles.set(messageId, info.role);
       }
-
       if (isAssistant && messageId) {
-        const unseen = !seenMessages.has(messageId);
-        const needsFinalUpdate = completed && !completedMessages.has(messageId);
-        if (unseen || needsFinalUpdate) {
-          const normalized = normalizeOpenCodeEvent(
-            {
-              type: "message.updated",
-              properties: { info },
-            } as unknown as OpenCodeEvent,
-            factory,
-            normalization,
-          );
-          events.push(
-            ...(unseen
-              ? normalized.events
-              : normalized.events.filter((event) => event.kind !== "model")),
-          );
+        const unseen = !normalization.seenMessages.has(messageId);
+        const needsFinalUpdate = completed && !normalization.completedMessages.has(messageId);
+        const messageEvent = {
+          type: "message.updated",
+          properties: { info },
+        } as unknown as OpenCodeEvent;
+        if (!unseen && !needsFinalUpdate) {
+          foldOpenCodeEvent(messageEvent, normalization);
+        } else {
+          const normalized = normalizeOpenCodeEvent(messageEvent, factory, normalization, {
+            suppressModel: !unseen,
+          });
+          events.push(...normalized.events);
           turns += normalized.turns;
         }
-        if (unseen) seenMessages.add(messageId);
-        if (completed) completedMessages.add(messageId);
       }
 
       const parts = Array.isArray(message.parts) ? message.parts : [];
@@ -641,8 +584,18 @@ async function reconcileSession(
         const toolKey = partKey(part);
         const toolCompleted =
           part.type === "tool" && normalization.toolPhases.get(toolKey) === "completed";
-        const seenPart = seenParts.has(partId);
-        if ((seenPart && part.type !== "tool") || (seenPart && toolCompleted)) continue;
+        const seenPart = normalization.seenParts.has(partId);
+        if (part.type === "text" && part.sessionID === sessionId) {
+          const text = stringValue(part.text, "");
+          const changed = normalization.resultTextParts.get(partId) !== text;
+          normalization.resultTextParts.set(partId, text);
+          if (!changed) {
+            normalization.seenParts.add(partId);
+            continue;
+          }
+        } else if ((seenPart && part.type !== "tool") || (seenPart && toolCompleted)) {
+          continue;
+        }
         const normalized = normalizeOpenCodeEvent(
           {
             type: "message.part.updated",
@@ -652,7 +605,7 @@ async function reconcileSession(
           normalization,
         );
         events.push(...normalized.events);
-        seenParts.add(partId);
+        normalization.seenParts.add(partId);
       }
     }
 
@@ -672,10 +625,7 @@ async function reconcileSession(
     const rootStatus = statuses[sessionId];
     const rootIsIdle = rootStatus === undefined || record(rootStatus).type === "idle";
     if (rootIsIdle) {
-      const completedError =
-        data
-          .map((entry) => providerErrorFromMessageEntry(entry, sessionId))
-          .find((message) => message !== undefined) ?? normalization.rootAssistantError;
+      const completedError = normalization.rootSessionError ?? normalization.rootAssistantError;
       if (completedError) {
         outcome = "failed";
         reason = completedError;
@@ -706,26 +656,70 @@ async function reconcileSession(
 }
 
 function shouldReconcile(reason: unknown): boolean {
-  const message = abortReasonText(reason).toLowerCase();
+  const kind = abortKind(reason);
   return (
-    !message.includes("timeout") &&
-    !message.includes("shutdown") &&
-    !message.includes("cancel") &&
-    !message.includes("max_turns")
+    kind !== "timeout" &&
+    kind !== "shutdown" &&
+    kind !== "cancel" &&
+    kind !== "cancelled" &&
+    kind !== "interrupt" &&
+    kind !== "interrupted" &&
+    kind !== "max_turns"
   );
+}
+
+function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationContext): void {
+  const properties = event.properties as Record<string, unknown>;
+  if (event.type === "session.created" || event.type === "session.updated") {
+    const info = record(properties.info);
+    const sessionId = typeof info.id === "string" ? info.id : undefined;
+    const parentId = typeof info.parentID === "string" ? info.parentID : undefined;
+    if (
+      sessionId &&
+      (context.sessionIds.has(sessionId) || context.sessionIds.has(parentId ?? ""))
+    ) {
+      context.sessionIds.add(sessionId);
+    }
+    return;
+  }
+  if (event.type === "message.updated") {
+    const info = record(properties.info);
+    const messageId = typeof info.id === "string" ? info.id : undefined;
+    if (!messageId) return;
+    context.seenMessages.add(messageId);
+    if (typeof info.role === "string") context.messageRoles.set(messageId, info.role);
+    if (recordOrUndefined(info.time)?.completed) context.completedMessages.add(messageId);
+    if (eventSessionId(event) === context.rootSessionId && info.role === "assistant") {
+      context.rootAssistantError = info.error ? providerErrorMessage(info.error) : undefined;
+    }
+    return;
+  }
+  if (event.type === "message.part.updated") {
+    const part = record(properties.part);
+    const partId = part.id;
+    const messageId = part.messageID;
+    if (
+      typeof partId === "string" &&
+      typeof messageId === "string" &&
+      context.messageRoles.get(messageId) === "assistant"
+    ) {
+      context.seenParts.add(partId);
+    }
+  }
 }
 
 function normalizeOpenCodeEvent(
   event: OpenCodeEvent,
   factory: ReturnType<typeof createEventFactory>,
   context: NormalizationContext,
+  options: NormalizeOptions = {},
 ): NormalizedEvents {
   const properties = event.properties as Record<string, unknown>;
+  foldOpenCodeEvent(event, context);
   const withSession = { runtimeSessionRef: eventSessionId(event) ?? context.rootSessionId };
   switch (event.type) {
-    case "server.connected":
-      return { events: [factory("run", { state: "server_connected" }, withSession)], turns: 0 };
     case "session.created":
+      if (eventSessionId(event) === context.rootSessionId) return { events: [], turns: 0 };
       return {
         events: [factory("run", { state: "child_session_started" }, withSession)],
         turns: 0,
@@ -739,8 +733,11 @@ function normalizeOpenCodeEvent(
       return {
         events: [factory("run", { state: status }, withSession)],
         ...(isRoot && status.type === "idle"
-          ? context.rootAssistantError
-            ? { outcome: "failed" as const, reason: context.rootAssistantError }
+          ? (context.rootSessionError ?? context.rootAssistantError)
+            ? {
+                outcome: "failed" as const,
+                reason: context.rootSessionError ?? context.rootAssistantError,
+              }
             : { outcome: "completed" as const }
           : {}),
         turns: 0,
@@ -751,8 +748,11 @@ function normalizeOpenCodeEvent(
       return {
         events: [factory("run", { state: "idle" }, withSession)],
         ...(isRoot
-          ? context.rootAssistantError
-            ? { outcome: "failed" as const, reason: context.rootAssistantError }
+          ? (context.rootSessionError ?? context.rootAssistantError)
+            ? {
+                outcome: "failed" as const,
+                reason: context.rootSessionError ?? context.rootAssistantError,
+              }
             : { outcome: "completed" as const }
           : {}),
         turns: 0,
@@ -760,10 +760,9 @@ function normalizeOpenCodeEvent(
     }
     case "session.error": {
       const message = providerErrorMessage(properties.error);
-      const isRoot = properties.sessionID === context.rootSessionId;
+      if (properties.sessionID === context.rootSessionId) context.rootSessionError = message;
       return {
         events: [factory("error", { message }, withSession)],
-        ...(isRoot ? { outcome: "failed" as const, reason: message } : {}),
         turns: 0,
       };
     }
@@ -772,39 +771,48 @@ function normalizeOpenCodeEvent(
       if (info.role !== "assistant") return { events: [], turns: 0 };
       const model = typeof info.modelID === "string" ? info.modelID : undefined;
       const error = info.error ? providerErrorMessage(info.error) : undefined;
-      if (eventSessionId(event) === context.rootSessionId) context.rootAssistantError = error;
       const messageId = typeof info.id === "string" ? info.id : undefined;
-      const modelEvent = factory(
-        "model",
-        {
-          phase: "updated",
-          messageId: info.id,
-          ...(info.finish ? { finish: info.finish } : {}),
-          ...(error ? { error } : {}),
-        },
-        { ...withSession, ...(model ? { model } : {}) },
-      );
-      if (messageId && !context.modelEventIds.has(messageId)) {
-        context.modelEventIds.set(messageId, modelEvent.eventId);
+      let modelEvent: RehorEvent | undefined;
+      if (!options.suppressModel) {
+        modelEvent = factory(
+          "model",
+          {
+            phase: "updated",
+            messageId: info.id,
+            ...(info.finish ? { finish: info.finish } : {}),
+            ...(error ? { error } : {}),
+          },
+          { ...withSession, ...(model ? { model } : {}) },
+        );
+        if (messageId && !context.modelEventIds.has(messageId)) {
+          context.modelEventIds.set(messageId, modelEvent.eventId);
+        }
       }
       const completed = Boolean(recordOrUndefined(info.time)?.completed);
-      const turns = completed && messageId && !context.countedMessages.has(messageId) ? 1 : 0;
+      const turns =
+        eventSessionId(event) === context.rootSessionId &&
+        completed &&
+        messageId &&
+        !context.countedMessages.has(messageId)
+          ? 1
+          : 0;
       if (completed && messageId) context.countedMessages.add(messageId);
+      const parentEventId = messageId
+        ? (context.modelEventIds.get(messageId) ?? modelEvent?.eventId)
+        : modelEvent?.eventId;
       const usage = assistantUsage(
         info,
         factory,
         {
           ...withSession,
-          parentEventId: messageId
-            ? (context.modelEventIds.get(messageId) ?? modelEvent.eventId)
-            : modelEvent.eventId,
+          ...(parentEventId ? { parentEventId } : {}),
           ...(model ? { model } : {}),
         },
         context,
       );
       return {
         events: [
-          modelEvent,
+          ...(modelEvent ? [modelEvent] : []),
           ...(usage ? [usage] : []),
           ...(error ? [factory("error", { message: error }, withSession)] : []),
         ],
@@ -847,7 +855,7 @@ function normalizeOpenCodeEvent(
         const name = stringValue(part.tool, "unknown");
         const input = recordOrUndefined(state.input);
         const finished = state.status === "completed" || state.status === "error";
-        extractOpenCodeToolContext(name, input, context.workContext);
+        extractToolContext(name, input, context.workContext);
         if (state.status === "completed") extractTaskResult(state.output, context.workContext);
         const start = numberValue(recordOrUndefined(state.time)?.start);
         const end = numberValue(recordOrUndefined(state.time)?.end);
@@ -893,22 +901,20 @@ function normalizeOpenCodeEvent(
       }
       return { events: [], turns: 0 };
     }
-    case "permission.updated":
-      return {
-        events: [factory("policy", { state: "permission_requested", ...properties }, withSession)],
-        turns: 0,
-      };
-    default:
+    case "permission.updated": {
+      const reason = "OpenCode permission request cannot be handled in headless mode";
       return {
         events: [
-          factory(
-            "runtime-exit",
-            { state: "unknown_event", eventType: boundedString(event.type, "unknown-event") },
-            withSession,
-          ),
+          factory("policy", { state: "permission_requested", ...properties }, withSession),
+          factory("error", { message: reason }, withSession),
         ],
+        outcome: "failed",
+        reason,
         turns: 0,
       };
+    }
+    default:
+      return { events: [], turns: 0 };
   }
 }
 
@@ -925,12 +931,15 @@ function assistantUsage(
   if (!tokens) return undefined;
   const cache = recordOrUndefined(tokens.cache);
   const messageId = stringValue(info.id, "unknown-message");
+  const returnedModel = typeof info.modelID === "string" ? info.modelID : undefined;
+  const bucketModel = returnedModel ?? context.requestedModel;
   const requestedModel =
     overrides.runtimeSessionRef === context.rootSessionId
       ? context.requestedModel
       : (qualifiedModel(info) ?? context.requestedModel);
   const snapshot: UsageSnapshot = {
     requestedModel,
+    bucketModel,
     tokenCounts: {
       input: nonNegativeInteger(tokens.input),
       output: nonNegativeInteger(tokens.output),
@@ -939,7 +948,7 @@ function assistantUsage(
       cacheWrite: nonNegativeInteger(cache?.write),
     },
     completed: Boolean(recordOrUndefined(info.time)?.completed),
-    ...(typeof info.modelID === "string" ? { returnedModel: info.modelID } : {}),
+    ...(returnedModel ? { returnedModel } : {}),
     ...(typeof info.cost === "number" && Number.isFinite(info.cost) ? { cost: info.cost } : {}),
   };
   context.usageSnapshots.set(`${overrides.runtimeSessionRef}:${messageId}`, snapshot);
@@ -954,9 +963,8 @@ function assistantUsage(
   let cost = 0;
   let hasCost = false;
   let final = true;
-  let returnedModel: string | undefined;
   for (const current of context.usageSnapshots.values()) {
-    if (current.requestedModel !== requestedModel) continue;
+    if (current.bucketModel !== snapshot.bucketModel) continue;
     tokenCounts.input += current.tokenCounts.input;
     tokenCounts.output += current.tokenCounts.output;
     tokenCounts.reasoning += current.tokenCounts.reasoning;
@@ -967,14 +975,13 @@ function assistantUsage(
       cost += current.cost;
       hasCost = true;
     }
-    if (current.returnedModel !== undefined) returnedModel = current.returnedModel;
   }
 
   return factory(
     "usage",
     {
       requestedModel,
-      ...(returnedModel ? { returnedModel } : {}),
+      ...(snapshot.returnedModel ? { returnedModel: snapshot.returnedModel } : {}),
       tokenCounts,
       partial: !final,
       final,
@@ -982,33 +989,8 @@ function assistantUsage(
       incomplete: !final,
       ...(hasCost ? { cost: { amount: cost, currency: "USD", source: "provider" } } : {}),
     },
-    { ...overrides, ...(returnedModel ? { model: returnedModel } : {}) },
+    { ...overrides, ...(snapshot.returnedModel ? { model: snapshot.returnedModel } : {}) },
   );
-}
-
-async function assertClientReady(
-  client: OpencodeClient,
-  directory: string,
-  signal: AbortSignal,
-  timeoutMs: number,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  const result = await boundedOperation(
-    (requestSignal) =>
-      client.path.get({
-        query: { directory },
-        signal: requestSignal,
-        responseStyle: "data",
-        throwOnError: true,
-      }),
-    signal,
-    deadline,
-    "path readiness",
-  );
-  const path = record(unwrapSdkResponse(result, "OpenCode path readiness"));
-  if (path.directory !== directory) {
-    throw new Error(`OpenCode client readiness resolved wrong worktree for ${directory}`);
-  }
 }
 
 function unwrapSdkResponse(value: unknown, operation: string): unknown {
@@ -1017,12 +999,6 @@ function unwrapSdkResponse(value: unknown, operation: string): unknown {
     throw new Error(`${operation} failed: ${providerErrorMessage(response.error)}`);
   }
   return response && "data" in response ? response.data : value;
-}
-
-function providerErrorFromMessageEntry(value: unknown, sessionId: string): string | undefined {
-  const info = record(record(value).info);
-  if (info.sessionID !== sessionId || info.role !== "assistant" || !info.error) return undefined;
-  return providerErrorMessage(info.error);
 }
 
 function isTerminalAssistantMessageEntry(value: unknown, sessionId: string): boolean {
@@ -1048,32 +1024,33 @@ function resolveModel(input: RehorRun): { providerID: string; modelID: string } 
   return { providerID: input.provider.id, modelID: input.provider.requestedModel };
 }
 
-function isSessionEvent(
-  event: OpenCodeEvent,
-  sessionIds: Set<string>,
-  rootSessionId: string,
-): boolean {
+function isSessionEvent(event: OpenCodeEvent, context: NormalizationContext): boolean {
   const properties = event.properties as Record<string, unknown>;
-  if (event.type === "server.connected") return true;
   if (event.type === "session.created" || event.type === "session.updated") {
     const info = record(properties.info);
     return (
-      info.id === rootSessionId ||
-      (typeof info.id === "string" && sessionIds.has(info.id)) ||
-      (typeof info.parentID === "string" && sessionIds.has(info.parentID))
+      info.id === context.rootSessionId ||
+      (typeof info.id === "string" && context.sessionIds.has(info.id)) ||
+      (typeof info.parentID === "string" && context.sessionIds.has(info.parentID))
     );
   }
   const sessionId = eventSessionId(event);
-  return sessionId !== undefined && sessionIds.has(sessionId);
+  return sessionId !== undefined && context.sessionIds.has(sessionId);
 }
 
-function beginsNewTurn(event: OpenCodeEvent, seenMessages: Set<string>): boolean {
+function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boolean {
   if (event.type === "message.updated") {
     const info = record(event.properties.info);
-    return info.role === "assistant" && typeof info.id === "string" && !seenMessages.has(info.id);
+    return (
+      eventSessionId(event) === context.rootSessionId &&
+      info.role === "assistant" &&
+      typeof info.id === "string" &&
+      !context.seenMessages.has(info.id)
+    );
   }
   if (event.type === "message.part.updated") {
-    return record(event.properties.part).type === "step-start";
+    const part = record(event.properties.part);
+    return part.sessionID === context.rootSessionId && part.type === "step-start";
   }
   return false;
 }
@@ -1105,116 +1082,22 @@ function initialTerminalContext(input: RehorRun): TerminalWorkContext {
   };
 }
 
-function openCodeEventKey(event: OpenCodeEvent): string {
-  return `${event.type}:${stableJson(event.properties)}`;
-}
-
 function partKey(part: JsonRecord): string {
   return `${stringValue(part.sessionID, "unknown-session")}:${stringValue(part.id, "unknown-part")}`;
 }
 
-function extractOpenCodeToolContext(
-  name: string,
-  input: JsonRecord | undefined,
-  context: TerminalWorkContext,
-): void {
-  if (!input) return;
-  if (typeof input.jira_key === "string" && input.jira_key) context.externalKey = input.jira_key;
-  if (typeof input.repo === "string" && input.repo) context.repository = input.repo;
-  if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
-
-  if (name.endsWith("task_add")) {
-    context.workType = context.workType ?? "new_ticket";
-  } else if (name.endsWith("task_update")) {
-    if (input.status === "pr_open") context.workType = "new_ticket";
-    if (input.status === "pr_changes") context.workType = "pr_review";
-    if (input.status === "done") context.workType = context.workType ?? "pr_review";
-  } else if (name === "Bash" || name.toLowerCase() === "bash") {
-    const command = typeof input.command === "string" ? input.command : "";
-    if (command.includes("gh pr checks") || command.includes("glab ci view")) {
-      context.workType = context.workType ?? "ci_fix";
-    } else if (command.includes("gh pr view") || command.includes("glab mr view")) {
-      context.workType = context.workType ?? "pr_review";
-    }
-  } else if (name.includes("jira_transition_issue")) {
-    context.workType = context.workType ?? "new_ticket";
-  } else if (name.endsWith("memory_delete")) {
-    context.workType = context.workType ?? "memory_housekeeping";
-  }
-
-  const progress = recordOrUndefined(input.progress);
-  if (progress) {
-    if (typeof progress.jira_key === "string" && progress.jira_key) {
-      context.externalKey ??= progress.jira_key;
-    }
-    if (typeof progress.repo === "string" && progress.repo) context.repository ??= progress.repo;
-  }
-}
-
-function extractTaskResult(value: unknown, context: TerminalWorkContext): void {
-  const texts: string[] = [];
-  if (typeof value === "string") texts.push(value);
-  if (Array.isArray(value)) {
-    for (const part of value) {
-      const record = recordOrUndefined(part);
-      if (typeof record?.text === "string") texts.push(record.text);
-    }
-  }
-  for (const text of texts) {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const object = recordOrUndefined(parsed);
-      if (!object) continue;
-      if (
-        typeof object.id === "number" &&
-        object.id > 0 &&
-        ("external_key" in object || "jira_key" in object)
-      ) {
-        context.taskId = object.id;
-      } else if (typeof object.task_id === "number" && object.task_id > 0) {
-        context.taskId = object.task_id;
-      }
-    } catch {
-      // Tool output is not required to be JSON.
-    }
-  }
-}
-
-function lastMeaningfulLine(text: string): string | undefined {
-  const lines = text
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const last = lines.at(-1);
-  return last ? last.slice(0, 200) : undefined;
-}
-
-function isNoWork(resultText: string): boolean {
-  return /\b(no actionable work|no[ _]work[ _]found|nothing actionable)\b/i.test(resultText);
-}
-
 function classifyAbort(
   signal: AbortSignal,
-  failure: unknown,
   crash: Error | undefined,
   controllerReason: unknown,
   streamLost: boolean,
 ): TerminalState {
-  if (signal.aborted || controllerReason !== undefined || failure instanceof Error) {
-    const reason = abortReasonText(
-      signal.aborted ? signal.reason : (controllerReason ?? failure),
-    ).toLowerCase();
-    if (
-      reason.includes("timeout") ||
-      reason.includes("timed_out") ||
-      reason.includes("deadline") ||
-      reason.includes("max_turns")
-    ) {
-      return "timed_out";
-    }
-    if (reason.includes("cancel")) return "cancelled";
-    if (reason.includes("shutdown") || reason.includes("interrupt")) return "interrupted";
+  const reason = signal.aborted ? signal.reason : controllerReason;
+  const kind = abortKind(reason);
+  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
+  if (kind === "cancel" || kind === "cancelled") return "cancelled";
+  if (kind === "shutdown" || kind === "interrupt" || kind === "interrupted") {
+    return "interrupted";
   }
   if (crash || streamLost) return "interrupted";
   return "failed";
@@ -1229,17 +1112,6 @@ function linkAbort(source: AbortSignal, target: AbortController): () => void {
 
 type JsonRecord = Record<string, unknown>;
 
-function stableJson(value: unknown): string {
-  if (value === undefined) return "undefined";
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
-  const object = value as JsonRecord;
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
-    .join(",")}}`;
-}
-
 function record(value: unknown): JsonRecord {
   return recordOrUndefined(value) ?? {};
 }
@@ -1252,11 +1124,6 @@ function recordOrUndefined(value: unknown): JsonRecord | undefined {
 
 function stringValue(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
-}
-
-function boundedString(value: unknown, fallback: string, maxLength = 128): string {
-  const text = stringValue(value, fallback);
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -1284,72 +1151,6 @@ function toError(value: unknown): Error {
   return value instanceof Error
     ? value
     : new Error(errorMessage(value) ?? "OpenCode cleanup failed");
-}
-
-function boundedOperation<T>(
-  operation: (signal: AbortSignal) => Promise<T> | T,
-  signal: AbortSignal,
-  deadline: number,
-  name: string,
-): Promise<T> {
-  const deadlineController = new AbortController();
-  const operationSignal = AbortSignal.any([signal, deadlineController.signal]);
-  const deadlineError = new Error(`OpenCode ${name} exceeded deadline`);
-  const remaining = deadline - Date.now();
-  let timer: NodeJS.Timeout | undefined;
-  if (remaining > 0) {
-    timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
-  } else {
-    deadlineController.abort(deadlineError);
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    let pending: Promise<T> | undefined;
-    let settled = false;
-    const cleanup = (): void => {
-      if (timer) clearTimeout(timer);
-      operationSignal.removeEventListener("abort", onAbort);
-    };
-    const settle = (callback: () => void): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      callback();
-    };
-    const onAbort = (): void => settle(() => reject(abortReason(operationSignal)));
-
-    if (operationSignal.aborted) {
-      onAbort();
-    } else {
-      operationSignal.addEventListener("abort", onAbort, { once: true });
-      pending = Promise.resolve().then(() => operation(operationSignal));
-      void pending.catch(() => undefined);
-      pending.then(
-        (value) => settle(() => resolve(value)),
-        (error) => settle(() => reject(error)),
-      );
-    }
-  });
-}
-
-function assertPositiveInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`OpenCode ${name} must be a positive safe integer`);
-  }
-}
-
-function abortReasonText(reason: unknown): string {
-  if (reason instanceof Error) return reason.message;
-  if (typeof reason === "string") return reason;
-  const object = recordOrUndefined(reason);
-  if (!object) return "OpenCode runtime aborted";
-  const kind = typeof object.kind === "string" ? object.kind : "";
-  const detail = "reason" in object ? abortReasonText(object.reason) : "";
-  return [kind, detail].filter(Boolean).join(": ") || "OpenCode runtime aborted";
-}
-
-function abortReason(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error(abortReasonText(signal.reason));
 }
 
 export type { ProxyEnvironment };
