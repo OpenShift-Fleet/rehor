@@ -403,6 +403,12 @@ def sanitize_env() -> None:
         os.environ.pop(var, None)
 
 
+# MCP servers provided only by selected persona/environment layers. Their
+# shared permission grants are optional; workflow-required MCP servers remain
+# strict at the OpenCode renderer boundary.
+OPTIONAL_MCP_SERVERS = ["hcc-patternfly-data-view"]
+
+
 ALLOWED_TOOLS = [
     # Built-in tools
     "Edit",

@@ -95,6 +95,7 @@ export async function prepareCycleInput(
       idleCycleLimit: config.idleCycleLimit,
       mcpServers: config.openCodeMcpServers ?? config.mcpServers ?? {},
       allowedTools: config.allowedTools ?? [],
+      optionalMcpServers: config.optionalMcpServers ?? [],
       instructionHash: instructions.hash.value,
     }),
   );

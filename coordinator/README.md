@@ -124,6 +124,7 @@ const registry = new RuntimeFactoryRegistry([
       providerId: "rehor-openai",
       mcpServers: prepared.config.openCodeMcpServers ?? {},
       allowedTools: prepared.config.allowedTools ?? [],
+      optionalMcpServers: prepared.config.optionalMcpServers ?? [],
     },
   }),
 ]);
@@ -132,7 +133,10 @@ const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, 
 
 `renderOpenCodeV1ConfigForCycle()` is the lower-level equivalent for callers
 that need the deterministic artifact before constructing a runtime. It consumes
-the reference-only `openCodeMcpServers` view from preparation.
+the reference-only `openCodeMcpServers` view from preparation. The bridge's
+`optionalMcpServers` list is explicit: missing grants for those persona-specific
+servers are omitted, while a missing MCP server referenced by any other grant
+fails configuration validation.
 `OpenCodeV1Runtime` validates the rendered snapshot before its supervisor starts
 a child; provider/plugin package versions must be exact and are emitted in the
 per-cycle lockfile artifact. The Python runner remains the active production

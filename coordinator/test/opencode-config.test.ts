@@ -211,10 +211,19 @@ describe("OpenCode V1 config renderer", () => {
     const rendered = renderOpenCodeV1Config({
       model: "provider/model",
       allowedTools: ["Read", "mcp__hcc-patternfly-data-view__*"],
+      optionalMcpServers: ["hcc-patternfly-data-view"],
     });
 
     expect(rendered.config.permission).toMatchObject({ read: "allow" });
     expect(rendered.config.permission).not.toHaveProperty("hcc-patternfly-data-view_*");
+
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        allowedTools: ["mcp__mcp-atlassian__jira_search"],
+        optionalMcpServers: ["hcc-patternfly-data-view"],
+      }),
+    ).toThrow("references unconfigured server 'mcp-atlassian'");
   });
 
   it("fails closed when a referenced package is not pinned", () => {

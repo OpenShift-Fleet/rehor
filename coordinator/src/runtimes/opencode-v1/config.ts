@@ -52,6 +52,8 @@ export interface OpenCodeV1ConfigInput {
   provider?: OpenCodeProviderConfig;
   mcpServers?: Readonly<Record<string, McpServerConfig>>;
   allowedTools?: readonly string[];
+  /** MCP servers whose grants may be omitted when persona configuration excludes them. */
+  optionalMcpServers?: readonly string[];
   plugins?: readonly OpenCodePluginConfig[];
   packages?: readonly OpenCodePackage[];
   /** Additional package declarations supplied by the packaging contract. */
@@ -62,7 +64,7 @@ export interface OpenCodeV1ConfigInput {
 /** Deployment-owned fields that are merged with one prepared cycle. */
 export type OpenCodeV1DeploymentConfig = Omit<
   OpenCodeV1ConfigInput,
-  "model" | "providerId" | "mcpServers" | "allowedTools"
+  "model" | "providerId" | "mcpServers" | "allowedTools" | "optionalMcpServers"
 > & {
   model?: string;
   providerId?: string;
@@ -72,7 +74,7 @@ export type OpenCodeV1DeploymentConfig = Omit<
 export function renderOpenCodeV1ConfigForCycle(
   preparation: Pick<
     ConfigPreparationResult,
-    "model" | "mcpServers" | "openCodeMcpServers" | "allowedTools"
+    "model" | "mcpServers" | "openCodeMcpServers" | "allowedTools" | "optionalMcpServers"
   >,
   providerId: string,
   deployment: OpenCodeV1DeploymentConfig = {},
@@ -83,6 +85,7 @@ export function renderOpenCodeV1ConfigForCycle(
     providerId: deployment.providerId ?? providerId,
     mcpServers: preparation.openCodeMcpServers ?? preparation.mcpServers ?? {},
     allowedTools: preparation.allowedTools ?? [],
+    optionalMcpServers: preparation.optionalMcpServers ?? [],
   });
 }
 
@@ -164,7 +167,11 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
   const requiredEnvironment = new Set<string>();
   const providerOutput = renderProviders(providers, model, packageLock, requiredEnvironment);
   const mcp = renderMcpServers(input.mcpServers ?? {}, requiredEnvironment);
-  const permission = renderPermissions(input.allowedTools ?? [], Object.keys(mcp));
+  const permission = renderPermissions(
+    input.allowedTools ?? [],
+    Object.keys(mcp),
+    input.optionalMcpServers ?? [],
+  );
   const plugin = renderPlugins(input.plugins ?? [], packageLock, requiredEnvironment);
 
   const config: Record<string, JsonValue> = {
@@ -522,18 +529,22 @@ function renderMcpServers(
 function renderPermissions(
   allowedTools: readonly string[],
   configuredMcpServers: readonly string[],
+  optionalMcpServers: readonly string[],
 ): Record<string, JsonValue> {
   const permissions: Record<string, JsonValue> = {};
   const configured = new Set(configuredMcpServers);
+  const optional = new Set(optionalMcpServers);
   const allowedMcpWildcards = new Set<string>();
 
   for (const tool of allowedTools) {
     const mcp = parseClaudeMcpTool(tool);
     if (mcp) {
-      // The shared Claude policy includes MCP wildcards for persona-specific
-      // servers. An absent server cannot receive a permission, so omit that
-      // rule rather than making unrelated personas fail closed at startup.
-      if (!configured.has(mcp.server)) continue;
+      if (!configured.has(mcp.server)) {
+        if (optional.has(mcp.server)) continue;
+        throw new OpenCodeConfigValidationError([
+          `allowed MCP tool '${tool}' references unconfigured server '${mcp.server}'`,
+        ]);
+      }
       const key = `${mcp.server}_${mcp.tool}`;
       permissions[key] = "allow";
       if (mcp.tool === "*") allowedMcpWildcards.add(mcp.server);
