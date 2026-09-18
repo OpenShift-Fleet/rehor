@@ -6,7 +6,7 @@ RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-server ./cmd/server \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:b0288b22a9c4ac633625bd9c8f9e39c0ad3043990d0fc8f9c62d60740af0e73e
 
 # Squid + GPG + Python 3.11 (gnupg2 for commit signing, python3.11 for mcp-atlassian which requires >=3.10)
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
