@@ -645,7 +645,7 @@ describe("OpenCode runtime", () => {
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
   });
 
-  it("submits the effective configured model used by the rendered config", async () => {
+  it("uses the effective configured model without changing run provider attribution", async () => {
     const { calls, runtime } = fakeRuntime({
       config: {
         model: "override-model",
@@ -661,15 +661,30 @@ describe("OpenCode runtime", () => {
       },
       events: [
         asOpenCodeEvent({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "override-message",
+              sessionID: "session-opencode",
+              role: "assistant",
+              providerID: "override-provider",
+              modelID: "override-model",
+              time: { created: 1, completed: 2 },
+              tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 0, write: 0 } },
+              cost: 0.01,
+            },
+          },
+        }),
+        asOpenCodeEvent({
           type: "session.idle",
           properties: { sessionID: "session-opencode" },
         }),
       ],
     });
 
-    await runtime.start(new AbortController().signal);
-    await collect(runtime.run(runtimeRun, new AbortController().signal));
+    const result = await executeRun(runtime, runtimeRun);
 
+    expect(result.error).toBeUndefined();
     const configured = calls.configure[0]?.[0];
     expect(configured).toMatchObject({
       model: "override-provider/override-model",
@@ -687,6 +702,27 @@ describe("OpenCode runtime", () => {
       body: {
         model: { providerID: "override-provider", modelID: "override-model" },
       },
+    });
+
+    const runAndTerminal = result.events.filter(
+      (event) => event.kind === "run" || event.kind === "terminal",
+    );
+    expect(runAndTerminal.length).toBeGreaterThan(0);
+    expect(
+      runAndTerminal.every(
+        (event) =>
+          event.provider === runtimeRun.provider.id &&
+          event.model === "override-provider/override-model",
+      ),
+    ).toBe(true);
+    expect(result.events.find((event) => event.kind === "model")).toMatchObject({
+      provider: runtimeRun.provider.id,
+      model: "override-model",
+    });
+    expect(result.events.find((event) => event.kind === "usage")).toMatchObject({
+      provider: runtimeRun.provider.id,
+      model: "override-model",
+      payload: { requestedModel: "override-provider/override-model" },
     });
   });
 

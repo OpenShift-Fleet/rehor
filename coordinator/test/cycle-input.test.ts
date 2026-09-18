@@ -197,9 +197,16 @@ describe("cycle preparation", () => {
       new FakeBridge(preflight(PreflightAction.Start), { allowedTools: ["Bash"] }),
       options,
     );
+    const optionalMcpChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        optionalMcpServers: ["optional-persona-mcp"],
+      }),
+      options,
+    );
 
     expect(mcpChanged.configHash.value).not.toBe(baseline.configHash.value);
     expect(toolsChanged.configHash.value).not.toBe(baseline.configHash.value);
+    expect(optionalMcpChanged.configHash.value).not.toBe(baseline.configHash.value);
   });
 
   it("keeps the current no-preflight triage prompt", () => {
@@ -269,6 +276,7 @@ describe("Python preflight bridge", () => {
           "sse-server": { type: "sse", url: "https://mcp.example/events" },
         },
         allowedTools: ["Bash", "mcp__mcp-atlassian__jira_get_issue"],
+        optionalMcpServers: ["hcc-patternfly-data-view"],
       },
     };
     await writeFile(
@@ -283,5 +291,6 @@ describe("Python preflight bridge", () => {
     expect(result.mcpServers).toEqual(response.result.mcpServers);
     expect(result.openCodeMcpServers).toEqual(response.result.mcpServers);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
+    expect(result.optionalMcpServers).toEqual(response.result.optionalMcpServers);
   });
 });

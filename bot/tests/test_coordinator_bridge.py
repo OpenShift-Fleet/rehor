@@ -132,6 +132,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     }
     assert result["mcpServers"] == expected_mcp
     assert result["openCodeMcpServers"] == expected_mcp
+    assert result["optionalMcpServers"] == ["hcc-patternfly-data-view"]
     assert "Bash" in result["allowedTools"]
 
 

@@ -178,6 +178,7 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
       "config.openCodeMcpServers",
     ),
     allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
+    optionalMcpServers: stringArray(object.optionalMcpServers ?? [], "config.optionalMcpServers"),
   };
 }
 

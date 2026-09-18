@@ -74,6 +74,12 @@ interface RuntimeOutcome {
   reason?: string;
 }
 
+interface EffectiveModel {
+  providerID: string;
+  modelID: string;
+  value: string;
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 const CAPABILITIES: RuntimeCapabilities = {
@@ -169,7 +175,21 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     if (this.hasRun) throw new Error("OpenCode V1 runtime supports one run per instance");
     this.hasRun = true;
 
-    const factory = createEventFactory(input, this.policyVersion);
+    let renderedConfig: RenderedOpenCodeV1Config | undefined;
+    let effectiveModel: EffectiveModel | undefined;
+    let renderError: unknown;
+    try {
+      renderedConfig = this.renderConfig(input);
+      effectiveModel = resolveModel(renderedConfig);
+    } catch (error) {
+      renderError = error;
+    }
+    const factory = createEventFactory(
+      renderedConfig === undefined || effectiveModel === undefined
+        ? input
+        : withEffectiveModel(input, effectiveModel),
+      this.policyVersion,
+    );
     const active: ActiveRun = { controller: new AbortController() };
     const detachAbort = linkAbort(signal, active.controller);
     let detachCrash = (): void => undefined;
@@ -191,8 +211,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     );
 
     try {
-      const renderedConfig = this.renderConfig(input);
-      const effectiveModel = resolveModel(renderedConfig);
+      if (renderedConfig === undefined || effectiveModel === undefined) {
+        throw renderError ?? new Error("OpenCode configuration could not be rendered");
+      }
       this.supervisor.configure(
         renderedConfig.config,
         renderedConfig.hash,
@@ -1050,11 +1071,7 @@ function qualifiedModel(info: Record<string, unknown>): string | undefined {
   return `${info.providerID}/${info.modelID}`;
 }
 
-function resolveModel(renderedConfig: RenderedOpenCodeV1Config): {
-  providerID: string;
-  modelID: string;
-  value: string;
-} {
+function resolveModel(renderedConfig: RenderedOpenCodeV1Config): EffectiveModel {
   const value = renderedConfig.config.model;
   if (typeof value !== "string") {
     throw new Error("OpenCode rendered configuration has no effective model");
@@ -1067,6 +1084,16 @@ function resolveModel(renderedConfig: RenderedOpenCodeV1Config): {
     providerID: value.slice(0, slash),
     modelID: value.slice(slash + 1),
     value,
+  };
+}
+
+function withEffectiveModel(input: RehorRun, model: EffectiveModel): RehorRun {
+  return {
+    ...input,
+    provider: {
+      ...input.provider,
+      requestedModel: model.value,
+    },
   };
 }
 

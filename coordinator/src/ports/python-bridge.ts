@@ -64,6 +64,8 @@ export interface ConfigPreparationResult {
   openCodeMcpServers?: Readonly<Record<string, McpServerConfig>>;
   /** Same allowed tool list used by the legacy Claude runner. */
   allowedTools?: readonly string[];
+  /** Persona-specific MCP servers that may be absent from a cycle. */
+  optionalMcpServers?: readonly string[];
 }
 
 /** Stable boundary for the existing Python preflight/config implementation. */

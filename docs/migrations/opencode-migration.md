@@ -330,8 +330,9 @@ fields separately. The renderer:
 
 - normalizes bare models with the deployment provider ID;
 - maps stdio MCP to `local` and HTTP/SSE MCP to `remote`;
-- converts Claude-style allowed tools to explicit OpenCode permissions and
-  denies unlisted built-ins and configured MCP servers;
+- converts Claude-style allowed tools to explicit OpenCode permissions,
+  denies unlisted built-ins and configured MCP servers, and skips grants only
+  for MCP servers explicitly marked optional by the prepared cycle;
 - converts `${VAR}` values to OpenCode `{env:VAR}` references and returns the
   required environment allowlist without serializing resolved credentials;
 - rejects unknown tools, malformed transports, literal credentials, and
@@ -341,7 +342,9 @@ fields separately. The renderer:
   version.
 
 `OpenCodeV1Runtime` renders and validates the snapshot before calling the
-supervisor. The supervisor writes the snapshot to a per-cycle config directory,
+supervisor. It derives prompt submission and Rehor event attribution from the
+same effective provider/model in that validated snapshot. The supervisor writes
+the snapshot to a per-cycle config directory,
 sets `OPENCODE_CONFIG`, isolates OpenCode's global home/config/database paths,
 and enables offline npm resolution plus the pinned runtime's update/download
 safeguards. Package installation is not a runtime responsibility: the image

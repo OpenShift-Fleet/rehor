@@ -195,7 +195,8 @@ describe("OpenCode V1 config renderer", () => {
         model: "gpt-5.4",
         mcpServers: { jira: { type: "http", url: "http://wrong.example" } },
         openCodeMcpServers: { jira: { type: "http", url: "$" + "{JIRA_URL}" } },
-        allowedTools: ["Read", "mcp__jira__search"],
+        allowedTools: ["Read", "mcp__jira__search", "mcp__optional-persona-mcp__*"],
+        optionalMcpServers: ["optional-persona-mcp"],
       },
       "provider",
     );
@@ -204,6 +205,7 @@ describe("OpenCode V1 config renderer", () => {
       model: "provider/gpt-5.4",
       mcp: { jira: { url: "{env:JIRA_URL}" } },
     });
+    expect(rendered.config.permission).not.toHaveProperty("optional-persona-mcp_*");
     expect(rendered.requiredEnvironment).toEqual(["JIRA_URL"]);
   });
 
@@ -211,6 +213,7 @@ describe("OpenCode V1 config renderer", () => {
     const rendered = renderOpenCodeV1Config({
       model: "provider/model",
       allowedTools: ["Read", "mcp__hcc-patternfly-data-view__*"],
+      optionalMcpServers: ["hcc-patternfly-data-view"],
     });
 
     expect(rendered.config.permission).toMatchObject({ read: "allow" });
@@ -226,6 +229,14 @@ describe("OpenCode V1 config renderer", () => {
       "hcc-patternfly-data-view_*",
       "allow",
     );
+
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        allowedTools: ["mcp__mcp-atlassian__jira_search"],
+        optionalMcpServers: ["hcc-patternfly-data-view"],
+      }),
+    ).toThrow("references unconfigured server 'mcp-atlassian'");
   });
 
   it("fails closed when a referenced package is not pinned", () => {

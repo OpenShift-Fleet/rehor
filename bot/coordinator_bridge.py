@@ -81,6 +81,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     from . import run as runner
     from .config import (
         ALLOWED_TOOLS,
+        OPTIONAL_MCP_SERVERS,
         load_config,
         load_instance_config,
         load_mcp_servers,
@@ -139,6 +140,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "mcpServers": mcp_servers,
         "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": ALLOWED_TOOLS,
+        "optionalMcpServers": OPTIONAL_MCP_SERVERS,
     }
 
 
