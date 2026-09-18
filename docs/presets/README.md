@@ -70,7 +70,7 @@ Unused presets waste Docker build time and image size. The `node` and `go` prese
 
 | Env Preset | What it installs | When you need it |
 |------------|-----------------|------------------|
-| [`node`](envs.md#node) | nvm + Node.js 22 LTS + npm/npx | Frontend repos, any repo with `package.json` |
+| [`node`](envs.md#node) | nvm + Node.js 24 LTS + npm/npx | Frontend repos, any repo with `package.json` |
 | [`go`](envs.md#go) | goenv + Go 1.24/1.25 + golangci-lint | Go repos, any repo with `go.mod` |
 | [`patternfly-mcp`](envs.md#patternfly-mcp) | PatternFly component guidance MCP server | Frontend repos using PatternFly (requires `node`) |
 | [`browser`](envs.md#browser) | Chromium + chrome-devtools MCP | UI repos needing visual verification/screenshots |
