@@ -1,7 +1,10 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { createServer } from "node:net";
 import { isAbsolute } from "node:path";
+
+import { abortReason, assertPositiveInteger, boundedOperation, stableJson } from "../shared";
 
 import {
   buildOpenCodeEnvironment,
@@ -11,6 +14,7 @@ import {
 } from "./environment";
 
 export const OPENCODE_VERSION = "1.18.29" as const;
+const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
 
 /** Capabilities provided by the pinned server/SDK protocol, not /global/health. */
 export const OPENCODE_V1_CAPABILITIES = ["sse", "sessions"] as const;
@@ -70,7 +74,10 @@ type RequiredOpenCodeSupervisorOption =
   | "killVerificationTimeoutMs";
 
 export class OpenCodeReadinessError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly deterministic = false,
+  ) {
     super(message);
     this.name = "OpenCodeReadinessError";
   }
@@ -98,6 +105,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private _crashError?: Error;
   private crashController = new AbortController();
   private outputCleanup?: () => void;
+  private startupOutput = "";
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
     this.options = {
@@ -112,9 +120,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     };
     assertConfiguredBinary(this.options.command);
     assertApprovedHostname(this.options.hostname);
-    assertPositiveInteger(this.options.startupTimeoutMs, "startupTimeoutMs");
-    assertPositiveInteger(this.options.shutdownTimeoutMs, "shutdownTimeoutMs");
-    assertPositiveInteger(this.options.killVerificationTimeoutMs, "killVerificationTimeoutMs");
+    assertPositiveInteger(this.options.startupTimeoutMs, "startupTimeoutMs", "OpenCode");
+    assertPositiveInteger(this.options.shutdownTimeoutMs, "shutdownTimeoutMs", "OpenCode");
+    assertPositiveInteger(
+      this.options.killVerificationTimeoutMs,
+      "killVerificationTimeoutMs",
+      "OpenCode",
+    );
   }
 
   get info(): OpenCodeServerInfo | undefined {
@@ -142,17 +154,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
     const allocatePortFn = this.options.allocatePort ?? allocatePort;
     const port = this.options.port ?? (await allocatePortFn());
-    const environment = buildOpenCodeEnvironment({
-      ...this.options,
-      base: this.options.config
-        ? {
-            ...(this.options.base ?? process.env),
-            OPENCODE_CONFIG_CONTENT: stableJson(this.options.config),
-          }
-        : this.options.base,
-    });
+    const environment = buildOpenCodeEnvironment(this.options);
+    if (this.options.config) {
+      environment.OPENCODE_CONFIG_CONTENT = stableJson(this.options.config);
+    }
     const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
     const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
+    this.startupOutput = "";
     const child = spawnProcess(this.options.command, args, {
       cwd: directory,
       env: environment,
@@ -167,9 +175,15 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
     const exitPromise = this.observeExit(child);
     const startupSignal = AbortSignal.any([signal, this.crashSignal]);
+    const startupDeadline = Date.now() + this.options.startupTimeoutMs;
     try {
-      const baseUrl = await this.waitForListening(child, startupSignal, port);
-      const health = await this.waitForReadiness(baseUrl, directory, startupSignal, environment);
+      const baseUrl = await this.waitForListening(child, startupSignal, port, startupDeadline);
+      const health = await this.waitForReadiness(
+        baseUrl,
+        directory,
+        startupSignal,
+        startupDeadline,
+      );
       const missingCapabilities = (this.options.requiredCapabilities ?? []).filter(
         (capability) => !(OPENCODE_V1_CAPABILITIES as readonly string[]).includes(capability),
       );
@@ -188,8 +202,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       };
       return this.server;
     } catch (error) {
+      const startupError = this.withStartupOutput(error);
       await this.stop();
-      throw error;
+      throw startupError;
     } finally {
       // Keep exitPromise referenced so a rejected child-exit observation cannot
       // become an unhandled rejection after startup has already failed.
@@ -254,9 +269,12 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
         this.exited = true;
         if (!this.stopping && !this._crashError) {
-          this._crashError = new Error(
-            `OpenCode server exited unexpectedly (code=${code ?? "null"}, signal=${signal ?? "none"})`,
+          const error = new Error(
+            this.server
+              ? `OpenCode server crashed after startup (code=${code ?? "null"}, signal=${signal ?? "none"})`
+              : `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signal ?? "none"})`,
           );
+          this._crashError = this.server ? error : this.withStartupOutput(error);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
@@ -265,24 +283,33 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onError = (error: Error): void => {
         this.exited = true;
         if (!this.stopping) {
-          this._crashError = error;
-          this.crashController.abort(error);
+          this._crashError = this.server ? error : this.withStartupOutput(error);
+          this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
-        reject(error);
+        reject(this._crashError ?? error);
       };
       child.once("exit", onExit);
       child.once("error", onError);
     });
   }
 
+  private withStartupOutput(value: unknown): Error {
+    const error = value instanceof Error ? value : new Error(String(value));
+    if (this.startupOutput && !error.message.includes("OpenCode startup output (tail)")) {
+      const diagnostic = this.startupOutput.slice(-STARTUP_DIAGNOSTIC_LIMIT);
+      error.message = `${error.message}\nOpenCode startup output (tail):\n${diagnostic}`;
+    }
+    return error;
+  }
+
   private waitForListening(
     child: ChildProcess,
     signal: AbortSignal,
     expectedPort: number,
+    deadline: number,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
-      let output = "";
       let timer: NodeJS.Timeout | undefined;
       let settled = false;
 
@@ -301,8 +328,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       };
       const onData = (chunk: Buffer | string): void => {
         if (settled) return;
-        output = appendBoundedOpenCodeOutput(output, chunk);
-        for (const line of output.split(/\r?\n/)) {
+        this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, chunk);
+        for (const line of this.startupOutput.split(/\r?\n/)) {
           const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
           if (match) {
             try {
@@ -342,8 +369,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       };
       const onExit = (code: number | null, signalName: NodeJS.Signals | null): void => {
         finish(
-          new Error(
-            `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signalName ?? "none"})`,
+          this.withStartupOutput(
+            new Error(
+              `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signalName ?? "none"})`,
+            ),
           ),
         );
       };
@@ -359,11 +388,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       timer = setTimeout(
         () =>
           finish(
-            new OpenCodeReadinessError(
-              `Timed out waiting for OpenCode server readiness after ${this.options.startupTimeoutMs}ms`,
+            this.withStartupOutput(
+              new OpenCodeReadinessError(
+                `Timed out waiting for OpenCode server readiness after ${this.options.startupTimeoutMs}ms`,
+              ),
             ),
           ),
-        this.options.startupTimeoutMs,
+        Math.max(0, deadline - Date.now()),
       );
       child.stdout?.on("data", onData);
       child.stderr?.on("data", onData);
@@ -377,20 +408,20 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     baseUrl: string,
     directory: string,
     signal: AbortSignal,
-    environment: Readonly<Record<string, string>>,
+    deadline: number,
   ): Promise<OpenCodeHealth> {
-    const readiness =
-      this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch, environment);
-    const deadline = Date.now() + this.options.startupTimeoutMs;
+    const readiness = this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch);
     let lastError: unknown;
 
     while (Date.now() < deadline) {
       if (signal.aborted) throw abortReason(signal);
       try {
-        const health = await boundedReadiness(
+        const health = await boundedOperation(
           (requestSignal) => readiness.check(baseUrl, directory, requestSignal),
           signal,
           deadline,
+          "OpenCode readiness",
+          new OpenCodeReadinessError("OpenCode readiness deadline exceeded"),
         );
         if (
           this.options.expectedVersion &&
@@ -398,10 +429,12 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         ) {
           throw new OpenCodeReadinessError(
             `OpenCode version ${health.version} does not satisfy expected version ${String(this.options.expectedVersion)}`,
+            true,
           );
         }
         return health;
       } catch (error) {
+        if (error instanceof OpenCodeReadinessError && error.deterministic) throw error;
         lastError = error;
         if (Date.now() < deadline) await delay(50, signal);
       }
@@ -422,10 +455,8 @@ export function appendBoundedOpenCodeOutput(output: string, chunk: Buffer | stri
 export class HttpOpenCodeReadiness implements OpenCodeReadiness {
   private readonly fetchImpl: OpenCodeFetch;
 
-  constructor(fetchImpl?: OpenCodeFetch, environment?: Readonly<Record<string, string>>) {
-    this.fetchImpl = environment
-      ? createOpenCodeFetch(environment, fetchImpl)
-      : (fetchImpl ?? globalThis.fetch);
+  constructor(fetchImpl?: OpenCodeFetch) {
+    this.fetchImpl = createOpenCodeFetch(fetchImpl);
   }
 
   async check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth> {
@@ -455,9 +486,20 @@ export class HttpOpenCodeReadiness implements OpenCodeReadiness {
       );
     }
     const path = await readJson(pathResponse, "path");
-    if (path.directory !== directory) {
+    if (typeof path.directory !== "string") {
       throw new OpenCodeReadinessError(
         `OpenCode path check resolved ${String(path.directory)} instead of ${directory}`,
+        true,
+      );
+    }
+    const [expectedDirectory, actualDirectory] = await Promise.all([
+      realpathOrOriginal(directory),
+      realpathOrOriginal(path.directory),
+    ]);
+    if (actualDirectory !== expectedDirectory) {
+      throw new OpenCodeReadinessError(
+        `OpenCode path check resolved ${path.directory} instead of ${directory}`,
+        true,
       );
     }
 
@@ -546,18 +588,6 @@ export function hashOpenCodeConfig(config: Record<string, unknown>): string {
   return createHash("sha256").update(stableJson(config)).digest("hex");
 }
 
-function stableJson(value: unknown): string {
-  if (value === undefined) return "null";
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .filter((key) => object[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
-    .join(",")}}`;
-}
-
 function parseCapabilities(value: unknown): readonly string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
@@ -570,6 +600,14 @@ function matchesVersion(version: string, expected: string | RegExp): boolean {
   if (typeof expected === "string") return version === expected;
   expected.lastIndex = 0;
   return expected.test(version);
+}
+
+async function realpathOrOriginal(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return path;
+  }
 }
 
 async function readJson(response: Response, name: string): Promise<Record<string, unknown>> {
@@ -585,12 +623,6 @@ async function readJson(response: Response, name: string): Promise<Record<string
   return value as Record<string, unknown>;
 }
 
-function abortReason(signal: AbortSignal): Error {
-  const reason = signal.reason;
-  if (reason instanceof Error) return reason;
-  return new Error(typeof reason === "string" ? reason : "OpenCode runtime aborted");
-}
-
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise((resolve, reject) => {
@@ -604,56 +636,6 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function boundedReadiness<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  signal: AbortSignal,
-  deadline: number,
-): Promise<T> {
-  const deadlineController = new AbortController();
-  const operationSignal = AbortSignal.any([signal, deadlineController.signal]);
-  const deadlineError = new OpenCodeReadinessError("OpenCode readiness deadline exceeded");
-  const remaining = deadline - Date.now();
-  let timer: NodeJS.Timeout | undefined;
-  if (remaining > 0) {
-    timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
-  } else {
-    deadlineController.abort(deadlineError);
-  }
-
-  return new Promise<T>((resolve, reject) => {
-    let pending: Promise<T> | undefined;
-    let settled = false;
-    const cleanup = (): void => {
-      if (timer) clearTimeout(timer);
-      operationSignal.removeEventListener("abort", onAbort);
-    };
-    const settle = (callback: () => void): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      callback();
-    };
-    const onAbort = (): void => settle(() => reject(abortReason(operationSignal)));
-
-    if (operationSignal.aborted) onAbort();
-    else {
-      operationSignal.addEventListener("abort", onAbort, { once: true });
-      pending = Promise.resolve().then(() => operation(operationSignal));
-      void pending.catch(() => undefined);
-      pending.then(
-        (value) => settle(() => resolve(value)),
-        (error) => settle(() => reject(error)),
-      );
-    }
-  });
-}
-
-function assertPositiveInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`OpenCode ${name} must be a positive safe integer`);
-  }
 }
 
 function waitForExit(
