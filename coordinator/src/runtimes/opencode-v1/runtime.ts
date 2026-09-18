@@ -19,6 +19,11 @@ import {
   lastMeaningfulLine,
   redactSensitiveText,
 } from "../shared";
+import {
+  type OpenCodeV1ConfigInput,
+  type RenderedOpenCodeV1Config,
+  renderOpenCodeV1Config,
+} from "./config";
 import type { ProxyEnvironment } from "./environment";
 import {
   buildOpenCodeEnvironment,
@@ -33,12 +38,18 @@ import {
   type OpenCodeSupervisorOptions,
 } from "./process-supervisor";
 
+export type OpenCodeV1RuntimeConfig = Omit<OpenCodeV1ConfigInput, "model"> & {
+  model?: string;
+};
+
 export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   policyVersion?: string;
   reconciliationTimeoutMs?: number;
   reconciliationMessageLimit?: number;
   requestTimeoutMs?: number;
   cleanupTimeoutMs?: number;
+  /** Deployment/workflow config merged with the current run's provider/model. */
+  config?: OpenCodeV1RuntimeConfig;
   server?: OpenCodeSupervisorOptions;
   supervisor?: OpenCodeServerController;
   clientFactory?: OpenCodeClientFactory;
@@ -86,6 +97,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   private readonly policyVersion: string;
   private readonly supervisor: OpenCodeServerController;
   private readonly clientEnvironment: Record<string, string>;
+  private readonly config?: OpenCodeV1RuntimeConfig;
   private readonly reconciliationTimeoutMs: number;
   private readonly reconciliationMessageLimit: number;
   private readonly requestTimeoutMs: number;
@@ -98,6 +110,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
   constructor(options: OpenCodeV1RuntimeOptions = {}) {
     this.policyVersion = options.policyVersion ?? "opencode-v1";
+    this.config = options.config;
     this.clientEnvironment = buildOpenCodeEnvironment(options);
     this.reconciliationTimeoutMs = options.reconciliationTimeoutMs ?? 1_000;
     this.reconciliationMessageLimit = options.reconciliationMessageLimit ?? 100;
@@ -178,6 +191,13 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     );
 
     try {
+      const renderedConfig = this.renderConfig(input);
+      this.supervisor.configure(
+        renderedConfig.config,
+        renderedConfig.hash,
+        renderedConfig.requiredEnvironment,
+        renderedConfig.packageLock,
+      );
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
       detachCrash = linkAbort(this.supervisor.crashSignal, active.controller);
       const directory = server.directory;
@@ -399,6 +419,15 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     this.stopped = true;
     this.active?.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
     await this.supervisor.stop();
+  }
+
+  private renderConfig(input: RehorRun): RenderedOpenCodeV1Config {
+    const configured = this.config ?? {};
+    return renderOpenCodeV1Config({
+      ...configured,
+      model: configured.model ?? input.provider.requestedModel,
+      providerId: configured.providerId ?? input.provider.id,
+    });
   }
 
   private async cleanup(active: ActiveRun): Promise<Error | undefined> {

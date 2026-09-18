@@ -5,6 +5,7 @@ import {
   type ClaudeAgentRuntimeOptions,
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
+import { OpenCodeV1Runtime, type OpenCodeV1RuntimeOptions } from "./runtimes/opencode-v1";
 
 export const DEFAULT_RUNTIME_ID = "claude";
 
@@ -76,6 +77,26 @@ export function createDefaultRuntimeRegistry(
   claudeOptions: ClaudeAgentRuntimeOptions = {},
 ): RuntimeFactoryRegistry {
   return new RuntimeFactoryRegistry([createClaudeAgentRuntimeFactory(claudeOptions)]);
+}
+
+/** Registers OpenCode without changing the default production runtime selection. */
+export function createOpenCodeV1RuntimeFactory(
+  options: OpenCodeV1RuntimeOptions = {},
+): AgentRuntimeFactory {
+  return {
+    runtimeId: "opencode-v1",
+    create(context) {
+      const configured = options.config ?? {};
+      return new OpenCodeV1Runtime({
+        ...options,
+        config: {
+          ...configured,
+          model: configured.model ?? context.run.provider.requestedModel,
+          providerId: configured.providerId ?? context.run.provider.id,
+        },
+      });
+    },
+  };
 }
 
 export function resolveRuntimeSelection(runtimeId?: string | null): RuntimeSelection {

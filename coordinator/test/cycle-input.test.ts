@@ -281,6 +281,7 @@ describe("Python preflight bridge", () => {
     const result = await bridge.prepareConfig({ scriptDir: root, label: "test-label" });
 
     expect(result.mcpServers).toEqual(response.result.mcpServers);
+    expect(result.openCodeMcpServers).toEqual(response.result.mcpServers);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
   });
 });

@@ -58,8 +58,10 @@ export interface ConfigPreparationResult {
   remoteAgentDir: string | null;
   sharedAgentDir: string | null;
   claudeMdPath: string;
-  /** Additional MCP servers loaded from bot/persona config. */
+  /** Additional MCP servers loaded from bot/persona config with env references preserved. */
   mcpServers?: Readonly<Record<string, McpServerConfig>>;
+  /** Explicit OpenCode view of the same reference-only MCP configuration. */
+  openCodeMcpServers?: Readonly<Record<string, McpServerConfig>>;
   /** Same allowed tool list used by the legacy Claude runner. */
   allowedTools?: readonly string[];
 }

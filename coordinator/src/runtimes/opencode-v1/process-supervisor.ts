@@ -1,8 +1,9 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { isAbsolute, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 
 import {
   abortReason,
@@ -11,6 +12,7 @@ import {
   redactSensitiveText,
   stableJson,
 } from "../shared";
+import type { OpenCodePackageLock } from "./config";
 
 import {
   buildOpenCodeEnvironment,
@@ -64,6 +66,9 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   /** Bound verification after SIGKILL when a group ignores the grace signal. */
   killVerificationTimeoutMs?: number;
   config?: Record<string, unknown>;
+  packageLock?: OpenCodePackageLock;
+  /** Optional caller-owned state directory; otherwise one is created per start. */
+  stateDirectory?: string;
   readiness?: OpenCodeReadiness;
   /** Trusted direct-loopback transport override for readiness checks. */
   fetch?: OpenCodeFetch;
@@ -101,6 +106,13 @@ export interface OpenCodeServerController {
   readonly info: OpenCodeServerInfo | undefined;
   readonly crashError: Error | undefined;
   readonly crashSignal: AbortSignal;
+  /** Replace the validated cycle configuration before the child starts. */
+  configure(
+    config: Record<string, unknown>,
+    expectedConfigHash?: string,
+    passthrough?: readonly string[],
+    packageLock?: OpenCodePackageLock,
+  ): void;
   start(directory: string, signal: AbortSignal): Promise<OpenCodeServerInfo>;
   stop(): Promise<void>;
 }
@@ -121,6 +133,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private outputCleanup?: () => void;
   private startupOutput = "";
   private startupOutputTruncated = false;
+  private stateDirectory?: string;
+  private ownsStateDirectory = false;
+  private packageLock?: OpenCodePackageLock;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
     this.options = {
@@ -133,6 +148,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       killVerificationTimeoutMs:
         options.killVerificationTimeoutMs ?? Math.min(options.shutdownTimeoutMs ?? 5_000, 1_000),
     };
+    this.packageLock = options.packageLock;
     assertConfiguredBinary(this.options.command);
     assertApprovedHostname(this.options.hostname);
     assertPositiveInteger(this.options.startupTimeoutMs, "startupTimeoutMs", "OpenCode");
@@ -142,6 +158,19 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       "killVerificationTimeoutMs",
       "OpenCode",
     );
+  }
+
+  configure(
+    config: Record<string, unknown>,
+    expectedConfigHash = hashOpenCodeConfig(config),
+    passthrough: readonly string[] = [],
+    packageLock?: OpenCodePackageLock,
+  ): void {
+    if (this.child || this.server) throw new Error("cannot reconfigure a running OpenCode server");
+    this.options.config = config;
+    this.options.expectedConfigHash = expectedConfigHash;
+    this.packageLock = packageLock;
+    this.options.passthrough = [...new Set([...(this.options.passthrough ?? []), ...passthrough])];
   }
 
   get info(): OpenCodeServerInfo | undefined {
@@ -182,20 +211,62 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
     const allocatePortFn = this.options.allocatePort ?? allocatePort;
     const port = this.options.port ?? (await allocatePortFn());
-    const environment = buildOpenCodeEnvironment(this.options);
+    const stateDirectory = await this.prepareStateDirectory();
+    const environment = buildOpenCodeEnvironment({
+      ...this.options,
+      configDirectory: stateDirectory,
+      databasePath: join(stateDirectory, "opencode.db"),
+    });
+    // These flags are controlled by the runner, not inherited from ambient env.
+    // Project CLAUDE.md and .claude/skills compatibility remain enabled.
+    environment.OPENCODE_DISABLE_AUTOUPDATE = "1";
+    environment.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
+    environment.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
+    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
+    // OpenCode uses this value for its global home while shell tools retain HOME.
+    environment.OPENCODE_TEST_HOME = stateDirectory;
+    environment.NPM_CONFIG_OFFLINE = "true";
+    environment.npm_config_offline = "true";
     if (this.options.config) {
-      environment.OPENCODE_CONFIG_CONTENT = stableJson(this.options.config);
+      environment.OPENCODE_CONFIG = join(stateDirectory, "opencode.json");
+      try {
+        await Promise.all([
+          writeFile(
+            join(stateDirectory, "opencode.json"),
+            `${stableJson(this.options.config)}\n`,
+            "utf8",
+          ),
+          ...(this.packageLock === undefined
+            ? []
+            : [
+                writeFile(
+                  join(stateDirectory, "opencode-packages.lock.json"),
+                  `${stableJson(this.packageLock)}\n`,
+                  "utf8",
+                ),
+              ]),
+        ]);
+      } catch (error) {
+        await this.cleanupStateDirectory();
+        throw error;
+      }
     }
     const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
     const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
     this.startupOutput = "";
     this.startupOutputTruncated = false;
-    const child = spawnProcess(this.options.command, args, {
-      cwd: workspaceDirectory,
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcess;
+    try {
+      child = spawnProcess(this.options.command, args, {
+        cwd: workspaceDirectory,
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      await this.cleanupStateDirectory();
+      throw error;
+    }
     this.child = child;
     this.exited = false;
     this.termSent = false;
@@ -242,6 +313,18 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     }
   }
 
+  private async prepareStateDirectory(): Promise<string> {
+    if (this.options.stateDirectory !== undefined) {
+      await mkdir(this.options.stateDirectory, { recursive: true });
+      this.stateDirectory = this.options.stateDirectory;
+      this.ownsStateDirectory = false;
+      return this.options.stateDirectory;
+    }
+    this.stateDirectory = await mkdtemp(join(tmpdir(), "rehor-opencode-"));
+    this.ownsStateDirectory = true;
+    return this.stateDirectory;
+  }
+
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     const promise = this.stopInternal();
@@ -257,6 +340,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     if (!this.child) {
       this.outputCleanup?.();
       this.server = undefined;
+      await this.cleanupStateDirectory();
       return;
     }
     if (this.stopping) return;
@@ -281,7 +365,16 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       this.child = undefined;
       this.server = undefined;
       this.stopping = false;
+      await this.cleanupStateDirectory();
     }
+  }
+
+  private async cleanupStateDirectory(): Promise<void> {
+    if (!this.stateDirectory || !this.ownsStateDirectory) return;
+    const directory = this.stateDirectory;
+    this.stateDirectory = undefined;
+    this.ownsStateDirectory = false;
+    await rm(directory, { recursive: true, force: true });
   }
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {

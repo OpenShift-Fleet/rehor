@@ -193,12 +193,21 @@ def load_config(script_dir: Path) -> Config:
     )
 
 
-def load_mcp_servers(script_dir: Path) -> dict:
-    """Load and merge MCP servers from bot and persona configs.
+def load_mcp_servers(
+    script_dir: Path,
+    *,
+    resolve_env: bool = True,
+    include_project: bool = False,
+) -> dict:
+    """Load the complete merged MCP configuration for each runtime.
 
-    The root .mcp.json (bot-memory, chrome-devtools) is loaded automatically
-    by the SDK via setting_sources=["project"]. This function loads additional
-    servers: bot-specific (bot/mcp.json for mcp-atlassian) and per-persona.
+    Claude Code can discover the project-level ``.mcp.json`` itself, but the
+    provider-neutral coordinator cannot rely on that ambient discovery. The
+    OpenCode bridge opts into ``include_project=True`` so it receives the
+    protected project servers explicitly; the legacy default remains unchanged.
+
+    ``resolve_env=False`` preserves ``${VAR}`` references for the OpenCode
+    renderer; the resolved default remains for the legacy Claude path.
     """
     servers: dict = {}
 
@@ -209,7 +218,7 @@ def load_mcp_servers(script_dir: Path) -> dict:
         with open(bot_mcp) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     merged_mcp = script_dir / "data" / "merged-mcp.json"
     if merged_mcp.exists():
@@ -217,13 +226,23 @@ def load_mcp_servers(script_dir: Path) -> dict:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
             if name not in servers:
-                servers[name] = _resolve_env_vars(cfg)
+                servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
         with open(mcp_file) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
+
+    # Project-level servers are protected by the merge contract and must win
+    # over optional persona definitions. This explicit result is consumed by
+    # the OpenCode renderer; Claude's project discovery remains compatible.
+    root_mcp = script_dir / ".mcp.json"
+    if include_project and root_mcp.exists():
+        with open(root_mcp) as f:
+            data = json.load(f)
+        for name, cfg in data.get("mcpServers", {}).items():
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
     return servers
 
 

@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  createDefaultRuntimeRegistry,
+  createOpenCodeV1RuntimeFactory,
   executeSelectedRun,
   type RehorEvent,
   type RehorRun,
@@ -8,6 +10,7 @@ import {
   RuntimeFactoryRegistry,
   resolveRuntimeSelection,
 } from "../src";
+import type { OpenCodeServerController } from "../src/runtimes/opencode-v1";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
 
 const run: RehorRun = {
@@ -58,6 +61,81 @@ describe("runtime selection", () => {
     expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
     expect(resolveRuntimeSelection("opencode")).toEqual({ runtimeId: "opencode" });
     expect(() => resolveRuntimeSelection("bad runtime")).toThrow(RuntimeFactoryError);
+  });
+
+  it("provides an explicit OpenCode factory without changing the default registry", async () => {
+    const registry = new RuntimeFactoryRegistry([createOpenCodeV1RuntimeFactory()]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+
+    expect(registry.runtimeIds).toEqual(["opencode-v1"]);
+    await expect(runtime.start(new AbortController().signal)).resolves.toMatchObject({
+      runtimeId: "opencode-v1",
+    });
+    await runtime.stop();
+    expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
+    expect(createDefaultRuntimeRegistry().runtimeIds).toEqual(["claude"]);
+  });
+
+  it("forwards configured OpenCode options into the created adapter", async () => {
+    const supervisor: OpenCodeServerController = {
+      crashSignal: new AbortController().signal,
+      get info() {
+        return undefined;
+      },
+      get crashError() {
+        return undefined;
+      },
+      configure: vi.fn(),
+      start: vi.fn(async () => {
+        throw new Error("supervisor should not start for invalid configuration");
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        supervisor,
+        config: { allowedTools: ["UnknownTool"] },
+      }),
+    ]);
+
+    const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
+
+    expect(result.events.at(-1)?.payload).toMatchObject({ state: "failed" });
+    expect(supervisor.configure).not.toHaveBeenCalled();
+    expect(supervisor.start).not.toHaveBeenCalled();
+  });
+
+  it("fills configured OpenCode model with the selected run provider", async () => {
+    const configure = vi.fn();
+    const supervisor: OpenCodeServerController = {
+      crashSignal: new AbortController().signal,
+      get info() {
+        return undefined;
+      },
+      get crashError() {
+        return undefined;
+      },
+      configure,
+      start: vi.fn(async () => {
+        throw new Error("stop after configuration capture");
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        supervisor,
+        config: { model: "factory-model" },
+      }),
+    ]);
+
+    await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
+
+    expect(configure).toHaveBeenCalled();
+    expect(configure.mock.calls[0]?.[0]).toMatchObject({
+      model: "vertex/factory-model",
+      enabled_providers: ["vertex"],
+    });
   });
 
   it("registers and resolves factories without coupling to providers", async () => {
