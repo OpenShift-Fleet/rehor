@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +25,7 @@ import {
   OpenCodeServerSupervisor,
   type OpenCodeSpawn,
   OpenCodeV1Runtime,
+  type OpenCodeV1RuntimeOptions,
 } from "../src/runtimes/opencode-v1";
 
 class FakeChild extends EventEmitter {
@@ -97,6 +98,7 @@ interface FakeRuntimeOptions {
   deleteGate?: Promise<unknown>;
   cleanupTimeoutMs?: number;
   crashError?: Error;
+  config?: OpenCodeV1RuntimeOptions["config"];
 }
 
 interface FactoryCall {
@@ -109,6 +111,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
   const calls = {
     abort: 0,
     delete: 0,
+    start: 0,
     messages: 0,
     stop: 0,
     pathGet: [] as unknown[],
@@ -116,6 +119,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     streamStarts: [] as number[],
     create: [] as unknown[],
     prompt: [] as unknown[],
+    configure: [] as Array<readonly unknown[]>,
     messageRequests: [] as unknown[],
     statusRequests: [] as unknown[],
     deleteRequests: [] as unknown[],
@@ -146,7 +150,11 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     get crashError() {
       return crashError;
     },
+    configure(...args: unknown[]) {
+      calls.configure.push(args);
+    },
     async start() {
+      calls.start += 1;
       activeServer = server;
       return server;
     },
@@ -222,6 +230,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     ...(options.cleanupTimeoutMs === undefined
       ? {}
       : { cleanupTimeoutMs: options.cleanupTimeoutMs }),
+    ...(options.config === undefined ? {} : { config: options.config }),
   });
   return { calls, runtime, crashController, supervisor };
 }
@@ -276,9 +285,10 @@ describe("OpenCode environment", () => {
         NO_PROXY: "memory-server,proxy",
         SECRET_TOKEN: "must-not-leak",
         OPENCODE_CONFIG_CONTENT: "ambient-config-must-not-leak",
+        NPM_CONFIG_REGISTRY: "https://registry.example.invalid",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
       },
-      passthrough: ["REHOR_MODEL_PROXY_TOKEN"],
+      passthrough: ["REHOR_MODEL_PROXY_TOKEN", "OPENCODE_CONFIG_CONTENT", "NPM_CONFIG_REGISTRY"],
       noProxyHosts: ["model-gateway"],
     });
 
@@ -296,6 +306,7 @@ describe("OpenCode environment", () => {
     expect(environment.no_proxy).toBe(environment.NO_PROXY);
     expect(environment.SECRET_TOKEN).toBeUndefined();
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
   });
 
   it("preserves external proxy use while adding required internal bypasses", () => {
@@ -530,6 +541,12 @@ describe("OpenCode runtime", () => {
     });
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
+    expect(calls.configure).toHaveLength(1);
+    expect(calls.configure[0]?.[0]).toMatchObject({
+      model: "rehor-openai/gpt-5.6-luna",
+      enabled_providers: ["rehor-openai"],
+    });
+    expect(calls.configure[0]?.[1]).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
     expect(calls.factory).toHaveLength(1);
     expect(calls.factory[0]).toMatchObject({
       server: { baseUrl: "http://127.0.0.1:41236" },
@@ -576,6 +593,20 @@ describe("OpenCode runtime", () => {
     expect(events.map((event) => event.kind)).toEqual(["run", "model", "model", "run", "terminal"]);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
+  });
+
+  it("rejects invalid rendered configuration before starting the supervisor", async () => {
+    const { calls, runtime } = fakeRuntime({
+      config: { allowedTools: ["UnknownTool"] },
+      events: [],
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(calls.start).toBe(0);
+    expect(calls.factory).toHaveLength(0);
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("primes the SSE stream before creating the OpenCode session", async () => {
@@ -2065,6 +2096,11 @@ describe("OpenCode process supervisor", () => {
     });
     expect(child.stdout.listenerCount("data")).toBe(1);
     expect(child.stderr.listenerCount("data")).toBe(1);
+    if (!spawnCall) throw new Error("OpenCode process was not spawned");
+    const configPath = String((spawnCall.options.env as NodeJS.ProcessEnv).OPENCODE_CONFIG);
+    await expect(readFile(configPath, "utf8")).resolves.toBe(
+      '{"nested":{"a":"stable","b":true},"z":1}\n',
+    );
 
     expect(spawnCall).toMatchObject({
       command: "/usr/local/bin/opencode-test",
@@ -2075,7 +2111,15 @@ describe("OpenCode process supervisor", () => {
         env: expect.objectContaining({
           HTTP_PROXY: "http://proxy:3128",
           NO_PROXY: expect.stringContaining("127.0.0.1"),
-          OPENCODE_CONFIG_CONTENT: '{"nested":{"a":"stable","b":true},"z":1}',
+          OPENCODE_CONFIG: expect.stringMatching(/\/opencode\.json$/),
+          OPENCODE_CONFIG_DIR: expect.stringMatching(/rehor-opencode-/),
+          OPENCODE_DB: expect.stringMatching(/rehor-opencode-.*\/opencode\.db$/),
+          OPENCODE_TEST_HOME: expect.stringMatching(/rehor-opencode-/),
+          NPM_CONFIG_OFFLINE: "true",
+          OPENCODE_DISABLE_AUTOUPDATE: "1",
+          OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+          OPENCODE_DISABLE_MODELS_FETCH: "1",
         }),
       },
     });

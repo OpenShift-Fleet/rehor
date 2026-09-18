@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createOpenCodeV1RuntimeFactory,
   executeSelectedRun,
   type RehorEvent,
   type RehorRun,
@@ -58,6 +59,19 @@ describe("runtime selection", () => {
     expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
     expect(resolveRuntimeSelection("opencode")).toEqual({ runtimeId: "opencode" });
     expect(() => resolveRuntimeSelection("bad runtime")).toThrow(RuntimeFactoryError);
+  });
+
+  it("provides an explicit OpenCode factory without changing the default registry", async () => {
+    const registry = new RuntimeFactoryRegistry([createOpenCodeV1RuntimeFactory()]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+
+    expect(registry.runtimeIds).toEqual(["opencode-v1"]);
+    await expect(runtime.start(new AbortController().signal)).resolves.toMatchObject({
+      runtimeId: "opencode-v1",
+    });
+    await runtime.stop();
+    expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
   });
 
   it("registers and resolves factories without coupling to providers", async () => {

@@ -111,7 +111,14 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     install_skills(script_dir, workflow_dir, active_envs)
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
-    mcp_servers = load_mcp_servers(script_dir)
+    # Keep references on the process-safe boundary. The legacy runner still
+    # calls load_mcp_servers(resolve_env=True) before its own sanitization.
+    mcp_servers = load_mcp_servers(
+        script_dir,
+        resolve_env=False,
+        include_project=True,
+    )
+    opencode_mcp_servers = mcp_servers
 
     return {
         "model": cycle_model,
@@ -130,6 +137,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "sharedAgentDir": str(shared_dir) if shared_dir else None,
         "claudeMdPath": str(script_dir / "CLAUDE.md"),
         "mcpServers": mcp_servers,
+        "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": ALLOWED_TOOLS,
     }
 

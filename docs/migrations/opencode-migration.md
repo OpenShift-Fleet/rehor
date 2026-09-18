@@ -316,6 +316,40 @@ Exact model IDs remain deployment configuration. Do not hardcode model names
 until OpenAI account access, pricing, tool support, and regional requirements
 are confirmed.
 
+### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
+
+The coordinator's `runtimes/opencode-v1/config.ts` owns the translation from
+provider-neutral cycle data to this OpenCode V1 subset. Call
+`renderOpenCodeV1ConfigForCycle()` with the Python-prepared model, allowed tools,
+and `openCodeMcpServers` data, then supply deployment-owned provider/plugin
+fields separately. The renderer:
+
+- normalizes bare models with the deployment provider ID;
+- maps stdio MCP to `local` and HTTP/SSE MCP to `remote`;
+- converts Claude-style allowed tools to explicit OpenCode permissions and
+  denies unlisted built-ins and configured MCP servers;
+- converts `${VAR}` values to OpenCode `{env:VAR}` references and returns the
+  required environment allowlist without serializing resolved credentials;
+- rejects unknown tools, malformed transports, literal credentials, and
+  unpinned package references;
+- emits stable JSON, a content hash, and
+  `opencode-packages.lock.json` containing every exact provider/plugin package
+  version.
+
+`OpenCodeV1Runtime` renders and validates the snapshot before calling the
+supervisor. The supervisor writes the snapshot to a per-cycle config directory,
+sets `OPENCODE_CONFIG`, isolates OpenCode's global home/config/database paths,
+and enables offline npm resolution plus the pinned runtime's update/download
+safeguards. Package installation is not a runtime responsibility: the image
+must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
+The default Claude runtime registry and production runtime selection remain
+unchanged.
+
+OpenCode receives the generated root `CLAUDE.md` and project `.claude/skills`
+through its project discovery path. Persona selection remains in the existing
+instruction assembly/preflight boundary; arbitrary global `CLAUDE.md`,
+`AGENTS.md`, skills, and plugin configuration are not inherited.
+
 Provider selection remains independent from runtime selection. During canary,
 OpenCode may select either the existing Vertex route or the OpenAI Chat
 Completions route. If a selected model requires OpenAI Responses API semantics,

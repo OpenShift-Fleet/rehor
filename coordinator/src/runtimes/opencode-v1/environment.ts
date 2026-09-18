@@ -1,3 +1,12 @@
+const BLOCKED_PASSTHROUGH = new Set([
+  "OPENCODE_CONFIG",
+  "OPENCODE_CONFIG_CONTENT",
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_DB",
+  "OPENCODE_TEST_HOME",
+]);
+const BLOCKED_PASSTHROUGH_PREFIXES = ["OPENCODE_", "NPM_CONFIG_", "npm_config_"] as const;
+
 const ENVIRONMENT_ALLOWLIST = [
   "HOME",
   "LANG",
@@ -38,6 +47,10 @@ export interface OpenCodeEnvironmentOptions {
   /** Explicitly permitted variables needed by a provider or an MCP server. */
   passthrough?: readonly string[];
   noProxyHosts?: readonly string[];
+  /** Per-cycle OpenCode global config directory. Ambient user config is excluded. */
+  configDirectory?: string;
+  /** Per-cycle OpenCode database/state path. */
+  databasePath?: string;
 }
 
 export type OpenCodeFetch = (request: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -57,7 +70,14 @@ export function buildOpenCodeEnvironment(
   const environment: Record<string, string> = {};
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
-  for (const name of options.passthrough ?? []) copyIfPresent(environment, base, name);
+  for (const name of options.passthrough ?? []) {
+    if (
+      !BLOCKED_PASSTHROUGH.has(name) &&
+      !BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix))
+    ) {
+      copyIfPresent(environment, base, name);
+    }
+  }
 
   const proxy = options.proxy ?? {
     httpProxy: base.HTTP_PROXY ?? base.http_proxy,
@@ -76,6 +96,10 @@ export function buildOpenCodeEnvironment(
   const noProxy = [...new Set(noProxyHosts.filter(Boolean))].join(",");
   environment.NO_PROXY = noProxy;
   environment.no_proxy = noProxy;
+  if (options.configDirectory !== undefined) {
+    environment.OPENCODE_CONFIG_DIR = options.configDirectory;
+  }
+  if (options.databasePath !== undefined) environment.OPENCODE_DB = options.databasePath;
 
   return environment;
 }
