@@ -530,11 +530,10 @@ function renderPermissions(
   for (const tool of allowedTools) {
     const mcp = parseClaudeMcpTool(tool);
     if (mcp) {
-      if (!configured.has(mcp.server)) {
-        throw new OpenCodeConfigValidationError([
-          `allowed MCP tool '${tool}' references unconfigured server '${mcp.server}'`,
-        ]);
-      }
+      // The shared Claude policy includes MCP wildcards for persona-specific
+      // servers. An absent server cannot receive a permission, so omit that
+      // rule rather than making unrelated personas fail closed at startup.
+      if (!configured.has(mcp.server)) continue;
       const key = `${mcp.server}_${mcp.tool}`;
       permissions[key] = "allow";
       if (mcp.tool === "*") allowedMcpWildcards.add(mcp.server);

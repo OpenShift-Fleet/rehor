@@ -192,6 +192,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
     try {
       const renderedConfig = this.renderConfig(input);
+      const effectiveModel = resolveModel(renderedConfig);
       this.supervisor.configure(
         renderedConfig.config,
         renderedConfig.hash,
@@ -248,7 +249,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       active.sessionId = sessionId;
       normalization = {
         rootSessionId: sessionId,
-        requestedModel: input.provider.requestedModel,
+        requestedModel: effectiveModel.value,
         workContext,
         resultTextParts: new Map(),
         messageRoles: new Map(),
@@ -271,7 +272,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
               path: { id: sessionId },
               query: { directory },
               body: {
-                model: resolveModel(input),
+                model: {
+                  providerID: effectiveModel.providerID,
+                  modelID: effectiveModel.modelID,
+                },
                 parts: [{ type: "text", text: input.prompt }],
               },
               signal: requestSignal,
@@ -1046,15 +1050,24 @@ function qualifiedModel(info: Record<string, unknown>): string | undefined {
   return `${info.providerID}/${info.modelID}`;
 }
 
-function resolveModel(input: RehorRun): { providerID: string; modelID: string } {
-  const slash = input.provider.requestedModel.indexOf("/");
-  if (slash > 0 && slash < input.provider.requestedModel.length - 1) {
-    return {
-      providerID: input.provider.requestedModel.slice(0, slash),
-      modelID: input.provider.requestedModel.slice(slash + 1),
-    };
+function resolveModel(renderedConfig: RenderedOpenCodeV1Config): {
+  providerID: string;
+  modelID: string;
+  value: string;
+} {
+  const value = renderedConfig.config.model;
+  if (typeof value !== "string") {
+    throw new Error("OpenCode rendered configuration has no effective model");
   }
-  return { providerID: input.provider.id, modelID: input.provider.requestedModel };
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash >= value.length - 1) {
+    throw new Error("OpenCode rendered configuration has an invalid effective model");
+  }
+  return {
+    providerID: value.slice(0, slash),
+    modelID: value.slice(slash + 1),
+    value,
+  };
 }
 
 function isSessionEvent(event: OpenCodeEvent, context: NormalizationContext): boolean {

@@ -645,6 +645,51 @@ describe("OpenCode runtime", () => {
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
   });
 
+  it("submits the effective configured model used by the rendered config", async () => {
+    const { calls, runtime } = fakeRuntime({
+      config: {
+        model: "override-model",
+        providerId: "override-provider",
+        providers: [
+          {
+            id: "override-provider",
+            npm: "override-provider-package",
+            options: { apiKey: "$" + "{OVERRIDE_TOKEN}" },
+          },
+        ],
+        packages: [{ name: "override-provider-package", version: "1.0.0" }],
+      },
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    const configured = calls.configure[0]?.[0];
+    expect(configured).toMatchObject({
+      model: "override-provider/override-model",
+      enabled_providers: ["override-provider"],
+    });
+    expect(calls.configure[0]?.[1]).toBe(
+      "0a5d1baa4accdcac552bf75b28c4a7500448fc4fe97dc388eadfe67be11eaa77",
+    );
+    expect(calls.configure[0]?.[2]).toEqual(["OVERRIDE_TOKEN"]);
+    expect(calls.configure[0]?.[3]).toEqual({
+      lockfileVersion: 1,
+      packages: { "override-provider-package": "1.0.0" },
+    });
+    expect(calls.prompt[0]).toMatchObject({
+      body: {
+        model: { providerID: "override-provider", modelID: "override-model" },
+      },
+    });
+  });
+
   it("rejects invalid rendered configuration before starting the supervisor", async () => {
     const { calls, runtime } = fakeRuntime({
       config: { allowedTools: ["UnknownTool"] },
