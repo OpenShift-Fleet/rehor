@@ -207,6 +207,16 @@ describe("OpenCode V1 config renderer", () => {
     expect(rendered.requiredEnvironment).toEqual(["JIRA_URL"]);
   });
 
+  it("skips MCP permissions for servers absent from the active cycle", () => {
+    const rendered = renderOpenCodeV1Config({
+      model: "provider/model",
+      allowedTools: ["Read", "mcp__hcc-patternfly-data-view__*"],
+    });
+
+    expect(rendered.config.permission).toMatchObject({ read: "allow" });
+    expect(rendered.config.permission).not.toHaveProperty("hcc-patternfly-data-view_*");
+  });
+
   it("fails closed when a referenced package is not pinned", () => {
     expect(() =>
       renderOpenCodeV1Config({

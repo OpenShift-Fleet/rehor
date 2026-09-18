@@ -595,6 +595,31 @@ describe("OpenCode runtime", () => {
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
   });
 
+  it("submits the effective configured model used by the rendered config", async () => {
+    const { calls, runtime } = fakeRuntime({
+      config: { model: "override-model", providerId: "override-provider" },
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(calls.configure[0]?.[0]).toMatchObject({
+      model: "override-provider/override-model",
+      enabled_providers: ["override-provider"],
+    });
+    expect(calls.prompt[0]).toMatchObject({
+      body: {
+        model: { providerID: "override-provider", modelID: "override-model" },
+      },
+    });
+  });
+
   it("rejects invalid rendered configuration before starting the supervisor", async () => {
     const { calls, runtime } = fakeRuntime({
       config: { allowedTools: ["UnknownTool"] },
