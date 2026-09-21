@@ -102,7 +102,7 @@ envs:
 
 | Preset | What it provides |
 |--------|-----------------|
-| `node` | nvm + Node.js 22 LTS + npm/npx |
+| `node` | nvm + Node.js 24 LTS + npm/npx |
 | `go` | goenv + Go 1.24/1.25 + golangci-lint |
 | `patternfly-mcp` | PatternFly component guidance MCP server (requires `node`) |
 | `browser` | Chromium + chrome-devtools MCP for visual verification |
@@ -435,6 +435,11 @@ openshiftResources:
 The secret needs two keys: `jira-email` and `jira-token`. Then set `JIRA_SECRET_NAME=myteam-jira-secrets` and `PROXY_REPLICAS=1` in your deploy.yml parameters so the instance gets its own proxy pod with these credentials.
 
 The shared `devbot-secrets` secret (GitHub/GitLab/GPG/GCP credentials) is still used by all instances — only the Jira identity is per-instance.
+
+`devbot-secrets` also carries an optional `openai-api-key` for the OpenAI-compatible
+gateway on proxy port 8450. It is read only by the proxy container and is not required:
+until the key exists, the gateway listener stays off and Claude via Vertex is unaffected.
+See the prerequisites comment in `deploy/template.yaml` for the full key list.
 
 ### Reference: Existing app-interface config
 

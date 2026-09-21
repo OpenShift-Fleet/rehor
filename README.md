@@ -435,6 +435,7 @@ graph LR
 - **Git credential helpers** are configured globally so `git push` transparently authenticates via the thin client → proxy path.
 - **GPG commit signing** works the same way — git invokes `gpg --sign` which routes through the thin client to the proxy's GPG keyring.
 - **Vertex AI auth proxy** (port 8443) — the bot sends unauthenticated requests to the proxy's embedded HTTP server. The proxy injects OAuth2 Bearer tokens from the GCP service account, rewrites dummy project/region values to real ones, enforces a model allowlist, and forwards to the Vertex AI API. The bot never sees the SA key or tokens.
+- **OpenAI-compatible auth proxy** (port 8450) — the same pattern for OpenAI Chat Completions and Responses. The proxy overwrites the inbound `Authorization` header with the real key, enforces `OPENAI_ALLOWED_MODELS` from the request body, and serves `/healthz`, `/v1/models`, `/v1/chat/completions`, and `/v1/responses`. Off unless `OPENAI_API_KEY` is set; the bot never sees the key.
 - **Jira MCP server** (port 8444) — mcp-atlassian runs inside the proxy container with the Jira API token. The bot connects via streamable HTTP transport — no Jira credentials in the bot container.
 - **HTTP/HTTPS traffic** is routed through Squid with a domain allowlist — the bot container has no direct internet access.
 - **Bash hooks** (`.claude/hooks/validate-bash.sh`) block dangerous commands (curl, eval, credential reads) as an additional defense layer.
