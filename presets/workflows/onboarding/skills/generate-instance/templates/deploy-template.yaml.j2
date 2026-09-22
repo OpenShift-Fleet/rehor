@@ -74,16 +74,54 @@ objects:
           app.kubernetes.io/component: bot
           app.kubernetes.io/part-of: devbot
       spec:
+        # Image chowns /home/botuser to botuser:0 with g+rwX (see Dockerfile) —
+        # match that group here so the emptyDir is writable regardless of the
+        # arbitrary UID the cluster's SCC assigns to the containers.
+        securityContext:
+          fsGroup: 0
+        # Seeds the writable /home/botuser emptyDir with the image's baked-in
+        # content (venv, bot code, config) before the rootfs goes read-only —
+        # a plain emptyDir mount would otherwise hide that content.
+        initContainers:
+        - name: init-home
+          image: ${BOT_IMAGE}:${IMAGE_TAG}
+          command: ["sh", "-c", "cp -a /home/botuser/. /mnt/home/"]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+              ephemeral-storage: 100Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi
+              ephemeral-storage: 100Mi
+          volumeMounts:
+          - name: home
+            mountPath: /mnt/home
         containers:
         - name: bot
           image: ${BOT_IMAGE}:${IMAGE_TAG}
           securityContext:
             runAsNonRoot: true
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+          - name: home
+            mountPath: /home/botuser
+          - name: tmp
+            mountPath: /tmp
           ports:
           - containerPort: 9091
             name: metrics
@@ -200,6 +238,13 @@ objects:
               cpu: "<< cpu_lim >>"
               memory: << mem_lim >>
               ephemeral-storage: << eph_lim >>
+        volumes:
+        - name: home
+          emptyDir:
+            sizeLimit: 6Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
 
 # --- NetworkPolicy: Bot can only reach proxy + memory-server ---
 - apiVersion: networking.k8s.io/v1
