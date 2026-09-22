@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ConfigPreparationResult } from "../../ports/python-bridge";
 import type { McpServerConfig } from "../../ports/runtime-config";
 import { stableJson } from "../shared";
+import { OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES, OPENCODE_MCP_URL_ENVIRONMENT } from "./environment";
 
 export const OPENCODE_CONFIG_SCHEMA = "https://opencode.ai/config.json" as const;
 export const OPENCODE_PACKAGE_LOCK_VERSION = 1 as const;
@@ -38,8 +39,8 @@ export interface OpenCodePackage {
 }
 
 export interface OpenCodePackageLock {
-  lockfileVersion: typeof OPENCODE_PACKAGE_LOCK_VERSION;
-  packages: Readonly<Record<string, string>>;
+  readonly lockfileVersion: typeof OPENCODE_PACKAGE_LOCK_VERSION;
+  readonly packages: Readonly<Record<string, string>>;
 }
 
 /** Runtime-owned input. No OpenCode SDK types cross this boundary. */
@@ -83,17 +84,18 @@ export function renderOpenCodeV1ConfigForCycle(
     ...deployment,
     model: deployment.model ?? preparation.model,
     providerId: deployment.providerId ?? providerId,
-    mcpServers: preparation.openCodeMcpServers ?? preparation.mcpServers ?? {},
+    mcpServers: preparation.openCodeMcpServers,
     allowedTools: preparation.allowedTools ?? [],
     optionalMcpServers: preparation.optionalMcpServers ?? [],
   });
 }
 
 export interface RenderedOpenCodeV1Config {
-  config: Record<string, JsonValue>;
-  json: string;
-  hash: string;
-  packageLock: OpenCodePackageLock;
+  readonly config: Readonly<Record<string, JsonValue>>;
+  readonly json: string;
+  readonly hash: string;
+  readonly packageLock: OpenCodePackageLock;
+  /** Agent environment variables required by trusted provider/plugin config; never MCP refs. */
   requiredEnvironment: readonly string[];
 }
 
@@ -152,8 +154,6 @@ const SECRET_KEY =
 const ENV_REFERENCE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const BRACED_ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-const RESERVED_ENVIRONMENT_PREFIXES = ["OPENCODE_", "NPM_CONFIG_"] as const;
-
 /** Render one deterministic, fail-closed OpenCode V1 configuration. */
 export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOpenCodeV1Config {
   const model = normalizeModel(input.model, input.providerId ?? input.provider?.id);
@@ -166,7 +166,7 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
   );
   const requiredEnvironment = new Set<string>();
   const providerOutput = renderProviders(providers, model, packageLock, requiredEnvironment);
-  const mcp = renderMcpServers(input.mcpServers ?? {}, requiredEnvironment);
+  const mcp = renderMcpServers(input.mcpServers ?? {});
   const permission = renderPermissions(
     input.allowedTools ?? [],
     Object.keys(mcp),
@@ -193,11 +193,11 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
   validateOpenCodeV1Config(config, packageLock);
   const json = `${stableJson(config)}\n`;
   return {
-    config,
+    config: deepFreeze(config),
     json,
     hash: createHash("sha256").update(stableJson(config), "utf8").digest("hex"),
-    packageLock,
-    requiredEnvironment: [...requiredEnvironment].sort(),
+    packageLock: deepFreeze(packageLock),
+    requiredEnvironment: Object.freeze([...requiredEnvironment].sort()),
   };
 }
 
@@ -281,6 +281,12 @@ export async function writeOpenCodeConfig(
     writeFile(packageLockPath, `${stableJson(rendered.packageLock)}\n`, "utf8"),
   ]);
   return { configPath, packageLockPath };
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  return Object.freeze(value);
 }
 
 function normalizeModel(
@@ -455,7 +461,6 @@ function renderModelConfig(
 
 function renderMcpServers(
   servers: Readonly<Record<string, McpServerConfig>>,
-  requiredEnvironment: Set<string>,
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
   for (const [name, server] of Object.entries(servers).sort(([left], [right]) =>
@@ -483,7 +488,8 @@ function renderMcpServers(
               environment: normalizeStringRecord(
                 server.env,
                 `mcp.${name}.env`,
-                requiredEnvironment,
+                undefined,
+                rejectMcpEnvironmentReference,
               ),
             }),
         enabled,
@@ -501,8 +507,7 @@ function renderMcpServers(
     }
     const url = normalizeEnvironmentReference(requireNonEmpty(server.url, `mcp.${name}.url`));
     for (const environment of parseEnvironmentReferences(url)) {
-      assertProviderEnvironment(environment, `mcp.${name}.url`);
-      requiredEnvironment.add(environment);
+      assertMcpUrlEnvironment(environment, `mcp.${name}.url`);
     }
     assertHttpUrlTemplate(url, `mcp.${name}.url`);
     output[name] = {
@@ -514,7 +519,8 @@ function renderMcpServers(
             headers: normalizeStringRecord(
               server.headers,
               `mcp.${name}.headers`,
-              requiredEnvironment,
+              undefined,
+              rejectMcpEnvironmentReference,
             ),
           }),
       enabled,
@@ -535,6 +541,7 @@ function renderPermissions(
   const configured = new Set(configuredMcpServers);
   const optional = new Set(optionalMcpServers);
   const allowedMcpWildcards = new Set<string>();
+  const mcpPermissionSources = new Map<string, string>();
 
   for (const tool of allowedTools) {
     const mcp = parseClaudeMcpTool(tool);
@@ -546,6 +553,14 @@ function renderPermissions(
         ]);
       }
       const key = `${mcp.server}_${mcp.tool}`;
+      const source = `${mcp.server}/${mcp.tool}`;
+      const previousSource = mcpPermissionSources.get(key);
+      if (previousSource !== undefined && previousSource !== source) {
+        throw new OpenCodeConfigValidationError([
+          `MCP permission key '${key}' collides for '${previousSource}' and '${source}'`,
+        ]);
+      }
+      mcpPermissionSources.set(key, source);
       permissions[key] = "allow";
       if (mcp.tool === "*") allowedMcpWildcards.add(mcp.server);
       continue;
@@ -672,16 +687,25 @@ function parsePackageReference(rawSpec: string): { name: string; version?: strin
   return { name: spec.slice(0, separator), version: spec.slice(separator + 1) };
 }
 
+type EnvironmentReferenceValidator = (name: string, path: string) => void;
+
 function normalizeJsonObject(
   input: Readonly<Record<string, JsonValue>>,
   path: string,
-  requiredEnvironment: Set<string>,
+  requiredEnvironment: Set<string> | undefined,
+  validateEnvironment: EnvironmentReferenceValidator = assertProviderEnvironment,
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
   for (const [key, value] of Object.entries(input).sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
-    output[key] = normalizeJsonValue(value, `${path}.${key}`, requiredEnvironment, key);
+    output[key] = normalizeJsonValue(
+      value,
+      `${path}.${key}`,
+      requiredEnvironment,
+      key,
+      validateEnvironment,
+    );
   }
   return output;
 }
@@ -689,15 +713,16 @@ function normalizeJsonObject(
 function normalizeJsonValue(
   value: JsonValue,
   path: string,
-  requiredEnvironment: Set<string>,
+  requiredEnvironment: Set<string> | undefined,
   key: string,
+  validateEnvironment: EnvironmentReferenceValidator = assertProviderEnvironment,
 ): JsonValue {
   if (typeof value === "string") {
     const normalized = normalizeEnvironmentReference(value);
     const environments = parseEnvironmentReferences(normalized);
     for (const environment of environments) {
-      assertProviderEnvironment(environment, path);
-      requiredEnvironment.add(environment);
+      validateEnvironment(environment, path);
+      requiredEnvironment?.add(environment);
     }
     if (SECRET_KEY.test(key) && environments.length === 0) {
       throw new OpenCodeConfigValidationError([
@@ -708,30 +733,37 @@ function normalizeJsonValue(
   }
   if (Array.isArray(value)) {
     return value.map((entry, index) =>
-      normalizeJsonValue(entry, `${path}[${index}]`, requiredEnvironment, key),
+      normalizeJsonValue(entry, `${path}[${index}]`, requiredEnvironment, key, validateEnvironment),
     );
   }
   const object = asRecord(value);
-  if (object) return normalizeJsonObject(object, path, requiredEnvironment);
+  if (object) return normalizeJsonObject(object, path, requiredEnvironment, validateEnvironment);
   return value;
 }
 
 function normalizeStringRecord(
   input: Readonly<Record<string, string>>,
   path: string,
-  requiredEnvironment: Set<string>,
+  requiredEnvironment: Set<string> | undefined,
+  validateEnvironment: EnvironmentReferenceValidator = assertProviderEnvironment,
 ): Record<string, JsonValue> {
   const values: Record<string, JsonValue> = {};
   for (const [key, value] of Object.entries(input).sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
-    values[key] = normalizeJsonValue(value, `${path}.${key}`, requiredEnvironment, key);
+    values[key] = normalizeJsonValue(
+      value,
+      `${path}.${key}`,
+      requiredEnvironment,
+      key,
+      validateEnvironment,
+    );
   }
   return values;
 }
 
 function isCoordinatorControlledEnvironment(name: string): boolean {
-  return RESERVED_ENVIRONMENT_PREFIXES.some((prefix) => name.startsWith(prefix));
+  return OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
 function assertProviderEnvironment(name: string, path: string): void {
@@ -740,6 +772,20 @@ function assertProviderEnvironment(name: string, path: string): void {
       `${path} cannot reference a coordinator-controlled environment variable`,
     ]);
   }
+}
+
+function assertMcpUrlEnvironment(name: string, path: string): void {
+  if (name !== OPENCODE_MCP_URL_ENVIRONMENT) {
+    throw new OpenCodeConfigValidationError([
+      `${path} cannot reference an unapproved environment variable '${name}'`,
+    ]);
+  }
+}
+
+function rejectMcpEnvironmentReference(name: string, path: string): void {
+  throw new OpenCodeConfigValidationError([
+    `${path} cannot reference an environment variable '${name}'`,
+  ]);
 }
 
 function normalizeEnvironmentReference(value: string): string {
@@ -789,14 +835,28 @@ function validateMcpConfig(name: string, value: unknown, issues: string[]): void
     ) {
       issues.push(`mcp.${name}.command must be a non-empty string array`);
     }
+    if (config.environment !== undefined) {
+      validateNoMcpEnvironmentReferences(config.environment, `mcp.${name}.environment`, issues);
+    }
   } else if (config.type === "remote") {
     if (typeof config.url !== "string") issues.push(`mcp.${name}.url must be a string`);
     else {
+      const url = normalizeEnvironmentReference(config.url);
+      for (const environment of parseEnvironmentReferences(url)) {
+        if (environment !== OPENCODE_MCP_URL_ENVIRONMENT) {
+          issues.push(
+            `mcp.${name}.url cannot reference an unapproved environment variable '${environment}'`,
+          );
+        }
+      }
       try {
-        assertHttpUrlTemplate(config.url, `mcp.${name}.url`);
+        assertHttpUrlTemplate(url, `mcp.${name}.url`);
       } catch (error) {
         issues.push(error instanceof Error ? error.message : String(error));
       }
+    }
+    if (config.headers !== undefined) {
+      validateNoMcpEnvironmentReferences(config.headers, `mcp.${name}.headers`, issues);
     }
   } else {
     issues.push(`mcp.${name}.type must be local or remote`);
@@ -810,6 +870,26 @@ function validateMcpConfig(name: string, value: unknown, issues: string[]): void
     issues.push(`mcp.${name}.timeout must be a positive safe integer`);
   }
   validateNoLiteralSecrets(config, `mcp.${name}`, issues);
+}
+
+function validateNoMcpEnvironmentReferences(value: unknown, path: string, issues: string[]): void {
+  if (typeof value === "string") {
+    for (const environment of parseEnvironmentReferences(normalizeEnvironmentReference(value))) {
+      issues.push(`${path} cannot reference an environment variable '${environment}'`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      validateNoMcpEnvironmentReferences(entry, `${path}[${index}]`, issues);
+    });
+    return;
+  }
+  const object = asRecord(value);
+  if (!object) return;
+  for (const [key, entry] of Object.entries(object)) {
+    validateNoMcpEnvironmentReferences(entry, `${path}.${key}`, issues);
+  }
 }
 
 function validatePermissions(permission: Record<string, unknown>, issues: string[]): void {

@@ -1,6 +1,6 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
@@ -12,7 +12,7 @@ import {
   redactSensitiveText,
   stableJson,
 } from "../shared";
-import type { OpenCodePackageLock } from "./config";
+import { type RenderedOpenCodeV1Config, writeOpenCodeConfig } from "./config";
 
 import {
   buildOpenCodeEnvironment,
@@ -21,6 +21,7 @@ import {
   type OpenCodeFetch,
 } from "./environment";
 
+/** Pinned because state/config isolation is verified against this CLI contract. */
 export const OPENCODE_VERSION = "1.18.29" as const;
 const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
@@ -54,8 +55,8 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
-  /** Required when config is supplied; must come from trusted policy data. */
-  expectedConfigHash?: string;
+  /** Immutable, already validated configuration for this server instance. */
+  renderedConfig?: RenderedOpenCodeV1Config;
   /** Required by start; absolute root containing only approved worktrees. */
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
@@ -65,8 +66,6 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   processGroupExists?: (pid: number) => boolean;
   /** Bound verification after SIGKILL when a group ignores the grace signal. */
   killVerificationTimeoutMs?: number;
-  config?: Record<string, unknown>;
-  packageLock?: OpenCodePackageLock;
   /** Optional caller-owned state directory; otherwise one is created per start. */
   stateDirectory?: string;
   readiness?: OpenCodeReadiness;
@@ -106,13 +105,6 @@ export interface OpenCodeServerController {
   readonly info: OpenCodeServerInfo | undefined;
   readonly crashError: Error | undefined;
   readonly crashSignal: AbortSignal;
-  /** Replace the validated cycle configuration before the child starts. */
-  configure(
-    config: Record<string, unknown>,
-    expectedConfigHash?: string,
-    passthrough?: readonly string[],
-    packageLock?: OpenCodePackageLock,
-  ): void;
   start(directory: string, signal: AbortSignal): Promise<OpenCodeServerInfo>;
   stop(): Promise<void>;
 }
@@ -135,11 +127,18 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private startupOutputTruncated = false;
   private stateDirectory?: string;
   private ownsStateDirectory = false;
-  private packageLock?: OpenCodePackageLock;
+  private readonly renderedConfig?: RenderedOpenCodeV1Config;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
+    this.renderedConfig = options.renderedConfig;
     this.options = {
       ...options,
+      passthrough: [
+        ...new Set([
+          ...(options.passthrough ?? []),
+          ...(options.renderedConfig?.requiredEnvironment ?? []),
+        ]),
+      ],
       command: options.command ?? "/usr/local/bin/opencode",
       hostname: options.hostname ?? "127.0.0.1",
       startupTimeoutMs: options.startupTimeoutMs ?? 10_000,
@@ -148,7 +147,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       killVerificationTimeoutMs:
         options.killVerificationTimeoutMs ?? Math.min(options.shutdownTimeoutMs ?? 5_000, 1_000),
     };
-    this.packageLock = options.packageLock;
     assertConfiguredBinary(this.options.command);
     assertApprovedHostname(this.options.hostname);
     assertPositiveInteger(this.options.startupTimeoutMs, "startupTimeoutMs", "OpenCode");
@@ -158,19 +156,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       "killVerificationTimeoutMs",
       "OpenCode",
     );
-  }
-
-  configure(
-    config: Record<string, unknown>,
-    expectedConfigHash = hashOpenCodeConfig(config),
-    passthrough: readonly string[] = [],
-    packageLock?: OpenCodePackageLock,
-  ): void {
-    if (this.child || this.server) throw new Error("cannot reconfigure a running OpenCode server");
-    this.options.config = config;
-    this.options.expectedConfigHash = expectedConfigHash;
-    this.packageLock = packageLock;
-    this.options.passthrough = [...new Set([...(this.options.passthrough ?? []), ...passthrough])];
   }
 
   get info(): OpenCodeServerInfo | undefined {
@@ -196,17 +181,12 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     );
     if (signal.aborted) throw abortReason(signal);
 
-    const configHash = this.options.config ? hashOpenCodeConfig(this.options.config) : undefined;
-    if (this.options.config && !this.options.expectedConfigHash) {
-      throw new OpenCodeReadinessError(
-        "OpenCode expected config hash is required when config is provided",
-        true,
-      );
-    }
-    if (this.options.expectedConfigHash && configHash !== this.options.expectedConfigHash) {
-      throw new OpenCodeReadinessError(
-        `OpenCode config hash ${configHash ?? "missing"} does not match expected ${this.options.expectedConfigHash}`,
-      );
+    const configHash = this.renderedConfig?.hash;
+    if (
+      this.renderedConfig !== undefined &&
+      hashOpenCodeConfig(this.renderedConfig.config) !== this.renderedConfig.hash
+    ) {
+      throw new OpenCodeReadinessError("OpenCode rendered config hash is invalid", true);
     }
 
     const allocatePortFn = this.options.allocatePort ?? allocatePort;
@@ -227,25 +207,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     environment.OPENCODE_TEST_HOME = stateDirectory;
     environment.NPM_CONFIG_OFFLINE = "true";
     environment.npm_config_offline = "true";
-    if (this.options.config) {
+    if (this.renderedConfig !== undefined) {
       environment.OPENCODE_CONFIG = join(stateDirectory, "opencode.json");
       try {
-        await Promise.all([
-          writeFile(
-            join(stateDirectory, "opencode.json"),
-            `${stableJson(this.options.config)}\n`,
-            "utf8",
-          ),
-          ...(this.packageLock === undefined
-            ? []
-            : [
-                writeFile(
-                  join(stateDirectory, "opencode-packages.lock.json"),
-                  `${stableJson(this.packageLock)}\n`,
-                  "utf8",
-                ),
-              ]),
-        ]);
+        await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
       } catch (error) {
         await this.cleanupStateDirectory();
         throw error;
@@ -810,7 +775,7 @@ function isNoSuchProcess(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
-export function hashOpenCodeConfig(config: Record<string, unknown>): string {
+export function hashOpenCodeConfig(config: Readonly<Record<string, unknown>>): string {
   return createHash("sha256").update(stableJson(config)).digest("hex");
 }
 

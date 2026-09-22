@@ -25,7 +25,9 @@ import {
   OpenCodeServerSupervisor,
   type OpenCodeSpawn,
   OpenCodeV1Runtime,
-  type OpenCodeV1RuntimeOptions,
+  type OpenCodeV1RuntimeConfig,
+  type RenderedOpenCodeV1Config,
+  renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
 import { boundedOperation } from "../src/runtimes/shared";
 
@@ -101,7 +103,7 @@ interface FakeRuntimeOptions {
   deleteGate?: Promise<unknown>;
   cleanupTimeoutMs?: number;
   crashError?: Error;
-  config?: OpenCodeV1RuntimeOptions["config"];
+  config?: OpenCodeV1RuntimeConfig;
 }
 
 interface FactoryCall {
@@ -122,7 +124,6 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     streamStarts: [] as number[],
     create: [] as unknown[],
     prompt: [] as unknown[],
-    configure: [] as Array<readonly unknown[]>,
     messageRequests: [] as unknown[],
     statusRequests: [] as unknown[],
     deleteRequests: [] as unknown[],
@@ -153,9 +154,6 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     },
     get crashError() {
       return crashError;
-    },
-    configure(...args: unknown[]) {
-      calls.configure.push(args);
     },
     async start() {
       calls.start += 1;
@@ -229,13 +227,26 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     calls.factory.push({ server, directory, environment });
     return client;
   };
+  let renderedConfig: RenderedOpenCodeV1Config | undefined;
+  let renderError: unknown;
+  try {
+    const configured = options.config ?? {};
+    renderedConfig = renderOpenCodeV1Config({
+      ...configured,
+      model: configured.model ?? runtimeRun.provider.requestedModel,
+      providerId: configured.providerId ?? runtimeRun.provider.id,
+    });
+  } catch (error) {
+    renderError = error;
+  }
   const runtime = new OpenCodeV1Runtime({
     supervisor,
     clientFactory,
+    renderedConfig,
+    renderError,
     ...(options.cleanupTimeoutMs === undefined
       ? {}
       : { cleanupTimeoutMs: options.cleanupTimeoutMs }),
-    ...(options.config === undefined ? {} : { config: options.config }),
   });
   return { calls, runtime, crashController, supervisor };
 }
@@ -334,6 +345,21 @@ describe("OpenCode environment", () => {
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(environment.NODE_OPTIONS).toBeUndefined();
     expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
+  });
+
+  it("keeps MCP endpoint references available without allowing arbitrary MCP variables", () => {
+    const environment = buildOpenCodeEnvironment({
+      base: {
+        JIRA_MCP_URL: "http://jira-mcp:8444/mcp",
+        GITHUB_TOKEN: "<REDACTED>",
+        JIRA_MCP_TOKEN: "<REDACTED>",
+      },
+      passthrough: ["GITHUB_TOKEN", "JIRA_MCP_TOKEN"],
+    });
+
+    expect(environment.JIRA_MCP_URL).toBe("http://jira-mcp:8444/mcp");
+    expect(environment.GITHUB_TOKEN).toBeUndefined();
+    expect(environment.JIRA_MCP_TOKEN).toBeUndefined();
   });
 
   it("preserves external proxy use while adding required internal bypasses", () => {
@@ -591,12 +617,11 @@ describe("OpenCode runtime", () => {
     });
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(calls.configure).toHaveLength(1);
-    expect(calls.configure[0]?.[0]).toMatchObject({
+    expect(runtime.renderedConfiguration?.config).toMatchObject({
       model: "rehor-openai/gpt-5.6-luna",
       enabled_providers: ["rehor-openai"],
     });
-    expect(calls.configure[0]?.[1]).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
+    expect(runtime.renderedConfiguration?.hash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
     expect(calls.factory).toHaveLength(1);
     expect(calls.factory[0]).toMatchObject({
       server: { baseUrl: "http://127.0.0.1:41236" },
@@ -685,16 +710,15 @@ describe("OpenCode runtime", () => {
     const result = await executeRun(runtime, runtimeRun);
 
     expect(result.error).toBeUndefined();
-    const configured = calls.configure[0]?.[0];
+    const configured = runtime.renderedConfiguration?.config;
     expect(configured).toMatchObject({
       model: "override-provider/override-model",
       enabled_providers: ["override-provider"],
     });
-    expect(calls.configure[0]?.[1]).toBe(
-      "0a5d1baa4accdcac552bf75b28c4a7500448fc4fe97dc388eadfe67be11eaa77",
-    );
-    expect(calls.configure[0]?.[2]).toEqual(["OVERRIDE_TOKEN"]);
-    expect(calls.configure[0]?.[3]).toEqual({
+    if (!configured) throw new Error("rendered configuration missing");
+    expect(runtime.renderedConfiguration?.hash).toBe(hashOpenCodeConfig(configured));
+    expect(runtime.renderedConfiguration?.requiredEnvironment).toEqual(["OVERRIDE_TOKEN"]);
+    expect(runtime.renderedConfiguration?.packageLock).toEqual({
       lockfileVersion: 1,
       packages: { "override-provider-package": "1.0.0" },
     });
@@ -2475,6 +2499,13 @@ describe("OpenCode process supervisor", () => {
       lockfileVersion: 1 as const,
       packages: { "provider-package": "1.0.0" },
     };
+    const renderedConfig = {
+      config,
+      json: '{"nested":{"a":"stable","b":true},"z":1}\n',
+      hash: hashOpenCodeConfig(config),
+      packageLock,
+      requiredEnvironment: ["REHOR_MODEL_PROXY_TOKEN"],
+    };
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     let spawnCall:
       | { command: string; args: readonly string[]; options: Parameters<OpenCodeSpawn>[2] }
@@ -2506,13 +2537,8 @@ describe("OpenCode process supervisor", () => {
         // /global/health on the pinned server exposes only health and version.
         check: async () => ({ healthy: true, version: "1.18.29" }),
       },
+      renderedConfig,
     });
-    supervisor.configure(
-      config,
-      hashOpenCodeConfig(config),
-      ["REHOR_MODEL_PROXY_TOKEN"],
-      packageLock,
-    );
 
     const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
     expect(info).toMatchObject({
@@ -2716,7 +2742,7 @@ describe("OpenCode process supervisor", () => {
     );
   });
 
-  it("requires an expected config hash before spawning configured OpenCode", async () => {
+  it("requires an immutable rendered configuration before spawning configured OpenCode", async () => {
     let spawned = false;
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
@@ -2725,7 +2751,13 @@ describe("OpenCode process supervisor", () => {
       startupTimeoutMs: 20,
       shutdownTimeoutMs: 20,
       killVerificationTimeoutMs: 20,
-      config: { mode: "safe" },
+      renderedConfig: {
+        config: { mode: "safe" },
+        json: '{"mode":"safe"}\n',
+        hash: "0".repeat(64),
+        packageLock: { lockfileVersion: 1, packages: {} },
+        requiredEnvironment: [],
+      },
       signalProcess: (_pid, signal) => child.kill(signal),
       spawnProcess: () => {
         spawned = true;
@@ -2734,17 +2766,22 @@ describe("OpenCode process supervisor", () => {
     });
 
     await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "expected config hash",
+      "rendered config hash is invalid",
     );
     expect(spawned).toBe(false);
   });
 
-  it("rejects an unverified config hash before spawning a child", async () => {
+  it("rejects a tampered rendered config before spawning a child", async () => {
     let spawned = false;
     const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
-      config: { mode: "safe" },
-      expectedConfigHash: "0".repeat(64),
+      renderedConfig: {
+        config: { mode: "safe" },
+        json: '{"mode":"safe"}\n',
+        hash: "0".repeat(64),
+        packageLock: { lockfileVersion: 1, packages: {} },
+        requiredEnvironment: [],
+      },
       spawnProcess: () => {
         spawned = true;
         return new FakeChild() as never;
@@ -2752,7 +2789,7 @@ describe("OpenCode process supervisor", () => {
     });
 
     await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "does not match expected",
+      "rendered config hash is invalid",
     );
     expect(spawned).toBe(false);
   });

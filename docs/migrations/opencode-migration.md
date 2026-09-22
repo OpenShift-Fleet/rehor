@@ -326,28 +326,37 @@ The coordinator's `runtimes/opencode-v1/config.ts` owns the translation from
 provider-neutral cycle data to this OpenCode V1 subset. Call
 `renderOpenCodeV1ConfigForCycle()` with the Python-prepared model, allowed tools,
 and `openCodeMcpServers` data, then supply deployment-owned provider/plugin
-fields separately. The renderer:
+fields separately. `mcpServers` and `openCodeMcpServers` are mandatory,
+separate bridge views; an absent OpenCode view is a protocol error, never a
+fallback to resolved Claude values. The renderer:
 
 - normalizes bare models with the deployment provider ID;
 - maps stdio MCP to `local` and HTTP/SSE MCP to `remote`;
 - converts Claude-style allowed tools to explicit OpenCode permissions,
   denies unlisted built-ins and configured MCP servers, and skips grants only
   for MCP servers explicitly marked optional by the prepared cycle;
-- converts `${VAR}` values to OpenCode `{env:VAR}` references and returns the
-  required environment allowlist without serializing resolved credentials;
-- rejects unknown tools, malformed transports, literal credentials, and
-  unpinned package references;
+- converts provider/plugin `${VAR}` values to OpenCode `{env:VAR}` references
+  and returns the required agent-environment allowlist without serializing
+  resolved credentials; MCP URLs may reference only the non-secret
+  `JIRA_MCP_URL` endpoint, while MCP headers and local MCP environments cannot
+  use environment references;
+- rejects unknown tools, malformed transports, untrusted MCP environment
+  references, literal credentials, and unpinned package references;
 - emits stable JSON, a content hash, and
   `opencode-packages.lock.json` containing every exact provider/plugin package
   version.
 
-`OpenCodeV1Runtime` renders and validates the snapshot before calling the
-supervisor. It derives prompt submission and Rehor event attribution from the
-same effective provider/model in that validated snapshot. The supervisor writes
-the snapshot to a per-cycle config directory,
+The runtime factory renders one immutable snapshot for the selected run and
+validates it before constructing the supervisor. `OpenCodeV1Runtime` derives
+prompt submission and Rehor event attribution from that same effective
+provider/model. The supervisor receives the snapshot in its constructor and
+writes the snapshot to a per-cycle config directory,
 sets `OPENCODE_CONFIG`, isolates OpenCode's global home/config/database paths,
 and enables offline npm resolution plus the pinned runtime's update/download
-safeguards. Package installation is not a runtime responsibility: the image
+safeguards. The pinned `1.18.29` release is a tested dependency: its
+`OPENCODE_TEST_HOME` behavior is required for per-cycle state isolation. A
+version bump must update the supervisor contract tests before the pin changes.
+Package installation is not a runtime responsibility: the image
 must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
 The default Claude runtime registry and production runtime selection remain
 unchanged.

@@ -14,6 +14,8 @@ import yaml
 
 from .constants import _DEFAULT_COOLDOWN_SECONDS
 
+OPEN_CODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL"
+
 
 @dataclass
 class Config:
@@ -246,6 +248,42 @@ def load_mcp_servers(
     return servers
 
 
+def discover_optional_mcp_servers(
+    script_dir: Path,
+    active_envs: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Return MCP servers supplied by optional persona and environment layers."""
+    names: set[str] = set()
+
+    for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
+        with open(mcp_file) as f:
+            data = json.load(f)
+        servers = data.get("mcpServers", {})
+        if isinstance(servers, dict):
+            names.update(name for name in servers if isinstance(name, str))
+
+    for manifest_file in sorted(script_dir.glob("personas/*/manifest.yaml")):
+        names.update(_manifest_mcp_server_names(manifest_file))
+
+    for env in active_envs:
+        names.update(_manifest_mcp_server_names(script_dir / "presets" / "envs" / env / "manifest.yaml"))
+
+    return sorted(names)
+
+
+def _manifest_mcp_server_names(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    with open(path) as f:
+        manifest = yaml.safe_load(f) or {}
+    provided = manifest.get("provides", {}).get("mcp_servers", {})
+    if isinstance(provided, dict):
+        return {name for name in provided if isinstance(name, str)}
+    if isinstance(provided, list):
+        return {name for name in provided if isinstance(name, str)}
+    return set()
+
+
 def _resolve_env_vars(obj):
     """Recursively resolve ${VAR} references in MCP server configs.
 
@@ -376,6 +414,9 @@ SECRET_ENV_VARS = [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",
+    "JIRA_API_TOKEN",
+    "JIRA_MCP_TOKEN",
+    "JIRA_USERNAME",
     "GPG_PRIVATE_KEY_B64",
     "GPG_SIGNING_KEY",
     "SSO_USERNAME",
@@ -401,12 +442,6 @@ def sanitize_env() -> None:
     """
     for var in SECRET_ENV_VARS + GIT_OVERRIDE_VARS:
         os.environ.pop(var, None)
-
-
-# MCP servers provided only by selected persona/environment layers. Their
-# shared permission grants are optional; workflow-required MCP servers remain
-# strict at the OpenCode renderer boundary.
-OPTIONAL_MCP_SERVERS = ["hcc-patternfly-data-view"]
 
 
 ALLOWED_TOOLS = [

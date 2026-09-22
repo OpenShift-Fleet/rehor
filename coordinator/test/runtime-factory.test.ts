@@ -10,7 +10,7 @@ import {
   RuntimeFactoryRegistry,
   resolveRuntimeSelection,
 } from "../src";
-import type { OpenCodeServerController } from "../src/runtimes/opencode-v1";
+import type { OpenCodeServerController, OpenCodeV1Runtime } from "../src/runtimes/opencode-v1";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
 
 const run: RehorRun = {
@@ -86,7 +86,6 @@ describe("runtime selection", () => {
       get crashError() {
         return undefined;
       },
-      configure: vi.fn(),
       start: vi.fn(async () => {
         throw new Error("supervisor should not start for invalid configuration");
       }),
@@ -102,12 +101,10 @@ describe("runtime selection", () => {
     const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
 
     expect(result.events.at(-1)?.payload).toMatchObject({ state: "failed" });
-    expect(supervisor.configure).not.toHaveBeenCalled();
     expect(supervisor.start).not.toHaveBeenCalled();
   });
 
   it("fills configured OpenCode model with the selected run provider", async () => {
-    const configure = vi.fn();
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
       get info() {
@@ -116,7 +113,6 @@ describe("runtime selection", () => {
       get crashError() {
         return undefined;
       },
-      configure,
       start: vi.fn(async () => {
         throw new Error("stop after configuration capture");
       }),
@@ -129,10 +125,8 @@ describe("runtime selection", () => {
       }),
     ]);
 
-    await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
-
-    expect(configure).toHaveBeenCalled();
-    expect(configure.mock.calls[0]?.[0]).toMatchObject({
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    expect((runtime as OpenCodeV1Runtime).renderedConfiguration?.config).toMatchObject({
       model: "vertex/factory-model",
       enabled_providers: ["vertex"],
     });

@@ -81,6 +81,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         '"url": "${JIRA_MCP_URL}", '
         '"headers": {"Authorization": "Bearer ${JIRA_MCP_TOKEN}"}}}}'
     )
+    persona_dir = tmp_path / "personas" / "frontend"
+    persona_dir.mkdir(parents=True)
+    (persona_dir / "mcp.json").write_text('{"mcpServers": {"hcc-patternfly-data-view": {"command": "hcc-pf-mcp"}}}')
     monkeypatch.setenv("JIRA_MCP_URL", "https://jira.example/mcp")
     monkeypatch.setenv("JIRA_MCP_TOKEN", "secret-value")
     (tmp_path / ".mcp.json").write_text(
@@ -121,17 +124,24 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)
     assert result["sharedAgentDir"] == str(shared_dir)
-    expected_mcp = {
+    assert result["mcpServers"] == {
+        "mcp-atlassian": {
+            "type": "http",
+            "url": "https://jira.example/mcp",
+            "headers": {"Authorization": "Bearer secret-value"},
+        },
+        "hcc-patternfly-data-view": {"command": "hcc-pf-mcp"},
+    }
+    assert result["openCodeMcpServers"] == {
         "mcp-atlassian": {
             "type": "http",
             "url": "${JIRA_MCP_URL}",
             "headers": {"Authorization": "Bearer ${JIRA_MCP_TOKEN}"},
         },
+        "hcc-patternfly-data-view": {"command": "hcc-pf-mcp"},
         "bot-memory": {"type": "http", "url": "http://memory-server/mcp"},
         "chrome-devtools": {"command": "chrome-devtools-mcp"},
     }
-    assert result["mcpServers"] == expected_mcp
-    assert result["openCodeMcpServers"] == expected_mcp
     assert result["optionalMcpServers"] == ["hcc-patternfly-data-view"]
     assert "Bash" in result["allowedTools"]
 
@@ -196,6 +206,20 @@ def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypa
     assert resolved["jira"]["headers"]["Authorization"] == "Bearer secret-value"
     assert references["jira"]["url"] == "${JIRA_URL}"
     assert references["jira"]["headers"]["Authorization"] == "Bearer ${JIRA_TOKEN}"
+
+
+def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_path):
+    from bot.config import discover_optional_mcp_servers
+
+    (tmp_path / "personas" / "frontend").mkdir(parents=True)
+    (tmp_path / "personas" / "frontend" / "manifest.yaml").write_text(
+        "provides:\n  mcp_servers:\n    persona-mcp: {}\n"
+    )
+    env_dir = tmp_path / "presets" / "envs" / "browser"
+    env_dir.mkdir(parents=True)
+    (env_dir / "manifest.yaml").write_text("provides:\n  mcp_servers:\n    browser-mcp:\n      type: stdio\n")
+
+    assert discover_optional_mcp_servers(tmp_path, ["browser"]) == ["browser-mcp", "persona-mcp"]
 
 
 def test_bridge_rejects_unknown_operation():

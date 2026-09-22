@@ -5,7 +5,12 @@ import {
   type ClaudeAgentRuntimeOptions,
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
-import { OpenCodeV1Runtime, type OpenCodeV1RuntimeOptions } from "./runtimes/opencode-v1";
+import {
+  OpenCodeV1Runtime,
+  type OpenCodeV1RuntimeConfig,
+  type OpenCodeV1RuntimeOptions,
+  renderOpenCodeV1Config,
+} from "./runtimes/opencode-v1";
 
 export const DEFAULT_RUNTIME_ID = "claude";
 
@@ -80,20 +85,37 @@ export function createDefaultRuntimeRegistry(
 }
 
 /** Registers OpenCode without changing the default production runtime selection. */
+export type OpenCodeV1RuntimeFactoryOptions = Omit<
+  OpenCodeV1RuntimeOptions,
+  "renderedConfig" | "renderError"
+> & {
+  config?: OpenCodeV1RuntimeConfig;
+};
+
 export function createOpenCodeV1RuntimeFactory(
-  options: OpenCodeV1RuntimeOptions = {},
+  options: OpenCodeV1RuntimeFactoryOptions = {},
 ): AgentRuntimeFactory {
   return {
     runtimeId: "opencode-v1",
     create(context) {
       const configured = options.config ?? {};
-      return new OpenCodeV1Runtime({
-        ...options,
-        config: {
+      let renderedConfig: ReturnType<typeof renderOpenCodeV1Config> | undefined;
+      let renderError: unknown;
+      try {
+        renderedConfig = renderOpenCodeV1Config({
           ...configured,
           model: configured.model ?? context.run.provider.requestedModel,
           providerId: configured.providerId ?? context.run.provider.id,
-        },
+        });
+      } catch (error) {
+        renderError = error;
+      }
+
+      const { config: _config, ...runtimeOptions } = options;
+      return new OpenCodeV1Runtime({
+        ...runtimeOptions,
+        renderedConfig,
+        renderError,
       });
     },
   };

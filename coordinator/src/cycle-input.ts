@@ -93,7 +93,7 @@ export async function prepareCycleInput(
       activeEnvs: config.activeEnvs,
       claudeMdStrategy: config.claudeMdStrategy,
       idleCycleLimit: config.idleCycleLimit,
-      mcpServers: config.openCodeMcpServers ?? config.mcpServers ?? {},
+      mcpServers: config.openCodeMcpServers,
       allowedTools: config.allowedTools ?? [],
       optionalMcpServers: config.optionalMcpServers ?? [],
       instructionHash: instructions.hash.value,
