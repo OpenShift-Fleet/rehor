@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from fastmcp import FastMCP
@@ -54,7 +55,8 @@ def register_rag_read_tools(mcp: FastMCP):
     ) -> list[dict]:
         """Semantic search over memories. Returns top matches with similarity scores. Filter by tag."""
         pool = get_pool()
-        vector = embed(query)
+        limit = min(limit, 100)
+        vector = await asyncio.to_thread(embed, query)
 
         conditions = []
         params = [vector, limit]
@@ -98,6 +100,7 @@ def register_rag_read_tools(mcp: FastMCP):
         """List recent memories, optionally filtered by category, repo, or tag.
         Returns {items, total, limit, offset}."""
         pool = get_pool()
+        limit = min(limit, 100)
 
         conditions = []
         params = []
@@ -164,7 +167,7 @@ def register_rag_write_tools(mcp: FastMCP):
         Categories: learning, review_feedback, codebase_pattern.
         Tags: free-form labels like bug-fix, cve, css, patternfly, dependency-upgrade, ci, ui-change, testing."""
         pool = get_pool()
-        vector = embed(f"{title}\n{content}")
+        vector = await asyncio.to_thread(embed, f"{title}\n{content}")
         if external_key and not source_type:
             source_type = "jira"
         row = await pool.fetchrow(

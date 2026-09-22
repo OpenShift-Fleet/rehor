@@ -1,5 +1,6 @@
 """Bearer-token auth for the public read-only MCP endpoint."""
 
+import hmac
 import os
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -25,12 +26,13 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         secret = get_memory_api_key()
         if not secret:
             return JSONResponse(
-                {"error": "MEMORY_API_KEY not configured"},
+                {"error": "MEMORY_API_KEY not configured — set team-memory-api-key"},
                 status_code=503,
             )
 
         auth = request.headers.get("authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != secret:
+        token = auth[7:] if auth.startswith("Bearer ") else ""
+        if not hmac.compare_digest(token.encode(), secret.encode()):
             return JSONResponse({"error": "forbidden"}, status_code=403)
 
         return await call_next(request)
