@@ -11,7 +11,7 @@ COPY proxy/executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:b0288b22a9c4ac633625bd9c8f9e39c0ad3043990d0fc8f9c62d60740af0e73e
 
 # System deps + Python 3.12 + Chromium runtime libraries
 RUN dnf install -y --nodocs --allowerasing \
@@ -46,11 +46,10 @@ RUN dnf install -y --nodocs --allowerasing \
     libXrandr \
     && dnf clean all
 
-# Node.js 22 (official binary tarball)
+# Node.js 24 LTS (official binary tarball; includes npm 11.19.0 and tar >= 7.5.19)
 RUN ARCH=$(uname -m | sed 's/x86_64/x64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-${ARCH}.tar.gz" \
+    && curl -fsSL "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-${ARCH}.tar.gz" \
     | tar -xz -C /usr/local --strip-components=1
-
 
 # Headless Chromium via Playwright (avoids EPEL/CentOS RPMs)
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers

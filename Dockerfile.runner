@@ -14,7 +14,7 @@ COPY dev-bot/proxy/executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:b0288b22a9c4ac633625bd9c8f9e39c0ad3043990d0fc8f9c62d60740af0e73e
 
 # Core system deps + Python 3.12 (env-specific deps installed via presets)
 RUN dnf install -y --nodocs --allowerasing \
@@ -91,6 +91,8 @@ COPY instance/ /home/botuser/app/instance/
 COPY dev-bot/presets/ presets/
 ARG GOVERSIONS="1.24.13 1.25.13"
 ENV GOVERSIONS="${GOVERSIONS}"
+ARG PYTHONVERSIONS="3.12.8"
+ENV PYTHONVERSIONS="${PYTHONVERSIONS}"
 RUN bash presets/install-envs.sh
 
 ENV HOME=/home/botuser

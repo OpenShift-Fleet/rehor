@@ -70,16 +70,19 @@ class TestPython:
         (tmp_path / "requirements.txt").write_text("flask==2.0\n")
         result = detect(str(tmp_path))
         assert "python" in result["stack"]
+        assert "python" in result["envs"]
 
     def test_pyproject_toml(self, tmp_path):
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'myapp'\n")
         result = detect(str(tmp_path))
         assert "python" in result["stack"]
+        assert "python" in result["envs"]
 
     def test_django_detected(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("Django==4.0\n")
         result = detect(str(tmp_path))
         assert "django" in result["stack"]
+        assert "python" in result["envs"]
         assert "backend" in result["personas"]
 
 
