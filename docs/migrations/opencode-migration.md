@@ -362,7 +362,10 @@ version bump must update the supervisor contract tests before the pin changes.
 Package installation is not a runtime responsibility: the image
 must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
 The default Claude runtime registry and production runtime selection remain
-unchanged.
+unchanged. Instance configuration now carries independent `runtime` and
+`provider` values through the Python bridge as `runtimeId` and `providerId`;
+`executeConfiguredRun()` consumes that normalized selection when the future
+TypeScript runner is enabled. See the [canary rollout runbook](../operations/rehor-146-opencode-canary.md).
 
 OpenCode receives the generated root `CLAUDE.md` and project `.claude/skills`
 through its project discovery path. Persona selection remains in the existing

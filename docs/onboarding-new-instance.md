@@ -54,7 +54,7 @@ Create your instance config. This entire directory gets COPYed into the image at
 ```
 instance/my-config/
 └── agent/
-    ├── instance.yaml         # preset selection (workflow, env presets, CLAUDE.md strategy)
+    ├── instance.yaml         # workflow, env presets, runtime/provider, CLAUDE.md strategy
     ├── CLAUDE.md             # instance-specific instructions (optional, strategy-dependent)
     ├── project-repos.json    # repos this instance works on
     ├── mcp.json              # MCP server overrides (usually just Jira)
@@ -86,6 +86,8 @@ envs:
   - browser
   - slack
   - container-scan
+runtime: claude
+provider: vertex
 ```
 
 | Field | Type | Default | Description |
@@ -94,7 +96,17 @@ envs:
 | `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
-| `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). Must be in `VERTEX_ALLOWED_MODELS`. |
+| `runtime` | string | `claude` | Runtime adapter: `claude` or `opencode-v1`. |
+| `provider` | string | `vertex` | Provider route: `vertex` or `rehor-openai`. |
+| `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). Must be allowed by the selected provider route. |
+
+`runtime` and `provider` are selected independently and passed to the TypeScript
+coordinator. Supported combinations are `claude` + `vertex`, `opencode-v1` +
+`vertex`, and `opencode-v1` + `rehor-openai`. Invalid combinations fail
+validation. If omitted from `instance.yaml`, deployment operators can set
+`BOT_RUNTIME` and `BOT_PROVIDER`; the default remains the Claude/Vertex path.
+Keep that path available as the rollback while running the [OpenCode canary
+runbook](operations/rehor-146-opencode-canary.md).
 
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 

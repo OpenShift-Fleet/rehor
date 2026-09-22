@@ -21,6 +21,7 @@ const run: RehorRun = {
   instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
+  runtimeId: "opencode-v1",
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
   limits: { timeoutMs: 1_000, maxTurns: 20 },
   preflightPayloadRef: null,
@@ -166,6 +167,50 @@ describe("legacy compatibility projection", () => {
         expect.objectContaining({
           name: "devbot_cycle_duration_seconds",
           labels: { label: run.label, work_type: "new_ticket" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_sessions_total",
+          labels: { runtime: "opencode-v1", provider: "vertex" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_duration_seconds",
+          value: 3,
+          labels: { runtime: "opencode-v1", provider: "vertex", state: "completed" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_health_total",
+          labels: { runtime: "opencode-v1", provider: "vertex", status: "healthy" },
+        }),
+      ]),
+    );
+  });
+
+  it("records interruption and resource-leak metrics", async () => {
+    const metrics: unknown[] = [];
+    const projection = new LegacyCompatibilityProjection({
+      metrics: {
+        observe: (record) => {
+          metrics.push(record);
+        },
+      },
+    });
+    const interrupted = event("terminal-interrupted", 2, "terminal", {
+      state: "timed_out",
+      durationMs: 2_000,
+      resourceLeak: true,
+    });
+
+    await executeRun(new FakeAgentRuntime({ events: [start, interrupted] }), run, { projection });
+
+    expect(metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "devbot_runtime_interruptions_total",
+          labels: { runtime: "opencode-v1", provider: "vertex", state: "timed_out" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_resource_leaks_total",
+          labels: { runtime: "opencode-v1", provider: "vertex" },
         }),
       ]),
     );

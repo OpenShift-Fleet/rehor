@@ -1,15 +1,18 @@
 # Instance Configuration
 
-`instance.yaml` controls workflow and env-preset selection for a bot instance.
-It lives at `<BOT_CONFIG_PATH>/agent/instance.yaml` in the remote config repo.
+`instance.yaml` controls workflow, env-preset, runtime, and provider selection for
+one bot instance. It lives at `<BOT_CONFIG_PATH>/agent/instance.yaml` in the
+remote config repo.
 
 ## Resolution Order
 
 `run.py` resolves configuration in this order:
 
 1. `instance.yaml`, when present in the remote config repo.
-2. `BOT_WORKFLOW_PRESET` and `BOT_ENV_PRESETS` environment variables.
-3. Defaults: workflow `jira-sprint`, source `jira`, all available env presets.
+2. `BOT_WORKFLOW_PRESET`, `BOT_ENV_PRESETS`, `BOT_RUNTIME`, and `BOT_PROVIDER`
+   environment variables.
+3. Defaults: workflow `jira-sprint`, source `jira`, all available env presets,
+   runtime `claude`, and provider `vertex`.
 
 The file is optional for default behavior. Use it when configuration must be
 explicit, reviewable, or different between profiles.
@@ -26,6 +29,8 @@ envs:
 claude_md:
   strategy: ignore
 idle_cycle_limit: 0
+runtime: claude
+provider: vertex
 model: claude-sonnet-4-6
 ```
 
@@ -36,7 +41,27 @@ model: claude-sonnet-4-6
 | `envs` | `null` | `null` enables all env presets; `[]` disables them |
 | `claude_md.strategy` | `ignore` | `ignore`, `append`, or `replace` for instance `CLAUDE.md` |
 | `idle_cycle_limit` | `0` | Optional idle-cycle reminder threshold; `0` disables it |
+| `runtime` | `claude` | Runtime adapter: `claude` or `opencode-v1` |
+| `provider` | `vertex` | Provider route: `vertex` or `rehor-openai` |
 | `model` | `null` | Explicit model override for this instance (e.g. `claude-sonnet-4-6`) |
+
+## Runtime and Provider Selection
+
+Runtime and provider are independent selections carried from Python config
+preparation into the TypeScript coordinator. Supported pairs are:
+
+| Runtime | Providers | Use |
+|---|---|---|
+| `claude` | `vertex` | Existing rollback/default path |
+| `opencode-v1` | `vertex` | OpenCode compatibility canary through the Vertex route |
+| `opencode-v1` | `rehor-openai` | OpenCode canary through the OpenAI-compatible gateway |
+
+Unsupported IDs and the `claude`/`rehor-openai` combination fail validation.
+When the keys are omitted from `instance.yaml`, `BOT_RUNTIME` and
+`BOT_PROVIDER` provide deployment-level defaults before falling back to
+Claude/Vertex. Keep the existing Python/Claude/Vertex deployment available
+until the canary gates in the [OpenCode rollout runbook](../operations/rehor-146-opencode-canary.md)
+pass.
 
 ## Model Resolution Order
 

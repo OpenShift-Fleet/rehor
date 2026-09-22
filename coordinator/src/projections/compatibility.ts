@@ -19,6 +19,8 @@ import type { CoordinatorProjection } from "../ports/projection";
 interface ProjectionState {
   startedAt: string;
   runtimeSessionRef: string | null;
+  runtimeReadyObserved: boolean;
+  runtimeSessionObserved: boolean;
   usages: Map<string, Usage>;
 }
 
@@ -43,7 +45,13 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const key = attemptKey(event, run);
     if (this.completedAttempts.has(key)) return;
     const state = this.stateFor(event, run);
-    if (event.runtimeSessionRef) state.runtimeSessionRef = event.runtimeSessionRef;
+    if (event.runtimeSessionRef) {
+      state.runtimeSessionRef = event.runtimeSessionRef;
+      if (!state.runtimeSessionObserved) {
+        state.runtimeSessionObserved = true;
+        await observeRuntimeSessionMetric(this.writers.metrics, run);
+      }
+    }
     if (event.kind === "usage") this.recordUsage(state, event);
 
     await this.writers.transcripts?.append({
@@ -55,6 +63,10 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       event,
       run,
     });
+    if (event.kind === "run" && !state.runtimeReadyObserved) {
+      state.runtimeReadyObserved = true;
+      await observeRuntimeHealthMetric(this.writers.metrics, run, "ready");
+    }
     await observePolicyMetric(this.writers.metrics, event, run);
     const status = statusForEvent(event, run);
     if (status) await this.writers.status?.write(status);
@@ -91,6 +103,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
         totals,
         durationMs,
         noWork,
+        payload.resourceLeak === true,
       );
     } finally {
       this.state.delete(key);
@@ -105,6 +118,8 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const state: ProjectionState = {
       startedAt: event.occurredAt,
       runtimeSessionRef: null,
+      runtimeReadyObserved: false,
+      runtimeSessionObserved: false,
       usages: new Map(),
     };
     this.state.set(key, state);
@@ -146,6 +161,35 @@ async function observePolicyMetric(
     value: 1,
     labels: { label: run.label, level },
   });
+}
+
+async function observeRuntimeSessionMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    name: "devbot_runtime_sessions_total",
+    value: 1,
+    labels: runtimeMetricLabels(run),
+  });
+}
+
+async function observeRuntimeHealthMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+  status: "ready" | "healthy" | "failed",
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    name: "devbot_runtime_health_total",
+    value: 1,
+    labels: { ...runtimeMetricLabels(run), status },
+  });
+}
+
+function runtimeMetricLabels(run: RehorRun): { runtime: string; provider: string } {
+  return { runtime: run.runtimeId ?? "unknown", provider: run.provider.id };
 }
 
 function statusForEvent(event: RehorEvent, run: RehorRun): StatusUpdate | null {
@@ -263,6 +307,7 @@ async function observeTerminalMetrics(
   totals: UsageTotals,
   durationMs: number,
   noWork: boolean,
+  resourceLeak: boolean,
 ): Promise<void> {
   if (!writer) return;
   const labels = { model: totals.model, label: run.label, workflow: run.workflowId };
@@ -282,7 +327,34 @@ async function observeTerminalMetrics(
     { name: "devbot_cycle_output_tokens_total", value: totals.outputTokens, labels },
     { name: "devbot_cycle_cache_read_tokens_total", value: totals.cacheReadTokens, labels },
     { name: "devbot_cycle_cache_write_tokens_total", value: totals.cacheWriteTokens, labels },
+    {
+      name: "devbot_runtime_health_total",
+      value: 1,
+      labels: {
+        ...runtimeMetricLabels(run),
+        status: state === "completed" ? "healthy" : "failed",
+      },
+    },
+    {
+      name: "devbot_runtime_duration_seconds",
+      value: durationMs / 1000,
+      labels: { ...runtimeMetricLabels(run), state },
+    },
   ];
+  if (state === "interrupted" || state === "cancelled" || state === "timed_out") {
+    points.push({
+      name: "devbot_runtime_interruptions_total",
+      value: 1,
+      labels: { ...runtimeMetricLabels(run), state },
+    });
+  }
+  if (resourceLeak) {
+    points.push({
+      name: "devbot_runtime_resource_leaks_total",
+      value: 1,
+      labels: runtimeMetricLabels(run),
+    });
+  }
   if (
     metricStatus === "idle" &&
     totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens > 0

@@ -198,6 +198,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     const startedAt = Date.now();
     let outcome: RuntimeOutcome | undefined;
     let failure: unknown;
+    let cleanupFailure: Error | undefined;
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
@@ -372,7 +373,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       clearTimeout(timeout);
       detachAbort();
       detachCrash();
-      const cleanupFailure = await this.cleanup(active);
+      cleanupFailure = await this.cleanup(active);
       if (!failure && cleanupFailure) failure = cleanupFailure;
       if (this.active === active) this.active = undefined;
     }
@@ -428,6 +429,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         noWork: isNoWork(resultText),
         turns,
         durationMs: Date.now() - startedAt,
+        ...(isResourceLeak(failure) || isResourceLeak(cleanupFailure)
+          ? { resourceLeak: true }
+          : {}),
         ...(Object.keys(workContext).length > 0 ? { context: workContext } : {}),
       },
       { runtimeSessionRef: active.sessionId },
@@ -1204,6 +1208,10 @@ function errorMessage(value: unknown): string | undefined {
   if (value instanceof Error) return redactSensitiveText(value.message);
   if (typeof value === "string") return redactSensitiveText(value);
   return undefined;
+}
+
+function isResourceLeak(value: unknown): boolean {
+  return errorMessage(value)?.toLowerCase().includes("process group remained alive") ?? false;
 }
 
 function toError(value: unknown): Error {
