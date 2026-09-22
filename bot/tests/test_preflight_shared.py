@@ -65,6 +65,19 @@ def test_upstream_repo_bare_gitlab():
     assert host == "gitlab"
 
 
+def test_upstream_repo_bare_matches_upstream_basename():
+    repos = {
+        "konflux": {
+            "upstream": "https://gitlab.cee.redhat.com/releng/konflux-release-data.git",
+            "host": "gitlab",
+        }
+    }
+    with patch("common.load_project_repos", return_value=repos):
+        path, host = upstream_repo("konflux-release-data")
+    assert path == "releng/konflux-release-data"
+    assert host == "gitlab"
+
+
 # --- build_repo_lookup ---
 
 

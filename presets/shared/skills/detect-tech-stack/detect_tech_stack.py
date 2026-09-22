@@ -126,6 +126,7 @@ def detect(repo_path):
     for req_file in ("Pipfile", "requirements.txt", "pyproject.toml"):
         if (root / req_file).exists():
             stack.append("python")
+            envs.add("python")
             if _file_contains(root / req_file, "django"):
                 stack.append("django")
                 personas.add("backend")
