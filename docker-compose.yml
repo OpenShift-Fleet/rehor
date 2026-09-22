@@ -20,11 +20,13 @@ services:
       dockerfile: memory-server/Dockerfile
     ports:
       - "8080:8080"
+      - "8081:8081"
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql://bot:bot@postgres:5432/bot_memory
       TRUSTED_BOT_ACCOUNTS: "${TRUSTED_BOT_ACCOUNTS:-}"
+      MEMORY_API_KEY: ${MEMORY_API_KEY:-local-dev-memory-key}
       KUBEARCHIVE_TOKEN: "${KUBEARCHIVE_TOKEN:-}"
     depends_on:
       postgres:

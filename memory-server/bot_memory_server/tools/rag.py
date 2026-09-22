@@ -41,51 +41,8 @@ def _row_to_search_result(row) -> dict:
     return result.model_dump(mode="json")
 
 
-def register_rag_tools(mcp: FastMCP):
-    @mcp.tool()
-    async def memory_store(
-        category: str,
-        title: str,
-        content: str,
-        repo: str | None = None,
-        external_key: str | None = None,
-        source_type: str | None = None,
-        tags: list[str] | None = None,
-        metadata: dict | None = None,
-    ) -> dict:
-        """Store a memory with auto-generated embedding.
-        external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345'). Optional.
-        source_type: Source system — 'jira', 'github', etc. Inferred as 'jira' if external_key looks like a Jira key.
-        Categories: learning, review_feedback, codebase_pattern.
-        Tags: free-form labels like bug-fix, cve, css, patternfly, dependency-upgrade, ci, ui-change, testing."""
-        pool = get_pool()
-        vector = embed(f"{title}\n{content}")
-        if external_key and not source_type:
-            source_type = "jira"
-        row = await pool.fetchrow(
-            """
-            INSERT INTO memories (category, repo, external_key, source_type, title, content, tags, embedding, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING *
-            """,
-            category,
-            repo,
-            external_key,
-            source_type,
-            title,
-            content,
-            tags or [],
-            vector,
-            json.dumps(metadata or {}),
-        )
-        result = _row_to_memory(row)
-        await bus.publish(
-            Event(
-                "memory_stored",
-                {"id": result["id"], "title": title, "category": category},
-            )
-        )
-        return result
+def register_rag_read_tools(mcp: FastMCP):
+    """Register read-only memory tools (safe for public/team MCP endpoints)."""
 
     @mcp.tool()
     async def memory_search(
@@ -186,6 +143,55 @@ def register_rag_tools(mcp: FastMCP):
             "offset": offset,
         }
 
+
+def register_rag_write_tools(mcp: FastMCP):
+    """Register memory write tools (bot / internal MCP only)."""
+
+    @mcp.tool()
+    async def memory_store(
+        category: str,
+        title: str,
+        content: str,
+        repo: str | None = None,
+        external_key: str | None = None,
+        source_type: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Store a memory with auto-generated embedding.
+        external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345'). Optional.
+        source_type: Source system — 'jira', 'github', etc. Inferred as 'jira' if external_key looks like a Jira key.
+        Categories: learning, review_feedback, codebase_pattern.
+        Tags: free-form labels like bug-fix, cve, css, patternfly, dependency-upgrade, ci, ui-change, testing."""
+        pool = get_pool()
+        vector = embed(f"{title}\n{content}")
+        if external_key and not source_type:
+            source_type = "jira"
+        row = await pool.fetchrow(
+            """
+            INSERT INTO memories (category, repo, external_key, source_type, title, content, tags, embedding, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING *
+            """,
+            category,
+            repo,
+            external_key,
+            source_type,
+            title,
+            content,
+            tags or [],
+            vector,
+            json.dumps(metadata or {}),
+        )
+        result = _row_to_memory(row)
+        await bus.publish(
+            Event(
+                "memory_stored",
+                {"id": result["id"], "title": title, "category": category},
+            )
+        )
+        return result
+
     @mcp.tool()
     async def memory_delete(id: int) -> dict:
         """Delete a memory by ID."""
@@ -195,3 +201,9 @@ def register_rag_tools(mcp: FastMCP):
             raise ValueError(f"Memory {id} not found")
         await bus.publish(Event("memory_deleted", {"id": id}))
         return {"deleted": True, "id": id}
+
+
+def register_rag_tools(mcp: FastMCP):
+    """Register all RAG tools (read + write) for the full bot MCP endpoint."""
+    register_rag_read_tools(mcp)
+    register_rag_write_tools(mcp)
