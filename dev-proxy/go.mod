@@ -1,6 +1,6 @@
 module dev-proxy
 
-go 1.26.8
+go 1.26.7
 
 require github.com/caddyserver/caddy/v2 v2.11.4
 
