@@ -152,6 +152,8 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
   const envs = object.envs === null ? null : stringArray(object.envs, "config.envs");
   return {
     model: stringValue(object.model, "config.model"),
+    runtimeId: selectionId(object.runtimeId, "config.runtimeId"),
+    providerId: selectionId(object.providerId, "config.providerId"),
     maxTurns: positiveInteger(object.maxTurns, "config.maxTurns"),
     intervalSeconds: nonNegativeNumber(object.intervalSeconds, "config.intervalSeconds"),
     idleIntervalSeconds: nonNegativeNumber(
@@ -271,6 +273,14 @@ function finiteNumber(value: unknown, path: string): number {
 function stringValue(value: unknown, path: string): string {
   if (typeof value !== "string") throw new PythonBridgeError(`${path} must be a string`);
   return value;
+}
+
+function selectionId(value: unknown, path: string): string {
+  const selection = stringValue(value, path);
+  if (!/^[a-z][a-z0-9-]*$/.test(selection)) {
+    throw new PythonBridgeError(`${path} must be a lowercase runtime/provider identifier`);
+  }
+  return selection;
 }
 
 function nullableString(value: unknown, path: string): string | null {

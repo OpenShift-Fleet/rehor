@@ -44,6 +44,10 @@ export interface ConfigPreparationRequest {
 
 export interface ConfigPreparationResult {
   model: string;
+  /** Adapter/runtime selected by the instance for the future coordinator. */
+  runtimeId: string;
+  /** Provider route selected independently from the runtime adapter. */
+  providerId: string;
   maxTurns: number;
   intervalSeconds: number;
   idleIntervalSeconds: number;

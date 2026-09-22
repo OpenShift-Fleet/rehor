@@ -20,6 +20,8 @@ const repositoryRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..
 
 const config: ConfigPreparationResult = {
   model: "test-model",
+  runtimeId: "claude",
+  providerId: "vertex",
   maxTurns: 10,
   intervalSeconds: 300,
   idleIntervalSeconds: 300,
@@ -207,10 +209,20 @@ describe("cycle preparation", () => {
       }),
       options,
     );
+    const runtimeChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), { runtimeId: "opencode-v1" }),
+      options,
+    );
+    const providerChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), { providerId: "rehor-openai" }),
+      options,
+    );
 
     expect(mcpChanged.configHash.value).not.toBe(baseline.configHash.value);
     expect(toolsChanged.configHash.value).not.toBe(baseline.configHash.value);
     expect(optionalMcpChanged.configHash.value).not.toBe(baseline.configHash.value);
+    expect(runtimeChanged.configHash.value).not.toBe(baseline.configHash.value);
+    expect(providerChanged.configHash.value).not.toBe(baseline.configHash.value);
   });
 
   it("keeps the current no-preflight triage prompt", () => {
@@ -248,6 +260,8 @@ describe("Python preflight bridge", () => {
       ok: true,
       result: {
         model: "test-model",
+        runtimeId: "opencode-v1",
+        providerId: "rehor-openai",
         maxTurns: 10,
         intervalSeconds: 300,
         idleIntervalSeconds: 300,
@@ -287,6 +301,8 @@ describe("Python preflight bridge", () => {
       ok: true,
       result: {
         model: "test-model",
+        runtimeId: "opencode-v1",
+        providerId: "rehor-openai",
         maxTurns: 10,
         intervalSeconds: 300,
         idleIntervalSeconds: 300,
@@ -336,6 +352,8 @@ describe("Python preflight bridge", () => {
 
     expect(result.mcpServers).toEqual(response.result.mcpServers);
     expect(result.openCodeMcpServers).toEqual(response.result.openCodeMcpServers);
+    expect(result.runtimeId).toBe("opencode-v1");
+    expect(result.providerId).toBe("rehor-openai");
     expect(result.allowedTools).toEqual(response.result.allowedTools);
     expect(result.optionalMcpServers).toEqual(response.result.optionalMcpServers);
   });

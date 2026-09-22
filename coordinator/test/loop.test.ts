@@ -15,6 +15,8 @@ function prepared(action: PreflightAction): PreparedCycleInput {
   return {
     config: {
       model: "test-model",
+      runtimeId: "claude",
+      providerId: "vertex",
       maxTurns: 10,
       intervalSeconds: 1,
       idleIntervalSeconds: 2,

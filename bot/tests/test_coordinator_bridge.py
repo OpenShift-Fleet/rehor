@@ -70,7 +70,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     profile_dir.mkdir(parents=True)
     shared_dir.mkdir(parents=True)
     (profile_dir / "instance.yaml").write_text(
-        "workflow: test-workflow\nsource: github\nenvs: [github]\nclaude_md:\n  strategy: append\n"
+        "workflow: test-workflow\nsource: github\nenvs: [github]\n"
+        "runtime: opencode-v1\nprovider: rehor-openai\n"
+        "claude_md:\n  strategy: append\n"
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
@@ -120,6 +122,8 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["workflow"] == "test-workflow"
     assert result["source"] == "github"
     assert result["envs"] == ["github"]
+    assert result["runtimeId"] == "opencode-v1"
+    assert result["providerId"] == "rehor-openai"
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)

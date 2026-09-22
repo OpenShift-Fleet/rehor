@@ -25,6 +25,8 @@ from . import idle_reminder
 from .agent import push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
+    DEFAULT_PROVIDER_ID,
+    DEFAULT_RUNTIME_ID,
     Config,
     InstanceConfig,
     load_config,
@@ -36,6 +38,7 @@ from .config import (
     sanitize_env,
     validate_instance_config,
     validate_manifest,
+    validate_runtime_provider_selection,
 )
 from .costs import record_cost
 from .log import bind, clear, setup_logging
@@ -379,6 +382,34 @@ def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:
     return None, None
 
 
+def validate_python_runner_selection(instance_config: InstanceConfig) -> None:
+    """Fail closed instead of silently ignoring a coordinator selection.
+
+    The legacy Python loop owns only the Claude/Vertex path. The TypeScript
+    coordinator consumes non-default selections; an old image must not run an
+    OpenCode config through the Claude SDK by accident.
+    """
+    logger = logging.getLogger(__name__)
+    errors = validate_runtime_provider_selection(instance_config.runtime, instance_config.provider)
+    if errors:
+        for error in errors:
+            logger.error("FATAL: %s", error)
+        sys.exit(1)
+    if (instance_config.runtime, instance_config.provider) != (
+        DEFAULT_RUNTIME_ID,
+        DEFAULT_PROVIDER_ID,
+    ):
+        logger.error(
+            "Runtime/provider selection %s/%s requires the TypeScript coordinator; "
+            "the Python runner supports only %s/%s",
+            instance_config.runtime,
+            instance_config.provider,
+            DEFAULT_RUNTIME_ID,
+            DEFAULT_PROVIDER_ID,
+        )
+        sys.exit(1)
+
+
 def main() -> None:
     # Load .env before anything else so MCP servers get the credentials
     load_dotenv(SCRIPT_DIR / ".env")
@@ -431,6 +462,7 @@ def main() -> None:
             model_tiers=config.model_tiers,
         )
         validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
+        validate_python_runner_selection(instance_config)
 
         # Remove secrets from env so Bash subprocesses can't leak them.
         # MCP servers already have resolved values. gh/glab use config files.
@@ -483,6 +515,7 @@ def main() -> None:
                         apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
                     instance_config = load_instance_config(remote_agent_dir)
+                    validate_python_runner_selection(instance_config)
                     install_skills(
                         SCRIPT_DIR,
                         resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),

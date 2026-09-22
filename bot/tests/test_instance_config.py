@@ -14,6 +14,7 @@ from bot.config import (
     resolve_cycle_model,
     validate_instance_config,
 )
+from bot.run import validate_python_runner_selection
 
 
 @pytest.fixture
@@ -52,6 +53,8 @@ class TestInstanceConfigFromYaml:
                     "source": "github",
                     "envs": ["browser"],
                     "claude_md": {"strategy": "append"},
+                    "runtime": "opencode-v1",
+                    "provider": "rehor-openai",
                 }
             )
         )
@@ -60,6 +63,8 @@ class TestInstanceConfigFromYaml:
         assert ic.source == "github"
         assert ic.envs == ["browser"]
         assert ic.claude_md_strategy == "append"
+        assert ic.runtime == "opencode-v1"
+        assert ic.provider == "rehor-openai"
 
     def test_minimal_config(self, agent_dir):
         (agent_dir / "instance.yaml").write_text("workflow: jira-sprint\n")
@@ -70,6 +75,8 @@ class TestInstanceConfigFromYaml:
         assert ic.claude_md_strategy == "ignore"
         assert ic.idle_cycle_limit == 0
         assert ic.model is None
+        assert ic.runtime == "claude"
+        assert ic.provider == "vertex"
 
     def test_with_model(self, agent_dir):
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "model": "claude-sonnet-4-6"}))
@@ -154,6 +161,16 @@ class TestInstanceConfigFromEnv:
             ic = InstanceConfig.from_env()
         assert ic.model is None
 
+    def test_runtime_and_provider_env(self):
+        with patch.dict(
+            os.environ,
+            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            clear=True,
+        ):
+            ic = InstanceConfig.from_env()
+        assert ic.runtime == "opencode-v1"
+        assert ic.provider == "rehor-openai"
+
 
 class TestLoadInstanceConfig:
     def test_from_yaml(self, agent_dir):
@@ -180,6 +197,30 @@ class TestLoadInstanceConfig:
         with patch.dict(os.environ, {"BOT_MODEL": "claude-env-overlay"}, clear=True):
             ic = load_instance_config(agent_dir)
         assert ic.model == "claude-env-overlay"
+
+    def test_from_yaml_runtime_and_provider_win_over_env(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(
+            yaml.dump({"workflow": "reviewer", "runtime": "claude", "provider": "vertex"})
+        )
+        with patch.dict(
+            os.environ,
+            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            clear=True,
+        ):
+            ic = load_instance_config(agent_dir)
+        assert ic.runtime == "claude"
+        assert ic.provider == "vertex"
+
+    def test_from_yaml_omits_runtime_and_provider_overlays_env(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer"}))
+        with patch.dict(
+            os.environ,
+            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            clear=True,
+        ):
+            ic = load_instance_config(agent_dir)
+        assert ic.runtime == "opencode-v1"
+        assert ic.provider == "rehor-openai"
 
     def test_no_yaml_falls_back_to_env(self, agent_dir):
         with patch.dict(os.environ, {"BOT_WORKFLOW_PRESET": "kanban", "BOT_MODEL": "claude-opus-4-6"}, clear=True):
@@ -224,6 +265,26 @@ class TestValidateInstanceConfig:
         with patch.dict(os.environ, env, clear=False):
             validate_instance_config(preset_tree, ic)
 
+    @pytest.mark.parametrize("runtime", ["unknown", "opencode_v1", ""])
+    def test_invalid_runtime_exits(self, preset_tree, runtime):
+        ic = InstanceConfig(runtime=runtime)
+        with pytest.raises(SystemExit) as exc_info:
+            validate_instance_config(preset_tree, ic)
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize("provider", ["unknown", "openai", ""])
+    def test_invalid_provider_exits(self, preset_tree, provider):
+        ic = InstanceConfig(provider=provider)
+        with pytest.raises(SystemExit) as exc_info:
+            validate_instance_config(preset_tree, ic)
+        assert exc_info.value.code == 1
+
+    def test_claude_runtime_rejects_non_vertex_provider(self, preset_tree):
+        ic = InstanceConfig(runtime="claude", provider="rehor-openai")
+        with pytest.raises(SystemExit) as exc_info:
+            validate_instance_config(preset_tree, ic)
+        assert exc_info.value.code == 1
+
     def test_missing_workflow_exits(self, preset_tree):
         ic = InstanceConfig(workflow="nonexistent")
         with pytest.raises(SystemExit) as exc_info:
@@ -253,6 +314,23 @@ class TestValidateInstanceConfig:
             validate_instance_config(preset_tree, ic)
         assert "browser" in caplog.text
         assert "container-scan" in caplog.text
+
+
+class TestValidatePythonRunnerSelection:
+    def test_default_selection_is_supported(self):
+        validate_python_runner_selection(InstanceConfig())
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            {"runtime": "opencode-v1", "provider": "rehor-openai"},
+            {"runtime": "opencode-v1", "provider": "vertex"},
+        ],
+    )
+    def test_non_default_selection_fails_closed(self, selection):
+        with pytest.raises(SystemExit) as exc_info:
+            validate_python_runner_selection(InstanceConfig(**selection))
+        assert exc_info.value.code == 1
 
 
 @pytest.fixture

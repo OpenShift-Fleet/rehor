@@ -88,6 +88,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_active_envs,
         resolve_cycle_model,
         resolve_workflow_dir,
+        validate_runtime_provider_selection,
     )
     from .merge import apply_merged_config, install_skills
 
@@ -107,6 +108,12 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         apply_merged_config(script_dir, profile_dir)
 
     instance_config = load_instance_config(profile_dir)
+    selection_errors = validate_runtime_provider_selection(
+        instance_config.runtime,
+        instance_config.provider,
+    )
+    if selection_errors:
+        raise BridgeError("; ".join(selection_errors))
     workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
     active_envs = resolve_active_envs(script_dir, instance_config)
     install_skills(script_dir, workflow_dir, active_envs)
@@ -125,6 +132,8 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "model": cycle_model,
+        "runtimeId": instance_config.runtime,
+        "providerId": instance_config.provider,
         "maxTurns": runtime_config.max_turns,
         "intervalSeconds": runtime_config.interval,
         "idleIntervalSeconds": runtime_config.idle_interval,

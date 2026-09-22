@@ -99,9 +99,10 @@ selection can change without changing lifecycle orchestration.
 
 Factories receive only a normalized `RehorRun` and return an `AgentRuntime`.
 Provider SDK clients, server processes, and sessions remain private to the
-adapter. `executeSelectedRun()` feeds the selected adapter into the existing
-`executeRun()` lifecycle, preserving event validation, projection, timeout,
-and cleanup behavior.
+adapter. `executeSelectedRun()` feeds an explicitly selected adapter into the existing
+`executeRun()` lifecycle. `executeConfiguredRun()` resolves the adapter from
+`RehorRun.runtimeId`, which is the normalized per-instance selection. Both
+paths preserve event validation, projection, timeout, and cleanup behavior.
 
 `createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
 runtime ID `claude` and remains the production default. Its options are
@@ -121,14 +122,23 @@ const registry = new RuntimeFactoryRegistry([
   createOpenCodeV1RuntimeFactory({
     config: {
       ...deploymentOpenCodeConfig,
-      providerId: "rehor-openai",
+      model: prepared.config.model,
+      providerId: prepared.config.providerId,
+      mcpServers: prepared.config.openCodeMcpServers ?? {},
+      allowedTools: prepared.config.allowedTools ?? [],
+      optionalMcpServers: prepared.config.optionalMcpServers ?? [],
     },
   }),
 ]);
+const runForInstance = {
+  ...run,
+  runtimeId: prepared.config.runtimeId,
+  provider: { ...run.provider, id: prepared.config.providerId },
+};
 const result = await executeSelectedRun(
   registry,
-  { runtimeId: "opencode-v1" },
-  run,
+  { runtimeId: runForInstance.runtimeId ?? "claude" },
+  runForInstance,
   { preparedConfig: prepared.config },
 );
 ```
@@ -186,7 +196,11 @@ is reserved for the versioned bridge response.
 Instruction layers match the current runner: core, optional shared, workflow,
 and optional instance instructions. `replace`, `append`, and `ignore` strategies
 retain their existing meanings. The assembled content receives a SHA-256
-`instructionHash`; semantic config inputs receive a separate `configHash`.
+`instructionHash`; semantic config inputs, including `runtimeId` and
+`providerId`, receive a separate `configHash` so a selection change cannot be
+silently reused for a cycle. `ConfigPreparationResult.runtimeId` selects the
+runtime adapter, while `ConfigPreparationResult.providerId` independently
+becomes `RehorRun.provider.id`.
 
 Preflight `skip` and `error` actions remain coordinator-owned no-session
 paths. Existing aggregation is preserved: a mixed error/start result is still
@@ -234,6 +248,7 @@ sleep through one `AbortSignal`.
 | Current Python behavior | Coordinator representation |
 |---|---|
 | `label`, workflow, model, `max_turns`, cycle timeout | `RehorRun.label`, `workflowId`, `provider`, and `limits` |
+| Instance runtime/provider selection | `RehorRun.runtimeId` and `RehorRun.provider.id` |
 | Dynamic prompt plus optional preflight content | `RehorRun.prompt` plus optional `preflightPayloadRef` for audit linkage |
 | Cycle starts before a task is selected | `RehorRun.task` may be `null` |
 | SDK session ID | opaque `runtimeSessionRef`; provider session IDs remain inside adapters |

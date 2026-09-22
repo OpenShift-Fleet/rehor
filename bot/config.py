@@ -16,6 +16,11 @@ from .constants import _DEFAULT_COOLDOWN_SECONDS
 
 OPEN_CODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL"
 
+DEFAULT_RUNTIME_ID = "claude"
+DEFAULT_PROVIDER_ID = "vertex"
+SUPPORTED_RUNTIME_IDS = frozenset({DEFAULT_RUNTIME_ID, "opencode-v1"})
+SUPPORTED_PROVIDER_IDS = frozenset({DEFAULT_PROVIDER_ID, "rehor-openai"})
+
 
 @dataclass
 class Config:
@@ -65,6 +70,8 @@ class InstanceConfig:
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
     model: str | None = None
+    runtime: str = DEFAULT_RUNTIME_ID
+    provider: str = DEFAULT_PROVIDER_ID
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -79,6 +86,16 @@ class InstanceConfig:
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
             model=_nonempty_model(data.get("model")),
+            runtime=(
+                _nonempty_model(data.get("runtime"))
+                or _nonempty_model(os.environ.get("BOT_RUNTIME"))
+                or DEFAULT_RUNTIME_ID
+            ),
+            provider=(
+                _nonempty_model(data.get("provider"))
+                or _nonempty_model(os.environ.get("BOT_PROVIDER"))
+                or DEFAULT_PROVIDER_ID
+            ),
         )
 
     @classmethod
@@ -89,7 +106,9 @@ class InstanceConfig:
         if envs_str is not None:
             envs = [e.strip() for e in envs_str.split(",") if e.strip()]
         model = _nonempty_model(os.environ.get("BOT_MODEL"))
-        return cls(workflow=workflow, envs=envs, model=model)
+        runtime = _nonempty_model(os.environ.get("BOT_RUNTIME")) or DEFAULT_RUNTIME_ID
+        provider = _nonempty_model(os.environ.get("BOT_PROVIDER")) or DEFAULT_PROVIDER_ID
+        return cls(workflow=workflow, envs=envs, model=model, runtime=runtime, provider=provider)
 
 
 def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
@@ -102,19 +121,23 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
             if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
                 ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, model=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
+                ic.runtime,
+                ic.provider,
                 ic.model,
             )
             return ic
 
     ic = InstanceConfig.from_env()
     logger.info(
-        "No instance.yaml — env/defaults: workflow=%s, envs=%s, model=%s",
+        "No instance.yaml — env/defaults: workflow=%s, envs=%s, runtime=%s, provider=%s, model=%s",
         ic.workflow,
         ic.envs,
+        ic.runtime,
+        ic.provider,
         ic.model,
     )
     return ic
@@ -143,13 +166,44 @@ def resolve_active_envs(script_dir: Path, instance_config: InstanceConfig) -> li
     return sorted(d.name for d in envs_dir.iterdir() if d.is_dir() and d.name != ".gitkeep")
 
 
+def validate_runtime_provider_selection(runtime: str, provider: str) -> list[str]:
+    """Return configuration errors for a runtime/provider pair.
+
+    The selection is deliberately validated at the Python/coordinator boundary
+    so a canary cannot silently fall back to an unrelated provider. The
+    TypeScript Claude adapter currently supports Vertex; OpenCode supports the
+    Vertex compatibility route and the OpenAI gateway route.
+    """
+    errors: list[str] = []
+    if runtime not in SUPPORTED_RUNTIME_IDS:
+        errors.append(
+            f"Unsupported runtime '{runtime}'. Supported runtimes: {', '.join(sorted(SUPPORTED_RUNTIME_IDS))}"
+        )
+    if provider not in SUPPORTED_PROVIDER_IDS:
+        errors.append(
+            f"Unsupported provider '{provider}'. Supported providers: {', '.join(sorted(SUPPORTED_PROVIDER_IDS))}"
+        )
+    if runtime == DEFAULT_RUNTIME_ID and provider != DEFAULT_PROVIDER_ID:
+        errors.append(
+            f"Runtime '{DEFAULT_RUNTIME_ID}' supports provider '{DEFAULT_PROVIDER_ID}' only; got '{provider}'"
+        )
+    return errors
+
+
 def validate_instance_config(
     script_dir: Path,
     instance_config: InstanceConfig,
     remote_agent_dir: Path | None = None,
 ) -> None:
-    """Validate instance config references exist. FATAL on missing workflow, WARNING on missing env."""
+    """Validate instance config references exist. FATAL on invalid selection/workflow, WARNING on missing env."""
     logger = logging.getLogger(__name__)
+
+    selection_errors = validate_runtime_provider_selection(instance_config.runtime, instance_config.provider)
+    if selection_errors:
+        for error in selection_errors:
+            logger.error("FATAL: %s", error)
+        logger.error("Runtime/provider selection validation failed. Check instance.yaml or deployment env.")
+        sys.exit(1)
 
     wf_dir = resolve_workflow_dir(script_dir, instance_config.workflow, remote_agent_dir)
     if not wf_dir.is_dir():
