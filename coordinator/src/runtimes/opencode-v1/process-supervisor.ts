@@ -1,10 +1,16 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createServer } from "node:net";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 
-import { abortReason, assertPositiveInteger, boundedOperation, stableJson } from "../shared";
+import {
+  abortReason,
+  assertPositiveInteger,
+  boundedOperation,
+  redactSensitiveText,
+  stableJson,
+} from "../shared";
 
 import {
   buildOpenCodeEnvironment,
@@ -14,6 +20,7 @@ import {
 } from "./environment";
 
 export const OPENCODE_VERSION = "1.18.29" as const;
+const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
 
 /** Capabilities provided by the pinned server/SDK protocol, not /global/health. */
@@ -33,6 +40,8 @@ export interface OpenCodeServerInfo extends OpenCodeHealth {
   baseUrl: string;
   hostname: string;
   port: number;
+  /** Canonical, validated worktree path used for child cwd and client requests. */
+  directory: string;
   configHash?: string;
 }
 
@@ -43,7 +52,12 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
+  /** Required when config is supplied; must come from trusted policy data. */
   expectedConfigHash?: string;
+  /** Required by start; absolute root containing only approved worktrees. */
+  workspaceRoot?: string;
+  /** Expected owner UID for the canonical worktree directory. */
+  workspaceOwnerUid?: number;
   requiredCapabilities?: readonly string[];
   /** Probe the process group belonging to the child PID. */
   processGroupExists?: (pid: number) => boolean;
@@ -106,6 +120,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private crashController = new AbortController();
   private outputCleanup?: () => void;
   private startupOutput = "";
+  private startupOutputTruncated = false;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
     this.options = {
@@ -145,7 +160,20 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     if (this.child || this.server) throw new Error("OpenCode server already started");
     if (signal.aborted) throw abortReason(signal);
 
+    const workspaceDirectory = await resolveApprovedWorkspace(
+      directory,
+      this.options.workspaceRoot,
+      this.options.workspaceOwnerUid,
+    );
+    if (signal.aborted) throw abortReason(signal);
+
     const configHash = this.options.config ? hashOpenCodeConfig(this.options.config) : undefined;
+    if (this.options.config && !this.options.expectedConfigHash) {
+      throw new OpenCodeReadinessError(
+        "OpenCode expected config hash is required when config is provided",
+        true,
+      );
+    }
     if (this.options.expectedConfigHash && configHash !== this.options.expectedConfigHash) {
       throw new OpenCodeReadinessError(
         `OpenCode config hash ${configHash ?? "missing"} does not match expected ${this.options.expectedConfigHash}`,
@@ -161,8 +189,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
     const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
     this.startupOutput = "";
+    this.startupOutputTruncated = false;
     const child = spawnProcess(this.options.command, args, {
-      cwd: directory,
+      cwd: workspaceDirectory,
       env: environment,
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
@@ -180,7 +209,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const baseUrl = await this.waitForListening(child, startupSignal, port, startupDeadline);
       const health = await this.waitForReadiness(
         baseUrl,
-        directory,
+        workspaceDirectory,
         startupSignal,
         startupDeadline,
       );
@@ -198,6 +227,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         baseUrl: baseUrl.replace(/\/$/, ""),
         hostname: parsed.hostname,
         port: Number(parsed.port),
+        directory: workspaceDirectory,
         ...(configHash ? { configHash } : {}),
       };
       return this.server;
@@ -282,12 +312,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       };
       const onError = (error: Error): void => {
         this.exited = true;
+        const safeError = redactError(error);
         if (!this.stopping) {
-          this._crashError = this.server ? error : this.withStartupOutput(error);
+          this._crashError = this.server ? safeError : this.withStartupOutput(safeError);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
-        reject(this._crashError ?? error);
+        reject(this._crashError ?? safeError);
       };
       child.once("exit", onExit);
       child.once("error", onError);
@@ -296,11 +327,22 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
   private withStartupOutput(value: unknown): Error {
     const error = value instanceof Error ? value : new Error(String(value));
-    if (this.startupOutput && !error.message.includes("OpenCode startup output (tail)")) {
-      const diagnostic = this.startupOutput.slice(-STARTUP_DIAGNOSTIC_LIMIT);
+    const diagnostic = this.startupDiagnostic();
+    if (diagnostic && !error.message.includes("OpenCode startup output (tail)")) {
       error.message = `${error.message}\nOpenCode startup output (tail):\n${diagnostic}`;
     }
+    error.message = redactSensitiveText(error.message);
     return error;
+  }
+
+  private startupDiagnostic(): string {
+    let output = this.startupOutput;
+    if (this.startupOutputTruncated) {
+      const firstLineEnd = output.indexOf("\n");
+      if (firstLineEnd === -1) return "";
+      output = output.slice(firstLineEnd + 1);
+    }
+    return redactSensitiveText(output).slice(-STARTUP_DIAGNOSTIC_LIMIT);
   }
 
   private waitForListening(
@@ -328,7 +370,11 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       };
       const onData = (chunk: Buffer | string): void => {
         if (settled) return;
-        this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, chunk);
+        const text = chunk.toString();
+        if (this.startupOutput.length + text.length > STARTUP_OUTPUT_LIMIT) {
+          this.startupOutputTruncated = true;
+        }
+        this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, text);
         for (const line of this.startupOutput.split(/\r?\n/)) {
           const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
           if (match) {
@@ -400,7 +446,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       child.stderr?.on("data", onData);
       child.once("exit", onExit);
       child.once("error", onError);
-      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -447,9 +494,14 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   }
 }
 
+function redactError(error: Error): Error {
+  error.message = redactSensitiveText(error.message);
+  return error;
+}
+
 /** Keeps startup diagnostics bounded while waiting for the advertised URL. */
 export function appendBoundedOpenCodeOutput(output: string, chunk: Buffer | string): string {
-  return `${output}${chunk.toString()}`.slice(-16_384);
+  return `${output}${chunk.toString()}`.slice(-STARTUP_OUTPUT_LIMIT);
 }
 
 export class HttpOpenCodeReadiness implements OpenCodeReadiness {
@@ -510,6 +562,87 @@ export class HttpOpenCodeReadiness implements OpenCodeReadiness {
       ...(capabilities ? { capabilities } : {}),
     };
   }
+}
+
+async function resolveApprovedWorkspace(
+  directory: string,
+  workspaceRoot: string | undefined,
+  workspaceOwnerUid: number | undefined,
+): Promise<string> {
+  if (!isAbsolute(directory)) {
+    throw new OpenCodeReadinessError(
+      `OpenCode worktree path must be absolute, got ${directory}`,
+      true,
+    );
+  }
+  if (!workspaceRoot) {
+    throw new OpenCodeReadinessError("OpenCode workspace root is required", true);
+  }
+  if (!isAbsolute(workspaceRoot)) {
+    throw new OpenCodeReadinessError(
+      `OpenCode workspace root must be absolute, got ${workspaceRoot}`,
+      true,
+    );
+  }
+
+  let canonicalRoot: string;
+  let canonicalDirectory: string;
+  try {
+    [canonicalRoot, canonicalDirectory] = await Promise.all([
+      realpath(workspaceRoot),
+      realpath(directory),
+    ]);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new OpenCodeReadinessError(
+      `OpenCode worktree path must resolve to an accessible directory${detail}`,
+      true,
+    );
+  }
+
+  const relativeDirectory = relative(canonicalRoot, canonicalDirectory);
+  if (
+    relativeDirectory !== "" &&
+    (relativeDirectory === ".." ||
+      relativeDirectory.startsWith(`..${pathSeparator()}`) ||
+      isAbsolute(relativeDirectory))
+  ) {
+    throw new OpenCodeReadinessError(
+      `OpenCode worktree path ${canonicalDirectory} is outside approved workspace root ${canonicalRoot}`,
+      true,
+    );
+  }
+
+  let directoryStats: Awaited<ReturnType<typeof stat>>;
+  try {
+    directoryStats = await stat(canonicalDirectory);
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new OpenCodeReadinessError(`OpenCode worktree path must be stat-able${detail}`, true);
+  }
+  if (!directoryStats.isDirectory()) {
+    throw new OpenCodeReadinessError(
+      `OpenCode worktree path is not a directory: ${canonicalDirectory}`,
+      true,
+    );
+  }
+
+  const expectedOwnerUid = workspaceOwnerUid ?? currentUserUid();
+  if (expectedOwnerUid !== undefined && directoryStats.uid !== expectedOwnerUid) {
+    throw new OpenCodeReadinessError(
+      `OpenCode worktree path ${canonicalDirectory} is owned by UID ${directoryStats.uid}, expected ${expectedOwnerUid}`,
+      true,
+    );
+  }
+  return canonicalDirectory;
+}
+
+function currentUserUid(): number | undefined {
+  return typeof process.getuid === "function" ? process.getuid() : undefined;
+}
+
+function pathSeparator(): string {
+  return process.platform === "win32" ? "\\" : "/";
 }
 
 function defaultSpawn(

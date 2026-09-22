@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,7 @@ import {
   type OpenCodeSpawn,
   OpenCodeV1Runtime,
 } from "../src/runtimes/opencode-v1";
+import { boundedOperation } from "../src/runtimes/shared";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -87,11 +88,13 @@ async function* streamEvents(
 
 interface FakeRuntimeOptions {
   events: OpenCodeEvent[];
+  serverDirectory?: string;
   streamError?: Error;
   messages?: unknown[];
   sessionStatus?: Record<string, unknown>;
   omitConfigHash?: boolean;
   deleteError?: Error;
+  promptError?: Error;
   promptGate?: Promise<unknown>;
   streamReturnGate?: Promise<unknown>;
   deleteGate?: Promise<unknown>;
@@ -125,6 +128,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     baseUrl: "http://127.0.0.1:41236",
     hostname: "127.0.0.1",
     port: 41236,
+    directory: options.serverDirectory ?? runtimeRun.worktree.path,
     healthy: true,
     version: "1.18.29",
     ...(options.omitConfigHash ? {} : { configHash: runtimeRun.configHash.value }),
@@ -184,6 +188,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
       promptAsync: async (request: unknown) => {
         calls.prompt.push(request);
         await options.promptGate;
+        if (options.promptError) throw options.promptError;
         return { data: {} };
       },
       messages: async (request: unknown) => {
@@ -265,6 +270,26 @@ async function waitForCondition(condition: () => boolean): Promise<void> {
   throw new Error("test condition was not reached");
 }
 
+describe("bounded operations", () => {
+  it("does not start an operation after cancellation wins before its microtask", async () => {
+    const controller = new AbortController();
+    let called = false;
+    const pending = boundedOperation(
+      () => {
+        called = true;
+        return "must not run";
+      },
+      controller.signal,
+      undefined,
+      "test operation",
+    );
+
+    controller.abort("cancelled");
+    await expect(pending).rejects.toThrow("cancelled");
+    expect(called).toBe(false);
+  });
+});
+
 describe("OpenCode environment", () => {
   it("copies only explicit runtime variables and makes proxy routing deterministic", () => {
     const environment = buildOpenCodeEnvironment({
@@ -276,6 +301,7 @@ describe("OpenCode environment", () => {
         NO_PROXY: "memory-server,proxy",
         SECRET_TOKEN: "must-not-leak",
         OPENCODE_CONFIG_CONTENT: "ambient-config-must-not-leak",
+        NODE_OPTIONS: "--require=/tmp/preload.cjs",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
       },
       passthrough: ["REHOR_MODEL_PROXY_TOKEN"],
@@ -296,6 +322,7 @@ describe("OpenCode environment", () => {
     expect(environment.no_proxy).toBe(environment.NO_PROXY);
     expect(environment.SECRET_TOKEN).toBeUndefined();
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(environment.NODE_OPTIONS).toBeUndefined();
   });
 
   it("preserves external proxy use while adding required internal bypasses", () => {
@@ -488,6 +515,29 @@ describe("OpenCode readiness", () => {
 });
 
 describe("OpenCode runtime", () => {
+  it("uses the supervisor's canonical directory for OpenCode client requests", async () => {
+    const { calls, runtime } = fakeRuntime({
+      serverDirectory: "/canonical-worktree",
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(calls.factory[0]?.directory).toBe("/canonical-worktree");
+    expect(calls.subscribe[0]).toMatchObject({ query: { directory: "/canonical-worktree" } });
+    expect(calls.create[0]).toMatchObject({ query: { directory: "/canonical-worktree" } });
+    expect(calls.prompt[0]).toMatchObject({ query: { directory: "/canonical-worktree" } });
+    expect(calls.deleteRequests[0]).toMatchObject({
+      query: { directory: "/canonical-worktree" },
+    });
+  });
+
   it("normalizes a completed session and cleans up the session and server", async () => {
     const { calls, runtime } = fakeRuntime({
       omitConfigHash: true,
@@ -1030,6 +1080,44 @@ describe("OpenCode runtime", () => {
     expect(calls.abort).toBe(0);
   });
 
+  it("reconciles a prompt request whose response is lost after submission", async () => {
+    const { calls, runtime } = fakeRuntime({
+      events: [],
+      promptError: new Error("prompt response lost"),
+      sessionStatus: {},
+      messages: [
+        {
+          info: {
+            id: "message-1",
+            sessionID: "session-opencode",
+            role: "assistant",
+            modelID: "gpt-5.6-luna",
+            time: { created: 1, completed: 2 },
+            finish: "stop",
+          },
+          parts: [
+            {
+              id: "answer-part",
+              sessionID: "session-opencode",
+              messageID: "message-1",
+              type: "text",
+              text: "hello",
+            },
+          ],
+        },
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(calls.messages).toBe(1);
+    expect(events.at(-1)?.payload).toMatchObject({
+      state: "completed",
+      resultText: "hello",
+    });
+  });
+
   it("passes external cancellation to an active prompt and still stops the server", async () => {
     const promptGate = new Promise<void>(() => undefined);
     const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
@@ -1401,6 +1489,54 @@ describe("OpenCode runtime", () => {
       reconciled.runtime.run(runtimeRun, new AbortController().signal),
     );
     expect(reconciledEvents.at(-1)?.payload).toMatchObject({ state: "completed" });
+  });
+
+  it("redacts sensitive provider error text before emitting events", async () => {
+    const { runtime } = fakeRuntime({
+      events: [
+        asOpenCodeEvent({
+          type: "session.error",
+          properties: {
+            sessionID: "session-opencode",
+            error: {
+              data: {
+                message:
+                  "Authorization: Bearer provider-secret https://user:password@example.com?token=query-secret",
+              },
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+    const serialized = JSON.stringify(events);
+
+    expect(serialized).not.toContain("provider-secret");
+    expect(serialized).not.toContain("password@example.com");
+    expect(serialized).not.toContain("query-secret");
+    expect(serialized).toContain("[REDACTED]");
+  });
+
+  it("redacts sensitive request failures before emitting events", async () => {
+    const { runtime } = fakeRuntime({
+      events: [],
+      promptError: new Error("Authorization: Bearer request-secret"),
+      messages: [],
+      sessionStatus: {},
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+    const serialized = JSON.stringify(events);
+
+    expect(serialized).not.toContain("request-secret");
+    expect(serialized).toContain("[REDACTED]");
   });
 
   it("preserves a root session error through reconciliation", async () => {
@@ -1878,7 +2014,125 @@ describe("OpenCode runtime", () => {
   });
 });
 
+const TEST_WORKSPACE = process.cwd();
+
+function createTestSupervisor(
+  options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
+): OpenCodeServerSupervisor {
+  return new OpenCodeServerSupervisor({ workspaceRoot: TEST_WORKSPACE, ...options });
+}
+
 describe("OpenCode process supervisor", () => {
+  it("requires an approved workspace root before spawning a child", async () => {
+    let spawned = false;
+    const supervisor = new OpenCodeServerSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      spawnProcess: () => {
+        spawned = true;
+        return new FakeChild() as never;
+      },
+    });
+
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
+      "workspace root is required",
+    );
+    expect(spawned).toBe(false);
+  });
+
+  it("rejects a relative worktree path before spawning a child", async () => {
+    let spawned = false;
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      workspaceRoot: process.cwd(),
+      startupTimeoutMs: 20,
+      spawnProcess: () => {
+        spawned = true;
+        return new FakeChild() as never;
+      },
+    });
+
+    await expect(
+      supervisor.start("relative-worktree", new AbortController().signal),
+    ).rejects.toThrow("absolute");
+    expect(spawned).toBe(false);
+  });
+
+  it("rejects a worktree outside the approved workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opencode-root-"));
+    const outside = await mkdtemp(join(tmpdir(), "opencode-outside-"));
+    let spawned = false;
+    try {
+      const supervisor = createTestSupervisor({
+        command: "/usr/local/bin/opencode-test",
+        workspaceRoot: root,
+        startupTimeoutMs: 20,
+        spawnProcess: () => {
+          spawned = true;
+          return new FakeChild() as never;
+        },
+      });
+
+      await expect(supervisor.start(outside, new AbortController().signal)).rejects.toThrow(
+        "outside approved workspace root",
+      );
+      expect(spawned).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a worktree with an unexpected owner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opencode-owner-"));
+    const ownerUid = typeof process.getuid === "function" ? process.getuid() : 0;
+    try {
+      const supervisor = createTestSupervisor({
+        command: "/usr/local/bin/opencode-test",
+        workspaceRoot: root,
+        workspaceOwnerUid: ownerUid + 1,
+        startupTimeoutMs: 20,
+        spawnProcess: () => new FakeChild() as never,
+      });
+
+      await expect(supervisor.start(root, new AbortController().signal)).rejects.toThrow(
+        "owned by",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the canonical worktree path after validating a symlinked workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opencode-canonical-root-"));
+    const worktree = await mkdtemp(join(root, "worktree-"));
+    const alias = join(root, "alias");
+    await symlink(worktree, alias);
+    const child = new FakeChild();
+    let spawnCwd: string | undefined;
+    try {
+      const supervisor = createTestSupervisor({
+        command: "/usr/local/bin/opencode-test",
+        port: 41252,
+        workspaceRoot: root,
+        spawnProcess: (_command, _args, options) => {
+          spawnCwd = options.cwd as string;
+          queueMicrotask(() => child.stdout.write("server listening on http://127.0.0.1:41252\\n"));
+          return child as never;
+        },
+        signalProcess: (_pid, signal) => child.kill(signal),
+        readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
+      });
+
+      const info = await supervisor.start(alias, new AbortController().signal);
+      const canonicalWorktree = await realpath(worktree);
+      expect(spawnCwd).toBe(canonicalWorktree);
+      expect(info.directory).toBe(canonicalWorktree);
+      await supervisor.stop();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("bounds startup diagnostics while waiting for the server URL", () => {
     const output = appendBoundedOpenCodeOutput("prefix", "diagnostic output ".repeat(2_000));
 
@@ -1886,9 +2140,90 @@ describe("OpenCode process supervisor", () => {
     expect(output).toBe(`prefix${"diagnostic output ".repeat(2_000)}`.slice(-16_384));
   });
 
+  it("honors startup abort before registering the listening handler", async () => {
+    const child = new FakeChild();
+    const controller = new AbortController();
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      startupTimeoutMs: 20,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      allocatePort: async () => {
+        controller.abort("cancelled before listening");
+        return 41250;
+      },
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: () => child as never,
+    });
+
+    await expect(supervisor.start(TEST_WORKSPACE, controller.signal)).rejects.toThrow(
+      "cancelled before listening",
+    );
+  });
+
+  it("redacts secrets from startup diagnostics", async () => {
+    const child = new FakeChild();
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41251,
+      startupTimeoutMs: 50,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: () => {
+        queueMicrotask(() => child.stderr.write("Authorization: Bearer startup-secret\n"));
+        return child as never;
+      },
+    });
+
+    const error = await supervisor.start(TEST_WORKSPACE, new AbortController().signal).then(
+      () => undefined,
+      (value: unknown) => (value instanceof Error ? value : new Error(String(value))),
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain("startup-secret");
+    expect((error as Error).message).toContain("[REDACTED]");
+  });
+
+  it("does not expose secret tails when startup output truncates redaction context", async () => {
+    const child = new FakeChild();
+    const captureBoundarySecretTail = "s".repeat(256);
+    const diagnosticBoundarySecretTail = "t".repeat(256);
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41253,
+      startupTimeoutMs: 50,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: () => {
+        queueMicrotask(() =>
+          child.stderr.write(
+            `Authorization: Bearer ${"s".repeat(20_000)}\n` +
+              `Authorization: Bearer ${"t".repeat(3_000)}\n` +
+              "public startup diagnostic\n",
+          ),
+        );
+        return child as never;
+      },
+    });
+
+    const error = await supervisor.start(TEST_WORKSPACE, new AbortController().signal).then(
+      () => undefined,
+      (value: unknown) => (value instanceof Error ? value : new Error(String(value))),
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).not.toContain(captureBoundarySecretTail);
+    expect(message).not.toContain(diagnosticBoundarySecretTail);
+    expect(message).toContain("public startup diagnostic");
+  });
+
   it("caps startup diagnostics included in startup errors", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41248,
       startupTimeoutMs: 50,
@@ -1901,7 +2236,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    const error = await supervisor.start("/worktree", new AbortController().signal).then(
+    const error = await supervisor.start(TEST_WORKSPACE, new AbortController().signal).then(
       () => undefined,
       (value: unknown) => (value instanceof Error ? value : new Error(String(value))),
     );
@@ -1916,7 +2251,7 @@ describe("OpenCode process supervisor", () => {
 
   it("includes startup output when the server exits before listening", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41244,
       startupTimeoutMs: 100,
@@ -1930,14 +2265,14 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       /fatal startup configuration/,
     );
   });
 
   it("includes startup output when listening times out", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41245,
       startupTimeoutMs: 20,
@@ -1950,7 +2285,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       /fatal startup timeout/,
     );
   });
@@ -1958,7 +2293,7 @@ describe("OpenCode process supervisor", () => {
   it("does not retry a deterministic path mismatch", async () => {
     const child = new FakeChild();
     let requests = 0;
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41246,
       startupTimeoutMs: 100,
@@ -1980,7 +2315,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "resolved /other instead of /worktree",
     );
     expect(requests).toBe(1);
@@ -1989,7 +2324,7 @@ describe("OpenCode process supervisor", () => {
   it("uses one startup deadline for listening and readiness", async () => {
     const child = new FakeChild();
     const signals: AbortSignal[] = [];
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41247,
       startupTimeoutMs: 50,
@@ -2014,7 +2349,7 @@ describe("OpenCode process supervisor", () => {
     });
 
     const startedAt = Date.now();
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "readiness failed",
     );
     expect(Date.now() - startedAt).toBeLessThan(150);
@@ -2037,7 +2372,7 @@ describe("OpenCode process supervisor", () => {
       });
       return child as never;
     };
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41234,
       base: { PATH: "/bin", HTTP_PROXY: "http://proxy:3128" },
@@ -2055,7 +2390,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    const info = await supervisor.start("/worktree", new AbortController().signal);
+    const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
     expect(info).toMatchObject({
       baseUrl: "http://127.0.0.1:41234",
       version: "1.18.29",
@@ -2070,7 +2405,7 @@ describe("OpenCode process supervisor", () => {
       command: "/usr/local/bin/opencode-test",
       args: ["serve", "--hostname=127.0.0.1", "--port=41234"],
       options: {
-        cwd: "/worktree",
+        cwd: TEST_WORKSPACE,
         detached: true,
         env: expect.objectContaining({
           HTTP_PROXY: "http://proxy:3128",
@@ -2091,7 +2426,7 @@ describe("OpenCode process supervisor", () => {
   it("aborts an in-flight readiness check when startup deadline expires", async () => {
     const child = new FakeChild();
     const readinessSignals: AbortSignal[] = [];
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41240,
       startupTimeoutMs: 20,
@@ -2114,7 +2449,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "readiness failed",
     );
     expect(readinessSignals).toHaveLength(1);
@@ -2123,7 +2458,7 @@ describe("OpenCode process supervisor", () => {
 
   it("rejects a listener announcement on a different loopback port", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41241,
       startupTimeoutMs: 100,
@@ -2137,14 +2472,14 @@ describe("OpenCode process supervisor", () => {
       readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "unapproved port 41242; expected 41241",
     );
   });
 
   it("rejects a non-http listener announcement", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41243,
       startupTimeoutMs: 100,
@@ -2158,7 +2493,7 @@ describe("OpenCode process supervisor", () => {
       readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "unapproved protocol https:",
     );
   });
@@ -2167,7 +2502,7 @@ describe("OpenCode process supervisor", () => {
     const child = new FakeChild();
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     let groupAlive = true;
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41239,
       shutdownTimeoutMs: 20,
@@ -2191,7 +2526,7 @@ describe("OpenCode process supervisor", () => {
       readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
     });
 
-    await supervisor.start("/worktree", new AbortController().signal);
+    await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
     await supervisor.stop();
 
     expect(signals).toEqual([
@@ -2204,7 +2539,7 @@ describe("OpenCode process supervisor", () => {
   it("aborts and signals the process group when the server crashes", async () => {
     const child = new FakeChild();
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41237,
       signalProcess: (pid, signal) => {
@@ -2220,7 +2555,7 @@ describe("OpenCode process supervisor", () => {
       readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
     });
 
-    await supervisor.start("/worktree", new AbortController().signal);
+    await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
     child.stderr.write("runtime diagnostic, not startup output\n");
     child.emit("exit", 1, null);
 
@@ -2237,9 +2572,32 @@ describe("OpenCode process supervisor", () => {
     );
   });
 
+  it("requires an expected config hash before spawning configured OpenCode", async () => {
+    let spawned = false;
+    const child = new FakeChild();
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41249,
+      startupTimeoutMs: 20,
+      shutdownTimeoutMs: 20,
+      killVerificationTimeoutMs: 20,
+      config: { mode: "safe" },
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: () => {
+        spawned = true;
+        return child as never;
+      },
+    });
+
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
+      "expected config hash",
+    );
+    expect(spawned).toBe(false);
+  });
+
   it("rejects an unverified config hash before spawning a child", async () => {
     let spawned = false;
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       config: { mode: "safe" },
       expectedConfigHash: "0".repeat(64),
@@ -2249,7 +2607,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "does not match expected",
     );
     expect(spawned).toBe(false);
@@ -2258,7 +2616,7 @@ describe("OpenCode process supervisor", () => {
   it("rejects a server whose health version differs from the pinned runtime", async () => {
     const child = new FakeChild();
     let readinessChecks = 0;
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41238,
       startupTimeoutMs: 100,
@@ -2278,7 +2636,7 @@ describe("OpenCode process supervisor", () => {
       },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "does not satisfy expected version 1.18.29",
     );
     expect(readinessChecks).toBe(1);
@@ -2286,7 +2644,7 @@ describe("OpenCode process supervisor", () => {
 
   it("rejects missing server capabilities during readiness admission", async () => {
     const child = new FakeChild();
-    const supervisor = new OpenCodeServerSupervisor({
+    const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41235,
       requiredCapabilities: ["unsupported"],
@@ -2299,13 +2657,13 @@ describe("OpenCode process supervisor", () => {
       readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
     });
 
-    await expect(supervisor.start("/worktree", new AbortController().signal)).rejects.toThrow(
+    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "missing capabilities: unsupported",
     );
   });
 
   it("rejects a non-loopback bind before spawning a child", () => {
-    expect(() => new OpenCodeServerSupervisor({ hostname: "0.0.0.0" })).toThrow(
+    expect(() => createTestSupervisor({ hostname: "0.0.0.0" })).toThrow(
       "OpenCode server hostname must be loopback",
     );
   });

@@ -17,6 +17,7 @@ import {
   extractToolContext,
   isNoWork,
   lastMeaningfulLine,
+  redactSensitiveText,
 } from "../shared";
 import type { ProxyEnvironment } from "./environment";
 import {
@@ -165,7 +166,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let failure: unknown;
     let resultText = "";
     let turns = 0;
-    let promptSubmitted = false;
+    let promptAttempted = false;
     let streamLost = false;
     let maxTurnsReached = false;
     const workContext = initialTerminalContext(input);
@@ -179,14 +180,15 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     try {
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
       detachCrash = linkAbort(this.supervisor.crashSignal, active.controller);
-      const client = this.clientFactory(server, input.worktree.path, this.clientEnvironment);
+      const directory = server.directory;
+      const client = this.clientFactory(server, directory, this.clientEnvironment);
       active.client = client;
-      active.directory = input.worktree.path;
+      active.directory = directory;
 
       const subscription = await boundedOperation(
         (requestSignal) =>
           client.event.subscribe({
-            query: { directory: input.worktree.path },
+            query: { directory },
             signal: requestSignal,
             sseMaxRetryAttempts: 0,
           }),
@@ -210,7 +212,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       const sessionResponse = await boundedOperation(
         (requestSignal) =>
           client.session.create({
-            query: { directory: input.worktree.path },
+            query: { directory },
             body: { title: `Rehor ${input.runId}` },
             signal: requestSignal,
             responseStyle: "data",
@@ -241,12 +243,13 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       };
 
       yield factory("run", { state: "started" }, { runtimeSessionRef: sessionId });
+      promptAttempted = true;
       unwrapSdkResponse(
         await boundedOperation(
           (requestSignal) =>
             client.session.promptAsync({
               path: { id: sessionId },
-              query: { directory: input.worktree.path },
+              query: { directory },
               body: {
                 model: resolveModel(input),
                 parts: [{ type: "text", text: input.prompt }],
@@ -261,7 +264,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         ),
         "OpenCode session prompt",
       );
-      promptSubmitted = true;
 
       for (;;) {
         const next = await boundedOperation(
@@ -305,7 +307,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     } catch (error) {
       failure = error;
       if (
-        promptSubmitted &&
+        promptAttempted &&
         !signal.aborted &&
         !this.supervisor.crashError &&
         shouldReconcile(active.controller.signal.reason)
@@ -358,7 +360,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           action: "partial-state",
           state: "not_resumable",
           reason:
-            this.supervisor.crashError?.message ??
+            (this.supervisor.crashError?.message
+              ? redactSensitiveText(this.supervisor.crashError.message)
+              : undefined) ??
             errorMessage(failure) ??
             outcome.reason ??
             "OpenCode runtime ended without a completed result",
@@ -1135,15 +1139,15 @@ function nonNegativeInteger(value: unknown): number {
 }
 
 function providerErrorMessage(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return redactSensitiveText(value);
   const error = record(value);
   const data = record(error.data);
-  return stringValue(data.message ?? error.message, "OpenCode session error");
+  return redactSensitiveText(stringValue(data.message ?? error.message, "OpenCode session error"));
 }
 
 function errorMessage(value: unknown): string | undefined {
-  if (value instanceof Error) return value.message;
-  if (typeof value === "string") return value;
+  if (value instanceof Error) return redactSensitiveText(value.message);
+  if (typeof value === "string") return redactSensitiveText(value);
   return undefined;
 }
 

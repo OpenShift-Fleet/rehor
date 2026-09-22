@@ -29,6 +29,28 @@ export function stableJson(value: unknown): string {
     .join(",")}}`;
 }
 
+const REDACTED = "[REDACTED]";
+
+/** Removes common credential forms before runtime text enters the event stream. */
+export function redactSensitiveText(value: string): string {
+  return value
+    .replace(
+      /((?:authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+)[^\s,;]+/gi,
+      `$1${REDACTED}`,
+    )
+    .replace(/\b(bearer\s+)[^\s,;]+/gi, `$1${REDACTED}`)
+    .replace(/(https?:\/\/)([^/\s@]+)@/gi, `$1${REDACTED}@`)
+    .replace(
+      /([?&](?:api[-_]?key|access[-_]?token|authorization|password|secret|token)=)[^&#\s]+/gi,
+      `$1${REDACTED}`,
+    )
+    .replace(
+      /((?:["']?(?:api[-_]?key|access[-_]?token|auth(?:orization)?|password|secret|token)["']?)\s*[:=]\s*["']?)[^"',\s}&]+/gi,
+      `$1${REDACTED}`,
+    )
+    .replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{8,}\b/g, REDACTED);
+}
+
 /** Runs an operation until it settles, the caller aborts, or its deadline expires. */
 export function boundedOperation<T>(
   operation: (signal: AbortSignal) => Promise<T> | T,
@@ -68,7 +90,10 @@ export function boundedOperation<T>(
       onAbort();
     } else {
       operationSignal.addEventListener("abort", onAbort, { once: true });
-      pending = Promise.resolve().then(() => operation(operationSignal));
+      pending = Promise.resolve().then(() => {
+        if (operationSignal.aborted) throw abortReason(operationSignal);
+        return operation(operationSignal);
+      });
       void pending.catch(() => undefined);
       pending.then(
         (value) => settle(() => resolve(value)),

@@ -11,7 +11,6 @@ const ENVIRONMENT_ALLOWLIST = [
   "XDG_CONFIG_HOME",
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
-  "NODE_OPTIONS",
 ] as const;
 
 export const DEFAULT_NO_PROXY_HOSTS = [
