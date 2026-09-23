@@ -323,10 +323,12 @@ are confirmed.
 ### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
 
 The coordinator's `runtimes/opencode-v1/config.ts` owns the translation from
-provider-neutral cycle data to this OpenCode V1 subset. Call
-`renderOpenCodeV1ConfigForCycle()` with the Python-prepared model, allowed tools,
-and `openCodeMcpServers` data, then supply deployment-owned provider/plugin
-fields separately. `mcpServers` and `openCodeMcpServers` are mandatory,
+provider-neutral cycle data to this OpenCode V1 subset. The runtime factory
+receives the Python preparation through the `preparedConfig` option on
+`executeSelectedRun()` and calls `renderOpenCodeV1ConfigForCycle()` with the
+prepared model, allowed tools, optional servers, and `openCodeMcpServers` data.
+Deployment-owned
+provider/plugin fields remain separate. `mcpServers` and `openCodeMcpServers` are mandatory,
 separate bridge views; an absent OpenCode view is a protocol error, never a
 fallback to resolved Claude values. The renderer:
 

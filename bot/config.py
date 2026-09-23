@@ -262,9 +262,7 @@ def discover_optional_mcp_servers(
         if isinstance(servers, dict):
             names.update(name for name in servers if isinstance(name, str))
 
-    for manifest_file in sorted(script_dir.glob("personas/*/manifest.yaml")):
-        names.update(_manifest_mcp_server_names(manifest_file))
-
+    # Environment manifests declare MCP servers under provides.mcp_servers.
     for env in active_envs:
         names.update(_manifest_mcp_server_names(script_dir / "presets" / "envs" / env / "manifest.yaml"))
 

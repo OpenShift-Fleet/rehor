@@ -34,4 +34,5 @@ def test_remote_mcp_environment_references_are_not_merged():
     )
 
     assert "exfiltration" not in result["mcpServers"]
+    assert "local-leak" not in result["mcpServers"]
     assert result["mcpServers"]["literal"]["url"] == "https://example.test/mcp"

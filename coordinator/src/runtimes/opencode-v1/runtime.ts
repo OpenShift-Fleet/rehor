@@ -19,7 +19,7 @@ import {
   lastMeaningfulLine,
   redactSensitiveText,
 } from "../shared";
-import type { OpenCodeV1ConfigInput, RenderedOpenCodeV1Config } from "./config";
+import type { RenderedOpenCodeV1Config } from "./config";
 import type { ProxyEnvironment } from "./environment";
 import {
   buildOpenCodeEnvironment,
@@ -34,11 +34,10 @@ import {
   type OpenCodeSupervisorOptions,
 } from "./process-supervisor";
 
-export type OpenCodeV1RuntimeConfig = Omit<OpenCodeV1ConfigInput, "model"> & {
-  model?: string;
-};
-
 export type OpenCodeV1ServerOptions = Omit<OpenCodeSupervisorOptions, "renderedConfig">;
+export type OpenCodeSupervisorFactory = (
+  renderedConfig: RenderedOpenCodeV1Config | undefined,
+) => OpenCodeServerController;
 
 export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   policyVersion?: string;
@@ -51,7 +50,8 @@ export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   /** Configuration failures are emitted through the normal runtime lifecycle. */
   renderError?: unknown;
   server?: OpenCodeV1ServerOptions;
-  supervisor?: OpenCodeServerController;
+  /** Build an injected supervisor with this run's immutable rendered snapshot. */
+  supervisor?: OpenCodeSupervisorFactory;
   clientFactory?: OpenCodeClientFactory;
 }
 
@@ -133,7 +133,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     assertPositiveInteger(this.requestTimeoutMs, "requestTimeoutMs", "OpenCode");
     assertPositiveInteger(this.cleanupTimeoutMs, "cleanupTimeoutMs", "OpenCode");
     this.supervisor =
-      options.supervisor ??
+      options.supervisor?.(options.renderedConfig) ??
       new OpenCodeServerSupervisor({
         ...(options.server ?? {}),
         ...(options.base === undefined ? {} : { base: options.base }),

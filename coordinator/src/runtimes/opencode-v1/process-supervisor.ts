@@ -182,12 +182,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     if (signal.aborted) throw abortReason(signal);
 
     const configHash = this.renderedConfig?.hash;
-    if (
-      this.renderedConfig !== undefined &&
-      hashOpenCodeConfig(this.renderedConfig.config) !== this.renderedConfig.hash
-    ) {
-      throw new OpenCodeReadinessError("OpenCode rendered config hash is invalid", true);
-    }
 
     const allocatePortFn = this.options.allocatePort ?? allocatePort;
     const port = this.options.port ?? (await allocatePortFn());

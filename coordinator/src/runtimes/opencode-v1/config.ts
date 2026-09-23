@@ -5,7 +5,11 @@ import { join } from "node:path";
 import type { ConfigPreparationResult } from "../../ports/python-bridge";
 import type { McpServerConfig } from "../../ports/runtime-config";
 import { stableJson } from "../shared";
-import { OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES, OPENCODE_MCP_URL_ENVIRONMENT } from "./environment";
+import {
+  OPENCODE_BLOCKED_PASSTHROUGH,
+  OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES,
+  OPENCODE_MCP_URL_ENVIRONMENT,
+} from "./environment";
 
 export const OPENCODE_CONFIG_SCHEMA = "https://opencode.ai/config.json" as const;
 export const OPENCODE_PACKAGE_LOCK_VERSION = 1 as const;
@@ -154,6 +158,7 @@ const SECRET_KEY =
 const ENV_REFERENCE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const BRACED_ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const BLOCKED_PASSTHROUGH_ENVIRONMENTS: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 /** Render one deterministic, fail-closed OpenCode V1 configuration. */
 export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOpenCodeV1Config {
   const model = normalizeModel(input.model, input.providerId ?? input.provider?.id);
@@ -772,6 +777,11 @@ function assertProviderEnvironment(name: string, path: string): void {
       `${path} cannot reference a coordinator-controlled environment variable`,
     ]);
   }
+  if (BLOCKED_PASSTHROUGH_ENVIRONMENTS.has(name)) {
+    throw new OpenCodeConfigValidationError([
+      `${path} cannot reference a blocked OpenCode environment variable '${name}'`,
+    ]);
+  }
 }
 
 function assertMcpUrlEnvironment(name: string, path: string): void {
@@ -810,6 +820,8 @@ function validateNoLiteralSecrets(value: JsonValue, path: string, issues: string
       const environments = parseEnvironmentReferences(entry);
       if (environments.some(isCoordinatorControlledEnvironment)) {
         issues.push(`${path}.${key} references a coordinator-controlled environment variable`);
+      } else if (environments.some((name) => BLOCKED_PASSTHROUGH_ENVIRONMENTS.has(name))) {
+        issues.push(`${path}.${key} references a blocked OpenCode environment variable`);
       }
       if (SECRET_KEY.test(key) && environments.length === 0) {
         issues.push(`${path}.${key} must use an OpenCode environment reference`);

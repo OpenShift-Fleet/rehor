@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  type ConfigPreparationResult,
   createDefaultRuntimeRegistry,
   createOpenCodeV1RuntimeFactory,
   executeSelectedRun,
+  InstructionStrategy,
   type RehorEvent,
   type RehorRun,
   RuntimeFactoryError,
@@ -33,6 +35,30 @@ const run: RehorRun = {
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
   limits: { timeoutMs: 100, maxTurns: 20 },
   preflightPayloadRef: null,
+};
+
+const preparedConfig: ConfigPreparationResult = {
+  model: "prepared-model",
+  maxTurns: 10,
+  intervalSeconds: 60,
+  idleIntervalSeconds: 60,
+  cycleTimeoutSeconds: 1_800,
+  idleReminderCooldownSeconds: 3_600,
+  workflow: "jira-sprint",
+  source: "test",
+  envs: null,
+  activeEnvs: ["browser"],
+  claudeMdStrategy: InstructionStrategy.Append,
+  idleCycleLimit: 0,
+  remoteAgentDir: null,
+  sharedAgentDir: null,
+  claudeMdPath: "/tmp/CLAUDE.md",
+  mcpServers: {},
+  openCodeMcpServers: {
+    "prepared-server": { type: "http", url: "http://prepared.example/mcp" },
+  },
+  allowedTools: ["Read"],
+  optionalMcpServers: ["optional-persona-mcp"],
 };
 
 function event(sequence: number, terminal = false): RehorEvent {
@@ -77,7 +103,7 @@ describe("runtime selection", () => {
     expect(createDefaultRuntimeRegistry().runtimeIds).toEqual(["claude"]);
   });
 
-  it("forwards configured OpenCode options into the created adapter", async () => {
+  it("rejects invalid prepared OpenCode policy before starting the supervisor", async () => {
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
       get info() {
@@ -93,18 +119,21 @@ describe("runtime selection", () => {
     };
     const registry = new RuntimeFactoryRegistry([
       createOpenCodeV1RuntimeFactory({
-        supervisor,
-        config: { allowedTools: ["UnknownTool"] },
+        supervisor: () => supervisor,
+        config: {},
       }),
     ]);
 
-    const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
+    const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run, {
+      preparedConfig: { ...preparedConfig, allowedTools: ["UnknownTool"] },
+    });
 
     expect(result.events.at(-1)?.payload).toMatchObject({ state: "failed" });
     expect(supervisor.start).not.toHaveBeenCalled();
   });
 
   it("fills configured OpenCode model with the selected run provider", async () => {
+    let injectedConfig: unknown;
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
       get info() {
@@ -120,7 +149,10 @@ describe("runtime selection", () => {
     };
     const registry = new RuntimeFactoryRegistry([
       createOpenCodeV1RuntimeFactory({
-        supervisor,
+        supervisor: (renderedConfig) => {
+          injectedConfig = renderedConfig;
+          return supervisor;
+        },
         config: { model: "factory-model" },
       }),
     ]);
@@ -130,6 +162,30 @@ describe("runtime selection", () => {
       model: "vertex/factory-model",
       enabled_providers: ["vertex"],
     });
+    expect(injectedConfig).toBe((runtime as OpenCodeV1Runtime).renderedConfiguration);
+  });
+
+  it("renders Python-prepared MCP policy into the OpenCode snapshot", async () => {
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        config: { model: "deployment-model" },
+      }),
+    ]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
+    const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
+
+    expect(rendered?.config).toMatchObject({
+      model: "vertex/deployment-model",
+      mcp: {
+        "prepared-server": {
+          type: "remote",
+          url: "http://prepared.example/mcp",
+        },
+      },
+      permission: { read: "allow" },
+    });
+    expect(rendered?.config).not.toHaveProperty("mcp.stale-server");
   });
 
   it("registers and resolves factories without coupling to providers", async () => {

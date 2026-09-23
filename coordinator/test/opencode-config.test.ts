@@ -137,6 +137,22 @@ describe("OpenCode V1 config renderer", () => {
     expect(rendered.json).not.toContain("literal-secret");
   });
 
+  it("rejects provider references to blocked credential environments", () => {
+    for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
+      expect(() =>
+        renderOpenCodeV1Config({
+          model: "provider/model",
+          providers: [
+            {
+              id: "provider",
+              options: { apiKey: `{env:${environment}}` },
+            },
+          ],
+        }),
+      ).toThrow(`cannot reference a blocked OpenCode environment variable '${environment}'`);
+    }
+  });
+
   it("does not expose MCP environment references as agent passthrough variables", () => {
     const rendered = renderOpenCodeV1Config({
       model: "provider/model",

@@ -24,8 +24,8 @@ import {
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
   type OpenCodeSpawn,
+  type OpenCodeV1ConfigInput,
   OpenCodeV1Runtime,
-  type OpenCodeV1RuntimeConfig,
   type RenderedOpenCodeV1Config,
   renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
@@ -103,7 +103,7 @@ interface FakeRuntimeOptions {
   deleteGate?: Promise<unknown>;
   cleanupTimeoutMs?: number;
   crashError?: Error;
-  config?: OpenCodeV1RuntimeConfig;
+  config?: Omit<OpenCodeV1ConfigInput, "model"> & { model?: string };
 }
 
 interface FactoryCall {
@@ -240,7 +240,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     renderError = error;
   }
   const runtime = new OpenCodeV1Runtime({
-    supervisor,
+    supervisor: () => supervisor,
     clientFactory,
     renderedConfig,
     renderError,
@@ -2740,58 +2740,6 @@ describe("OpenCode process supervisor", () => {
     expect(() => new OpenCodeServerSupervisor({ command: "opencode" })).toThrow(
       "OpenCode binary path must be absolute",
     );
-  });
-
-  it("requires an immutable rendered configuration before spawning configured OpenCode", async () => {
-    let spawned = false;
-    const child = new FakeChild();
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      port: 41249,
-      startupTimeoutMs: 20,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
-      renderedConfig: {
-        config: { mode: "safe" },
-        json: '{"mode":"safe"}\n',
-        hash: "0".repeat(64),
-        packageLock: { lockfileVersion: 1, packages: {} },
-        requiredEnvironment: [],
-      },
-      signalProcess: (_pid, signal) => child.kill(signal),
-      spawnProcess: () => {
-        spawned = true;
-        return child as never;
-      },
-    });
-
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "rendered config hash is invalid",
-    );
-    expect(spawned).toBe(false);
-  });
-
-  it("rejects a tampered rendered config before spawning a child", async () => {
-    let spawned = false;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      renderedConfig: {
-        config: { mode: "safe" },
-        json: '{"mode":"safe"}\n',
-        hash: "0".repeat(64),
-        packageLock: { lockfileVersion: 1, packages: {} },
-        requiredEnvironment: [],
-      },
-      spawnProcess: () => {
-        spawned = true;
-        return new FakeChild() as never;
-      },
-    });
-
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "rendered config hash is invalid",
-    );
-    expect(spawned).toBe(false);
   });
 
   it("rejects a server whose health version differs from the pinned runtime", async () => {

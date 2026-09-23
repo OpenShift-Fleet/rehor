@@ -113,7 +113,7 @@ def _has_unsafe_mcp_env_reference(value: object) -> bool:
 
 
 def merge_mcp_servers(builtin: dict, remote: dict, report: MergeReport) -> dict:
-    """Additive merge of MCP server definitions. Protected servers unchanged."""
+    """Merge MCP definitions, rejecting untrusted env refs except JIRA URL refs."""
     result = dict(builtin)
     builtin_servers = result.get("mcpServers", {})
     remote_servers = remote.get("mcpServers", {})

@@ -209,17 +209,22 @@ def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypa
 
 
 def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_path):
+    from pathlib import Path
+
     from bot.config import discover_optional_mcp_servers
 
     (tmp_path / "personas" / "frontend").mkdir(parents=True)
-    (tmp_path / "personas" / "frontend" / "manifest.yaml").write_text(
-        "provides:\n  mcp_servers:\n    persona-mcp: {}\n"
+    (tmp_path / "personas" / "frontend" / "mcp.json").write_text(
+        '{"mcpServers": {"persona-mcp": {"command": "persona-mcp"}}}'
     )
     env_dir = tmp_path / "presets" / "envs" / "browser"
     env_dir.mkdir(parents=True)
     (env_dir / "manifest.yaml").write_text("provides:\n  mcp_servers:\n    browser-mcp:\n      type: stdio\n")
 
     assert discover_optional_mcp_servers(tmp_path, ["browser"]) == ["browser-mcp", "persona-mcp"]
+
+    repository_root = Path(__file__).resolve().parents[2]
+    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
 
 
 def test_bridge_rejects_unknown_operation():

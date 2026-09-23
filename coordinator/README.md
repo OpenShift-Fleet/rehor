@@ -110,9 +110,10 @@ passed directly to it because the legacy Python runner still owns resolved
 MCP credentials.
 
 OpenCode is available as an explicit adapter, but is not added to the default
-registry or selected by production configuration yet. A future TypeScript
-runner must copy the prepared cycle view into the OpenCode runtime options while
-keeping deployment-owned provider/plugin fields separate:
+registry or selected by production configuration yet. Pass the prepared cycle
+configuration through `executeSelectedRun()`; the OpenCode factory renders its
+MCP, tool, optional-server, and model inputs while keeping deployment-owned
+provider/plugin fields separate:
 
 ```ts
 const prepared = await prepareCycleInput(bridge, cycleOptions);
@@ -120,15 +121,16 @@ const registry = new RuntimeFactoryRegistry([
   createOpenCodeV1RuntimeFactory({
     config: {
       ...deploymentOpenCodeConfig,
-      model: prepared.config.model,
       providerId: "rehor-openai",
-      mcpServers: prepared.config.openCodeMcpServers,
-      allowedTools: prepared.config.allowedTools ?? [],
-      optionalMcpServers: prepared.config.optionalMcpServers ?? [],
     },
   }),
 ]);
-const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run);
+const result = await executeSelectedRun(
+  registry,
+  { runtimeId: "opencode-v1" },
+  run,
+  { preparedConfig: prepared.config },
+);
 ```
 
 `renderOpenCodeV1ConfigForCycle()` is the lower-level equivalent for callers
