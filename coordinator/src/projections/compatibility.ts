@@ -268,6 +268,8 @@ function buildCostRecord(
     repository: context?.repository ?? null,
     workType: context?.workType ?? null,
     summary: context?.summary ?? null,
+    runtimeId: run.runtimeId,
+    providerId: run.provider.id,
   };
 }
 

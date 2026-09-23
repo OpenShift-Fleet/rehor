@@ -42,6 +42,22 @@ export interface ConfigPreparationRequest {
   label: string;
 }
 
+export interface IdlePreflightSkipRequest {
+  scriptDir: string;
+  instanceId: string;
+  idleCycleLimit: number;
+  cooldownSeconds: number;
+}
+
+export interface IdlePreflightStartRequest {
+  scriptDir: string;
+  instanceId: string;
+}
+
+export interface CleanupBetweenCyclesRequest {
+  scriptDir: string;
+}
+
 export interface ConfigPreparationResult {
   model: string;
   /** Adapter/runtime selected by the instance for the future coordinator. */
@@ -79,4 +95,8 @@ export interface PythonBridge {
     input: ConfigPreparationRequest,
     signal?: AbortSignal,
   ): Promise<ConfigPreparationResult>;
+  /** Optional maintenance hooks preserve Python idle/cleanup behavior during migration. */
+  idlePreflightSkip?(input: IdlePreflightSkipRequest, signal?: AbortSignal): Promise<void>;
+  idlePreflightStart?(input: IdlePreflightStartRequest, signal?: AbortSignal): Promise<void>;
+  cleanupBetweenCycles?(input: CleanupBetweenCyclesRequest, signal?: AbortSignal): Promise<void>;
 }

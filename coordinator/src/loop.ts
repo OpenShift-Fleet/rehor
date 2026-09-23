@@ -34,7 +34,11 @@ export interface CoordinatorLoopOptions<TResult> {
   shutdownSignal?: AbortSignal;
   signal?: AbortSignal;
   maxCycles?: number;
-  onDecision?(plan: CyclePlan, prepared?: PreparedCycleInput): LoopWriteResult;
+  onDecision?(
+    plan: CyclePlan,
+    prepared?: PreparedCycleInput,
+    signal?: AbortSignal,
+  ): LoopWriteResult;
   onError?(error: unknown, phase: LoopErrorPhase): LoopWriteResult;
 }
 
@@ -158,14 +162,14 @@ export async function runCoordinatorLoop<TResult>(
         cycles += 1;
         await options.onError?.(error, LoopErrorPhase.Prepare);
         const plan = options.scheduler.planForPreflight(errorPreflight(error));
-        await options.onDecision?.(plan);
+        await options.onDecision?.(plan, undefined, signals.signal);
         if (!(await waitForPlan(plan, options, signals.signal))) break;
         continue;
       }
 
       const plan = options.scheduler.planForPreflight(prepared.preflight);
       cycles += 1;
-      await options.onDecision?.(plan, prepared);
+      await options.onDecision?.(plan, prepared, signals.signal);
       if (plan.decision !== CycleDecision.Run) {
         if (!(await waitForPlan(plan, options, signals.signal))) break;
         continue;

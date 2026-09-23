@@ -54,6 +54,8 @@ export interface CostRecord {
   repository: string | null;
   workType: string | null;
   summary: string | null;
+  runtimeId?: string;
+  providerId?: string;
 }
 
 export interface TranscriptEventRecord {

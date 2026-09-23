@@ -231,6 +231,7 @@ describe("ClaudeAgentRuntime", () => {
       GPG_SIGNING_KEY: "signing-key",
       SSO_USERNAME: "sso-user",
       SSO_PASSWORD: "sso-password",
+      REHOR_MODEL_PROXY_TOKEN: "proxy-secret",
       GIT_AUTHOR_NAME: "author",
       GIT_AUTHOR_EMAIL: "author@example.com",
       GIT_COMMITTER_NAME: "committer",

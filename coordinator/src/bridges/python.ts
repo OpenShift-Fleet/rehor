@@ -3,8 +3,11 @@ import type { Readable } from "node:stream";
 
 import { isInstructionStrategy } from "../instructions";
 import {
+  type CleanupBetweenCyclesRequest,
   type ConfigPreparationRequest,
   type ConfigPreparationResult,
+  type IdlePreflightSkipRequest,
+  type IdlePreflightStartRequest,
   isPreflightAction,
   type PreflightRequest,
   type PreflightResult,
@@ -58,6 +61,30 @@ export class PythonCoordinatorBridge implements PythonBridge {
       signal,
     );
     return parseConfigPreparationResult(result);
+  }
+
+  async idlePreflightSkip(input: IdlePreflightSkipRequest, signal?: AbortSignal): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "idle_skip", ...input },
+      signal,
+    );
+  }
+
+  async idlePreflightStart(input: IdlePreflightStartRequest, signal?: AbortSignal): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "idle_start", ...input },
+      signal,
+    );
+  }
+
+  async cleanupBetweenCycles(
+    input: CleanupBetweenCyclesRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "cleanup", ...input },
+      signal,
+    );
   }
 
   private async request(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {

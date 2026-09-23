@@ -5,10 +5,11 @@ cycles. It will let the runner select an agent runtime (initially the existing
 Claude path or OpenCode), apply one lifecycle policy, and project normalized
 events into status, transcript, usage, and cost records.
 
-The coordinator is **migration scaffolding**, not the production entry point
-yet. `bot/run.py` and `bot/agent.py` remain active. The TypeScript attempt loop
-is available to adapters and deterministic tests; production runtime selection
-and process startup remain unchanged until parity validation.
+The coordinator now has a production-capable entry point, but it is opt-in.
+`bot/run.py` remains the default engine and rollback path. Set
+`BOT_EXECUTION_ENGINE=coordinator` only after the image contains the coordinator
+bundle, OpenCode executable, provider package closure, and compatibility
+endpoints. Invalid runtime/provider selections fail closed.
 
 ## Responsibilities
 
@@ -87,8 +88,9 @@ snapshots so token/cost totals are not double-counted. File, HTTP, and
 Prometheus implementations can be supplied without changing coordinator code.
 
 The coordinator does not write a new event store and does not change the
-Python Claude/Vertex path. A runtime adapter and compatibility projections can
-be selected by the future TypeScript runner without changing this boundary.
+Python Claude/Vertex path. `src/runner.ts` is the production wiring layer; it
+uses the same preparation boundary and compatibility projection without
+changing the normalized contract.
 
 ## Runtime selection
 
@@ -110,11 +112,11 @@ Claude-specific; the reference-preserving `ConfigPreparationResult` is not
 passed directly to it because the legacy Python runner still owns resolved
 MCP credentials.
 
-OpenCode is available as an explicit adapter, but is not added to the default
-registry or selected by production configuration yet. Pass the prepared cycle
-configuration through `executeSelectedRun()`; the OpenCode factory renders its
-MCP, tool, optional-server, and model inputs while keeping deployment-owned
-provider/plugin fields separate:
+OpenCode is registered by the coordinator production runner only; the default
+registry exported for library callers still contains Claude alone. The runner
+copies the prepared cycle view into OpenCode runtime options while keeping
+deployment-owned provider/plugin fields separate. The OpenCode factory renders
+its MCP, tool, optional-server, and model inputs:
 
 ```ts
 const prepared = await prepareCycleInput(bridge, cycleOptions);
@@ -155,17 +157,18 @@ environment, and MCP references are never added to the agent passthrough list.
 The factory renders one immutable snapshot for the selected run. `OpenCodeV1Runtime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
 same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
-there is no mutable server-side configuration merge. Provider/plugin package
-versions must be exact and are emitted in the per-cycle lockfile artifact. The
-Python runner remains the active production
-entry point until a TypeScript runner canary is enabled. `ConfigPreparationResult`
-requires separate `mcpServers` and `openCodeMcpServers` fields; the coordinator
-rejects an older response instead of silently substituting resolved Claude MCP
-values into OpenCode. The supervisor pins
-OpenCode `1.18.29`; this version is part of the tested contract because it honors
-`OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`, and `OPENCODE_DB` as the per-cycle
-isolation controls. A version bump requires refreshing the lifecycle and state
-isolation tests before changing the pin.
+there is no mutable server-side configuration merge. `OpenCodeV1Runtime` validates
+the rendered snapshot before its supervisor starts a child; provider/plugin
+package versions must be exact and are emitted in the per-cycle lockfile
+artifact. `ConfigPreparationResult` requires separate `mcpServers` and
+`openCodeMcpServers` fields; the coordinator rejects an older response instead
+of silently substituting resolved Claude MCP values into OpenCode. The
+supervisor pins OpenCode `1.18.29`; this version is part of the tested contract
+because it honors `OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`, and `OPENCODE_DB`
+as the per-cycle isolation controls. A version bump requires refreshing the
+lifecycle and state isolation tests before changing the pin. The Python runner
+remains the default production entry point until `BOT_EXECUTION_ENGINE=coordinator`
+is enabled for a canary.
 
 ## Cycle input preparation
 
@@ -206,6 +209,41 @@ Preflight `skip` and `error` actions remain coordinator-owned no-session
 paths. Existing aggregation is preserved: a mixed error/start result is still
 `start`, while an all-error result is `error`. Only a `start` result, or the
 no-preflight pass-through case, produces an agent prompt.
+
+## Local coordinator launch
+
+Build and run one cycle from the repository root:
+
+```bash
+make coordinator-build
+BOT_LABEL=hcc-ai-framework BOT_INSTANCE_ID=local-1 \
+  OPENCODE_COMMAND="$(command -v opencode)" \
+  OPENCODE_EXPECTED_VERSION="$(opencode --version)" \
+  make run-coordinator
+```
+
+The default instance selection remains `claude`/`vertex`, so this command is a
+safe coordinator-path smoke test without changing an instance config. To test
+OpenCode, set `runtime: opencode-v1`, `provider: rehor-openai`, and point
+`REHOR_OPENCODE_DEPLOYMENT_CONFIG` at a deployment-owned JSON file (see
+`opencode-deployment.example.json`). The file must declare the selected
+provider and exact package versions; it must contain only environment
+references such as `{env:REHOR_MODEL_PROXY_TOKEN}`, never credentials. Use `--once` for a single preflight or attempt. The local sink
+writes `data/costs.jsonl`, `data/cycle-runs.jsonl`, compressed transcripts under
+`data/transcripts/`, and serves `/health`, `/ready`, and `/metrics` on port
+`COORDINATOR_METRICS_PORT` (9091 by default).
+
+## Deployment packaging
+
+`Dockerfile` packages the coordinator for Compose. `Dockerfile.runner` builds
+from the pinned UBI Node 22 builder, copies the ESM coordinator bundle and its
+locked npm dependencies, installs `opencode-ai@1.18.29` plus the pinned
+`@ai-sdk/openai-compatible@1.0.0` provider package, and installs `zstd` for
+transcript compatibility. `entrypoint.sh` accepts
+`BOT_EXECUTION_ENGINE=python|coordinator`; omitted or `python` always launches
+the existing Python/Claude runner. Set `coordinator` only with
+`BOT_INSTANCE_ID`, `CYCLE_RUNS_API_URL`, the deployment config path, provider
+secret references, and the existing proxy/memory services available.
 
 ## Cycle scheduling and idle state
 
@@ -276,6 +314,9 @@ cost data when an adapter emits partial usage events.
 - `src/idle.ts` — transport-neutral idle threshold/cooldown state
 - `src/loop.ts` — admission, signal, shutdown, and cycle-loop orchestration
 - `src/runtime-factory.ts` — runtime registry and provider-independent selection
+- `src/runner.ts` — production bridge, run construction, registry wiring, and loop
+- `src/adapters/` — file admission, HTTP/JSONL compatibility, health, and metrics
+- `src/cli.ts` — local/deployment coordinator entry point
 - `src/projections/` — legacy compatibility mappings for cycle outputs
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
@@ -294,8 +335,9 @@ npm run build
 npm audit --audit-level high
 ```
 
-`npm run build` emits an ESM Node bundle at `dist/index.js` with `ajv` and
-`ajv-formats` left external, then writes type declarations to `dist/index.d.ts`.
+`npm run build` emits ESM Node bundles at `dist/index.js` and `dist/cli.js`
+with runtime dependencies left external, then writes type declarations under
+`dist/`.
 
 From repository root, `make coordinator-verify` runs install, tests, typecheck,
 and build. Coordinator changes run the same checks in pre-push and GitHub CI.

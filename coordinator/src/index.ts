@@ -1,3 +1,6 @@
+export * from "./adapters/compatibility";
+export * from "./adapters/file-admission";
+export * from "./adapters/health";
 export * from "./bridges/python";
 export * from "./coordinator";
 export * from "./cycle-input";
@@ -7,6 +10,7 @@ export * from "./instructions";
 export * from "./loop";
 export * from "./ports";
 export * from "./projections/compatibility";
+export * from "./runner";
 export * from "./runtime-factory";
 export * from "./runtimes";
 export * from "./runtimes/claude-agent";
