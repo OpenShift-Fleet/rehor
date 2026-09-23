@@ -25,6 +25,9 @@ export const OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES = [
   "npm_config_",
 ] as const;
 
+/** Additional provider/plugin variables permitted to pass through when referenced. */
+export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = ["REHOR_MODEL_PROXY_TOKEN"] as const;
+
 export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "HOME",
   OPENCODE_MCP_URL_ENVIRONMENT,
@@ -44,6 +47,9 @@ export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
 const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 const BLOCKED_PASSTHROUGH_PREFIXES = OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES;
 const ENVIRONMENT_ALLOWLIST = OPENCODE_ENVIRONMENT_ALLOWLIST;
+const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
+  OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
+);
 
 export const DEFAULT_NO_PROXY_HOSTS = [
   "127.0.0.1",
@@ -94,6 +100,7 @@ export function buildOpenCodeEnvironment(
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
   for (const name of options.passthrough ?? []) {
     if (
+      PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&
       !BLOCKED_PASSTHROUGH.has(name) &&
       !BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix))
     ) {

@@ -153,6 +153,36 @@ describe("OpenCode V1 config renderer", () => {
     }
   });
 
+  it("rejects provider and plugin references outside the explicit environment allowlist", () => {
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        providers: [
+          {
+            id: "provider",
+            options: { apiKey: "{env:AWS_SECRET_ACCESS_KEY}" },
+          },
+        ],
+      }),
+    ).toThrow(
+      "cannot reference an unapproved OpenCode environment variable 'AWS_SECRET_ACCESS_KEY'",
+    );
+
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        plugins: [
+          {
+            name: "opencode-rehor-plugin",
+            version: "2.3.4",
+            options: { databaseUrl: "$" + "{DATABASE_URL}" },
+          },
+        ],
+        packages,
+      }),
+    ).toThrow("cannot reference an unapproved OpenCode environment variable 'DATABASE_URL'");
+  });
+
   it("does not expose MCP environment references as agent passthrough variables", () => {
     const rendered = renderOpenCodeV1Config({
       model: "provider/model",

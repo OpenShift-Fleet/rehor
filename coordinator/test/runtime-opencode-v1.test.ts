@@ -324,8 +324,16 @@ describe("OpenCode environment", () => {
         NODE_OPTIONS: "--require=/tmp/preload.cjs",
         NPM_CONFIG_REGISTRY: "https://registry.example.invalid",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
+        AWS_SECRET_ACCESS_KEY: "must-not-leak",
+        DATABASE_URL: "must-not-leak",
       },
-      passthrough: ["REHOR_MODEL_PROXY_TOKEN", "OPENCODE_CONFIG_CONTENT", "NPM_CONFIG_REGISTRY"],
+      passthrough: [
+        "REHOR_MODEL_PROXY_TOKEN",
+        "OPENCODE_CONFIG_CONTENT",
+        "NPM_CONFIG_REGISTRY",
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+      ],
       noProxyHosts: ["model-gateway"],
     });
 
@@ -342,6 +350,8 @@ describe("OpenCode environment", () => {
     expect(environment.NO_PROXY).toContain("model-gateway");
     expect(environment.no_proxy).toBe(environment.NO_PROXY);
     expect(environment.SECRET_TOKEN).toBeUndefined();
+    expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(environment.DATABASE_URL).toBeUndefined();
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(environment.NODE_OPTIONS).toBeUndefined();
     expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
@@ -679,7 +689,7 @@ describe("OpenCode runtime", () => {
           {
             id: "override-provider",
             npm: "override-provider-package",
-            options: { apiKey: "$" + "{OVERRIDE_TOKEN}" },
+            options: { apiKey: "$" + "{REHOR_MODEL_PROXY_TOKEN}" },
           },
         ],
         packages: [{ name: "override-provider-package", version: "1.0.0" }],
@@ -717,7 +727,7 @@ describe("OpenCode runtime", () => {
     });
     if (!configured) throw new Error("rendered configuration missing");
     expect(runtime.renderedConfiguration?.hash).toBe(hashOpenCodeConfig(configured));
-    expect(runtime.renderedConfiguration?.requiredEnvironment).toEqual(["OVERRIDE_TOKEN"]);
+    expect(runtime.renderedConfiguration?.requiredEnvironment).toEqual(["REHOR_MODEL_PROXY_TOKEN"]);
     expect(runtime.renderedConfiguration?.packageLock).toEqual({
       lockfileVersion: 1,
       packages: { "override-provider-package": "1.0.0" },

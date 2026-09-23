@@ -9,6 +9,7 @@ import {
   OPENCODE_BLOCKED_PASSTHROUGH,
   OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES,
   OPENCODE_MCP_URL_ENVIRONMENT,
+  OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
 } from "./environment";
 
 export const OPENCODE_CONFIG_SCHEMA = "https://opencode.ai/config.json" as const;
@@ -159,6 +160,9 @@ const ENV_REFERENCE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const BRACED_ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const BLOCKED_PASSTHROUGH_ENVIRONMENTS: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
+const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
+  OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
+);
 /** Render one deterministic, fail-closed OpenCode V1 configuration. */
 export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOpenCodeV1Config {
   const model = normalizeModel(input.model, input.providerId ?? input.provider?.id);
@@ -776,6 +780,11 @@ function assertProviderEnvironment(name: string, path: string): void {
   if (BLOCKED_PASSTHROUGH_ENVIRONMENTS.has(name)) {
     throw new OpenCodeConfigValidationError([
       `${path} cannot reference a blocked OpenCode environment variable '${name}'`,
+    ]);
+  }
+  if (!PROVIDER_ENVIRONMENT_ALLOWLIST.has(name)) {
+    throw new OpenCodeConfigValidationError([
+      `${path} cannot reference an unapproved OpenCode environment variable '${name}'`,
     ]);
   }
 }

@@ -338,8 +338,9 @@ fallback to resolved Claude values. The renderer:
   denies unlisted built-ins and configured MCP servers, and skips grants only
   for MCP servers explicitly marked optional by the prepared cycle;
 - converts provider/plugin `${VAR}` values to OpenCode `{env:VAR}` references
-  and returns the required agent-environment allowlist without serializing
-  resolved credentials; MCP URLs may reference only the non-secret
+  only when `VAR` is in the explicit `OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST`
+  (`REHOR_MODEL_PROXY_TOKEN` today), and returns required variables without
+  serializing resolved credentials; MCP URLs may reference only the non-secret
   `JIRA_MCP_URL` endpoint, while MCP headers and local MCP environments cannot
   use environment references;
 - rejects unknown tools, malformed transports, untrusted MCP environment
