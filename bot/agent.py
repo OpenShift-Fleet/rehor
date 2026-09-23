@@ -24,6 +24,7 @@ from claude_agent_sdk import (
 from .config import Config
 from .constants import MEMORY_API_BASE
 from .costs import summarize_result
+from .log import bind
 from .metrics import MCP_SERVER_STATUS_TOTAL, TURN_BUDGET_EVENT_TOTAL, WORK_TYPE_TOTAL
 
 logger = logging.getLogger(__name__)
@@ -205,6 +206,8 @@ async def run_cycle(
     model: str | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
+    if model:
+        bind(model=model)
     turn_hook = _make_turn_budget_hook(config.max_turns, label)
     pending_tools: dict[str, tuple[float, str]] = {}
 
@@ -307,6 +310,11 @@ async def run_cycle(
                     result = message
                     cost = f"${message.total_cost_usd:.4f}" if message.total_cost_usd is not None else "N/A"
                     summary = summarize_result(message)
+                    model_name = summary.get("model") or getattr(result, "model", None)
+                    if model_name and model_name != "unknown":
+                        bind(cost=message.total_cost_usd, model=model_name)
+                    else:
+                        bind(cost=message.total_cost_usd)
                     logger.info(
                         "Cycle done: %s | model=%s | turns=%s | cost=%s | duration=%sms | "
                         "tokens in=%s out=%s | cache_read=%s cache_write=%s ratio=%s",
@@ -413,6 +421,9 @@ def _extract_context(block, ctx: CycleContext) -> None:
                 ctx.jira_key = ctx.jira_key or progress["jira_key"]
             if progress.get("repo"):
                 ctx.repo = ctx.repo or progress["repo"]
+
+    if ctx.jira_key:
+        bind(task_key=ctx.jira_key)
 
 
 def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> None:

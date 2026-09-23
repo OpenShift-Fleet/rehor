@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -37,6 +38,7 @@ from .config import (
     validate_manifest,
 )
 from .costs import record_cost
+from .log import bind, clear, setup_logging
 from .merge import apply_merged_config, install_skills
 from .metrics import (
     CONFIG_SYNC_TOTAL,
@@ -138,29 +140,6 @@ def setup_git(script_dir: Path) -> None:
 
     config_path.write_text("\n".join(lines) + "\n")
     os.environ["GIT_CONFIG_GLOBAL"] = str(config_path)
-
-
-def setup_logging() -> None:
-    """Configure logging to stdout and data/bot.log.
-
-    Set DEBUG=true env var to enable DEBUG-level logging.
-    """
-    DATA_DIR.mkdir(exist_ok=True)
-    level = logging.DEBUG if os.environ.get("DEBUG") == "true" else logging.INFO
-    fmt = "[%(asctime)s] %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-
-    handlers: list[logging.Handler] = [
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(DATA_DIR / "bot.log", mode="a"),
-    ]
-
-    logging.basicConfig(
-        level=level,
-        format=fmt,
-        datefmt=datefmt,
-        handlers=handlers,
-    )
 
 
 REMOTE_CONFIG_DIR = DATA_DIR / "remote-config"
@@ -426,188 +405,214 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    config = load_config(SCRIPT_DIR)
-    mcp_servers = load_mcp_servers(SCRIPT_DIR)
-
-    # Initial config sync + instance config load (before validation so
-    # instance.yaml can override the workflow preset)
-    initial_agent_dir, initial_shared_dir = sync_config_repo(args.label)
-    if initial_shared_dir:
-        apply_merged_config(SCRIPT_DIR, initial_shared_dir)
-    if initial_agent_dir:
-        apply_merged_config(SCRIPT_DIR, initial_agent_dir)
-    instance_config = load_instance_config(initial_agent_dir)
-    install_skills(
-        SCRIPT_DIR,
-        resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, initial_agent_dir),
-        resolve_active_envs(SCRIPT_DIR, instance_config),
-    )
-
-    validate_manifest(
-        SCRIPT_DIR,
-        instance_config.workflow,
-        mcp_servers,
-        initial_agent_dir,
-        model_tiers=config.model_tiers,
-    )
-    validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
-
-    # Remove secrets from env so Bash subprocesses can't leak them.
-    # MCP servers already have resolved values. gh/glab use config files.
-    sanitize_env()
-    logger.info("Sanitized environment — secrets removed from env vars.")
-
-    # Lock file — prevent concurrent runs
-    lock = FileLock(DATA_DIR / ".lock", timeout=0)
     try:
-        lock.acquire()
-    except Timeout:
-        logger.error("Another instance is running. Exiting.")
-        sys.exit(1)
+        config = load_config(SCRIPT_DIR)
+        mcp_servers = load_mcp_servers(SCRIPT_DIR)
 
-    def shutdown(sig, frame):
-        logger.info("Shutting down.")
-        lock.release()
-        sys.exit(0)
+        # Initial config sync + instance config load (before validation so
+        # instance.yaml can override the workflow preset)
+        initial_agent_dir, initial_shared_dir = sync_config_repo(args.label)
+        if initial_shared_dir:
+            apply_merged_config(SCRIPT_DIR, initial_shared_dir)
+        if initial_agent_dir:
+            apply_merged_config(SCRIPT_DIR, initial_agent_dir)
+        instance_config = load_instance_config(initial_agent_dir)
+        install_skills(
+            SCRIPT_DIR,
+            resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, initial_agent_dir),
+            resolve_active_envs(SCRIPT_DIR, instance_config),
+        )
 
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+        validate_manifest(
+            SCRIPT_DIR,
+            instance_config.workflow,
+            mcp_servers,
+            initial_agent_dir,
+            model_tiers=config.model_tiers,
+        )
+        validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
 
-    start_http_server(9091)
-    logger.info("Metrics server listening on :9091")
+        # Remove secrets from env so Bash subprocesses can't leak them.
+        # MCP servers already have resolved values. gh/glab use config files.
+        sanitize_env()
+        logger.info("Sanitized environment — secrets removed from env vars.")
 
-    instance_id = args.instance_id or None
-    logger.info(
-        "Dev bot started. Label: %s. Instance: %s. Provider: Vertex AI. Active interval: %ds. Idle interval: %ds.",
-        args.label,
-        instance_id or "(none)",
-        config.interval,
-        config.idle_interval,
-    )
+        # Lock file — prevent concurrent runs
+        lock = FileLock(DATA_DIR / ".lock", timeout=0)
+        try:
+            lock.acquire()
+        except Timeout:
+            logger.error("Another instance is running. Exiting.")
+            sys.exit(1)
 
-    consecutive_preflight_errors = 0
+        def shutdown(sig, frame):
+            logger.info("Shutting down.")
+            lock.release()
+            sys.exit(0)
 
-    try:
-        while True:
-            _try_slack_digest()
+        signal.signal(signal.SIGINT, shutdown)
+        signal.signal(signal.SIGTERM, shutdown)
 
-            remote_agent_dir, shared_agent_dir = sync_config_repo(args.label)
-            if shared_agent_dir:
-                apply_merged_config(SCRIPT_DIR, shared_agent_dir)
-            if remote_agent_dir:
-                apply_merged_config(SCRIPT_DIR, remote_agent_dir)
+        start_http_server(9091)
+        logger.info("Metrics server listening on :9091")
 
-            instance_config = load_instance_config(remote_agent_dir)
-            install_skills(
-                SCRIPT_DIR,
-                resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),
-                resolve_active_envs(SCRIPT_DIR, instance_config),
-            )
-            assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir, shared_agent_dir)
+        instance_id = args.instance_id or None
+        logger.info(
+            "Dev bot started. Label: %s. Instance: %s. Provider: Vertex AI. Active interval: %ds. Idle interval: %ds.",
+            args.label,
+            instance_id or "(none)",
+            config.interval,
+            config.idle_interval,
+        )
 
-            # --- Pre-flight: gather data before starting AI session ---
-            preflight_result = run_preflight(SCRIPT_DIR, instance_config.workflow, remote_agent_dir, instance_id)
+        consecutive_preflight_errors = 0
 
-            preflight_prompt = None
-            if preflight_result is not None:
-                if preflight_result.action == "error":
-                    consecutive_preflight_errors += 1
-                    logger.error("Preflight error (consecutive: %d)", consecutive_preflight_errors)
-                    PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "error").inc()
-                    PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(consecutive_preflight_errors)
-                    WORK_TYPE_TOTAL.labels(args.label, "error").inc()
-                    post_orphan_cycle(
-                        instance_id or args.label,
-                        "error",
-                        preflight_result.transcript,
-                        input_prompt=preflight_result.transcript,
+        try:
+            while True:
+                # run_id for log correlation across this loop iteration (roadmap §9 will persist)
+                run_id = str(uuid.uuid4())
+                clear()
+                bind(run_id=run_id)
+                try:
+                    _try_slack_digest()
+
+                    remote_agent_dir, shared_agent_dir = sync_config_repo(args.label)
+                    if shared_agent_dir:
+                        apply_merged_config(SCRIPT_DIR, shared_agent_dir)
+                    if remote_agent_dir:
+                        apply_merged_config(SCRIPT_DIR, remote_agent_dir)
+
+                    instance_config = load_instance_config(remote_agent_dir)
+                    install_skills(
+                        SCRIPT_DIR,
+                        resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),
+                        resolve_active_envs(SCRIPT_DIR, instance_config),
                     )
-                    push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
-                    error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
-                    _write_sleep_signal(error_sleep, "preflight_error")
-                    _read_sleep_signal(config)
-                    cleanup_between_cycles(SCRIPT_DIR)
-                    continue
+                    assemble_claude_md(SCRIPT_DIR, instance_config, remote_agent_dir, shared_agent_dir)
 
-                if preflight_result.action == "skip":
-                    consecutive_preflight_errors = 0
-                    logger.info("Preflight skip — no session needed")
-                    PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "skip").inc()
-                    PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
-                    WORK_TYPE_TOTAL.labels(args.label, "idle").inc()
-                    post_orphan_cycle(
-                        instance_id or args.label,
-                        "idle",
-                        preflight_result.transcript,
-                        input_prompt=preflight_result.transcript,
+                    # --- Pre-flight: gather data before starting AI session ---
+                    preflight_result = run_preflight(
+                        SCRIPT_DIR, instance_config.workflow, remote_agent_dir, instance_id
                     )
-                    push_status("idle", "No work found. Sleeping...", instance_id=instance_id)
-                    idle_reminder.on_preflight_skip(
-                        instance_id or args.label,
-                        idle_cycle_limit=instance_config.idle_cycle_limit,
-                        cooldown_seconds=config.idle_reminder_cooldown_seconds,
-                    )
-                    _write_sleep_signal(config.idle_interval, "preflight_skip")
-                    _read_sleep_signal(config)
-                    cleanup_between_cycles(SCRIPT_DIR)
-                    continue
 
-                # action == "start"
-                consecutive_preflight_errors = 0
-                PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "start").inc()
-                PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
-                idle_reminder.on_preflight_start(instance_id or args.label)
-                preflight_prompt = preflight_result.prompt
-                logger.info("Preflight start — launching session with pre-fetched data")
+                    preflight_prompt = None
+                    if preflight_result is not None:
+                        if preflight_result.action == "error":
+                            consecutive_preflight_errors += 1
+                            logger.error("Preflight error (consecutive: %d)", consecutive_preflight_errors)
+                            PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "error").inc()
+                            PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(consecutive_preflight_errors)
+                            WORK_TYPE_TOTAL.labels(args.label, "error").inc()
+                            post_orphan_cycle(
+                                instance_id or args.label,
+                                "error",
+                                preflight_result.transcript,
+                                input_prompt=preflight_result.transcript,
+                            )
+                            push_status("error", "Preflight failed — check bot.log", instance_id=instance_id)
+                            error_sleep = min(config.interval * (2**consecutive_preflight_errors), 300)
+                            _write_sleep_signal(error_sleep, "preflight_error")
+                            _read_sleep_signal(config)
+                            cleanup_between_cycles(SCRIPT_DIR)
+                            continue
 
-            cycle_model = resolve_cycle_model(SCRIPT_DIR, instance_config, config, remote_agent_dir)
-            logger.info("Running agent cycle with model %s...", cycle_model)
+                        if preflight_result.action == "skip":
+                            consecutive_preflight_errors = 0
+                            logger.info("Preflight skip — no session needed")
+                            PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "skip").inc()
+                            PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
+                            WORK_TYPE_TOTAL.labels(args.label, "idle").inc()
+                            post_orphan_cycle(
+                                instance_id or args.label,
+                                "idle",
+                                preflight_result.transcript,
+                                input_prompt=preflight_result.transcript,
+                            )
+                            push_status("idle", "No work found. Sleeping...", instance_id=instance_id)
+                            idle_reminder.on_preflight_skip(
+                                instance_id or args.label,
+                                idle_cycle_limit=instance_config.idle_cycle_limit,
+                                cooldown_seconds=config.idle_reminder_cooldown_seconds,
+                            )
+                            _write_sleep_signal(config.idle_interval, "preflight_skip")
+                            _read_sleep_signal(config)
+                            cleanup_between_cycles(SCRIPT_DIR)
+                            continue
 
-            cycle_start = time.monotonic()
-            try:
-                result, ctx = asyncio.run(
-                    asyncio.wait_for(
-                        run_cycle(
+                        # action == "start"
+                        consecutive_preflight_errors = 0
+                        PREFLIGHT_OUTCOME_TOTAL.labels(args.label, "start").inc()
+                        PREFLIGHT_CONSECUTIVE_ERRORS.labels(args.label).set(0)
+                        idle_reminder.on_preflight_start(instance_id or args.label)
+                        preflight_prompt = preflight_result.prompt
+                        logger.info("Preflight start — launching session with pre-fetched data")
+
+                    cycle_model = resolve_cycle_model(SCRIPT_DIR, instance_config, config, remote_agent_dir)
+                    bind(model=cycle_model)
+                    logger.info("Running agent cycle with model %s...", cycle_model)
+
+                    cycle_start = time.monotonic()
+                    try:
+                        result, ctx = asyncio.run(
+                            asyncio.wait_for(
+                                run_cycle(
+                                    label=args.label,
+                                    config=config,
+                                    mcp_servers=mcp_servers,
+                                    allowed_tools=ALLOWED_TOOLS,
+                                    cwd=str(SCRIPT_DIR),
+                                    instance_id=instance_id,
+                                    preflight_prompt=preflight_prompt,
+                                    model=cycle_model,
+                                ),
+                                timeout=config.cycle_timeout,
+                            )
+                        )
+                    except TimeoutError:
+                        result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
+                    cycle_duration = time.monotonic() - cycle_start
+                    work_type = (ctx.work_type if ctx else None) or "unknown"
+                    CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
+
+                    if result is not None:
+                        bind(
+                            task_key=ctx.jira_key if ctx else None,
+                            cost=result.total_cost_usd if result.total_cost_usd is not None else None,
+                        )
+                        record_cost(
+                            costs_file=DATA_DIR / "costs.jsonl",
                             label=args.label,
-                            config=config,
-                            mcp_servers=mcp_servers,
-                            allowed_tools=ALLOWED_TOOLS,
+                            result=result,
+                            ctx=ctx,
+                            instance_id=instance_id,
+                            workflow=instance_config.workflow,
+                        )
+                        record_transcript(
+                            label=args.label,
+                            result=result,
+                            ctx=ctx,
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
-                            preflight_prompt=preflight_prompt,
-                            model=cycle_model,
-                        ),
-                        timeout=config.cycle_timeout,
-                    )
-                )
-            except TimeoutError:
-                result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
-            cycle_duration = time.monotonic() - cycle_start
-            work_type = (ctx.work_type if ctx else None) or "unknown"
-            CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
+                            input_prompt=preflight_prompt,
+                        )
+                    else:
+                        if ctx and ctx.jira_key:
+                            bind(task_key=ctx.jira_key)
+                        logger.warning("Cycle produced no result")
 
-            if result is not None:
-                record_cost(
-                    costs_file=DATA_DIR / "costs.jsonl",
-                    label=args.label,
-                    result=result,
-                    ctx=ctx,
-                    instance_id=instance_id,
-                    workflow=instance_config.workflow,
-                )
-                record_transcript(
-                    label=args.label,
-                    result=result,
-                    ctx=ctx,
-                    cwd=str(SCRIPT_DIR),
-                    instance_id=instance_id,
-                    input_prompt=preflight_prompt,
-                )
-            else:
-                logger.warning("Cycle produced no result")
+                    _read_sleep_signal(config)
 
-            _read_sleep_signal(config)
-
-            cleanup_between_cycles(SCRIPT_DIR)
-    finally:
-        lock.release()
+                    cleanup_between_cycles(SCRIPT_DIR)
+                except Exception:
+                    logger.exception("Cycle failed with unhandled exception")
+                    error_sleep = min(config.interval, 300)
+                    _write_sleep_signal(error_sleep, "cycle_exception")
+                    _read_sleep_signal(config)
+                    cleanup_between_cycles(SCRIPT_DIR)
+                finally:
+                    clear()
+        finally:
+            lock.release()
+    except Exception:
+        logger.exception("Fatal error during bot execution")
+        sys.exit(1)
