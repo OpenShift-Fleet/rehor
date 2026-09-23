@@ -58,6 +58,7 @@ def _run_preflight(request: dict[str, Any]) -> dict[str, Any] | None:
     from .preflight import run_preflight
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
     workflow = _required_string(request, "workflow")
     remote_agent_dir = _optional_string(request, "remoteAgentDir")
     instance_id = _optional_string(request, "instanceId")
@@ -88,11 +89,14 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_active_envs,
         resolve_cycle_model,
         resolve_workflow_dir,
+        validate_instance_config,
+        validate_manifest,
         validate_runtime_provider_selection,
     )
     from .merge import apply_merged_config, install_skills
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
     if script_dir != runner.SCRIPT_DIR.resolve():
         raise BridgeError(
             f"scriptDir must be the bot repository root ({runner.SCRIPT_DIR}), got {script_dir}",
@@ -129,6 +133,14 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_env=False,
         include_project=True,
     )
+    validate_manifest(
+        script_dir,
+        instance_config.workflow,
+        mcp_servers,
+        profile_dir,
+        model_tiers=runtime_config.model_tiers,
+    )
+    validate_instance_config(script_dir, instance_config, profile_dir)
 
     return {
         "model": cycle_model,
@@ -155,6 +167,56 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _load_dotenv(script_dir: Path) -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(script_dir / ".env", override=False)
+
+
+def _maintenance_script_dir(request: dict[str, Any]):
+    from . import run as runner
+
+    script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
+    if script_dir != runner.SCRIPT_DIR.resolve():
+        raise BridgeError(
+            f"scriptDir must be the bot repository root ({runner.SCRIPT_DIR}), got {script_dir}",
+        )
+    return script_dir, runner
+
+
+def _idle_skip(request: dict[str, Any]) -> None:
+    script_dir, _runner = _maintenance_script_dir(request)
+    from . import idle_reminder
+
+    instance_id = _required_string(request, "instanceId")
+    idle_cycle_limit = request.get("idleCycleLimit")
+    cooldown_seconds = request.get("cooldownSeconds")
+    if not isinstance(idle_cycle_limit, int) or idle_cycle_limit < 0:
+        raise BridgeError("idleCycleLimit must be a non-negative integer")
+    if not isinstance(cooldown_seconds, (int, float)) or cooldown_seconds < 0:
+        raise BridgeError("cooldownSeconds must be non-negative")
+    idle_reminder.on_preflight_skip(
+        instance_id,
+        idle_cycle_limit=idle_cycle_limit,
+        cooldown_seconds=int(cooldown_seconds),
+    )
+
+
+def _idle_start(request: dict[str, Any]) -> None:
+    _script_dir, _runner = _maintenance_script_dir(request)
+    from . import idle_reminder
+
+    idle_reminder.on_preflight_start(_required_string(request, "instanceId"))
+
+
+def _cleanup(request: dict[str, Any]) -> None:
+    script_dir, runner = _maintenance_script_dir(request)
+    runner.cleanup_between_cycles(script_dir)
+
+
 def handle(request: dict[str, Any]) -> Any:
     if request.get("protocolVersion", PROTOCOL_VERSION) != PROTOCOL_VERSION:
         raise BridgeError("unsupported protocolVersion")
@@ -164,7 +226,16 @@ def handle(request: dict[str, Any]) -> Any:
         return _run_preflight(request)
     if operation == "prepare":
         return _prepare_config(request)
-    raise BridgeError("operation must be 'preflight' or 'prepare'")
+    if operation == "idle_skip":
+        _idle_skip(request)
+        return None
+    if operation == "idle_start":
+        _idle_start(request)
+        return None
+    if operation == "cleanup":
+        _cleanup(request)
+        return None
+    raise BridgeError("operation must be preflight, prepare, idle_skip, idle_start, or cleanup")
 
 
 def main() -> int:

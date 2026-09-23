@@ -231,10 +231,51 @@ def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_pat
     assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
 
 
+def test_bridge_maintenance_operations_preserve_idle_and_cleanup_hooks(tmp_path, monkeypatch):
+    import bot.idle_reminder as idle_reminder
+    import bot.run as runner
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_skip",
+        lambda *args, **kwargs: calls.append(("skip", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_start",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "cleanup_between_cycles",
+        lambda script_dir: calls.append(("cleanup", script_dir)),
+    )
+
+    request_base = {"protocolVersion": 1, "scriptDir": str(tmp_path), "instanceId": "instance-1"}
+    handle(
+        {
+            **request_base,
+            "operation": "idle_skip",
+            "idleCycleLimit": 4,
+            "cooldownSeconds": 3600,
+        }
+    )
+    handle({**request_base, "operation": "idle_start"})
+    handle({"protocolVersion": 1, "operation": "cleanup", "scriptDir": str(tmp_path)})
+
+    assert calls == [
+        ("skip", ("instance-1",), {"idle_cycle_limit": 4, "cooldown_seconds": 3600}),
+        ("start", ("instance-1",), {}),
+        ("cleanup", tmp_path),
+    ]
+
+
 def test_bridge_rejects_unknown_operation():
     try:
         handle({"protocolVersion": 1, "operation": "unknown"})
     except ValueError as exc:
-        assert str(exc) == "operation must be 'preflight' or 'prepare'"
+        assert str(exc) == "operation must be preflight, prepare, idle_skip, idle_start, or cleanup"
     else:
         raise AssertionError("unknown operation should fail")
