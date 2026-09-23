@@ -48,6 +48,7 @@ EXPOSE 8446
 EXPOSE 8444
 EXPOSE 8447
 EXPOSE 8448
+EXPOSE 8450
 USER squid
 
 CMD ["/usr/local/bin/start.sh"]

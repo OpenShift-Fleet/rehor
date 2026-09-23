@@ -62,14 +62,25 @@ fi
 
 # --- Wait for executor (provides gh/glab/gpg via proxy) ---
 # Must be ready BEFORE GPG key lookups (gpg is a thin client to proxy)
+_log_json() {
+    local level="$1" msg="$2" ts escaped_msg
+    ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u +"%Y-%m-%dT%H:%M:%S+00:00")"
+    escaped_msg="${msg//\\/\\\\}"
+    escaped_msg="${escaped_msg//\"/\\\"}"
+    escaped_msg="${escaped_msg//$'\n'/\\n}"
+    escaped_msg="${escaped_msg//$'\r'/\\r}"
+    escaped_msg="${escaped_msg//$'\t'/\\t}"
+    printf '{"timestamp":"%s","level":"%s","logger":"entrypoint","message":"%s","run_id":null,"task_key":null,"model":null,"cost":null}\n' "$ts" "$level" "$escaped_msg"
+}
+
 EXECUTOR_ADDR="${EXECUTOR_ADDR:-unix:///var/run/devbot/executor.sock}"
-echo "Waiting for executor at ${EXECUTOR_ADDR}..."
+_log_json "INFO" "Waiting for executor at ${EXECUTOR_ADDR}..."
 elapsed=0
 if [[ "$EXECUTOR_ADDR" == unix://* ]]; then
     SOCK_PATH="${EXECUTOR_ADDR#unix://}"
     until [ -S "$SOCK_PATH" ]; do
         elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { echo "FATAL: executor socket not ready after 30s" >&2; exit 1; }
+        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor socket not ready after 30s"; exit 1; }
         sleep 1
     done
 else
@@ -77,11 +88,11 @@ else
     EXEC_PORT="${EXECUTOR_ADDR##*:}"
     until bash -c "echo > /dev/tcp/${EXEC_HOST}/${EXEC_PORT}" 2>/dev/null; do
         elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { echo "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s" >&2; exit 1; }
+        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s"; exit 1; }
         sleep 1
     done
 fi
-echo "Executor ready."
+_log_json "INFO" "Executor ready."
 
 # Per-platform git identity via includeIf (git 2.36+)
 # Each platform gets its own name, email, and GPG signing key.

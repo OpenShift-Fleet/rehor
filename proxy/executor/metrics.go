@@ -53,6 +53,20 @@ var (
 		},
 		[]string{"model", "status"},
 	)
+	OpenAIModelRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "openai_model_requests_total",
+			Help: "Total OpenAI-compatible proxy requests by model and outcome status.",
+		},
+		[]string{"model", "status"},
+	)
+	OpenAITokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "openai_tokens_total",
+			Help: "OpenAI token counts observed from upstream usage, when present.",
+		},
+		[]string{"model", "type"},
+	)
 )
 
 func init() {
@@ -63,6 +77,8 @@ func init() {
 		GRPCRequestDuration,
 		PolicyDenyTotal,
 		VertexModelRequestsTotal,
+		OpenAIModelRequestsTotal,
+		OpenAITokensTotal,
 	)
 }
 
@@ -74,6 +90,12 @@ type responseWriter struct {
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap exposes the underlying writer so http.ResponseController can reach
+// its Flusher. Without it, streaming (SSE) responses stall behind this wrapper.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 func InstrumentHTTPHandler(name string, next http.Handler) http.Handler {
