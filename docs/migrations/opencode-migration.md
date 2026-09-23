@@ -299,29 +299,53 @@ Example bot-side `opencode.json`:
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "rehor-openai": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Rehor OpenAI Proxy",
+      "npm": "@ai-sdk/openai@4.0.73",
+      "name": "Rehor OpenAI Responses",
       "options": {
         "baseURL": "http://devbot-proxy:8450/v1",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
       "models": {
-        "gpt-5.4": { "name": "GPT-5.4" },
-        "gpt-5.4-mini": { "name": "GPT-5.4 Mini" },
-        "gpt-5.4-nano": { "name": "GPT-5.4 Nano" }
+        "gpt-6-luna": { "name": "GPT-6 Luna", "reasoning": true }
+      }
+    },
+    "rehor-openai-chat": {
+      "npm": "@ai-sdk/openai-compatible@3.0.54",
+      "name": "Rehor OpenAI Chat Completions",
+      "options": {
+        "baseURL": "http://devbot-proxy:8450/v1",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-4.1": { "name": "GPT-4.1" },
+        "gpt-4.1-mini": { "name": "GPT-4.1 Mini" },
+        "gpt-4o": {
+          "name": "GPT-4o",
+          "reasoning": false,
+          "limit": { "context": 128000, "output": 16384 }
+        }
       }
     }
   },
-  "model": "rehor-openai/gpt-5.4",
-  "small_model": "rehor-openai/gpt-5.4-nano",
+  "model": "rehor-openai/gpt-6-luna",
   "enabled_providers": ["rehor-openai"],
   "share": "disabled"
 }
 ```
 
-Exact model IDs remain deployment configuration. Do not hardcode model names
-until OpenAI account access, pricing, tool support, and regional requirements
-are confirmed.
+GPT-6 Luna uses the native Responses route. OpenCode's `rehor-openai-chat`
+route retains Chat Completions for compatible models; pinning
+`@ai-sdk/openai-compatible@3.0.54` fixes request-parameter casing and terminal
+finish-reason handling. GPT-4o's explicit output limit prevents OpenCode from
+requesting more than its 16384-token maximum. Runtime-generated config also
+pins `@ai-sdk/openai@4.0.73` and supports both provider IDs in one offline
+package closure.
+
+The OpenCode+`rehor-openai` default lives in `config.json` under
+`opencode.model` and is `gpt-6-luna`; OpenCode+Vertex and the Python/Claude/
+Vertex rollback keep `claude.model`. The Chat Completions provider requires an
+explicit declared model. Deployment allowlists, pricing, tool support, and
+regional requirements remain deployment-owned.
 
 ### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
 

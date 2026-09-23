@@ -12,7 +12,7 @@ config preparation into the TypeScript coordinator:
 ```yaml
 runtime: opencode-v1
 provider: rehor-openai
-model: gpt-5.6-luna
+model: gpt-6-luna
 ```
 
 The rollback configuration is explicit and independently selectable:
@@ -29,7 +29,17 @@ Supported combinations are:
 |---|---|---|
 | `claude` | `vertex` | Legacy/default rollback path |
 | `opencode-v1` | `vertex` | OpenCode compatibility canary through Vertex |
-| `opencode-v1` | `rehor-openai` | OpenCode canary through the OpenAI-compatible gateway |
+| `opencode-v1` | `rehor-openai` | OpenAI Responses route (`@ai-sdk/openai`), default model `gpt-6-luna` |
+| `opencode-v1` | `rehor-openai-chat` | OpenAI Chat Completions compatibility route (`@ai-sdk/openai-compatible`) |
+
+With `runtime: opencode-v1`, `provider: rehor-openai`, and no model override,
+Python reads `config.json`'s `opencode.model` (`gpt-6-luna`). OpenCode+Vertex
+continues to use `claude.model`; `rehor-openai-chat` requires a model declared
+under that provider. GPT-6 Luna uses the native Responses route. The
+compatible provider pin fixes completion/turn-finish behavior; GPT-4o's model
+configuration caps output at 16384 tokens.
+Set a model declared under `rehor-openai-chat` (for example `gpt-4.1`); an
+undeclared model fails before OpenCode starts.
 
 Do not rely on a provider name embedded in a model string to select the
 runtime. Runtime and provider are separate fields so either can be rolled back
@@ -38,7 +48,8 @@ without changing the other.
 ## Before enabling a canary
 
 1. Confirm the target image includes `coordinator/dist/cli.js`, its locked Node
-   dependencies, `/usr/local/bin/opencode` version `1.18.29`, `zstd`, and the
+   dependencies, `/usr/local/bin/opencode` version `1.18.29`,
+   `@ai-sdk/openai@4.0.73`, `@ai-sdk/openai-compatible@3.0.54`, `zstd`, and the
    configured provider gateway.
 2. Confirm the instance has a known-good Claude/Vertex deployment or revision
    available for rollback.

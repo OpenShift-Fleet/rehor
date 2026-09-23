@@ -159,8 +159,10 @@ RUN rm -rf coordinator/node_modules coordinator/dist \
 # coordinator path and must not resolve provider code from the network.
 RUN npm install --global --omit=dev --no-audit --no-fund \
     opencode-ai@1.18.29 \
-    @ai-sdk/openai-compatible@1.0.0 \
+    @ai-sdk/openai@4.0.73 \
+    @ai-sdk/openai-compatible@3.0.54 \
     && test "$(opencode --version)" = "1.18.29" \
+    && test -f "$(npm root --global)/@ai-sdk/openai/package.json" \
     && test -f "$(npm root --global)/@ai-sdk/openai-compatible/package.json"
 ENV NODE_PATH=/usr/local/lib/node_modules
 ENV OPENCODE_EXPECTED_VERSION=1.18.29

@@ -18,7 +18,7 @@ import type { OpenCodeV1DeploymentConfig } from "../src/runtimes/opencode-v1";
 
 const prepared: PreparedCycleInput = {
   config: {
-    model: "rehor-openai/gpt-5.6-luna",
+    model: "gpt-6-luna",
     runtimeId: "opencode-v1",
     providerId: "rehor-openai",
     maxTurns: 17,
@@ -53,13 +53,24 @@ const prepared: PreparedCycleInput = {
 };
 
 const deployment: OpenCodeV1DeploymentConfig = {
-  provider: {
-    id: "rehor-openai",
-    npm: "@ai-sdk/openai-compatible",
-    options: { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" },
-    models: { "gpt-5.6-luna": { name: "GPT-5.6 Luna" } },
-  },
-  packages: [{ name: "@ai-sdk/openai-compatible", version: "1.0.0" }],
+  providers: [
+    {
+      id: "rehor-openai",
+      npm: "@ai-sdk/openai",
+      options: { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" },
+      models: { "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true } },
+    },
+    {
+      id: "rehor-openai-chat",
+      npm: "@ai-sdk/openai-compatible",
+      options: { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" },
+      models: { "gpt-4o": { name: "GPT-4o", limit: { context: 128_000, output: 16_384 } } },
+    },
+  ],
+  packages: [
+    { name: "@ai-sdk/openai", version: "4.0.73" },
+    { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
+  ],
 };
 
 describe("production runner boundary", () => {
@@ -79,7 +90,7 @@ describe("production runner boundary", () => {
       label: "hcc-ai-framework",
       workflowId: "jira-sprint",
       runtimeId: "opencode-v1",
-      provider: { id: "rehor-openai", requestedModel: "rehor-openai/gpt-5.6-luna" },
+      provider: { id: "rehor-openai", requestedModel: "gpt-6-luna" },
       limits: { timeoutMs: 120_000, maxTurns: 17 },
       worktree: {
         path: "/work/rehor",
@@ -95,14 +106,31 @@ describe("production runner boundary", () => {
   });
 
   it("fails closed when OpenCode deployment provider drifts from prepared provider", () => {
-    const provider = deployment.provider;
-    if (!provider) throw new Error("test deployment provider missing");
     expect(() =>
       validateOpenCodeDeployment(prepared, {
         ...deployment,
-        provider: { ...provider, id: "other-provider" },
+        providers: deployment.providers?.map((provider) =>
+          provider.id === "rehor-openai" ? { ...provider, id: "other-provider" } : provider,
+        ),
       }),
     ).toThrow("does not declare prepared provider 'rehor-openai'");
+  });
+
+  it("requires Chat Completions models to be declared by the selected provider", () => {
+    const chatRun = {
+      ...prepared,
+      config: { ...prepared.config, model: "gpt-6-luna", providerId: "rehor-openai-chat" },
+    };
+    expect(() => validateOpenCodeDeployment(chatRun, deployment)).toThrow(
+      "OpenCode deployment provider 'rehor-openai-chat' does not declare prepared model 'gpt-6-luna'",
+    );
+
+    expect(() =>
+      validateOpenCodeDeployment(
+        { ...chatRun, config: { ...chatRun.config, model: "gpt-4o" } },
+        deployment,
+      ),
+    ).not.toThrow();
   });
 
   it("registers both runtime adapters without changing the Claude default", () => {

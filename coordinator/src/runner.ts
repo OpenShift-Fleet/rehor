@@ -140,10 +140,19 @@ export function validateOpenCodeDeployment(
     ...(deployment.provider === undefined ? [] : [deployment.provider]),
     ...(deployment.providers ?? []),
   ];
-  if (!providers.some((provider) => provider.id === prepared.config.providerId)) {
+  const selectedProvider = providers.find((provider) => provider.id === prepared.config.providerId);
+  if (selectedProvider === undefined) {
     throw new Error(
       `OpenCode deployment does not declare prepared provider '${prepared.config.providerId}'`,
     );
+  }
+  if (selectedProvider.id === "rehor-openai-chat") {
+    const modelId = prepared.config.model.slice(prepared.config.model.lastIndexOf("/") + 1);
+    if (selectedProvider.models?.[modelId] === undefined) {
+      throw new Error(
+        `OpenCode deployment provider '${selectedProvider.id}' does not declare prepared model '${modelId}'`,
+      );
+    }
   }
   renderOpenCodeV1ConfigForCycle(prepared.config, prepared.config.providerId, deployment);
 }

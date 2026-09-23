@@ -21,6 +21,8 @@ export type JsonObject = { [key: string]: JsonValue };
 
 export interface OpenCodeModelConfig {
   name?: string;
+  reasoning?: boolean;
+  limit?: { context: number; output: number };
   options?: Readonly<Record<string, JsonValue>>;
 }
 
@@ -462,6 +464,18 @@ function renderModelConfig(
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
   if (model.name !== undefined) output.name = requireNonEmpty(model.name, `${path}.name`);
+  if (model.reasoning !== undefined) {
+    if (typeof model.reasoning !== "boolean") {
+      throw new OpenCodeConfigValidationError([`${path}.reasoning must be a boolean`]);
+    }
+    output.reasoning = model.reasoning;
+  }
+  if (model.limit !== undefined) {
+    output.limit = {
+      context: positiveInteger(model.limit.context, `${path}.limit.context`),
+      output: positiveInteger(model.limit.output, `${path}.limit.output`),
+    };
+  }
   if (model.options !== undefined) {
     output.options = normalizeJsonObject(model.options, `${path}.options`, requiredEnvironment);
   }

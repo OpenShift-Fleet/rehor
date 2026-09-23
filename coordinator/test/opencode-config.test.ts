@@ -11,7 +11,7 @@ import {
 } from "../src/runtimes/opencode-v1";
 
 const packages = [
-  { name: "@ai-sdk/openai-compatible", version: "1.0.0" },
+  { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
   { name: "opencode-rehor-plugin", version: "2.3.4" },
 ];
 
@@ -27,18 +27,18 @@ const allowedTools = [
 describe("OpenCode V1 config renderer", () => {
   it("renders validated provider, MCP, permissions, and pinned package configuration", () => {
     const rendered = renderOpenCodeV1Config({
-      model: "rehor-openai/gpt-5.4",
+      model: "rehor-openai-chat/gpt-4.1",
       providers: [
         {
-          id: "rehor-openai",
+          id: "rehor-openai-chat",
           npm: "@ai-sdk/openai-compatible",
-          name: "Rehor OpenAI Proxy",
+          name: "Rehor OpenAI Chat Proxy",
           options: {
             baseURL: "http://model-gateway:8450/v1",
             apiKey: "$" + "{REHOR_MODEL_PROXY_TOKEN}",
           },
           models: {
-            "gpt-5.4": { name: "GPT-5.4" },
+            "gpt-4.1": { name: "GPT-4.1" },
           },
         },
       ],
@@ -68,17 +68,17 @@ describe("OpenCode V1 config renderer", () => {
       share: "disabled",
       autoupdate: false,
       lsp: false,
-      model: "rehor-openai/gpt-5.4",
-      enabled_providers: ["rehor-openai"],
+      model: "rehor-openai-chat/gpt-4.1",
+      enabled_providers: ["rehor-openai-chat"],
       provider: {
-        "rehor-openai": {
-          npm: "@ai-sdk/openai-compatible@1.0.0",
-          name: "Rehor OpenAI Proxy",
+        "rehor-openai-chat": {
+          npm: "@ai-sdk/openai-compatible@3.0.54",
+          name: "Rehor OpenAI Chat Proxy",
           options: {
             apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
             baseURL: "http://model-gateway:8450/v1",
           },
-          models: { "gpt-5.4": { name: "GPT-5.4" } },
+          models: { "gpt-4.1": { name: "GPT-4.1" } },
         },
       },
       plugin: ["opencode-rehor-plugin@2.3.4"],
@@ -128,13 +128,79 @@ describe("OpenCode V1 config renderer", () => {
     expect(rendered.packageLock).toEqual({
       lockfileVersion: 1,
       packages: {
-        "@ai-sdk/openai-compatible": "1.0.0",
+        "@ai-sdk/openai-compatible": "3.0.54",
         "opencode-rehor-plugin": "2.3.4",
       },
     });
     expect(rendered.json.endsWith("\n")).toBe(true);
     expect(rendered.json).not.toContain("$" + "{REHOR_MODEL_PROXY_TOKEN}");
     expect(rendered.json).not.toContain("literal-secret");
+  });
+
+  it("renders native Responses and compatible Chat Completions providers with model limits", () => {
+    const rendered = renderOpenCodeV1Config({
+      model: "rehor-openai/gpt-6-luna",
+      providers: [
+        {
+          id: "rehor-openai",
+          npm: "@ai-sdk/openai",
+          options: {
+            baseURL: "http://model-gateway:8450/v1",
+            apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
+          },
+          models: {
+            "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true },
+          },
+        },
+        {
+          id: "rehor-openai-chat",
+          npm: "@ai-sdk/openai-compatible",
+          options: {
+            baseURL: "http://model-gateway:8450/v1",
+            apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
+          },
+          models: {
+            "gpt-4o": {
+              name: "GPT-4o",
+              reasoning: false,
+              limit: { context: 128_000, output: 16_384 },
+            },
+          },
+        },
+      ],
+      packages: [
+        { name: "@ai-sdk/openai", version: "4.0.73" },
+        { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
+      ],
+      allowedTools: [],
+    });
+
+    expect(rendered.config).toMatchObject({
+      model: "rehor-openai/gpt-6-luna",
+      provider: {
+        "rehor-openai": {
+          npm: "@ai-sdk/openai@4.0.73",
+          models: { "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true } },
+        },
+        "rehor-openai-chat": {
+          npm: "@ai-sdk/openai-compatible@3.0.54",
+          models: {
+            "gpt-4o": {
+              name: "GPT-4o",
+              reasoning: false,
+              limit: { context: 128_000, output: 16_384 },
+            },
+          },
+        },
+      },
+    });
+    expect(rendered.packageLock).toEqual({
+      lockfileVersion: 1,
+      packages: {
+        "@ai-sdk/openai": "4.0.73",
+        "@ai-sdk/openai-compatible": "3.0.54",
+      },
+    });
   });
 
   it("rejects provider references to blocked credential environments", () => {

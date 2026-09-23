@@ -224,11 +224,17 @@ BOT_LABEL=hcc-ai-framework BOT_INSTANCE_ID=local-1 \
 
 The default instance selection remains `claude`/`vertex`, so this command is a
 safe coordinator-path smoke test without changing an instance config. To test
-OpenCode, set `runtime: opencode-v1`, `provider: rehor-openai`, and point
+OpenCode, set `runtime: opencode-v1` and point
 `REHOR_OPENCODE_DEPLOYMENT_CONFIG` at a deployment-owned JSON file (see
-`opencode-deployment.example.json`). The file must declare the selected
-provider and exact package versions; it must contain only environment
-references such as `{env:REHOR_MODEL_PROXY_TOKEN}`, never credentials. Use `--once` for a single preflight or attempt. The local sink
+`opencode-deployment.example.json`). With no provider override, OpenCode selects
+`rehor-openai` and `config.json`'s `opencode.model` (`gpt-6-luna`); this provider
+uses `@ai-sdk/openai` and the native Responses API. OpenCode+Vertex retains the
+`claude.model` fallback. Select `provider: rehor-openai-chat` and a model
+declared under that provider for Chat Completions through
+`@ai-sdk/openai-compatible`; undeclared models fail closed. Both OpenAI routes
+use the model proxy; deployment config must
+contain only environment references such as `{env:REHOR_MODEL_PROXY_TOKEN}`, never
+credentials. Use `--once` for a single preflight or attempt. The local sink
 writes `data/costs.jsonl`, `data/cycle-runs.jsonl`, compressed transcripts under
 `data/transcripts/`, and serves `/health`, `/ready`, and `/metrics` on port
 `COORDINATOR_METRICS_PORT` (9091 by default).
@@ -237,9 +243,10 @@ writes `data/costs.jsonl`, `data/cycle-runs.jsonl`, compressed transcripts under
 
 `Dockerfile` packages the coordinator for Compose. `Dockerfile.runner` builds
 from the pinned UBI Node 22 builder, copies the ESM coordinator bundle and its
-locked npm dependencies, installs `opencode-ai@1.18.29` plus the pinned
-`@ai-sdk/openai-compatible@1.0.0` provider package, and installs `zstd` for
-transcript compatibility. `entrypoint.sh` accepts
+locked npm dependencies, installs `opencode-ai@1.18.29`,
+`@ai-sdk/openai@4.0.73`, and `@ai-sdk/openai-compatible@3.0.54`, and installs
+`zstd` for transcript compatibility. The first provider uses native Responses
+for GPT-6 Luna; the second preserves the compatible Chat Completions path. `entrypoint.sh` accepts
 `BOT_EXECUTION_ENGINE=python|coordinator`; omitted or `python` always launches
 the existing Python/Claude runner. Set `coordinator` only with
 `BOT_INSTANCE_ID`, `CYCLE_RUNS_API_URL`, the deployment config path, provider

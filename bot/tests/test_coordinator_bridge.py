@@ -93,7 +93,8 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         '"chrome-devtools": {"command": "chrome-devtools-mcp"}}}'
     )
     (tmp_path / "config.json").write_text(
-        '{"claude": {"model": "test-model", "maxTurns": 10}, '
+        '{"claude": {"model": "claude-test-model", "maxTurns": 10}, '
+        '"opencode": {"model": "test-model"}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )

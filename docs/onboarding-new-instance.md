@@ -97,15 +97,19 @@ provider: vertex
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
 | `runtime` | string | `claude` | Runtime adapter: `claude` or `opencode-v1`. |
-| `provider` | string | `vertex` | Provider route: `vertex` or `rehor-openai`. |
+| `provider` | string | Runtime-dependent | `vertex`, `rehor-openai` (native Responses), or `rehor-openai-chat` (Chat Completions). Defaults to `vertex` for Claude and `rehor-openai` for OpenCode. |
 | `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). Must be allowed by the selected provider route. |
 
 `runtime` and `provider` are selected independently and passed to the TypeScript
 coordinator. Supported combinations are `claude` + `vertex`, `opencode-v1` +
-`vertex`, and `opencode-v1` + `rehor-openai`. Invalid combinations fail
-validation. If omitted from `instance.yaml`, deployment operators can set
-`BOT_RUNTIME` and `BOT_PROVIDER`; the default remains the Claude/Vertex path.
-Keep that path available as the rollback while running the [OpenCode canary
+`vertex`, `opencode-v1` + `rehor-openai` (native Responses), and
+`opencode-v1` + `rehor-openai-chat` (Chat Completions). OpenCode+`rehor-openai`
+uses `config.json`'s `opencode.model` (`gpt-6-luna`); OpenCode+Vertex preserves
+`claude.model`. Chat Completions requires a model declared under its provider.
+Invalid combinations fail validation. If
+omitted from `instance.yaml`, deployment operators can set `BOT_RUNTIME` and
+`BOT_PROVIDER`; the default remains the Claude/Vertex path. Keep that path
+available as the rollback while running the [OpenCode canary
 runbook](operations/rehor-146-opencode-canary.md).
 
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.

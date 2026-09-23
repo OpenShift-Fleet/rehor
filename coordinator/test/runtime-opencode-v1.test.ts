@@ -1127,6 +1127,18 @@ describe("OpenCode runtime", () => {
           },
         }),
         asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "step-finish",
+              messageID: "assistant-message",
+              sessionID: "session-opencode",
+              type: "step-finish",
+              reason: "stop",
+            },
+          },
+        }),
+        asOpenCodeEvent({
           type: "session.idle",
           properties: { sessionID: "session-opencode" },
         }),

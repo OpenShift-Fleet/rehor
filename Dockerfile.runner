@@ -8,8 +8,8 @@
 #   instance/  — (optional) extra files, COPYed to /home/botuser/app/instance/
 
 # Build the coordinator bundle and the pinned OpenCode executable. The runtime
-# image remains UBI-based; only the Node executable, bundle, dependencies, and
-# OpenCode installation cross the stage boundary.
+# image remains UBI-based; the Node executable, its shared runtime libraries,
+# coordinator bundle/dependencies, and OpenCode installation cross the stage boundary.
 FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS coordinator-builder
 USER 0
 WORKDIR /build/coordinator
@@ -22,13 +22,20 @@ RUN rm -rf node_modules dist \
     && npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
-    && cp -L /usr/bin/node /tmp/node-runtime
+    && cp -L /usr/bin/node /tmp/node-runtime \
+    && mkdir -p /tmp/node-runtime-libs \
+    && cp -L /lib64/libnode.so.127 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlidec.so.1 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlienc.so.1 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlicommon.so.1 /tmp/node-runtime-libs/
 # Keep the provider package in the image too: OpenCode runs offline in the
 # coordinator path and must not resolve provider code from the network.
 RUN npm install --global --prefix /opt/opencode --omit=dev --no-audit --no-fund \
     opencode-ai@1.18.29 \
-    @ai-sdk/openai-compatible@1.0.0 \
+    @ai-sdk/openai@4.0.73 \
+    @ai-sdk/openai-compatible@3.0.54 \
     && test "$(/opt/opencode/bin/opencode --version)" = "1.18.29" \
+    && test -f /opt/opencode/lib/node_modules/@ai-sdk/openai/package.json \
     && test -f /opt/opencode/lib/node_modules/@ai-sdk/openai-compatible/package.json
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
@@ -105,6 +112,8 @@ ENV CLOUD_ML_REGION=global
 # Coordinator production bundle and Node runtime. Python remains the default
 # execution engine until BOT_EXECUTION_ENGINE=coordinator is explicitly set.
 COPY --from=coordinator-builder /tmp/node-runtime /usr/local/bin/node
+COPY --from=coordinator-builder /tmp/node-runtime-libs/ /usr/lib64/
+RUN ldconfig
 COPY --from=coordinator-builder /build/coordinator/dist /home/botuser/app/coordinator/dist
 COPY --from=coordinator-builder /build/coordinator/node_modules /home/botuser/app/coordinator/node_modules
 COPY --from=coordinator-builder /opt/opencode /opt/opencode

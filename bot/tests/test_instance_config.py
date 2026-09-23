@@ -66,6 +66,13 @@ class TestInstanceConfigFromYaml:
         assert ic.runtime == "opencode-v1"
         assert ic.provider == "rehor-openai"
 
+    def test_opencode_runtime_defaults_to_native_provider(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text("runtime: opencode-v1\n")
+        with patch.dict(os.environ, {}, clear=True):
+            ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.runtime == "opencode-v1"
+        assert ic.provider == "rehor-openai"
+
     def test_minimal_config(self, agent_dir):
         (agent_dir / "instance.yaml").write_text("workflow: jira-sprint\n")
         ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
@@ -167,6 +174,12 @@ class TestInstanceConfigFromEnv:
             {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
             clear=True,
         ):
+            ic = InstanceConfig.from_env()
+        assert ic.runtime == "opencode-v1"
+        assert ic.provider == "rehor-openai"
+
+    def test_opencode_runtime_defaults_to_native_openai_provider(self):
+        with patch.dict(os.environ, {"BOT_RUNTIME": "opencode-v1"}, clear=True):
             ic = InstanceConfig.from_env()
         assert ic.runtime == "opencode-v1"
         assert ic.provider == "rehor-openai"
@@ -285,6 +298,10 @@ class TestValidateInstanceConfig:
             validate_instance_config(preset_tree, ic)
         assert exc_info.value.code == 1
 
+    def test_opencode_runtime_accepts_chat_completions_provider(self, preset_tree):
+        ic = InstanceConfig(runtime="opencode-v1", provider="rehor-openai-chat")
+        validate_instance_config(preset_tree, ic)
+
     def test_missing_workflow_exits(self, preset_tree):
         ic = InstanceConfig(workflow="nonexistent")
         with pytest.raises(SystemExit) as exc_info:
@@ -342,6 +359,7 @@ def global_config():
         idle_interval=300,
         cycle_timeout=600,
         board_key="RHCLOUD",
+        opencode_model="gpt-6-luna",
         model_tiers={"light": "claude-sonnet-4-6", "heavy": "claude-opus-4-6"},
     )
 
@@ -394,6 +412,52 @@ class TestResolveCycleModel:
 
         resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"
+
+    def test_opencode_runtime_uses_its_own_default_model(self, preset_tree, global_config):
+        ic = InstanceConfig(
+            workflow="jira-sprint",
+            model=None,
+            runtime="opencode-v1",
+            provider="rehor-openai",
+        )
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "gpt-6-luna"
+
+    def test_opencode_vertex_keeps_claude_model_default(self, preset_tree, global_config):
+        ic = InstanceConfig(runtime="opencode-v1", provider="vertex")
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-global-default"
+
+    def test_opencode_chat_provider_requires_explicit_model(self, preset_tree, global_config):
+        ic = InstanceConfig(runtime="opencode-v1", provider="rehor-openai-chat")
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
+
+        with pytest.raises(ValueError, match="requires an explicit model"):
+            resolve_cycle_model(preset_tree, ic, global_config)
+
+    @pytest.mark.parametrize("provider", ["rehor-openai", "rehor-openai-chat"])
+    def test_opencode_openai_provider_rejects_claude_model_tier(self, preset_tree, global_config, provider):
+        ic = InstanceConfig(runtime="opencode-v1", provider=provider)
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
+
+        with pytest.raises(ValueError, match="has no model-tier mapping"):
+            resolve_cycle_model(preset_tree, ic, global_config)
+
+    def test_opencode_vertex_resolves_claude_model_tier(self, preset_tree, global_config):
+        ic = InstanceConfig(runtime="opencode-v1", provider="vertex")
+        wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
+        wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
+
+        resolved = resolve_cycle_model(preset_tree, ic, global_config)
+        assert resolved == "claude-sonnet-4-6"
 
     def test_custom_remote_workflow_model_tier(self, tmp_path, global_config):
         """Custom workflow (./workflows/custom) model_tier resolves via remote_agent_dir."""

@@ -1,18 +1,55 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "id": "rehor-openai",
-    "npm": "@ai-sdk/openai-compatible",
-    "name": "Rehor OpenAI Proxy",
-    "options": {
-      "baseURL": "http://proxy:8450/v1",
-      "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+  "providers": [
+    {
+      "id": "rehor-openai",
+      "npm": "@ai-sdk/openai",
+      "name": "Rehor OpenAI Responses",
+      "options": {
+        "baseURL": "http://proxy:8450/v1",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna",
+          "reasoning": true
+        }
+      }
+    },
+    {
+      "id": "rehor-openai-chat",
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Rehor OpenAI Chat Completions",
+      "options": {
+        "baseURL": "http://proxy:8450/v1",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-4.1": {
+          "name": "GPT-4.1"
+        },
+        "gpt-4.1-mini": {
+          "name": "GPT-4.1 Mini"
+        },
+        "gpt-4o": {
+          "name": "GPT-4o",
+          "reasoning": false,
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        }
+      }
     }
-  },
+  ],
   "packages": [
     {
+      "name": "@ai-sdk/openai",
+      "version": "4.0.73"
+    },
+    {
       "name": "@ai-sdk/openai-compatible",
-      "version": "1.0.0"
+      "version": "3.0.54"
     }
   ]
 }
