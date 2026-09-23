@@ -1,4 +1,4 @@
-.PHONY: install run init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration
+.PHONY: install run run-coordinator init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-install coordinator-build coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
@@ -40,8 +40,17 @@ verify: ## Run all checks (same as CI)
 	@echo ""
 	@echo "All checks passed."
 
-coordinator-verify: ## Install and run coordinator tests, type check, and build
+coordinator-install: ## Install coordinator dependencies
 	cd coordinator && npm ci
+
+coordinator-build: coordinator-install ## Build the production coordinator bundle
+	cd coordinator && npm run build
+
+run-coordinator: coordinator-build ## Run one local coordinator cycle (INSTANCE_ID=<id>)
+	@test -n "$(INSTANCE_ID)" || { echo "usage: make run-coordinator INSTANCE_ID=<id>" >&2; exit 2; }
+	BOT_EXECUTION_ENGINE=coordinator node coordinator/dist/cli.js --once --label "$(LABEL)" --instance-id "$(INSTANCE_ID)"
+
+coordinator-verify: coordinator-install ## Install and run coordinator tests, type check, and build
 	cd coordinator && npm test
 	cd coordinator && npm run typecheck
 	cd coordinator && npm run build
@@ -85,11 +94,13 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 	@echo "=== bot: build ==="
 	$(CONTAINER_RT) build --build-arg GOVERSIONS="1.24.13 1.25.13" -t bot:verify -f Dockerfile .
 	@echo "=== bot: tooling presence check ==="
-	@for tool in python3 uv git tini bwrap buildah node go gcc make gh glab gpg; do \
+	@for tool in python3 uv git tini bwrap buildah node opencode zstd go gcc make gh glab gpg; do \
 		$(CONTAINER_RT) run --rm --entrypoint bash bot:verify -c "command -v $$tool" >/dev/null \
 			&& echo "OK: $$tool present" \
 			|| { echo "MISSING: $$tool"; exit 1; }; \
 	done
+	$(CONTAINER_RT) run --rm --entrypoint bash bot:verify -c \
+		'test -f /home/botuser/app/coordinator/dist/cli.js && test "$$(opencode --version)" = "1.18.29" && test -f "$${NODE_PATH}/@ai-sdk/openai-compatible/package.json"'
 	@echo "=== proxy: build ==="
 	$(CONTAINER_RT) build -t proxy:verify ./proxy
 	@echo "=== proxy: smoke check ==="

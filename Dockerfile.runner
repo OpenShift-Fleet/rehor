@@ -7,6 +7,30 @@
 #   setup.sh   — (required) custom build steps (dnf install, config, etc.)
 #   instance/  — (optional) extra files, COPYed to /home/botuser/app/instance/
 
+# Build the coordinator bundle and the pinned OpenCode executable. The runtime
+# image remains UBI-based; only the Node executable, bundle, dependencies, and
+# OpenCode installation cross the stage boundary.
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS coordinator-builder
+USER 0
+WORKDIR /build/coordinator
+COPY dev-bot/coordinator/package.json dev-bot/coordinator/package-lock.json ./
+COPY dev-bot/coordinator/ ./
+# The source checkout may carry a host node_modules/ or dist/ directory; never
+# copy those artifacts into the image or let them replace this platform's npm
+# install.
+RUN rm -rf node_modules dist \
+    && npm ci --no-audit --no-fund \
+    && npm run build \
+    && npm prune --omit=dev \
+    && cp -L /usr/bin/node /tmp/node-runtime
+# Keep the provider package in the image too: OpenCode runs offline in the
+# coordinator path and must not resolve provider code from the network.
+RUN npm install --global --prefix /opt/opencode --omit=dev --no-audit --no-fund \
+    opencode-ai@1.18.29 \
+    @ai-sdk/openai-compatible@1.0.0 \
+    && test "$(/opt/opencode/bin/opencode --version)" = "1.18.29" \
+    && test -f /opt/opencode/lib/node_modules/@ai-sdk/openai-compatible/package.json
+
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
 FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:15c3098dc4639e8a0e6a1bc77b50964513a1d76dccae4b07b9808101c5addd04 AS executor-client-builder
 WORKDIR /build
@@ -23,6 +47,7 @@ RUN dnf install -y --nodocs --allowerasing \
     curl \
     jq \
     socat \
+    zstd \
     gcc \
     make \
     sqlite-devel \
@@ -76,6 +101,18 @@ ENV PATH="/home/botuser/app/.venv/bin:/home/botuser/go/bin:$PATH"
 ENV GOPATH="/home/botuser/go"
 ENV CLAUDE_CODE_USE_VERTEX=1
 ENV CLOUD_ML_REGION=global
+
+# Coordinator production bundle and Node runtime. Python remains the default
+# execution engine until BOT_EXECUTION_ENGINE=coordinator is explicitly set.
+COPY --from=coordinator-builder /tmp/node-runtime /usr/local/bin/node
+COPY --from=coordinator-builder /build/coordinator/dist /home/botuser/app/coordinator/dist
+COPY --from=coordinator-builder /build/coordinator/node_modules /home/botuser/app/coordinator/node_modules
+COPY --from=coordinator-builder /opt/opencode /opt/opencode
+RUN ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode
+ENV NODE_PATH=/opt/opencode/lib/node_modules
+ENV OPENCODE_EXPECTED_VERSION=1.18.29
+ENV COORDINATOR_METRICS_PORT=9091
+EXPOSE 9091
 
 # Copy bot config files
 COPY dev-bot/config.json dev-bot/CLAUDE.md dev-bot/.mcp.json dev-bot/entrypoint.sh ./

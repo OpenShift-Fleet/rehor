@@ -82,9 +82,10 @@ boundary inside each bot pod.
 ## Coordinator Boundary
 
 The TypeScript code in `coordinator/` is Rehor's provider-neutral control
-plane. It does not replace the Python runner yet and does not contain an
-OpenCode adapter. It defines the stable boundary that both the current Claude
-runtime and future OpenCode runtime must implement.
+plane. It does not replace the Python runner by default, but it now contains
+the OpenCode adapter and an opt-in production runner. `BOT_EXECUTION_ENGINE=coordinator`
+selects that path; Python remains the rollback/default engine. Both runtimes
+implement the same stable boundary.
 
 The coordinator owns run identity, assembled prompt, workspace and provider
 attribution, limits, cancellation, normalized event ordering, terminal state,
@@ -109,8 +110,10 @@ for invariants, compatibility mapping, and development commands.
 
 ## OpenCode Server Lifecycle
 
-OpenCode supports runner-owned and client-only modes. The following is an API
-shape example, not production supervisor code:
+OpenCode supports runner-owned and client-only modes. The following SDK calls
+show the client surface; the production supervisor and adapter live in
+`coordinator/src/runtimes/opencode-v1/` and enforce loopback, workspace, version,
+configuration-hash, and cleanup checks:
 
 ```ts
 import { createOpencode } from "@opencode-ai/sdk"

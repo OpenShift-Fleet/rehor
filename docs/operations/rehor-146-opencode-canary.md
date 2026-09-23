@@ -37,24 +37,30 @@ without changing the other.
 
 ## Before enabling a canary
 
-1. Confirm the target image includes the TypeScript coordinator, the pinned
-   OpenCode runtime dependencies, and the configured provider gateway.
+1. Confirm the target image includes `coordinator/dist/cli.js`, its locked Node
+   dependencies, `/usr/local/bin/opencode` version `1.18.29`, `zstd`, and the
+   configured provider gateway.
 2. Confirm the instance has a known-good Claude/Vertex deployment or revision
    available for rollback.
 3. Confirm the instance config contains no API keys. Credentials remain in
    deployment secrets and provider gateway configuration.
-4. Run the coordinator unit suite, typecheck, and build from the exact image
-   revision.
+4. Run the coordinator unit suite, typecheck, build, and image smoke checks from
+   the exact image revision.
 5. Verify the config-preparation response contains non-empty `runtimeId` and
    `providerId`, and that the cycle config hash changes when either selection
    changes.
-6. Verify preflight `skip` and `error` outcomes do not start a runtime.
+6. Verify `BOT_EXECUTION_ENGINE=coordinator` is set deliberately,
+   `CYCLE_RUNS_API_URL` is configured, and the OpenCode deployment JSON declares
+   the prepared provider with exact package versions and environment references.
+7. Verify preflight `skip` and `error` outcomes do not start a runtime.
+8. Run one local/staging `--once` cycle first; verify `/health`, `/ready`,
+   `/metrics`, local JSONL output, HTTP projections, transcript compression,
+   and lock release.
 
-The current Python compatibility entrypoint is still the Claude/Vertex path.
-A deployment must launch the coordinator path that consumes `runtimeId` and
-`providerId` before setting a non-default selection on a production instance.
-This is intentional: an older Python-only image must not silently ignore a
-canary selection.
+The Python compatibility entrypoint remains the default. A deployment must set
+`BOT_EXECUTION_ENGINE=coordinator` before setting a non-default runtime in an
+instance config. An older Python-only image fails closed for that selection;
+it must not silently route OpenCode work through the Claude SDK.
 
 ## Rollout stages
 

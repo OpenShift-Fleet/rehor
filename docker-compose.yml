@@ -109,11 +109,16 @@ services:
       - SSO_PASSWORD
       - BOT_LABEL=${BOT_LABEL:-hcc-ai-framework}
       - BOT_INSTANCE_ID=${BOT_INSTANCE_ID:-}
+      - BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE:-python}
       - BOT_CONFIG_REPO=${BOT_CONFIG_REPO:-https://github.com/RedHatInsights/platform-frontend-ai-dev}
       - BOT_CONFIG_PATH=${BOT_CONFIG_PATH:-rehor-config}
       - BOT_MEMORY_URL=http://memory-server:8080/mcp
       - COSTS_API_URL=http://memory-server:8080/api/costs
+      - CYCLE_RUNS_API_URL=http://memory-server:8080/api/cycle-runs
       - BOT_DASHBOARD_URL=http://memory-server:8080/api/bot-status
+      - REHOR_MODEL_PROXY_TOKEN=${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}
+      - OPENCODE_COMMAND=/usr/local/bin/opencode
+      - OPENCODE_EXPECTED_VERSION=1.18.29
       - CLAUDE_CODE_SKIP_VERTEX_AUTH=true
       # Empty so .env's OPENAI_API_KEY does not leak into the bot.
       - OPENAI_API_KEY=

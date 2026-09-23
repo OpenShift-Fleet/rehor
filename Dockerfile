@@ -20,6 +20,7 @@ RUN dnf install -y --nodocs --allowerasing \
     curl \
     jq \
     socat \
+    zstd \
     gcc \
     make \
     sqlite-devel \
@@ -142,6 +143,29 @@ ENV GOPATH="/home/botuser/go"
 ENV CLAUDE_CODE_USE_VERTEX=1
 ENV CLOUD_ML_REGION=global
 ENV BUILDAH_ISOLATION=chroot
+
+# Build the coordinator locally as well as in Dockerfile.runner so Compose can
+# exercise the same explicit engine switch before deployment packaging.
+COPY coordinator/package.json coordinator/package-lock.json ./coordinator/
+COPY coordinator/ ./coordinator/
+# Ignore any host node_modules/ or dist/ that may be present in the build
+# context; install dependencies for the image platform from the lockfile.
+RUN rm -rf coordinator/node_modules coordinator/dist \
+    && cd coordinator \
+    && npm ci --no-audit --no-fund \
+    && npm run build \
+    && npm prune --omit=dev
+# Keep the provider package in the image too: OpenCode runs offline in the
+# coordinator path and must not resolve provider code from the network.
+RUN npm install --global --omit=dev --no-audit --no-fund \
+    opencode-ai@1.18.29 \
+    @ai-sdk/openai-compatible@1.0.0 \
+    && test "$(opencode --version)" = "1.18.29" \
+    && test -f "$(npm root --global)/@ai-sdk/openai-compatible/package.json"
+ENV NODE_PATH=/usr/local/lib/node_modules
+ENV OPENCODE_EXPECTED_VERSION=1.18.29
+ENV COORDINATOR_METRICS_PORT=9091
+EXPOSE 9091
 
 # Copy bot config files
 COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./

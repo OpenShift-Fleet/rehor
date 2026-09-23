@@ -232,4 +232,20 @@ fi
 shopt -u nullglob
 
 echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
-exec uv run dev-bot --label "$BOT_LABEL"
+case "${BOT_EXECUTION_ENGINE:-python}" in
+    python)
+        exec uv run dev-bot --label "$BOT_LABEL"
+        ;;
+    coordinator)
+        if [ ! -f /home/botuser/app/coordinator/dist/cli.js ]; then
+            echo "FATAL: coordinator bundle is not installed" >&2
+            exit 1
+        fi
+        exec node /home/botuser/app/coordinator/dist/cli.js --label "$BOT_LABEL"
+        ;;
+    *)
+        echo "FATAL: unsupported BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE}" >&2
+        echo "Supported engines: python, coordinator" >&2
+        exit 64
+        ;;
+esac
