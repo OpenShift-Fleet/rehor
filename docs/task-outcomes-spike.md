@@ -233,14 +233,6 @@ GET /api/task-outcomes/tasks?repo=&decision=&confidence=&reason=&source=&from=&t
 
 Return task lifecycle, outcome, artifacts, evidence, canonical repositories, provider states, and report/verification timestamps. Use stable ordering and unchanged filters across pages.
 
-For a single task, provide a detail route that can return the complete evidence graph without list-size constraints:
-
-```text
-GET /api/task-outcomes/tasks/{taskKey}
-```
-
-The list endpoint may return compact records by default; callers can request full evidence with an explicit `include=evidence,artifacts` option. The single-task endpoint returns full task history, all artifacts, all evidence, provider responses, corrections, and outcome changes.
-
 ## Acceptance Criteria
 
 - Existing tasks remain readable.
