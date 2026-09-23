@@ -235,6 +235,21 @@ describe("OpenCode V1 config renderer", () => {
     });
   });
 
+  it("orders MCP wildcard denies before explicit tool grants", () => {
+    const rendered = renderOpenCodeV1Config({
+      model: "provider/model",
+      mcpServers: { jira: { command: "jira" } },
+      allowedTools: ["mcp__jira__search"],
+    });
+
+    const permission = rendered.config.permission as Record<string, unknown>;
+    expect(permission["jira_*"]).toBe("deny");
+    expect(permission.jira_search).toBe("allow");
+    expect(Object.keys(permission).indexOf("jira_*")).toBeLessThan(
+      Object.keys(permission).indexOf("jira_search"),
+    );
+  });
+
   it("maps a bare model using the deployment provider id", () => {
     const rendered = renderOpenCodeV1Config({
       model: "claude-opus-4-6",

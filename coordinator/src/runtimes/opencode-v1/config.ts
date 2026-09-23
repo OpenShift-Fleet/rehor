@@ -545,7 +545,9 @@ function renderPermissions(
   const permissions: Record<string, JsonValue> = {};
   const configured = new Set(configuredMcpServers);
   const optional = new Set(optionalMcpServers);
-  const allowedMcpWildcards = new Set<string>();
+  for (const server of [...configuredMcpServers].sort()) {
+    permissions[`${server}_*`] = "deny";
+  }
   const mcpPermissionSources = new Map<string, string>();
 
   for (const tool of allowedTools) {
@@ -567,7 +569,6 @@ function renderPermissions(
       }
       mcpPermissionSources.set(key, source);
       permissions[key] = "allow";
-      if (mcp.tool === "*") allowedMcpWildcards.add(mcp.server);
       continue;
     }
 
@@ -594,11 +595,6 @@ function renderPermissions(
 
   for (const tool of BUILTIN_TOOLS) {
     if (permissions[tool] === undefined) permissions[tool] = "deny";
-  }
-  for (const server of [...configuredMcpServers].sort()) {
-    if (!allowedMcpWildcards.has(server) && permissions[`${server}_*`] === undefined) {
-      permissions[`${server}_*`] = "deny";
-    }
   }
   return permissions;
 }
