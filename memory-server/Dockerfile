@@ -1,5 +1,5 @@
 # Stage 1: Build the React dashboard
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS dashboard
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:130884e8be8170676be0c660fb63333ad68b496455cc075e1cb7b3fa596681a6 AS dashboard
 USER 0
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
@@ -9,7 +9,7 @@ COPY shared/ /app/shared/
 RUN npm run build
 
 # Stage 2: Python memory server
-FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:3ad9a8b075fe314f59db0737aa6d14528aa0beecc0bd121c7dd5a798c070a91d
+FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:1826b5dfde1430f458f864cf04b17130e316d0b7246cc6d5b1ed85c7d968e3eb
 USER 0
 
 RUN pip3 install uv

@@ -80,7 +80,7 @@ cp .env.example .env  # then edit with your values
 make run LABEL=hcc-ai-framework
 ```
 
-The bot will start polling for Jira tickets with the `hcc-ai-framework` label. It logs to stdout and `bot.log`.
+The bot will start polling for Jira tickets with the `hcc-ai-framework` label. It emits structured JSON lines to stdout and rotating `data/bot.log`.
 
 ### Available make targets
 

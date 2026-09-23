@@ -103,3 +103,12 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest --cov=bot --cov-report=term-missing --cov-fail-under=50
+
+      - name: Verify structured JSON log schema
+        run: |
+          which jq >/dev/null || { echo "jq is required but not found"; exit 1; }
+          output=$(uv run python -c 'from bot.log import emit_sample_line; emit_sample_line()')
+          [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 2 ] || { echo "Output must be exactly two lines"; exit 1; }
+          echo "$output" | jq -e 'has("level") and has("timestamp") and has("message") and has("run_id") and has("task_key") and has("model") and has("cost")'
+          echo "$output" | jq -e 'select(.level == "INFO") and (.message | contains("Sample log message"))'
+          echo "$output" | jq -e 'select(.level == "ERROR") and has("exc_info")'
