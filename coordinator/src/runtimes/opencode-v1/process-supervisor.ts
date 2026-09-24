@@ -1,8 +1,9 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
-import { isAbsolute, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 
 import {
   abortReason,
@@ -11,6 +12,7 @@ import {
   redactSensitiveText,
   stableJson,
 } from "../shared";
+import { type RenderedOpenCodeV1Config, writeOpenCodeConfig } from "./config";
 
 import {
   buildOpenCodeEnvironment,
@@ -19,6 +21,7 @@ import {
   type OpenCodeFetch,
 } from "./environment";
 
+/** Pinned because state/config isolation is verified against this CLI contract. */
 export const OPENCODE_VERSION = "1.18.29" as const;
 const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
@@ -52,8 +55,8 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
-  /** Required when config is supplied; must come from trusted policy data. */
-  expectedConfigHash?: string;
+  /** Immutable, already validated configuration for this server instance. */
+  renderedConfig?: RenderedOpenCodeV1Config;
   /** Required by start; absolute root containing only approved worktrees. */
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
@@ -63,7 +66,8 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   processGroupExists?: (pid: number) => boolean;
   /** Bound verification after SIGKILL when a group ignores the grace signal. */
   killVerificationTimeoutMs?: number;
-  config?: Record<string, unknown>;
+  /** Optional caller-owned state directory; otherwise one is created per start. */
+  stateDirectory?: string;
   readiness?: OpenCodeReadiness;
   /** Trusted direct-loopback transport override for readiness checks. */
   fetch?: OpenCodeFetch;
@@ -121,10 +125,20 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private outputCleanup?: () => void;
   private startupOutput = "";
   private startupOutputTruncated = false;
+  private stateDirectory?: string;
+  private ownsStateDirectory = false;
+  private readonly renderedConfig?: RenderedOpenCodeV1Config;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
+    this.renderedConfig = options.renderedConfig;
     this.options = {
       ...options,
+      passthrough: [
+        ...new Set([
+          ...(options.passthrough ?? []),
+          ...(options.renderedConfig?.requiredEnvironment ?? []),
+        ]),
+      ],
       command: options.command ?? "/usr/local/bin/opencode",
       hostname: options.hostname ?? "127.0.0.1",
       startupTimeoutMs: options.startupTimeoutMs ?? 10_000,
@@ -167,35 +181,51 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     );
     if (signal.aborted) throw abortReason(signal);
 
-    const configHash = this.options.config ? hashOpenCodeConfig(this.options.config) : undefined;
-    if (this.options.config && !this.options.expectedConfigHash) {
-      throw new OpenCodeReadinessError(
-        "OpenCode expected config hash is required when config is provided",
-        true,
-      );
-    }
-    if (this.options.expectedConfigHash && configHash !== this.options.expectedConfigHash) {
-      throw new OpenCodeReadinessError(
-        `OpenCode config hash ${configHash ?? "missing"} does not match expected ${this.options.expectedConfigHash}`,
-      );
-    }
+    const configHash = this.renderedConfig?.hash;
 
     const allocatePortFn = this.options.allocatePort ?? allocatePort;
     const port = this.options.port ?? (await allocatePortFn());
-    const environment = buildOpenCodeEnvironment(this.options);
-    if (this.options.config) {
-      environment.OPENCODE_CONFIG_CONTENT = stableJson(this.options.config);
+    const stateDirectory = await this.prepareStateDirectory();
+    const environment = buildOpenCodeEnvironment({
+      ...this.options,
+      configDirectory: stateDirectory,
+      databasePath: join(stateDirectory, "opencode.db"),
+    });
+    // These flags are controlled by the runner, not inherited from ambient env.
+    // Project CLAUDE.md and .claude/skills compatibility remain enabled.
+    environment.OPENCODE_DISABLE_AUTOUPDATE = "1";
+    environment.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
+    environment.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
+    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
+    // OpenCode uses this value for its global home while shell tools retain HOME.
+    environment.OPENCODE_TEST_HOME = stateDirectory;
+    environment.NPM_CONFIG_OFFLINE = "true";
+    environment.npm_config_offline = "true";
+    if (this.renderedConfig !== undefined) {
+      environment.OPENCODE_CONFIG = join(stateDirectory, "opencode.json");
+      try {
+        await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
+      } catch (error) {
+        await this.cleanupStateDirectory();
+        throw error;
+      }
     }
     const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
     const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
     this.startupOutput = "";
     this.startupOutputTruncated = false;
-    const child = spawnProcess(this.options.command, args, {
-      cwd: workspaceDirectory,
-      env: environment,
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcess;
+    try {
+      child = spawnProcess(this.options.command, args, {
+        cwd: workspaceDirectory,
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      await this.cleanupStateDirectory();
+      throw error;
+    }
     this.child = child;
     this.exited = false;
     this.termSent = false;
@@ -242,6 +272,18 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     }
   }
 
+  private async prepareStateDirectory(): Promise<string> {
+    if (this.options.stateDirectory !== undefined) {
+      await mkdir(this.options.stateDirectory, { recursive: true });
+      this.stateDirectory = this.options.stateDirectory;
+      this.ownsStateDirectory = false;
+      return this.options.stateDirectory;
+    }
+    this.stateDirectory = await mkdtemp(join(tmpdir(), "rehor-opencode-"));
+    this.ownsStateDirectory = true;
+    return this.stateDirectory;
+  }
+
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
     const promise = this.stopInternal();
@@ -257,6 +299,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     if (!this.child) {
       this.outputCleanup?.();
       this.server = undefined;
+      await this.cleanupStateDirectory();
       return;
     }
     if (this.stopping) return;
@@ -281,7 +324,16 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       this.child = undefined;
       this.server = undefined;
       this.stopping = false;
+      await this.cleanupStateDirectory();
     }
+  }
+
+  private async cleanupStateDirectory(): Promise<void> {
+    if (!this.stateDirectory || !this.ownsStateDirectory) return;
+    const directory = this.stateDirectory;
+    this.stateDirectory = undefined;
+    this.ownsStateDirectory = false;
+    await rm(directory, { recursive: true, force: true });
   }
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -717,7 +769,7 @@ function isNoSuchProcess(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
-export function hashOpenCodeConfig(config: Record<string, unknown>): string {
+export function hashOpenCodeConfig(config: Readonly<Record<string, unknown>>): string {
   return createHash("sha256").update(stableJson(config)).digest("hex");
 }
 

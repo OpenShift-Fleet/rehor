@@ -58,10 +58,14 @@ export interface ConfigPreparationResult {
   remoteAgentDir: string | null;
   sharedAgentDir: string | null;
   claudeMdPath: string;
-  /** Additional MCP servers loaded from bot/persona config. */
-  mcpServers?: Readonly<Record<string, McpServerConfig>>;
+  /** MCP servers for the legacy Claude adapter: resolved values, no project servers. */
+  mcpServers: Readonly<Record<string, McpServerConfig>>;
+  /** Explicit OpenCode view: reference-only values, including project servers. */
+  openCodeMcpServers: Readonly<Record<string, McpServerConfig>>;
   /** Same allowed tool list used by the legacy Claude runner. */
   allowedTools?: readonly string[];
+  /** Persona-specific MCP servers that may be absent from a cycle. */
+  optionalMcpServers?: readonly string[];
 }
 
 /** Stable boundary for the existing Python preflight/config implementation. */

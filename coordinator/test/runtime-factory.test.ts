@@ -1,13 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  type ConfigPreparationResult,
+  createDefaultRuntimeRegistry,
+  createOpenCodeV1RuntimeFactory,
   executeSelectedRun,
+  InstructionStrategy,
   type RehorEvent,
   type RehorRun,
   RuntimeFactoryError,
   RuntimeFactoryRegistry,
   resolveRuntimeSelection,
 } from "../src";
+import type { OpenCodeServerController, OpenCodeV1Runtime } from "../src/runtimes/opencode-v1";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
 
 const run: RehorRun = {
@@ -30,6 +35,30 @@ const run: RehorRun = {
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
   limits: { timeoutMs: 100, maxTurns: 20 },
   preflightPayloadRef: null,
+};
+
+const preparedConfig: ConfigPreparationResult = {
+  model: "prepared-model",
+  maxTurns: 10,
+  intervalSeconds: 60,
+  idleIntervalSeconds: 60,
+  cycleTimeoutSeconds: 1_800,
+  idleReminderCooldownSeconds: 3_600,
+  workflow: "jira-sprint",
+  source: "test",
+  envs: null,
+  activeEnvs: ["browser"],
+  claudeMdStrategy: InstructionStrategy.Append,
+  idleCycleLimit: 0,
+  remoteAgentDir: null,
+  sharedAgentDir: null,
+  claudeMdPath: "/tmp/CLAUDE.md",
+  mcpServers: {},
+  openCodeMcpServers: {
+    "prepared-server": { type: "http", url: "http://prepared.example/mcp" },
+  },
+  allowedTools: ["Read"],
+  optionalMcpServers: ["optional-persona-mcp"],
 };
 
 function event(sequence: number, terminal = false): RehorEvent {
@@ -58,6 +87,105 @@ describe("runtime selection", () => {
     expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
     expect(resolveRuntimeSelection("opencode")).toEqual({ runtimeId: "opencode" });
     expect(() => resolveRuntimeSelection("bad runtime")).toThrow(RuntimeFactoryError);
+  });
+
+  it("provides an explicit OpenCode factory without changing the default registry", async () => {
+    const registry = new RuntimeFactoryRegistry([createOpenCodeV1RuntimeFactory()]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+
+    expect(registry.runtimeIds).toEqual(["opencode-v1"]);
+    await expect(runtime.start(new AbortController().signal)).resolves.toMatchObject({
+      runtimeId: "opencode-v1",
+    });
+    await runtime.stop();
+    expect(resolveRuntimeSelection()).toEqual({ runtimeId: "claude" });
+    expect(createDefaultRuntimeRegistry().runtimeIds).toEqual(["claude"]);
+  });
+
+  it("rejects invalid prepared OpenCode policy before starting the supervisor", async () => {
+    const supervisor: OpenCodeServerController = {
+      crashSignal: new AbortController().signal,
+      get info() {
+        return undefined;
+      },
+      get crashError() {
+        return undefined;
+      },
+      start: vi.fn(async () => {
+        throw new Error("supervisor should not start for invalid configuration");
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        supervisor: () => supervisor,
+        config: {},
+      }),
+    ]);
+
+    const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run, {
+      preparedConfig: { ...preparedConfig, allowedTools: ["UnknownTool"] },
+    });
+
+    expect(result.events.at(-1)?.payload).toMatchObject({ state: "failed" });
+    expect(supervisor.start).not.toHaveBeenCalled();
+  });
+
+  it("fills configured OpenCode model with the selected run provider", async () => {
+    let injectedConfig: unknown;
+    const supervisor: OpenCodeServerController = {
+      crashSignal: new AbortController().signal,
+      get info() {
+        return undefined;
+      },
+      get crashError() {
+        return undefined;
+      },
+      start: vi.fn(async () => {
+        throw new Error("stop after configuration capture");
+      }),
+      stop: vi.fn(async () => undefined),
+    };
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        supervisor: (renderedConfig) => {
+          injectedConfig = renderedConfig;
+          return supervisor;
+        },
+        config: { model: "factory-model" },
+      }),
+    ]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    expect((runtime as OpenCodeV1Runtime).renderedConfiguration?.config).toMatchObject({
+      model: "vertex/factory-model",
+      enabled_providers: ["vertex"],
+    });
+    expect(injectedConfig).toBe((runtime as OpenCodeV1Runtime).renderedConfiguration);
+  });
+
+  it("renders Python-prepared MCP policy into the OpenCode snapshot", async () => {
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        config: { model: "deployment-model" },
+      }),
+    ]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
+    const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
+
+    expect(rendered?.config).toMatchObject({
+      model: "vertex/deployment-model",
+      mcp: {
+        "prepared-server": {
+          type: "remote",
+          url: "http://prepared.example/mcp",
+        },
+      },
+      permission: { read: "allow" },
+    });
+    expect(rendered?.config).not.toHaveProperty("mcp.stale-server");
   });
 
   it("registers and resolves factories without coupling to providers", async () => {

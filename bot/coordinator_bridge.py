@@ -81,6 +81,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     from . import run as runner
     from .config import (
         ALLOWED_TOOLS,
+        discover_optional_mcp_servers,
         load_config,
         load_instance_config,
         load_mcp_servers,
@@ -111,7 +112,16 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     install_skills(script_dir, workflow_dir, active_envs)
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
+    # Preserve the legacy Claude view: resolved MCP values and no project
+    # servers, because Claude discovers .mcp.json through setting_sources.
     mcp_servers = load_mcp_servers(script_dir)
+    # Keep a separate reference-only view for OpenCode. It owns project-server
+    # discovery; the TypeScript renderer validates its untrusted references.
+    opencode_mcp_servers = load_mcp_servers(
+        script_dir,
+        resolve_env=False,
+        include_project=True,
+    )
 
     return {
         "model": cycle_model,
@@ -130,7 +140,9 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "sharedAgentDir": str(shared_dir) if shared_dir else None,
         "claudeMdPath": str(script_dir / "CLAUDE.md"),
         "mcpServers": mcp_servers,
+        "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": ALLOWED_TOOLS,
+        "optionalMcpServers": discover_optional_mcp_servers(script_dir, active_envs),
     }
 
 

@@ -19,6 +19,7 @@ import {
   lastMeaningfulLine,
   redactSensitiveText,
 } from "../shared";
+import type { RenderedOpenCodeV1Config } from "./config";
 import type { ProxyEnvironment } from "./environment";
 import {
   buildOpenCodeEnvironment,
@@ -33,14 +34,24 @@ import {
   type OpenCodeSupervisorOptions,
 } from "./process-supervisor";
 
+export type OpenCodeV1ServerOptions = Omit<OpenCodeSupervisorOptions, "renderedConfig">;
+export type OpenCodeSupervisorFactory = (
+  renderedConfig: RenderedOpenCodeV1Config | undefined,
+) => OpenCodeServerController;
+
 export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   policyVersion?: string;
   reconciliationTimeoutMs?: number;
   reconciliationMessageLimit?: number;
   requestTimeoutMs?: number;
   cleanupTimeoutMs?: number;
-  server?: OpenCodeSupervisorOptions;
-  supervisor?: OpenCodeServerController;
+  /** Immutable configuration rendered by the runtime factory for this run. */
+  renderedConfig?: RenderedOpenCodeV1Config;
+  /** Configuration failures are emitted through the normal runtime lifecycle. */
+  renderError?: unknown;
+  server?: OpenCodeV1ServerOptions;
+  /** Build an injected supervisor with this run's immutable rendered snapshot. */
+  supervisor?: OpenCodeSupervisorFactory;
   clientFactory?: OpenCodeClientFactory;
 }
 
@@ -61,6 +72,12 @@ interface ActiveRun {
 interface RuntimeOutcome {
   state: TerminalState;
   reason?: string;
+}
+
+interface EffectiveModel {
+  providerID: string;
+  modelID: string;
+  value: string;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
@@ -86,6 +103,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   private readonly policyVersion: string;
   private readonly supervisor: OpenCodeServerController;
   private readonly clientEnvironment: Record<string, string>;
+  private readonly renderedConfig?: RenderedOpenCodeV1Config;
+  private readonly renderError?: unknown;
   private readonly reconciliationTimeoutMs: number;
   private readonly reconciliationMessageLimit: number;
   private readonly requestTimeoutMs: number;
@@ -98,6 +117,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
   constructor(options: OpenCodeV1RuntimeOptions = {}) {
     this.policyVersion = options.policyVersion ?? "opencode-v1";
+    this.renderedConfig = options.renderedConfig;
+    this.renderError = options.renderError;
     this.clientEnvironment = buildOpenCodeEnvironment(options);
     this.reconciliationTimeoutMs = options.reconciliationTimeoutMs ?? 1_000;
     this.reconciliationMessageLimit = options.reconciliationMessageLimit ?? 100;
@@ -112,13 +133,14 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     assertPositiveInteger(this.requestTimeoutMs, "requestTimeoutMs", "OpenCode");
     assertPositiveInteger(this.cleanupTimeoutMs, "cleanupTimeoutMs", "OpenCode");
     this.supervisor =
-      options.supervisor ??
+      options.supervisor?.(options.renderedConfig) ??
       new OpenCodeServerSupervisor({
         ...(options.server ?? {}),
         ...(options.base === undefined ? {} : { base: options.base }),
         ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
         ...(options.passthrough === undefined ? {} : { passthrough: options.passthrough }),
         ...(options.noProxyHosts === undefined ? {} : { noProxyHosts: options.noProxyHosts }),
+        ...(options.renderedConfig === undefined ? {} : { renderedConfig: options.renderedConfig }),
       });
     if (options.clientFactory) {
       this.clientFactory = options.clientFactory;
@@ -143,6 +165,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     return this.clientEnvironment;
   }
 
+  get renderedConfiguration(): RenderedOpenCodeV1Config | undefined {
+    return this.renderedConfig;
+  }
+
   async start(signal: AbortSignal): Promise<RuntimeCapabilities> {
     if (this.stopped) throw new Error("stopped runtime must not be restarted");
     if (signal.aborted) throw abortReason(signal);
@@ -156,7 +182,15 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     if (this.hasRun) throw new Error("OpenCode V1 runtime supports one run per instance");
     this.hasRun = true;
 
-    const factory = createEventFactory(input, this.policyVersion);
+    const renderedConfig = this.renderedConfig;
+    const effectiveModel = renderedConfig === undefined ? undefined : resolveModel(renderedConfig);
+    const renderError = this.renderError;
+    const factory = createEventFactory(
+      renderedConfig === undefined || effectiveModel === undefined
+        ? input
+        : withEffectiveModel(input, effectiveModel),
+      this.policyVersion,
+    );
     const active: ActiveRun = { controller: new AbortController() };
     const detachAbort = linkAbort(signal, active.controller);
     let detachCrash = (): void => undefined;
@@ -178,6 +212,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     );
 
     try {
+      if (renderedConfig === undefined || effectiveModel === undefined) {
+        throw renderError ?? new Error("OpenCode configuration could not be rendered");
+      }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
       detachCrash = linkAbort(this.supervisor.crashSignal, active.controller);
       const directory = server.directory;
@@ -228,7 +265,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       active.sessionId = sessionId;
       normalization = {
         rootSessionId: sessionId,
-        requestedModel: input.provider.requestedModel,
+        requestedModel: effectiveModel.value,
         workContext,
         resultTextParts: new Map(),
         messageRoles: new Map(),
@@ -251,7 +288,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
               path: { id: sessionId },
               query: { directory },
               body: {
-                model: resolveModel(input),
+                model: {
+                  providerID: effectiveModel.providerID,
+                  modelID: effectiveModel.modelID,
+                },
                 parts: [{ type: "text", text: input.prompt }],
               },
               signal: requestSignal,
@@ -1017,15 +1057,30 @@ function qualifiedModel(info: Record<string, unknown>): string | undefined {
   return `${info.providerID}/${info.modelID}`;
 }
 
-function resolveModel(input: RehorRun): { providerID: string; modelID: string } {
-  const slash = input.provider.requestedModel.indexOf("/");
-  if (slash > 0 && slash < input.provider.requestedModel.length - 1) {
-    return {
-      providerID: input.provider.requestedModel.slice(0, slash),
-      modelID: input.provider.requestedModel.slice(slash + 1),
-    };
+function resolveModel(renderedConfig: RenderedOpenCodeV1Config): EffectiveModel {
+  const value = renderedConfig.config.model;
+  if (typeof value !== "string") {
+    throw new Error("OpenCode rendered configuration has no effective model");
   }
-  return { providerID: input.provider.id, modelID: input.provider.requestedModel };
+  const slash = value.indexOf("/");
+  if (slash <= 0 || slash >= value.length - 1) {
+    throw new Error("OpenCode rendered configuration has an invalid effective model");
+  }
+  return {
+    providerID: value.slice(0, slash),
+    modelID: value.slice(slash + 1),
+    value,
+  };
+}
+
+function withEffectiveModel(input: RehorRun, model: EffectiveModel): RehorRun {
+  return {
+    ...input,
+    provider: {
+      ...input.provider,
+      requestedModel: model.value,
+    },
+  };
 }
 
 function isSessionEvent(event: OpenCodeEvent, context: NormalizationContext): boolean {

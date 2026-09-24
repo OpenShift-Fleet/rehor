@@ -1,5 +1,36 @@
-const ENVIRONMENT_ALLOWLIST = [
+export const OPENCODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL" as const;
+
+export const OPENCODE_BLOCKED_PASSTHROUGH = [
+  "ANTHROPIC_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
+  "GPG_PRIVATE_KEY_B64",
+  "GPG_SIGNING_KEY",
+  "JIRA_API_TOKEN",
+  "JIRA_MCP_TOKEN",
+  "JIRA_USERNAME",
+  "OPENAI_API_KEY",
+  "OPENCODE_CONFIG",
+  "OPENCODE_CONFIG_CONTENT",
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_DB",
+  "OPENCODE_TEST_HOME",
+  "SSO_PASSWORD",
+  "SSO_USERNAME",
+] as const;
+export const OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES = [
+  "OPENCODE_",
+  "NPM_CONFIG_",
+  "npm_config_",
+] as const;
+
+/** Additional provider/plugin variables permitted to pass through when referenced. */
+export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = ["REHOR_MODEL_PROXY_TOKEN"] as const;
+
+export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "HOME",
+  OPENCODE_MCP_URL_ENVIRONMENT,
   "LANG",
   "LC_ALL",
   "NO_COLOR",
@@ -12,6 +43,13 @@ const ENVIRONMENT_ALLOWLIST = [
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
 ] as const;
+
+const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
+const BLOCKED_PASSTHROUGH_PREFIXES = OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES;
+const ENVIRONMENT_ALLOWLIST = OPENCODE_ENVIRONMENT_ALLOWLIST;
+const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
+  OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
+);
 
 export const DEFAULT_NO_PROXY_HOSTS = [
   "127.0.0.1",
@@ -34,9 +72,13 @@ export interface OpenCodeEnvironmentOptions {
   /** Sanitized runner environment. It is copied, never read by the child implicitly. */
   base?: NodeJS.ProcessEnv;
   proxy?: ProxyEnvironment;
-  /** Explicitly permitted variables needed by a provider or an MCP server. */
+  /** Explicitly permitted variables needed by trusted provider configuration. */
   passthrough?: readonly string[];
   noProxyHosts?: readonly string[];
+  /** Per-cycle OpenCode global config directory. Ambient user config is excluded. */
+  configDirectory?: string;
+  /** Per-cycle OpenCode database/state path. */
+  databasePath?: string;
 }
 
 export type OpenCodeFetch = (request: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -56,7 +98,15 @@ export function buildOpenCodeEnvironment(
   const environment: Record<string, string> = {};
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
-  for (const name of options.passthrough ?? []) copyIfPresent(environment, base, name);
+  for (const name of options.passthrough ?? []) {
+    if (
+      PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&
+      !BLOCKED_PASSTHROUGH.has(name) &&
+      !BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix))
+    ) {
+      copyIfPresent(environment, base, name);
+    }
+  }
 
   const proxy = options.proxy ?? {
     httpProxy: base.HTTP_PROXY ?? base.http_proxy,
@@ -75,6 +125,10 @@ export function buildOpenCodeEnvironment(
   const noProxy = [...new Set(noProxyHosts.filter(Boolean))].join(",");
   environment.NO_PROXY = noProxy;
   environment.no_proxy = noProxy;
+  if (options.configDirectory !== undefined) {
+    environment.OPENCODE_CONFIG_DIR = options.configDirectory;
+  }
+  if (options.databasePath !== undefined) environment.OPENCODE_DB = options.databasePath;
 
   return environment;
 }
