@@ -317,6 +317,7 @@ describe("Python preflight bridge", () => {
         remoteAgentDir: null,
         sharedAgentDir: null,
         claudeMdPath: join(root, "CLAUDE.md"),
+        gitConfigGlobal: join(root, ".gitconfig"),
         mcpServers: {
           "stdio-server": {
             command: "node",
@@ -354,6 +355,7 @@ describe("Python preflight bridge", () => {
     expect(result.openCodeMcpServers).toEqual(response.result.openCodeMcpServers);
     expect(result.runtimeId).toBe("opencode-v1");
     expect(result.providerId).toBe("rehor-openai");
+    expect(result.gitConfigGlobal).toBe(response.result.gitConfigGlobal);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
     expect(result.optionalMcpServers).toEqual(response.result.optionalMcpServers);
   });

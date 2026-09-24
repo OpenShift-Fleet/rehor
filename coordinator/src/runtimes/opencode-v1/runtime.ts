@@ -28,6 +28,7 @@ import {
 } from "./environment";
 import {
   OPENCODE_VERSION,
+  OpenCodeProcessLeakError,
   type OpenCodeServerController,
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
@@ -1211,7 +1212,13 @@ function errorMessage(value: unknown): string | undefined {
 }
 
 function isResourceLeak(value: unknown): boolean {
-  return errorMessage(value)?.toLowerCase().includes("process group remained alive") ?? false;
+  const seen = new Set<unknown>();
+  for (let current = value; current instanceof Error && !seen.has(current); ) {
+    if (current instanceof OpenCodeProcessLeakError) return true;
+    seen.add(current);
+    current = current.cause;
+  }
+  return false;
 }
 
 function toError(value: unknown): Error {

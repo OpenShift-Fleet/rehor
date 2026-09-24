@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 
 import { createCompatibilitySink } from "./adapters/compatibility";
 import { CoordinatorHealthServer } from "./adapters/health";
-import { LoopStopReason } from "./loop";
+import { coordinatorExitCode } from "./cli-result";
 import { loadOpenCodeDeploymentConfig } from "./deployment-config";
 import { runCoordinator } from "./runner";
 
@@ -75,9 +75,10 @@ async function main(): Promise<number> {
         stopReason: result.stopReason,
         cycles: result.cycles,
         results: result.results.length,
+        failures: result.failures,
       }),
     );
-    return result.stopReason === LoopStopReason.Failed ? 1 : 0;
+    return coordinatorExitCode(result, options.once);
   } finally {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);

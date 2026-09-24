@@ -16,6 +16,8 @@ import type {
 } from "../ports/compatibility";
 import type { CoordinatorProjection } from "../ports/projection";
 
+const DURATION_BUCKETS = [30, 60, 120, 300, 600, 900, 1200, 1800] as const;
+
 interface ProjectionState {
   startedAt: string;
   runtimeSessionRef: string | null;
@@ -157,6 +159,7 @@ async function observePolicyMetric(
   const level = stringPayload(event.payload, "state");
   if (level !== "warning" && level !== "critical") return;
   await writer.observe({
+    type: "counter",
     name: "devbot_turn_budget_event_total",
     value: 1,
     labels: { label: run.label, level },
@@ -169,6 +172,7 @@ async function observeRuntimeSessionMetric(
 ): Promise<void> {
   if (!writer) return;
   await writer.observe({
+    type: "counter",
     name: "devbot_runtime_sessions_total",
     value: 1,
     labels: runtimeMetricLabels(run),
@@ -182,6 +186,7 @@ async function observeRuntimeHealthMetric(
 ): Promise<void> {
   if (!writer) return;
   await writer.observe({
+    type: "counter",
     name: "devbot_runtime_health_total",
     value: 1,
     labels: { ...runtimeMetricLabels(run), status },
@@ -318,18 +323,41 @@ async function observeTerminalMetrics(
   // empty string falls back too, and a no-work cycle is not relabelled "idle".
   const durationLabels = { label: run.label, work_type: workType || "unknown" };
   const points: MetricPoint[] = [
-    { name: "devbot_cycles_total", value: 1, labels: { ...labels, status: metricStatus } },
     {
+      type: "counter",
+      name: "devbot_cycles_total",
+      value: 1,
+      labels: { ...labels, status: metricStatus },
+    },
+    {
+      type: "histogram",
       name: "devbot_cycle_duration_seconds",
       value: durationMs / 1000,
       labels: durationLabels,
+      buckets: DURATION_BUCKETS,
     },
-    { name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
-    { name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
-    { name: "devbot_cycle_output_tokens_total", value: totals.outputTokens, labels },
-    { name: "devbot_cycle_cache_read_tokens_total", value: totals.cacheReadTokens, labels },
-    { name: "devbot_cycle_cache_write_tokens_total", value: totals.cacheWriteTokens, labels },
+    { type: "counter", name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
+    { type: "counter", name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
     {
+      type: "counter",
+      name: "devbot_cycle_output_tokens_total",
+      value: totals.outputTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_read_tokens_total",
+      value: totals.cacheReadTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_write_tokens_total",
+      value: totals.cacheWriteTokens,
+      labels,
+    },
+    {
+      type: "counter",
       name: "devbot_runtime_health_total",
       value: 1,
       labels: {
@@ -338,13 +366,33 @@ async function observeTerminalMetrics(
       },
     },
     {
+      type: "histogram",
       name: "devbot_runtime_duration_seconds",
       value: durationMs / 1000,
       labels: { ...runtimeMetricLabels(run), state },
+      buckets: DURATION_BUCKETS,
     },
   ];
+  // bot/agent.py counts every completed session as `ctx.work_type or "triage_only"`;
+  // a timed-out Python cycle never reaches it and bumps the timeout counter instead.
+  if (state === "timed_out") {
+    points.push({
+      type: "counter",
+      name: "devbot_cycle_timeout_total",
+      value: 1,
+      labels: { label: run.label },
+    });
+  } else {
+    points.push({
+      type: "counter",
+      name: "devbot_work_type_total",
+      value: 1,
+      labels: { label: run.label, work_type: workType || "triage_only" },
+    });
+  }
   if (state === "interrupted" || state === "cancelled" || state === "timed_out") {
     points.push({
+      type: "counter",
       name: "devbot_runtime_interruptions_total",
       value: 1,
       labels: { ...runtimeMetricLabels(run), state },
@@ -352,6 +400,7 @@ async function observeTerminalMetrics(
   }
   if (resourceLeak) {
     points.push({
+      type: "counter",
       name: "devbot_runtime_resource_leaks_total",
       value: 1,
       labels: runtimeMetricLabels(run),
@@ -362,6 +411,7 @@ async function observeTerminalMetrics(
     totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens > 0
   ) {
     points.push({
+      type: "counter",
       name: "devbot_idle_with_tokens_total",
       value: 1,
       labels: { label: run.label, workflow: run.workflowId },

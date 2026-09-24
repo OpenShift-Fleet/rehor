@@ -227,6 +227,9 @@ describe("ClaudeAgentRuntime", () => {
       GH_TOKEN: "gh-secret",
       GITHUB_TOKEN: "github-secret",
       GITLAB_TOKEN: "gitlab-secret",
+      JIRA_API_TOKEN: "jira-api-secret",
+      JIRA_MCP_TOKEN: "jira-mcp-secret",
+      JIRA_USERNAME: "jira-user",
       GPG_PRIVATE_KEY_B64: "private-key",
       GPG_SIGNING_KEY: "signing-key",
       SSO_USERNAME: "sso-user",
@@ -239,6 +242,7 @@ describe("ClaudeAgentRuntime", () => {
     };
     for (const [name, value] of Object.entries(sensitiveValues)) vi.stubEnv(name, value);
     vi.stubEnv("PATH", "/safe/path");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/work/.gitconfig");
 
     let captured: Record<string, unknown> | undefined;
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
@@ -259,7 +263,10 @@ describe("ClaudeAgentRuntime", () => {
     await collect(runtime.run(run, new AbortController().signal));
 
     const environment = captured?.env as Record<string, string | undefined>;
-    expect(environment).toMatchObject({ PATH: "/safe/path" });
+    expect(environment).toMatchObject({
+      PATH: "/safe/path",
+      GIT_CONFIG_GLOBAL: "/work/.gitconfig",
+    });
     for (const name of Object.keys(sensitiveValues)) {
       expect(environment).not.toHaveProperty(name);
     }
@@ -372,6 +379,7 @@ describe("ClaudeAgentRuntime", () => {
       ),
     });
     expect(metrics).toContainEqual({
+      type: "counter",
       name: "devbot_turn_budget_event_total",
       value: 1,
       labels: { label: run.label, level: "warning" },

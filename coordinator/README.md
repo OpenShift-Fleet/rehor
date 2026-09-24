@@ -231,7 +231,9 @@ intentionally omit a top-level model, so Python preparation selects
 `config.json`'s `opencode.model` (`gpt-6-luna`) unless `instance.yaml` or
 `BOT_MODEL` overrides it. The default `rehor-openai` provider uses
 `@ai-sdk/openai` and native Responses. OpenCode+Vertex retains the `claude.model`
-fallback. Select `provider: rehor-openai-chat` and a model declared under that
+fallback, but the packaged defaults declare no `vertex` provider: supply a
+deployment config that declares one, or preparation fails with a preflight error
+before any attempt starts. Select `provider: rehor-openai-chat` and a model declared under that
 provider for Chat Completions through `@ai-sdk/openai-compatible`; undeclared
 models fail closed.
 
@@ -241,13 +243,15 @@ Both OpenAI routes use `REHOR_MODEL_PROXY_URL` and
 before OpenCode starts. The token is only the bot-side API-key value that the
 proxy overwrites; the real OpenAI key remains proxy-only. Compose sets both
 values directly. OpenShift defaults the gateway host from `PROXY_HOST` and uses
-the same placeholder token. `deploy/template.yaml` grants TCP/8450 egress only
-to `OPENAI_EGRESS_BOT_NAME` (default `devbot-framework`); keep that parameter
-aligned with the selected runner's `BOT_NAME`. Custom deployment configs must
+the same placeholder token. The proxy's ingress NetworkPolicy already admits
+TCP/8450 from devbot pods; the template adds no egress policy, because selecting
+a runner pod with one would also cut its DNS, memory-server, and other proxy
+traffic. Custom deployment configs must
 keep credentials out of JSON and use environment references such as
 `{env:REHOR_MODEL_PROXY_URL}` and `{env:REHOR_MODEL_PROXY_TOKEN}`. Use `--once`
 for a single preflight or attempt. The local sink writes `data/costs.jsonl`,
-`data/cycle-runs.jsonl`, compressed transcripts under `data/transcripts/`, and
+`data/cycle-runs.jsonl` (each record names its transcript in `transcript_path`),
+compressed transcripts under `data/transcripts/`, and
 serves `/health`, `/ready`, and `/metrics` on port `COORDINATOR_METRICS_PORT`
 (9091 by default).
 

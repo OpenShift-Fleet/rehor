@@ -28,7 +28,7 @@ Supported combinations are:
 | Runtime | Provider | Role |
 |---|---|---|
 | `claude` | `vertex` | Legacy/default rollback path |
-| `opencode-v1` | `vertex` | OpenCode compatibility canary through Vertex |
+| `opencode-v1` | `vertex` | OpenCode compatibility canary through Vertex; requires a deployment config that declares a `vertex` provider (the packaged defaults do not) |
 | `opencode-v1` | `rehor-openai` | OpenAI Responses route (`@ai-sdk/openai`), default model `gpt-6-luna` |
 | `opencode-v1` | `rehor-openai-chat` | OpenAI Chat Completions compatibility route (`@ai-sdk/openai-compatible`) |
 

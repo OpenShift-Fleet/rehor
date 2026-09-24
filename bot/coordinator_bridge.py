@@ -9,7 +9,9 @@ stderr so stdout remains machine-readable.
 from __future__ import annotations
 
 import json
+import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +93,6 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_workflow_dir,
         validate_instance_config,
         validate_manifest,
-        validate_runtime_provider_selection,
     )
     from .merge import apply_merged_config, install_skills
 
@@ -104,6 +105,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     label = _required_string(request, "label")
     runtime_config = load_config(script_dir)
+    runner.setup_git(script_dir)
     profile_dir, shared_dir = runner.sync_config_repo(label)
 
     if shared_dir:
@@ -112,20 +114,30 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         apply_merged_config(script_dir, profile_dir)
 
     instance_config = load_instance_config(profile_dir)
-    selection_errors = validate_runtime_provider_selection(
-        instance_config.runtime,
-        instance_config.provider,
+    # Preserve the legacy Claude view: resolved MCP values and no project
+    # servers, because Claude discovers .mcp.json through setting_sources.
+    mcp_servers = load_mcp_servers(script_dir)
+    # Validate before installing skills or assembling CLAUDE.md so an invalid
+    # selection, workflow, or manifest leaves the checkout untouched.
+    _validate_or_raise(
+        validate_instance_config,
+        script_dir,
+        instance_config,
+        profile_dir,
     )
-    if selection_errors:
-        raise BridgeError("; ".join(selection_errors))
+    _validate_or_raise(
+        validate_manifest,
+        script_dir,
+        instance_config.workflow,
+        mcp_servers,
+        profile_dir,
+        model_tiers=runtime_config.model_tiers,
+    )
     workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
     active_envs = resolve_active_envs(script_dir, instance_config)
     install_skills(script_dir, workflow_dir, active_envs)
     runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
-    # Preserve the legacy Claude view: resolved MCP values and no project
-    # servers, because Claude discovers .mcp.json through setting_sources.
-    mcp_servers = load_mcp_servers(script_dir)
     # Keep a separate reference-only view for OpenCode. It owns project-server
     # discovery; the TypeScript renderer validates its untrusted references.
     opencode_mcp_servers = load_mcp_servers(
@@ -133,14 +145,6 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_env=False,
         include_project=True,
     )
-    validate_manifest(
-        script_dir,
-        instance_config.workflow,
-        mcp_servers,
-        profile_dir,
-        model_tiers=runtime_config.model_tiers,
-    )
-    validate_instance_config(script_dir, instance_config, profile_dir)
 
     return {
         "model": cycle_model,
@@ -160,11 +164,25 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "remoteAgentDir": str(profile_dir) if profile_dir else None,
         "sharedAgentDir": str(shared_dir) if shared_dir else None,
         "claudeMdPath": str(script_dir / "CLAUDE.md"),
+        "gitConfigGlobal": os.environ.get("GIT_CONFIG_GLOBAL"),
         "mcpServers": mcp_servers,
         "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": ALLOWED_TOOLS,
         "optionalMcpServers": discover_optional_mcp_servers(script_dir, active_envs),
     }
+
+
+def _validate_or_raise(validate: Any, *args: Any, **kwargs: Any) -> None:
+    """Run a legacy validator that exits the process and surface it as a BridgeError.
+
+    The Python runner's validators log FATAL details and call ``sys.exit``.
+    ``SystemExit`` bypasses ``main``'s structured error handling, so convert it
+    into a bridge failure the TypeScript side can report.
+    """
+    try:
+        validate(*args, **kwargs)
+    except SystemExit as exc:
+        raise BridgeError(f"{validate.__name__} failed (see bridge stderr for details)") from exc
 
 
 def _load_dotenv(script_dir: Path) -> None:
@@ -212,9 +230,18 @@ def _idle_start(request: dict[str, Any]) -> None:
     idle_reminder.on_preflight_start(_required_string(request, "instanceId"))
 
 
-def _cleanup(request: dict[str, Any]) -> None:
+def _cleanup(request: dict[str, Any]) -> dict[str, Any]:
     script_dir, runner = _maintenance_script_dir(request)
-    runner.cleanup_between_cycles(script_dir)
+    # The Prometheus gauge set inside this short-lived process is lost on exit;
+    # return the reading so the coordinator can export it.
+    return {"diskFreeMb": runner.cleanup_between_cycles(script_dir)}
+
+
+def _scheduled_maintenance(request: dict[str, Any]) -> None:
+    _script_dir, runner = _maintenance_script_dir(request)
+    # Digest helpers print JSON; reserve bridge stdout for its response object.
+    with redirect_stdout(sys.stderr):
+        runner._try_slack_digest()
 
 
 def handle(request: dict[str, Any]) -> Any:
@@ -226,6 +253,9 @@ def handle(request: dict[str, Any]) -> Any:
         return _run_preflight(request)
     if operation == "prepare":
         return _prepare_config(request)
+    if operation == "scheduled_maintenance":
+        _scheduled_maintenance(request)
+        return None
     if operation == "idle_skip":
         _idle_skip(request)
         return None
@@ -233,9 +263,8 @@ def handle(request: dict[str, Any]) -> Any:
         _idle_start(request)
         return None
     if operation == "cleanup":
-        _cleanup(request)
-        return None
-    raise BridgeError("operation must be preflight, prepare, idle_skip, idle_start, or cleanup")
+        return _cleanup(request)
+    raise BridgeError("operation must be preflight, prepare, scheduled_maintenance, idle_skip, idle_start, or cleanup")
 
 
 def main() -> int:

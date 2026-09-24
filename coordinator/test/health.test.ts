@@ -23,7 +23,12 @@ async function freePort(): Promise<number> {
 describe("coordinator health server", () => {
   it("serves health, readiness, and Prometheus metrics endpoints", async () => {
     const metrics = new PrometheusMetricStore();
-    await metrics.observe({ name: "rehor_cycles_total", labels: { status: "ok" }, value: 1 });
+    await metrics.observe({
+      type: "counter",
+      name: "rehor_cycles_total",
+      labels: { status: "ok" },
+      value: 1,
+    });
     const server = new CoordinatorHealthServer({
       port: await freePort(),
       host: "127.0.0.1",

@@ -212,8 +212,33 @@ describe("legacy compatibility projection", () => {
           name: "devbot_runtime_resource_leaks_total",
           labels: { runtime: "opencode-v1", provider: "vertex" },
         }),
+        expect.objectContaining({
+          name: "devbot_cycle_timeout_total",
+          value: 1,
+          labels: { label: run.label },
+        }),
       ]),
     );
+    expect(metrics).not.toContainEqual(expect.objectContaining({ name: "devbot_work_type_total" }));
+  });
+
+  it("counts completed cycles by work type like the Python runner", async () => {
+    const withContext = await projectTerminal({
+      state: "completed",
+      resultText: "Implemented work.",
+      context: context("new_ticket"),
+    });
+    const contextless = await projectTerminal({ state: "completed", resultText: "Done." });
+
+    expect(metric(withContext.metrics, "devbot_work_type_total")).toMatchObject({
+      type: "counter",
+      value: 1,
+      labels: { label: run.label, work_type: "new_ticket" },
+    });
+    expect(metric(contextless.metrics, "devbot_work_type_total")?.labels).toEqual({
+      label: run.label,
+      work_type: "triage_only",
+    });
   });
 
   it("classifies a contextless no-work terminal as triage_only", async () => {
@@ -437,8 +462,12 @@ describe("legacy compatibility projection", () => {
 
     // bot/metrics.py declares this histogram as ["label", "work_type"]; any extra
     // or missing key makes the Python registry reject the observation outright.
+    expect(duration?.type).toBe("histogram");
     expect(duration?.labels).toEqual({ label: run.label, work_type: "pr_review" });
     expect(duration?.value).toBe(4);
+    expect(duration?.type === "histogram" ? duration.buckets : []).toEqual([
+      30, 60, 120, 300, 600, 900, 1200, 1800,
+    ]);
   });
 
   it("falls back to work_type unknown for a missing or blank work type", async () => {

@@ -18,7 +18,7 @@ import { LegacyCompatibilityProjection } from "./projections/compatibility";
 import {
   createDefaultRuntimeRegistry,
   createOpenCodeV1RuntimeFactory,
-  executeSelectedRun,
+  executeConfiguredRun,
   type RuntimeFactoryRegistry,
 } from "./runtime-factory";
 import type {
@@ -30,6 +30,13 @@ import { renderOpenCodeV1ConfigForCycle } from "./runtimes/opencode-v1/config";
 import { CycleDecision, CycleScheduler, consumeSleepSignal, sleep } from "./scheduler";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Python cleanup may run `go clean`, `npm cache clean`, and `git gc` with their
+ * own timeouts. Bound it independently of the run signal so shutdown still
+ * cleans up after an attempt.
+ */
+const CLEANUP_TIMEOUT_MS = 5 * 60_000;
 
 export interface RunBuildOptions {
   scriptDir: string;
@@ -148,7 +155,9 @@ export function validateOpenCodeDeployment(
   const selectedProvider = providers.find((provider) => provider.id === prepared.config.providerId);
   if (selectedProvider === undefined) {
     throw new Error(
-      `OpenCode deployment does not declare prepared provider '${prepared.config.providerId}'`,
+      `OpenCode deployment does not declare prepared provider '${prepared.config.providerId}'; ` +
+        "supply a deployment config (--opencode-deployment-config or " +
+        "REHOR_OPENCODE_DEPLOYMENT_CONFIG) that declares it",
     );
   }
   if (selectedProvider.id === "rehor-openai-chat") {
@@ -284,12 +293,27 @@ export async function runCoordinator(
   });
   const projection = new LegacyCompatibilityProjection(options.writers);
   const workspaceRoot = options.workspaceRoot ?? options.scriptDir;
-  const environment = options.environment ?? process.env;
+  const environment = { ...(options.environment ?? process.env) };
+  const cleanupBetweenCycles = async (): Promise<void> => {
+    const cleanup = await bridge.cleanupBetweenCycles?.(
+      { scriptDir: options.scriptDir },
+      AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
+    );
+    if (typeof cleanup?.diskFreeMb === "number") {
+      await options.writers.metrics?.observe({
+        type: "gauge",
+        name: "devbot_disk_free_mb",
+        value: cleanup.diskFreeMb,
+        labels: {},
+      });
+    }
+  };
 
   return runCoordinatorLoop<CoordinatorResult>({
-    admission: new FileCycleAdmission(options.lockPath),
+    admission: new FileCycleAdmission(options.lockPath, options.pythonExecutable),
     scheduler,
     prepare: async (signal) => {
+      await bridge.runScheduledMaintenance?.({ scriptDir: options.scriptDir }, signal);
       const prepared = await prepareCycleInput(bridge, {
         scriptDir: options.scriptDir,
         label: options.label,
@@ -300,6 +324,9 @@ export async function runCoordinator(
         intervalMs: secondsToMs(prepared.config.intervalSeconds, "intervalSeconds"),
         idleIntervalMs: secondsToMs(prepared.config.idleIntervalSeconds, "idleIntervalSeconds"),
       });
+      // Fail during preparation, with preflight-error backoff, rather than on
+      // every run attempt when the deployment cannot serve this selection.
+      validateOpenCodeDeployment(prepared, options.openCodeDeployment, environment);
       return prepared;
     },
     run: async (prepared, signal) => {
@@ -310,6 +337,9 @@ export async function runCoordinator(
         workspacePath: options.scriptDir,
         policyVersion: options.policyVersion,
       });
+      if (prepared.config.gitConfigGlobal) {
+        environment.GIT_CONFIG_GLOBAL = prepared.config.gitConfigGlobal;
+      }
       const registry = createRuntimeRegistryForCycle(prepared, {
         workspaceRoot,
         openCodeDeployment: options.openCodeDeployment,
@@ -318,16 +348,24 @@ export async function runCoordinator(
         openCodeWorkspaceOwnerUid: options.openCodeWorkspaceOwnerUid,
         environment,
       });
-      try {
-        return await executeSelectedRun(registry, { runtimeId: run.runtimeId ?? "claude" }, run, {
-          signal,
-          projection,
-          preparedConfig: prepared.config,
-        });
-      } finally {
-        await bridge.cleanupBetweenCycles?.({ scriptDir: options.scriptDir }, signal);
+      const result = await executeConfiguredRun(registry, run, {
+        signal,
+        projection,
+        preparedConfig: prepared.config,
+      });
+      if (result.error !== undefined) throw result.error;
+      if (
+        result.terminal.payload.state === "failed" ||
+        result.terminal.payload.state === "timed_out"
+      ) {
+        throw new Error(
+          result.terminal.payload.reason ??
+            `runtime returned a ${result.terminal.payload.state} terminal state`,
+        );
       }
+      return result;
     },
+    afterRun: cleanupBetweenCycles,
     sleepSignal: () => consumeSleepSignal(options.sleepSignalPath),
     sleep: options.once ? async () => undefined : sleep,
     maxCycles: options.maxCycles ?? (options.once ? 1 : undefined),
@@ -341,6 +379,18 @@ export async function runCoordinator(
             { scriptDir: options.scriptDir, instanceId: options.instanceId },
             signal,
           );
+          await options.writers.metrics?.observe({
+            type: "counter",
+            name: "devbot_preflight_outcome_total",
+            value: 1,
+            labels: { label: options.label, action: "start" },
+          });
+          await options.writers.metrics?.observe({
+            type: "gauge",
+            name: "devbot_preflight_consecutive_errors",
+            value: plan.consecutivePreflightErrors,
+            labels: { label: options.label },
+          });
         }
         return;
       }
@@ -356,30 +406,44 @@ export async function runCoordinator(
           signal,
         );
       }
+      const state = plan.decision === CycleDecision.Idle ? "idle" : "error";
       const input: PreflightCycleInput = {
+        label: options.label,
         instanceId: options.instanceId,
-        state: plan.decision === CycleDecision.Idle ? "idle" : "error",
+        state,
         transcript: preflight?.transcript ?? "",
         inputPrompt: preflight?.transcript ?? "",
       };
-      await options.compatibility?.writePreflightCycle(input);
-      await bridge.cleanupBetweenCycles?.({ scriptDir: options.scriptDir }, signal);
       await options.writers.metrics?.observe({
+        type: "counter",
+        name: "devbot_work_type_total",
+        value: 1,
+        labels: { label: options.label, work_type: state },
+      });
+      await options.writers.metrics?.observe({
+        type: "gauge",
         name: "devbot_preflight_consecutive_errors",
         value: plan.consecutivePreflightErrors,
         labels: { label: options.label },
       });
+      await options.compatibility?.writePreflightCycle(input);
+      await cleanupBetweenCycles();
     },
     onError: async (error, phase) => {
-      await options.writers.status?.write({
-        state: "error",
-        message:
-          phase === LoopErrorPhase.Prepare
-            ? "Preflight failed — check bot.log"
-            : "Coordinator failed — check bot.log",
-        instanceId: options.instanceId,
-      });
+      // Housekeeping and reporting failures do not change the cycle outcome,
+      // so they must not overwrite the status the cycle already published.
+      if (phase !== LoopErrorPhase.Cleanup && phase !== LoopErrorPhase.Decision) {
+        await options.writers.status?.write({
+          state: "error",
+          message:
+            phase === LoopErrorPhase.Prepare
+              ? "Preflight failed — check bot.log"
+              : "Coordinator failed — check bot.log",
+          instanceId: options.instanceId,
+        });
+      }
       await options.writers.metrics?.observe({
+        type: "counter",
         name: "devbot_coordinator_errors_total",
         value: 1,
         labels: { label: options.label, phase },

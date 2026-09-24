@@ -316,6 +316,7 @@ describe("OpenCode environment", () => {
       base: {
         PATH: "/bin",
         HOME: "/home/bot",
+        GIT_CONFIG_GLOBAL: "/home/bot/.gitconfig",
         HTTP_PROXY: "http://proxy:3128",
         HTTPS_PROXY: "http://proxy:3128",
         NO_PROXY: "memory-server,proxy",
@@ -342,6 +343,7 @@ describe("OpenCode environment", () => {
     expect(environment).toMatchObject({
       PATH: "/bin",
       HOME: "/home/bot",
+      GIT_CONFIG_GLOBAL: "/home/bot/.gitconfig",
       HTTP_PROXY: "http://proxy:3128",
       http_proxy: "http://proxy:3128",
       HTTPS_PROXY: "http://proxy:3128",

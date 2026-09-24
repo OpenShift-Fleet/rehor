@@ -315,8 +315,11 @@ def assemble_claude_md(
     logger.info("Assembled CLAUDE.md from core + %s (%d bytes)", workflow, output.stat().st_size)
 
 
-def cleanup_between_cycles(script_dir: Path) -> None:
-    """Free disk space between cycles if below threshold."""
+def cleanup_between_cycles(script_dir: Path) -> int | None:
+    """Free disk space between cycles if below threshold.
+
+    Returns the last free-space reading in MB, or None when it is unavailable.
+    """
     logger = logging.getLogger(__name__)
 
     SLEEP_SIGNAL_FILE.unlink(missing_ok=True)
@@ -325,12 +328,12 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         usage = shutil.disk_usage(str(script_dir))
         free_mb = usage.free // (1024 * 1024)
     except OSError:
-        return
+        return None
     DISK_FREE_MB.set(free_mb)
 
     if free_mb >= LOW_DISK_THRESHOLD_MB:
         logger.info("Disk OK: %dM free (threshold %dM)", free_mb, LOW_DISK_THRESHOLD_MB)
-        return
+        return free_mb
 
     logger.warning(
         "Low disk: %dM free (threshold %dM) — cleaning up",
@@ -368,6 +371,7 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         logger.info("Cleanup done. Free space: %dM", free_mb)
     except OSError:
         pass
+    return free_mb
 
 
 def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:

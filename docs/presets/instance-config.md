@@ -53,7 +53,7 @@ preparation into the TypeScript coordinator. Supported pairs are:
 | Runtime | Providers | Use |
 |---|---|---|
 | `claude` | `vertex` | Existing rollback/default path |
-| `opencode-v1` | `vertex` | OpenCode compatibility canary through the Vertex route |
+| `opencode-v1` | `vertex` | OpenCode compatibility canary through the Vertex route; requires a deployment config that declares a `vertex` provider (the packaged defaults do not) |
 | `opencode-v1` | `rehor-openai` | Native OpenAI Responses route; default model is GPT-6 Luna |
 | `opencode-v1` | `rehor-openai-chat` | OpenAI-compatible Chat Completions route; model must be declared under this provider |
 

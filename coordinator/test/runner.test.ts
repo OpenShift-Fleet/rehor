@@ -2,9 +2,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createCompatibilitySink } from "../src/adapters/compatibility";
+import type { CoordinatorResult } from "../src/coordinator";
 import type { PreparedCycleInput } from "../src/cycle-input";
 import { InstructionStrategy } from "../src/instructions";
 import { PreflightAction } from "../src/ports/python-bridge";
@@ -14,7 +15,10 @@ import {
   runCoordinator,
   validateOpenCodeDeployment,
 } from "../src/runner";
+import * as runtimeFactory from "../src/runtime-factory";
 import type { OpenCodeV1DeploymentConfig } from "../src/runtimes/opencode-v1";
+
+afterEach(() => vi.restoreAllMocks());
 
 const prepared: PreparedCycleInput = {
   config: {
@@ -174,15 +178,242 @@ describe("production runner boundary", () => {
     expect(registry.runtimeIds).toEqual(["claude"]);
   });
 
-  it("runs one prepared preflight cycle without starting a runtime on skip", async () => {
+  it("forwards Git config and records legacy preflight metrics before a runtime attempt", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
-    const events: string[] = [];
+    const metrics: unknown[] = [];
+    const runtimeEnvironment: NodeJS.ProcessEnv = { ...proxyEnvironment };
+    const createRegistry = vi.spyOn(runtimeFactory, "createDefaultRuntimeRegistry");
+    vi.spyOn(runtimeFactory, "executeConfiguredRun").mockRejectedValue(
+      new Error("runtime unavailable"),
+    );
+    const gitConfigGlobal = join(directory, ".gitconfig");
     const bridge = {
       prepareConfig: async () => ({
         ...prepared.config,
         claudeMdPath: join(directory, "CLAUDE.md"),
+        gitConfigGlobal,
         claudeMdStrategy: InstructionStrategy.Ignore,
       }),
+      preflight: async () => ({
+        action: PreflightAction.Start,
+        prompt: "work found",
+        transcript: "work found",
+        scripts: [],
+      }),
+      cleanupBetweenCycles: async () => undefined,
+    };
+
+    const result = await runCoordinator({
+      scriptDir: resolve(process.cwd(), ".."),
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      dataDirectory: directory,
+      lockPath: join(directory, ".lock"),
+      sleepSignalPath: join(directory, "cycle-sleep.json"),
+      bridge,
+      environment: runtimeEnvironment,
+      openCodeDeployment: deployment,
+      writers: {
+        metrics: {
+          observe: (point) => {
+            metrics.push(point);
+          },
+        },
+      },
+      once: true,
+      initialIntervalSeconds: 0,
+      initialIdleIntervalSeconds: 0,
+    });
+
+    expect(result.failures).toBe(1);
+    expect(runtimeEnvironment.GIT_CONFIG_GLOBAL).toBeUndefined();
+    expect(createRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({ GIT_CONFIG_GLOBAL: gitConfigGlobal }),
+      }),
+    );
+    expect(metrics).toContainEqual(
+      expect.objectContaining({
+        name: "devbot_preflight_outcome_total",
+        type: "counter",
+        value: 1,
+        labels: { label: "hcc-ai-framework", action: "start" },
+      }),
+    );
+    expect(metrics).toContainEqual(
+      expect.objectContaining({
+        name: "devbot_preflight_consecutive_errors",
+        type: "gauge",
+        value: 0,
+        labels: { label: "hcc-ai-framework" },
+      }),
+    );
+  });
+
+  it("counts a failed CoordinatorResult as a run failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+    const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({
+      error: new Error("projection failed"),
+      terminal: { payload: { state: "completed" } },
+    } as CoordinatorResult);
+    const bridge = {
+      prepareConfig: async () => ({
+        ...prepared.config,
+        model: "claude-opus-4-6",
+        runtimeId: "claude",
+        providerId: "vertex",
+        claudeMdPath: join(directory, "CLAUDE.md"),
+        claudeMdStrategy: InstructionStrategy.Ignore,
+      }),
+      preflight: async () => ({
+        action: PreflightAction.Start,
+        prompt: "work found",
+        transcript: "work found",
+        scripts: [],
+      }),
+      cleanupBetweenCycles: async () => undefined,
+    };
+
+    try {
+      const result = await runCoordinator({
+        scriptDir: resolve(process.cwd(), ".."),
+        label: "hcc-ai-framework",
+        instanceId: "instance-1",
+        dataDirectory: directory,
+        lockPath: join(directory, ".lock"),
+        sleepSignalPath: join(directory, "cycle-sleep.json"),
+        bridge,
+        writers: {},
+        once: true,
+        initialIntervalSeconds: 0,
+        initialIdleIntervalSeconds: 0,
+      });
+
+      expect(result).toMatchObject({ stopReason: "max_cycles", failures: 1, results: [] });
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
+  it("rejects an undeclared OpenCode provider during preparation, before any attempt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+    const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun");
+    const phases: string[] = [];
+    const bridge = {
+      prepareConfig: async () => ({
+        ...prepared.config,
+        model: "claude-sonnet-4-6",
+        providerId: "vertex",
+        claudeMdPath: join(directory, "CLAUDE.md"),
+        claudeMdStrategy: InstructionStrategy.Ignore,
+      }),
+      preflight: async () => ({
+        action: PreflightAction.Start,
+        prompt: "work found",
+        transcript: "work found",
+        scripts: [],
+      }),
+      cleanupBetweenCycles: async () => ({ diskFreeMb: 2048 }),
+    };
+
+    const result = await runCoordinator({
+      scriptDir: resolve(process.cwd(), ".."),
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      dataDirectory: directory,
+      lockPath: join(directory, ".lock"),
+      sleepSignalPath: join(directory, "cycle-sleep.json"),
+      bridge,
+      openCodeDeployment: deployment,
+      environment: { ...proxyEnvironment },
+      writers: {},
+      onError: (_error, phase) => {
+        phases.push(phase);
+      },
+      once: true,
+      initialIntervalSeconds: 0,
+      initialIdleIntervalSeconds: 0,
+    });
+
+    expect(result).toMatchObject({ stopReason: "max_cycles", failures: 1 });
+    expect(phases).toEqual(["prepare"]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("exports the disk reading and keeps a successful run when cleanup fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+    const metrics: Array<{ name: string; value: number }> = [];
+    vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({
+      terminal: { payload: { state: "completed" } },
+    } as CoordinatorResult);
+    let cleanups = 0;
+    const bridge = {
+      prepareConfig: async () => ({
+        ...prepared.config,
+        model: "claude-opus-4-6",
+        runtimeId: "claude",
+        providerId: "vertex",
+        claudeMdPath: join(directory, "CLAUDE.md"),
+        claudeMdStrategy: InstructionStrategy.Ignore,
+      }),
+      preflight: async () => ({
+        action: PreflightAction.Start,
+        prompt: "work found",
+        transcript: "work found",
+        scripts: [],
+      }),
+      cleanupBetweenCycles: async () => {
+        cleanups += 1;
+        throw new Error("bridge crashed");
+      },
+    };
+
+    const result = await runCoordinator({
+      scriptDir: resolve(process.cwd(), ".."),
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      dataDirectory: directory,
+      lockPath: join(directory, ".lock"),
+      sleepSignalPath: join(directory, "cycle-sleep.json"),
+      bridge,
+      writers: {
+        metrics: {
+          observe: (point) => {
+            metrics.push(point);
+          },
+        },
+      },
+      once: true,
+      initialIntervalSeconds: 0,
+      initialIdleIntervalSeconds: 0,
+    });
+
+    expect(cleanups).toBe(1);
+    expect(result).toMatchObject({ stopReason: "max_cycles", failures: 0 });
+    expect(result.results).toHaveLength(1);
+    expect(metrics).toContainEqual(
+      expect.objectContaining({
+        name: "devbot_coordinator_errors_total",
+        labels: { label: "hcc-ai-framework", phase: "cleanup" },
+      }),
+    );
+  });
+
+  it("runs one prepared preflight cycle without starting a runtime on skip", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+    const events: string[] = [];
+    const bridge = {
+      runScheduledMaintenance: async () => {
+        events.push("maintenance");
+      },
+      prepareConfig: async () => {
+        events.push("prepare");
+        return {
+          ...prepared.config,
+          claudeMdPath: join(directory, "CLAUDE.md"),
+          claudeMdStrategy: InstructionStrategy.Ignore,
+        };
+      },
       preflight: async () => ({
         action: PreflightAction.Skip,
         prompt: "",
@@ -194,6 +425,7 @@ describe("production runner boundary", () => {
       },
       cleanupBetweenCycles: async () => {
         events.push("cleanup");
+        return { diskFreeMb: 1024 };
       },
     };
     const compatibility = createCompatibilitySink({
@@ -211,6 +443,8 @@ describe("production runner boundary", () => {
       bridge,
       writers: compatibility.writers,
       compatibility,
+      openCodeDeployment: deployment,
+      environment: { ...proxyEnvironment },
       once: true,
       initialIntervalSeconds: 0,
       initialIdleIntervalSeconds: 0,
@@ -219,6 +453,9 @@ describe("production runner boundary", () => {
     expect(result.stopReason).toBe("max_cycles");
     expect(result.cycles).toBe(1);
     expect(result.results).toHaveLength(0);
-    expect(events).toEqual(["idle-skip", "cleanup"]);
+    expect(events).toEqual(["maintenance", "prepare", "idle-skip", "cleanup"]);
+    const output = compatibility.metricStore.render();
+    expect(output).toContain("devbot_disk_free_mb 1024");
+    expect(output).toContain('devbot_work_type_total{label="hcc-ai-framework",work_type="idle"} 1');
   });
 });
