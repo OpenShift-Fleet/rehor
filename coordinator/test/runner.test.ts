@@ -57,13 +57,19 @@ const deployment: OpenCodeV1DeploymentConfig = {
     {
       id: "rehor-openai",
       npm: "@ai-sdk/openai",
-      options: { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" },
+      options: {
+        apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
+        baseURL: "{env:REHOR_MODEL_PROXY_URL}",
+      },
       models: { "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true } },
     },
     {
       id: "rehor-openai-chat",
       npm: "@ai-sdk/openai-compatible",
-      options: { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" },
+      options: {
+        apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
+        baseURL: "{env:REHOR_MODEL_PROXY_URL}",
+      },
       models: { "gpt-4o": { name: "GPT-4o", limit: { context: 128_000, output: 16_384 } } },
     },
   ],
@@ -71,6 +77,11 @@ const deployment: OpenCodeV1DeploymentConfig = {
     { name: "@ai-sdk/openai", version: "4.0.73" },
     { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
   ],
+};
+
+const proxyEnvironment = {
+  REHOR_MODEL_PROXY_URL: "http://proxy:8450/v1",
+  REHOR_MODEL_PROXY_TOKEN: "test-proxy-token",
 };
 
 describe("production runner boundary", () => {
@@ -129,6 +140,7 @@ describe("production runner boundary", () => {
       validateOpenCodeDeployment(
         { ...chatRun, config: { ...chatRun.config, model: "gpt-4o" } },
         deployment,
+        proxyEnvironment,
       ),
     ).not.toThrow();
   });
@@ -139,7 +151,7 @@ describe("production runner boundary", () => {
       openCodeDeployment: deployment,
       openCodeCommand: "/usr/local/bin/opencode",
       openCodeExpectedVersion: "1.18.29",
-      environment: { PATH: "/usr/bin" },
+      environment: { PATH: "/usr/bin", ...proxyEnvironment },
     });
 
     expect(registry.runtimeIds).toEqual(["claude", "opencode-v1"]);

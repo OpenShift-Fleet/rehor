@@ -6,8 +6,8 @@ import { resolve } from "node:path";
 import { createCompatibilitySink } from "./adapters/compatibility";
 import { CoordinatorHealthServer } from "./adapters/health";
 import { LoopStopReason } from "./loop";
+import { loadOpenCodeDeploymentConfig } from "./deployment-config";
 import { runCoordinator } from "./runner";
-import type { OpenCodeV1DeploymentConfig } from "./runtimes/opencode-v1";
 
 interface CliOptions {
   label: string;
@@ -35,7 +35,7 @@ async function main(): Promise<number> {
   if (scriptDirArgument !== undefined) await loadDotEnv(resolve(scriptDirArgument, ".env"));
   const options = parseArgs(argv, process.env);
   await loadDotEnv(resolve(options.scriptDir, ".env"));
-  const deployment = await loadDeployment(options.deploymentConfigPath);
+  const deployment = await loadOpenCodeDeploymentConfig(options.deploymentConfigPath);
   const memoryApiBase = process.env.BOT_MEMORY_URL?.replace(/\/mcp\/?$/, "");
   const compatibility = createCompatibilitySink({
     dataDirectory: options.dataDirectory,
@@ -196,15 +196,6 @@ async function loadDotEnv(path: string): Promise<void> {
     }
     if (process.env[name] === undefined) process.env[name] = value;
   }
-}
-
-async function loadDeployment(path: string | undefined): Promise<OpenCodeV1DeploymentConfig> {
-  if (!path) return {};
-  const raw = JSON.parse(await readFile(resolve(path), "utf8")) as unknown;
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("OpenCode deployment config must be a JSON object");
-  }
-  return raw as OpenCodeV1DeploymentConfig;
 }
 
 function endpoint(base: string | undefined, path: string): string | undefined {

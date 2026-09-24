@@ -205,17 +205,19 @@ into the proxy deployment.
 OpenCode in bot pod
   → http://devbot-proxy:8450/v1/chat/completions
      or http://devbot-proxy:8450/v1/responses
-  → proxy authenticates bot request
-  → proxy validates provider/model
+  → NetworkPolicy restricts which bot pods can reach the gateway
+  → proxy replaces the bot-side Authorization value and validates provider/model
   → proxy adds Authorization: Bearer <OpenAI key>
   → https://api.openai.com (same path, unchanged)
   → streaming response back to OpenCode
 ```
 
-The bot must not receive `OPENAI_API_KEY`. The OpenCode provider config should
-use a bot-to-proxy credential or network policy as its authentication boundary.
-If a credential is required, use a separate short-lived proxy token, not the
-OpenAI key.
+The bot must not receive `OPENAI_API_KEY`. `REHOR_MODEL_PROXY_TOKEN` is the
+placeholder API-key value required by the OpenCode provider client; the current
+proxy overwrites inbound `Authorization` and does not authenticate this value.
+NetworkPolicy controls gateway reachability. Any request-level client
+authentication would require a separate proxy implementation and must not use
+the OpenAI key.
 
 ### Implementation Shape
 
@@ -302,7 +304,7 @@ Example bot-side `opencode.json`:
       "npm": "@ai-sdk/openai@4.0.73",
       "name": "Rehor OpenAI Responses",
       "options": {
-        "baseURL": "http://devbot-proxy:8450/v1",
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
       "models": {
@@ -313,7 +315,7 @@ Example bot-side `opencode.json`:
       "npm": "@ai-sdk/openai-compatible@3.0.54",
       "name": "Rehor OpenAI Chat Completions",
       "options": {
-        "baseURL": "http://devbot-proxy:8450/v1",
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
       "models": {
@@ -424,7 +426,7 @@ This is a provider and credential migration, not only a URL change.
 - `OPENAI_API_KEY` proxy-only environment variable.
 - `OPENAI_ALLOWED_MODELS` or provider-neutral model allowlist.
 - `OPENAI_BASE_URL` with default `https://api.openai.com/v1`.
-- `REHOR_MODEL_PROXY_TOKEN` for bot-to-proxy authentication, if required.
+- `REHOR_MODEL_PROXY_URL` for the internal gateway and `REHOR_MODEL_PROXY_TOKEN` as the provider client's placeholder API key. The proxy overwrites the latter; NetworkPolicy controls reachability.
 - OpenAI request ID and usage metrics.
 - OpenAI rate-limit and retry handling.
 

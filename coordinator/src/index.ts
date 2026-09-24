@@ -4,6 +4,7 @@ export * from "./adapters/health";
 export * from "./bridges/python";
 export * from "./coordinator";
 export * from "./cycle-input";
+export * from "./deployment-config";
 export * from "./domain";
 export * from "./idle";
 export * from "./instructions";

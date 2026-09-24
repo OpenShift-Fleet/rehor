@@ -21,7 +21,11 @@ import {
   executeSelectedRun,
   type RuntimeFactoryRegistry,
 } from "./runtime-factory";
-import type { OpenCodeSupervisorOptions, OpenCodeV1DeploymentConfig } from "./runtimes/opencode-v1";
+import type {
+  OpenCodeProviderConfig,
+  OpenCodeSupervisorOptions,
+  OpenCodeV1DeploymentConfig,
+} from "./runtimes/opencode-v1";
 import { renderOpenCodeV1ConfigForCycle } from "./runtimes/opencode-v1/config";
 import { CycleDecision, CycleScheduler, consumeSleepSignal, sleep } from "./scheduler";
 
@@ -124,6 +128,7 @@ export async function buildRehorRun(
 export function validateOpenCodeDeployment(
   prepared: PreparedCycleInput,
   deployment: OpenCodeV1DeploymentConfig = {},
+  environment: NodeJS.ProcessEnv = process.env,
 ): void {
   if (prepared.config.runtimeId !== "opencode-v1") return;
   if (deployment.providerId !== undefined && deployment.providerId !== prepared.config.providerId) {
@@ -154,7 +159,66 @@ export function validateOpenCodeDeployment(
       );
     }
   }
+  if (selectedProvider.id === "rehor-openai" || selectedProvider.id === "rehor-openai-chat") {
+    validateOpenAIGatewayConfig(selectedProvider, environment);
+  }
   renderOpenCodeV1ConfigForCycle(prepared.config, prepared.config.providerId, deployment);
+}
+
+function validateOpenAIGatewayConfig(
+  provider: OpenCodeProviderConfig,
+  environment: NodeJS.ProcessEnv,
+): void {
+  const baseURL = provider.options?.baseURL;
+  if (typeof baseURL !== "string" || !baseURL.trim()) {
+    throw new Error(`OpenCode deployment provider '${provider.id}' requires a gateway URL`);
+  }
+  const gatewayEnvironment = exactEnvironmentReference(baseURL.trim());
+  const gatewayValue = gatewayEnvironment ? environment[gatewayEnvironment] : baseURL;
+  if (!gatewayValue?.trim()) {
+    throw new Error(
+      `OpenCode deployment provider '${provider.id}' requires gateway URL environment variable '${gatewayEnvironment}'`,
+    );
+  }
+
+  let parsedGateway: URL;
+  try {
+    parsedGateway = new URL(gatewayValue.trim());
+  } catch {
+    throw new Error(`OpenCode deployment provider '${provider.id}' has an invalid gateway URL`);
+  }
+  if (
+    parsedGateway.protocol !== "http:" ||
+    !parsedGateway.hostname ||
+    parsedGateway.port !== "8450" ||
+    parsedGateway.pathname !== "/v1" ||
+    parsedGateway.username ||
+    parsedGateway.password ||
+    parsedGateway.search ||
+    parsedGateway.hash
+  ) {
+    throw new Error(
+      `OpenCode deployment provider '${provider.id}' gateway URL must be http://<proxy-host>:8450/v1`,
+    );
+  }
+
+  const tokenEnvironment = exactEnvironmentReference(provider.options?.apiKey);
+  if (!tokenEnvironment) {
+    throw new Error(
+      `OpenCode deployment provider '${provider.id}' apiKey must reference the bot-to-proxy token environment`,
+    );
+  }
+  if (!environment[tokenEnvironment]?.trim()) {
+    throw new Error(
+      `OpenCode deployment provider '${provider.id}' requires bot-to-proxy token environment '${tokenEnvironment}'`,
+    );
+  }
+}
+
+function exactEnvironmentReference(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const match = /^(?:\{env:([A-Za-z_][A-Za-z0-9_]*)\}|\$\{([A-Za-z_][A-Za-z0-9_]*)\})$/.exec(value);
+  return match?.[1] ?? match?.[2];
 }
 
 export function createRuntimeRegistryForCycle(
@@ -171,7 +235,7 @@ export function createRuntimeRegistryForCycle(
     ),
     allowedTools: prepared.config.allowedTools ?? [],
   });
-  validateOpenCodeDeployment(prepared, deployment);
+  validateOpenCodeDeployment(prepared, deployment, environment);
   if (prepared.config.runtimeId !== "opencode-v1") return registry;
 
   const server: OpenCodeSupervisorOptions = {

@@ -224,33 +224,48 @@ BOT_LABEL=hcc-ai-framework BOT_INSTANCE_ID=local-1 \
 
 The default instance selection remains `claude`/`vertex`, so this command is a
 safe coordinator-path smoke test without changing an instance config. To test
-OpenCode, set `runtime: opencode-v1` and point
-`REHOR_OPENCODE_DEPLOYMENT_CONFIG` at a deployment-owned JSON file (see
-`opencode-deployment.example.json`). With no provider override, OpenCode selects
-`rehor-openai` and `config.json`'s `opencode.model` (`gpt-6-luna`); this provider
-uses `@ai-sdk/openai` and the native Responses API. OpenCode+Vertex retains the
-`claude.model` fallback. Select `provider: rehor-openai-chat` and a model
-declared under that provider for Chat Completions through
-`@ai-sdk/openai-compatible`; undeclared models fail closed. Both OpenAI routes
-use the model proxy; deployment config must
-contain only environment references such as `{env:REHOR_MODEL_PROXY_TOKEN}`, never
-credentials. Use `--once` for a single preflight or attempt. The local sink
-writes `data/costs.jsonl`, `data/cycle-runs.jsonl`, compressed transcripts under
-`data/transcripts/`, and serves `/health`, `/ready`, and `/metrics` on port
-`COORDINATOR_METRICS_PORT` (9091 by default).
+OpenCode, set `runtime: opencode-v1`. The CLI loads the packaged
+`opencode-deployment.default.json`; `REHOR_OPENCODE_DEPLOYMENT_CONFIG` remains an
+optional override (see `opencode-deployment.example.json`). The shared defaults
+intentionally omit a top-level model, so Python preparation selects
+`config.json`'s `opencode.model` (`gpt-6-luna`) unless `instance.yaml` or
+`BOT_MODEL` overrides it. The default `rehor-openai` provider uses
+`@ai-sdk/openai` and native Responses. OpenCode+Vertex retains the `claude.model`
+fallback. Select `provider: rehor-openai-chat` and a model declared under that
+provider for Chat Completions through `@ai-sdk/openai-compatible`; undeclared
+models fail closed.
+
+Both OpenAI routes use `REHOR_MODEL_PROXY_URL` and
+`REHOR_MODEL_PROXY_TOKEN`. The gateway must be
+`http://<proxy-host>:8450/v1`; missing or invalid gateway/token settings fail
+before OpenCode starts. The token is only the bot-side API-key value that the
+proxy overwrites; the real OpenAI key remains proxy-only. Compose sets both
+values directly. OpenShift defaults the gateway host from `PROXY_HOST` and uses
+the same placeholder token. `deploy/template.yaml` grants TCP/8450 egress only
+to `OPENAI_EGRESS_BOT_NAME` (default `devbot-framework`); keep that parameter
+aligned with the selected runner's `BOT_NAME`. Custom deployment configs must
+keep credentials out of JSON and use environment references such as
+`{env:REHOR_MODEL_PROXY_URL}` and `{env:REHOR_MODEL_PROXY_TOKEN}`. Use `--once`
+for a single preflight or attempt. The local sink writes `data/costs.jsonl`,
+`data/cycle-runs.jsonl`, compressed transcripts under `data/transcripts/`, and
+serves `/health`, `/ready`, and `/metrics` on port `COORDINATOR_METRICS_PORT`
+(9091 by default).
 
 ## Deployment packaging
 
 `Dockerfile` packages the coordinator for Compose. `Dockerfile.runner` builds
-from the pinned UBI Node 22 builder, copies the ESM coordinator bundle and its
-locked npm dependencies, installs `opencode-ai@1.18.29`,
-`@ai-sdk/openai@4.0.73`, and `@ai-sdk/openai-compatible@3.0.54`, and installs
-`zstd` for transcript compatibility. The first provider uses native Responses
-for GPT-6 Luna; the second preserves the compatible Chat Completions path. `entrypoint.sh` accepts
+from the pinned UBI Node 22 builder, copies the ESM coordinator bundle, locked
+npm dependencies, and model-free `opencode-deployment.default.json`, installs
+`opencode-ai@1.18.29`, `@ai-sdk/openai@4.0.73`, and
+`@ai-sdk/openai-compatible@3.0.54`, and installs `zstd` for transcript
+compatibility. The first provider uses native Responses for GPT-6 Luna; the
+second preserves the compatible Chat Completions path. `entrypoint.sh` accepts
 `BOT_EXECUTION_ENGINE=python|coordinator`; omitted or `python` always launches
 the existing Python/Claude runner. Set `coordinator` only with
-`BOT_INSTANCE_ID`, `CYCLE_RUNS_API_URL`, the deployment config path, provider
-secret references, and the existing proxy/memory services available.
+`BOT_INSTANCE_ID`, `CYCLE_RUNS_API_URL`, the proxy/memory services, and valid
+proxy URL/token settings when selecting an OpenAI provider.
+`REHOR_OPENCODE_DEPLOYMENT_CONFIG` is optional and overrides the packaged
+provider defaults.
 
 ## Cycle scheduling and idle state
 

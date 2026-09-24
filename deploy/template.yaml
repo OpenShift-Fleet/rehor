@@ -25,6 +25,10 @@ parameters:
   value: ""
 - name: PROXY_NAME
   value: devbot-proxy
+# Allow the HCC Framework runner to reach the shared OpenAI gateway. Must match
+# BOT_NAME in its instance deployment; other bots remain unchanged by default.
+- name: OPENAI_EGRESS_BOT_NAME
+  value: devbot-framework
 - name: JIRA_SECRET_NAME
   value: devbot-secrets
 - name: GIT_AUTH_ENABLED
@@ -536,6 +540,28 @@ objects:
             kubernetes.io/metadata.name: openshift-customer-monitoring
       ports:
       - port: 9091
+        protocol: TCP
+
+# --- NetworkPolicy: Selected runner may reach the OpenAI model gateway ---
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    name: ${PROXY_NAME}-openai-egress
+    labels:
+      app.kubernetes.io/part-of: devbot
+  spec:
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/name: ${OPENAI_EGRESS_BOT_NAME}
+    policyTypes:
+    - Egress
+    egress:
+    - to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: ${PROXY_NAME}
+      ports:
+      - port: 8450
         protocol: TCP
 
 # --- NetworkPolicy: Memory server accepts ingress from bot pods + OpenShift router ---

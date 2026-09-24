@@ -116,6 +116,7 @@ services:
       - COSTS_API_URL=http://memory-server:8080/api/costs
       - CYCLE_RUNS_API_URL=http://memory-server:8080/api/cycle-runs
       - BOT_DASHBOARD_URL=http://memory-server:8080/api/bot-status
+      - REHOR_MODEL_PROXY_URL=${REHOR_MODEL_PROXY_URL:-http://proxy:8450/v1}
       - REHOR_MODEL_PROXY_TOKEN=${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}
       - OPENCODE_COMMAND=/usr/local/bin/opencode
       - OPENCODE_EXPECTED_VERSION=1.18.29

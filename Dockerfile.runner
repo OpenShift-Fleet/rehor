@@ -116,6 +116,7 @@ COPY --from=coordinator-builder /tmp/node-runtime-libs/ /usr/lib64/
 RUN ldconfig
 COPY --from=coordinator-builder /build/coordinator/dist /home/botuser/app/coordinator/dist
 COPY --from=coordinator-builder /build/coordinator/node_modules /home/botuser/app/coordinator/node_modules
+COPY --from=coordinator-builder /build/coordinator/opencode-deployment.default.json /home/botuser/app/coordinator/opencode-deployment.default.json
 COPY --from=coordinator-builder /opt/opencode /opt/opencode
 RUN ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode
 ENV NODE_PATH=/opt/opencode/lib/node_modules
