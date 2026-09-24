@@ -212,14 +212,14 @@ no-preflight pass-through case, produces an agent prompt.
 
 ## Local coordinator launch
 
-Build and run one cycle from the repository root:
+Build and run one cycle from the repository root. `run-coordinator` builds the
+coordinator and requires the Make variable `INSTANCE_ID`:
 
 ```bash
-make coordinator-build
 BOT_LABEL=hcc-ai-framework BOT_INSTANCE_ID=local-1 \
   OPENCODE_COMMAND="$(command -v opencode)" \
   OPENCODE_EXPECTED_VERSION="$(opencode --version)" \
-  make run-coordinator
+  make run-coordinator LABEL=hcc-ai-framework INSTANCE_ID=local-1
 ```
 
 The default instance selection remains `claude`/`vertex`, so this command is a
