@@ -111,7 +111,7 @@ Pick first candidate w/ matching `repos:` field. At capacity → only `needs-inv
 
 Removing primary label prevents same blocked candidate from triggering future preflight sessions. If Jira update fails, report failure and leave ticket for retry rather than claiming cleanup succeeded.
 
-**During candidate scanning**: Ticket is duplicate or already addressed by another ticket/PR → do NOT silently skip. MUST: `jira_add_comment` explaining which ticket/PR addresses it → `jira_transition_issue` "Release Pending" → `jira_create_issue_link` (duplicates). Then next candidate. Keeps Jira clean, avoids re-scanning.
+**During candidate scanning**: Ticket is duplicate, already addressed, already fixed, not affected, or needs no action → do NOT silently skip. First `task_get` candidate Jira key. If no record exists, `task_add` it with status `done`, repo/branch `n/a`, and metadata containing `last_step: "no_action_triage"`, `reason`, `related_items`, and any `prs`; if record exists, `task_update` it to `done` with same metadata. Then perform required Jira comment, transition, and issue-link actions for that outcome. Then next candidate. Keeps Jira and dashboard history complete without re-queuing work.
 
 #### Memory Housekeeping (idle)
 
