@@ -64,6 +64,15 @@ OpenCode selects `rehor-openai` while Claude remains `vertex`. Keep the existing
 until the canary gates in the [OpenCode rollout runbook](../operations/rehor-146-opencode-canary.md)
 pass.
 
+`BOT_EXECUTION_ENGINE` is separate: it is a runner-deployment environment
+setting, not an `instance.yaml` field. Omitted or `python` (default) launches
+the Python runner; `coordinator` launches the TypeScript coordinator. Within
+that coordinator, `runtime` selects the agent adapter. An OpenCode canary
+therefore needs both `BOT_EXECUTION_ENGINE=coordinator` on the target
+deployment and `runtime: opencode-v1` plus a supported provider in this
+instance's configuration. See [Onboarding a New Instance](../onboarding-new-instance.md#step-4-app-interface-configuration)
+for how to scope the engine to one app-interface deployment.
+
 ## Model Resolution Order
 
 When a cycle starts, explicit instance/deployment overrides take precedence;

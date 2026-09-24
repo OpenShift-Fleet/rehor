@@ -112,6 +112,13 @@ omitted from `instance.yaml`, deployment operators can set `BOT_RUNTIME` and
 available as the rollback while running the [OpenCode canary
 runbook](operations/rehor-146-opencode-canary.md).
 
+`runtime` and `provider` select the agent adapter and provider route inside the
+coordinator; they do not switch the runner engine.
+`BOT_EXECUTION_ENGINE` is a separate setting on the runner Deployment:
+`python` (the default) uses the legacy Python runner, while `coordinator` opts
+that Deployment into the TypeScript coordinator. Step 4 shows how to scope this
+setting to one app-interface deployment.
+
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 
 **Env presets** add tools and runtimes to the bot image. List only what your instance needs — unused presets waste build time and image size.
@@ -386,6 +393,8 @@ resourceTemplates:
       VERTEX_ALLOWED_MODELS: claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
       BOT_CONFIG_REPO: https://github.com/YourOrg/my-bot-instance.git
       BOT_CONFIG_PATH: instance/my-config
+      # Optional, per deployment; requires the runner template to expose it:
+      # BOT_EXECUTION_ENGINE: coordinator
       SLACK_WEBHOOK_URL: 'https://hooks.slack.com/...'
       # --- Per-instance proxy (optional — only if custom Jira, and other creds needed) ---
       # PROXY_IMAGE: quay.io/redhat-services-prod/hcc-platex-services/platform-frontend-ai-dev-proxy
@@ -394,6 +403,42 @@ resourceTemplates:
       # PROXY_NAME: devbot-myteam-proxy
       # JIRA_SECRET_NAME: myteam-jira-secrets
 ```
+
+### Opt one deployment into the coordinator
+
+`BOT_EXECUTION_ENGINE` selects the runner engine for this deployment. It is not
+an `instance.yaml` field, and an app-interface `parameters` entry does not
+automatically become a container environment variable. In the instance repo's
+runner `deploy/template.yaml`, declare a template parameter and forward it to
+the runner container. Keep Python as the default:
+
+```yaml
+parameters:
+- name: BOT_EXECUTION_ENGINE
+  value: python
+```
+
+Add this to the runner container's `env` list:
+
+```yaml
+- name: BOT_EXECUTION_ENGINE
+  value: ${BOT_EXECUTION_ENGINE}
+```
+
+For a canary on only `my-bot-instance`, set this in that resource template's
+`targets[].parameters` map:
+
+```yaml
+BOT_EXECUTION_ENGINE: coordinator
+```
+
+Leave this unset (or `python`) for every other runner. Set it only when the
+selected image contains the coordinator and its required configuration. For
+an OpenCode canary, follow the [OpenCode canary
+runbook](operations/rehor-146-opencode-canary.md). This switch does not select
+OpenCode: set `runtime: opencode-v1` and a supported
+`provider` in this instance's `instance.yaml` (or use the deployment fallbacks
+when those keys are omitted).
 
 ### Add managed resource types
 
@@ -517,6 +562,7 @@ After deploying, verify in order:
 |-----------|----------|-------------|
 | `BOT_IMAGE` | yes | Quay image path |
 | `BOT_IMAGE_TAG` | yes | Git SHA for image tag |
+| `BOT_EXECUTION_ENGINE` | no | `python` by default; set to `coordinator` only for one opted-in runner. The runner template must declare and forward it; see Step 4. |
 | `BOT_NAME` | yes | Deployment name (e.g. `devbot-myteam`) |
 | `BOT_LABEL` | yes | Jira label to filter tickets |
 | `BOT_REPLICAS` | yes | Number of replicas (`'0'` to disable) |
