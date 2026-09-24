@@ -30,6 +30,11 @@ GH_URL_RE = re.compile(r"https://github\.com/[^\s\]\)>,]+/pull/\d+")
 GL_URL_RE = re.compile(r"https://gitlab\.cee\.redhat\.com/[^\s\]\)>,]+/merge_requests/\d+")
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, msg, headers, new_url):
+        return None
+
+
 def load_dotenv(path: Path) -> None:
     """Load simple KEY=VALUE entries without executing .env as shell code."""
     if not path.exists():
@@ -58,7 +63,12 @@ class HttpClient:
         query = urllib.parse.urlencode(params or {})
         url = f"{self.base_url}/{path.lstrip('/')}" + (f"?{query}" if query else "")
         request = urllib.request.Request(url, headers={"Accept": "application/json", **self.headers})
-        with urllib.request.urlopen(request, timeout=60) as response:
+        opener = (
+            urllib.request.build_opener(NoRedirectHandler())
+            if "Authorization" in self.headers
+            else urllib.request.build_opener()
+        )
+        with opener.open(request, timeout=60) as response:
             return json.loads(response.read().decode())
 
 
