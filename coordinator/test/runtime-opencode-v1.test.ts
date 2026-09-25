@@ -2790,6 +2790,27 @@ describe("OpenCode process supervisor", () => {
     expect(requestAborted).toBe(true);
   });
 
+  it("waits for a complete listening line before parsing its advertised URL", async () => {
+    stubSuccessfulReadinessFetch();
+    const child = new FakeChild();
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      startupTimeoutMs: 100,
+      spawnProcess: () => {
+        queueMicrotask(() => {
+          child.stdout.write("opencode server listening on http://127.0.0.1:41");
+          queueMicrotask(() => child.stdout.write("236\n"));
+        });
+        return child as never;
+      },
+    });
+
+    const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+
+    expect(info.port).toBe(41_236);
+    await supervisor.stop();
+  });
+
   it("rejects an advertised port zero", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
