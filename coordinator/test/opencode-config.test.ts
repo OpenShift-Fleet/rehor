@@ -3,12 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  OPENCODE_CONFIG_SCHEMA,
   type OpenCodeV1ConfigInput,
-  renderOpenCodeV1Config,
-  renderOpenCodeV1ConfigForCycle,
+  renderOpenCodeV1ConfigForCycle as renderOpenCodeV1ConfigForCycleUnchecked,
+  renderOpenCodeV1Config as renderOpenCodeV1ConfigUnchecked,
   writeOpenCodeConfig,
 } from "../src/runtimes/opencode-v1";
+import { assertOpenCodeConfigInvariants } from "./opencode-config-invariants";
 
 const packages = [
   { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
@@ -29,6 +29,20 @@ const deploymentFixtures = [
   ["example", new URL("../opencode-deployment.example.json", import.meta.url)],
 ] as const;
 
+function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput) {
+  const rendered = renderOpenCodeV1ConfigUnchecked(input);
+  assertOpenCodeConfigInvariants(rendered.config);
+  return rendered;
+}
+
+function renderOpenCodeV1ConfigForCycle(
+  ...args: Parameters<typeof renderOpenCodeV1ConfigForCycleUnchecked>
+) {
+  const rendered = renderOpenCodeV1ConfigForCycleUnchecked(...args);
+  assertOpenCodeConfigInvariants(rendered.config);
+  return rendered;
+}
+
 describe("OpenCode V1 config renderer", () => {
   it("matches byte-for-byte snapshots for deployment fixtures", async () => {
     const rendered = await Promise.all(
@@ -37,21 +51,60 @@ describe("OpenCode V1 config renderer", () => {
         const result = renderOpenCodeV1Config({
           ...deployment,
           model: "rehor-openai/gpt-6-luna",
+          mcpServers: { snapshot: { type: "http", url: "https://mcp.example/mcp" } },
+          allowedTools: ["Read", "mcp__snapshot__search"],
         });
-        expect(result.config).toMatchObject({
-          $schema: OPENCODE_CONFIG_SCHEMA,
-          share: "disabled",
-          autoupdate: false,
-          lsp: false,
-          model: "rehor-openai/gpt-6-luna",
-          enabled_providers: ["rehor-openai"],
-        });
-        return [name, result.json];
+        return [
+          name,
+          { config: result.config, packageLock: result.packageLock, json: result.json },
+        ];
       }),
     );
 
     expect(rendered).toMatchSnapshot();
   });
+  it("test invariant helper rejects literal secrets and blocked environment references", () => {
+    expect(() =>
+      assertOpenCodeConfigInvariants({
+        provider: { provider: { options: { apiKey: "literal-secret" } } },
+      }),
+    ).toThrow("config.provider.provider.options.apiKey contains a literal secret");
+    expect(() =>
+      assertOpenCodeConfigInvariants({
+        provider: {
+          provider: {
+            name: "{env:JIRA_USERNAME}",
+            models: { model: { name: "{env:OPENCODE_CONFIG}" } },
+          },
+        },
+      }),
+    ).toThrow("config.provider.provider.name references a blocked environment variable");
+    expect(() =>
+      assertOpenCodeConfigInvariants({
+        provider: { provider: { models: { model: { name: "{env:OPENCODE_CONFIG}" } } } },
+      }),
+    ).toThrow(
+      "config.provider.provider.models.model.name references a coordinator-controlled environment variable",
+    );
+  });
+
+  it("rejects blocked environment references in provider and model names", () => {
+    expect(() =>
+      renderOpenCodeV1ConfigUnchecked({
+        model: "provider/model",
+        providers: [{ id: "provider", name: "{env:JIRA_USERNAME}" }],
+      }),
+    ).toThrow("provider.provider.name cannot reference a blocked OpenCode environment variable");
+    expect(() =>
+      renderOpenCodeV1ConfigUnchecked({
+        model: "provider/model",
+        providers: [{ id: "provider", models: { model: { name: "{env:JIRA_USERNAME}" } } }],
+      }),
+    ).toThrow(
+      "provider.provider.models.model.name cannot reference a blocked OpenCode environment variable",
+    );
+  });
+
   it("renders validated provider, MCP, permissions, and pinned package configuration", () => {
     const rendered = renderOpenCodeV1Config({
       model: "rehor-openai-chat/gpt-4.1",

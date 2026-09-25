@@ -8,6 +8,7 @@ import { stableJson } from "../shared";
 import {
   assertHttpUrlTemplate,
   assertMcpUrlEnvironment,
+  assertProviderEnvironment,
   normalizeEnvironmentReference,
   normalizeJsonObject,
   parseEnvironmentReferences,
@@ -228,8 +229,14 @@ function renderProviders(
       );
       entry.npm = packageSpec;
     }
-    if (provider.name !== undefined)
-      entry.name = requireNonEmpty(provider.name, `provider.${provider.id}.name`);
+    if (provider.name !== undefined) {
+      const path = `provider.${provider.id}.name`;
+      entry.name = normalizeProviderString(
+        requireNonEmpty(provider.name, path),
+        path,
+        requiredEnvironment,
+      );
+    }
     if (provider.options !== undefined) {
       entry.options = normalizeJsonObject(
         provider.options,
@@ -262,7 +269,14 @@ function renderModelConfig(
   requiredEnvironment: Set<string>,
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
-  if (model.name !== undefined) output.name = requireNonEmpty(model.name, `${path}.name`);
+  if (model.name !== undefined) {
+    const namePath = `${path}.name`;
+    output.name = normalizeProviderString(
+      requireNonEmpty(model.name, namePath),
+      namePath,
+      requiredEnvironment,
+    );
+  }
   if (model.reasoning !== undefined) {
     if (typeof model.reasoning !== "boolean") {
       throw new OpenCodeConfigValidationError([`${path}.reasoning must be a boolean`]);
@@ -452,6 +466,19 @@ function requireNonEmpty(value: string, path: string): string {
     throw new OpenCodeConfigValidationError([`${path} must be a non-empty string`]);
   }
   return value;
+}
+
+function normalizeProviderString(
+  value: string,
+  path: string,
+  requiredEnvironment: Set<string>,
+): string {
+  const normalized = normalizeEnvironmentReference(value, path);
+  for (const environment of parseEnvironmentReferences(normalized, path)) {
+    assertProviderEnvironment(environment, path);
+    requiredEnvironment.add(environment);
+  }
+  return normalized;
 }
 
 function positiveInteger(value: number, path: string): number {
