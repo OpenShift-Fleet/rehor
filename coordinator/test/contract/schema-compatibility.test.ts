@@ -5,7 +5,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 
-import { parseRehorEvent, parseRehorRun } from "../../src/domain";
+import { parseRehorEvent, parseRehorRun, RuntimeContractError } from "../../src/domain";
 
 async function readJson(relativePath: string): Promise<unknown> {
   return JSON.parse(await readFile(new URL(relativePath, import.meta.url), "utf8"));
@@ -200,6 +200,46 @@ describe("versioned Rehor fixtures", () => {
         policyVersion: "policy-2",
         payload: { input: "hello", tool: "bash" },
       }),
+    );
+  });
+
+  it("clones before validating inherited properties and getters", async () => {
+    const runFixture = (await readJson("../fixtures/rehor-run.v1.json")) as Record<string, unknown>;
+    const eventFixture = (await readJson("../fixtures/rehor-event.v1.json")) as {
+      events: Record<string, unknown>[];
+    };
+    const runWithInheritedId = Object.assign(
+      Object.create({ runId: runFixture.runId }) as Record<string, unknown>,
+      runFixture,
+    );
+    delete runWithInheritedId.runId;
+    const eventInput = eventFixture.events[0];
+    if (!eventInput) throw new Error("event fixture is empty");
+    const eventWithInheritedId = Object.assign(
+      Object.create({ eventId: eventInput.eventId }) as Record<string, unknown>,
+      eventInput,
+    );
+    delete eventWithInheritedId.eventId;
+
+    expect(() => parseRehorRun(runWithInheritedId)).toThrow(RuntimeContractError);
+    expect(() => parseRehorEvent(eventWithInheritedId)).toThrow(RuntimeContractError);
+
+    const withThrowingGetter = (input: Record<string, unknown>, key: string) => {
+      const result = { ...input };
+      Object.defineProperty(result, key, {
+        enumerable: true,
+        get() {
+          throw new TypeError("getter failed");
+        },
+      });
+      return result;
+    };
+
+    expect(() => parseRehorRun(withThrowingGetter(runFixture, "runId"))).toThrow(
+      RuntimeContractError,
+    );
+    expect(() => parseRehorEvent(withThrowingGetter(eventInput, "eventId"))).toThrow(
+      RuntimeContractError,
     );
   });
 
