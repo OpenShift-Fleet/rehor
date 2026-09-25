@@ -18,11 +18,12 @@ memory integrations.
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
+| [OpenShell deployment](deploy/sandbox-template.example.yaml) | OpenShell Sandbox template and filesystem/network boundaries |
 | [Instance Configuration](docs/presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
 | [Custom Workflows](docs/presets/custom-workflows.md) | Guide to building custom workflows for your instance |
 | [Custom Preflight Scripts](docs/presets/custom-preflight.md) | Guide to writing pre-session data-gathering scripts |
-| [Scheduling](docs/scheduling.md) | KEDA cron scaling for bot instances (business hours only) |
+| [Scheduling](docs/scheduling.md) | OpenShell scheduling and legacy KEDA cron scaling |
 
 ## Prerequisites
 
@@ -254,9 +255,9 @@ To update to the latest dev-bot: `git submodule update --remote dev-bot`
 
 ## Running the services
 
-### Option A: OpenShift (recommended)
+### Option A: OpenShift with OpenShell (recommended)
 
-The production deployment. Bot, proxy, and memory server run as separate pods with full credential isolation and network policies. See `deploy/template.yaml` and `OPERATIONS.md` for details.
+The production deployment. Shared proxy and memory server run as services; each bot runs through OpenShell `SandboxTemplate` + `SandboxWarmPool`, scheduled by KEDA. See `deploy/template.yaml`, `deploy/sandbox-template.example.yaml`, and `OPERATIONS.md`.
 
 ### Option B: Bot on host (advanced)
 

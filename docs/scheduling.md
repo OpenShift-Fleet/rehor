@@ -4,18 +4,18 @@ How to auto-scale your bot instance on a time-based schedule using KEDA. This le
 
 ## KEDA Cron Scaler
 
-Scale your bot to 1 replica during a configured time window and 0 outside it. Uses [KEDA](https://keda.sh/) (already installed on the AI cluster).
+Scale your OpenShell `SandboxWarmPool` to 1 replica during a configured time window and 0 outside it. Uses [KEDA](https://keda.sh/). KEDA is already installed on shared platform clusters; standalone namespaces must install it.
 
 ### What it does
 
-- Scales the bot Deployment to `desiredReplicas` during the configured window
+- Scales the `SandboxWarmPool` to `desiredReplicas` during the configured window
 - Outside the window, scales to `minReplicaCount: 0` — the pod is completely stopped
 - No compute costs outside working hours
-- KEDA takes ownership of replica count — `BOT_REPLICAS` in the template becomes the initial value before KEDA kicks in
+- KEDA owns `SandboxWarmPool` replica count; `BOT_REPLICAS` is the initial/off-hours baseline.
 
 ### Adding to your deploy template
 
-Add a `ScaledObject` resource to your `deploy/template.yaml`, after the NetworkPolicy:
+Add a `ScaledObject` resource to `deploy/template.yaml`, after the `SandboxWarmPool`:
 
 ```yaml
 # --- Cron Scaler ---
@@ -28,8 +28,8 @@ Add a `ScaledObject` resource to your `deploy/template.yaml`, after the NetworkP
       app.kubernetes.io/part-of: devbot
   spec:
     scaleTargetRef:
-      apiVersion: apps/v1
-      kind: Deployment
+       apiVersion: extensions.agents.x-k8s.io/v1beta1
+      kind: SandboxWarmPool
       name: ${BOT_NAME}
     minReplicaCount: 0
     maxReplicaCount: 1
@@ -169,16 +169,17 @@ If your team spans multiple timezones, pick the primary one and document the eff
 
 ## App-interface requirements
 
-Your SaaS file (`deploy.yml`) must include `ScaledObject.keda.sh` in `managedResourceTypes`:
+Your SaaS file (`deploy.yml`) must include OpenShell and KEDA resources in `managedResourceTypes`:
 
 ```yaml
 managedResourceTypes:
-- Deployment
+- SandboxTemplate.agents.x-k8s.io
+- SandboxWarmPool.agents.x-k8s.io
 - NetworkPolicy
 - ScaledObject.keda.sh      # required for KEDA
 ```
 
-Without this, app-interface will prune the ScaledObject on the next sync.
+Without these, app-interface will prune the OpenShell resources or ScaledObject on the next sync.
 
 The namespace file (`namespaces/*.yml`) must also allow it — either `managedResourceTypes: []` (allow all, which is the default) or explicitly list `ScaledObject.keda.sh`.
 
