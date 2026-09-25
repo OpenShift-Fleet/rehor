@@ -331,6 +331,27 @@ describe("bounded operations", () => {
     await runtime.stop();
   });
 
+  it("preserves the original deadline error class and name", async () => {
+    class KnownDeadlineError extends Error {
+      constructor() {
+        super("known deadline elapsed");
+        this.name = "KnownDeadlineError";
+      }
+    }
+    const deadlineError = new KnownDeadlineError();
+
+    await expect(
+      boundedOperation(
+        () => new Promise<never>(() => undefined),
+        new AbortController().signal,
+        Date.now() - 1,
+        "test operation",
+        deadlineError,
+      ),
+    ).rejects.toBe(deadlineError);
+    expect(deadlineError.name).toBe("KnownDeadlineError");
+  });
+
   it("does not start an operation after cancellation wins before its microtask", async () => {
     const controller = new AbortController();
     let called = false;
@@ -1303,6 +1324,21 @@ describe("OpenCode runtime", () => {
     expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
     expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
+  });
+
+  it("aborts the OpenCode prompt on coordinator timeout while session deletion stays live", async () => {
+    const promptGate = new Promise<void>(() => undefined);
+    const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
+    const result = await executeRun(runtime, {
+      ...runtimeRun,
+      limits: { ...runtimeRun.limits, timeoutMs: 50 },
+    });
+
+    expect(result.terminal.payload.state).toBe("timed_out");
+    expect(result.error).toBeUndefined();
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
+    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect(calls.delete).toBe(1);
   });
 
   it("leaves run timeout enforcement to the coordinator", async () => {

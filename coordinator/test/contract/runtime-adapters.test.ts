@@ -209,6 +209,7 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
       const events = await pending;
 
       expectLifecycle(events);
+      expect(events.at(-1)?.eventId).not.toMatch(/^coordinator-terminal-/);
       expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     },
   );

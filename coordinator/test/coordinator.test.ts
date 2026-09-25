@@ -340,6 +340,47 @@ describe("coordinator execution", () => {
     expect(result.error).toBe(startupError);
     expect(runtime.stopCalls).toBe(1);
   });
+
+  it("sequences coordinator policy events without colliding with out-of-order runtime events", async () => {
+    const toolEvents = ["one", "two", "three"].flatMap((id, index) => {
+      const startedSequence = 2 + index * 2;
+      return [
+        event({
+          eventId: `tool-${id}-started`,
+          sequence: startedSequence,
+          kind: "tool",
+          payload: { state: "started", toolUseId: id, name: "read" },
+        }),
+        event({
+          eventId: `tool-${id}-completed`,
+          sequence: startedSequence + 1,
+          kind: "tool",
+          payload: { state: "completed", toolUseId: id, name: "read" },
+        }),
+      ];
+    });
+    const outOfOrder = event({
+      eventId: "late-turn-marker",
+      sequence: 6,
+      kind: "run",
+      payload: { state: "turn_started" },
+    });
+    const runtime = new FakeAgentRuntime({
+      events: [event(), ...toolEvents, outOfOrder, terminal(9)],
+    });
+
+    const result = await executeRun(runtime, {
+      ...run,
+      limits: { ...run.limits, maxTurns: 4 },
+    });
+
+    const sequences = result.events.map((current) => current.sequence);
+    expect(new Set(sequences).size).toBe(sequences.length);
+    expect(result.events.filter((current) => current.kind === "policy")).toHaveLength(1);
+    expect(result.events.some((current) => current.eventId === "late-turn-marker")).toBe(true);
+    expect(result.terminal.payload.state).toBe("completed");
+  });
+
   it("keeps tool context from tool-start order when completion events arrive later", async () => {
     const started = event({
       eventId: "task-update-started",

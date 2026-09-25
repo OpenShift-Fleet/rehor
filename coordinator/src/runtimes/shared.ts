@@ -51,12 +51,9 @@ export function boundedOperation<T>(
   if (deadline !== undefined) {
     const remaining = deadline - Date.now();
     if (remaining > 0) {
-      timer = setTimeout(
-        () => deadlineController.abort({ kind: "timed_out", reason: deadlineError }),
-        remaining,
-      );
+      timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
     } else {
-      deadlineController.abort({ kind: "timed_out", reason: deadlineError });
+      deadlineController.abort(deadlineError);
     }
   }
 

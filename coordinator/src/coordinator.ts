@@ -410,6 +410,7 @@ async function consumeEvents(
       const sequencedEvent = sequenceAfterCoordinatorEvents(
         normalizedEvent,
         coordinatorEventOffset,
+        ledger.events,
       );
       const result = ledger.ingest(sequencedEvent);
       if (!result.accepted) continue;
@@ -463,8 +464,16 @@ function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): R
   };
 }
 
-function sequenceAfterCoordinatorEvents(event: RehorEvent, offset: number): RehorEvent {
-  return offset === 0 ? event : { ...event, sequence: event.sequence + offset };
+function sequenceAfterCoordinatorEvents(
+  event: RehorEvent,
+  offset: number,
+  acceptedEvents: readonly RehorEvent[],
+): RehorEvent {
+  if (offset === 0) return event;
+  const acceptedSequences = new Set(acceptedEvents.map(({ sequence }) => sequence));
+  let sequence = event.sequence + offset;
+  while (acceptedSequences.has(sequence)) sequence += 1;
+  return { ...event, sequence };
 }
 
 async function projectEvent(
