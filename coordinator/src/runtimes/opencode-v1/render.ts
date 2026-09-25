@@ -20,7 +20,6 @@ import {
   type OpenCodeConfigFiles,
   OpenCodeConfigValidationError,
   type OpenCodeModelConfig,
-  type OpenCodePackage,
   type OpenCodePackageLock,
   type OpenCodePluginConfig,
   type OpenCodeProviderConfig,
@@ -28,6 +27,20 @@ import {
   type OpenCodeV1DeploymentConfig,
   type RenderedOpenCodeV1Config,
 } from "./types";
+
+export function normalizeDeploymentConfig(
+  deployment: OpenCodeV1DeploymentConfig = {},
+): Omit<OpenCodeV1DeploymentConfig, "provider" | "packageLock"> {
+  const { provider, packageLock, ...canonicalDeployment } = deployment;
+  return {
+    ...canonicalDeployment,
+    providers: [...(deployment.providers ?? []), ...(provider ? [provider] : [])],
+    packages: [
+      ...Object.entries(packageLock?.packages ?? {}).map(([name, version]) => ({ name, version })),
+      ...(deployment.packages ?? []),
+    ],
+  };
+}
 
 export function renderOpenCodeV1ConfigForCycle(
   preparation: Pick<
@@ -37,18 +50,10 @@ export function renderOpenCodeV1ConfigForCycle(
   providerId: string,
   deployment: OpenCodeV1DeploymentConfig = {},
 ): RenderedOpenCodeV1Config {
-  const { provider, packageLock, ...canonicalDeployment } = deployment;
-  const providers = [...(deployment.providers ?? []), ...(provider ? [provider] : [])];
-  const packages: OpenCodePackage[] = [
-    ...Object.entries(packageLock?.packages ?? {}).map(([name, version]) => ({ name, version })),
-    ...(deployment.packages ?? []),
-  ];
   return renderOpenCodeV1Config({
-    ...canonicalDeployment,
+    ...normalizeDeploymentConfig(deployment),
     model: deployment.model ?? preparation.model,
     providerId: deployment.providerId ?? providerId,
-    providers,
-    packages,
     mcpServers: preparation.openCodeMcpServers,
     allowedTools: preparation.allowedTools ?? [],
     optionalMcpServers: preparation.optionalMcpServers ?? [],

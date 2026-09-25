@@ -107,6 +107,30 @@ describe("runtime selection", () => {
     expect(createDefaultRuntimeRegistry().runtimeIds).toEqual(["claude"]);
   });
 
+  it("normalizes legacy provider and package-lock config without prepared cycle data", async () => {
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        config: {
+          model: "legacy-provider/model",
+          providerId: "legacy-provider",
+          provider: { id: "legacy-provider", npm: "x-pkg" },
+          packageLock: { lockfileVersion: 1, packages: { "x-pkg": "1.0.0" } },
+        },
+      }),
+    ]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
+
+    expect(rendered?.config.provider).toEqual({
+      "legacy-provider": {
+        npm: "x-pkg@1.0.0",
+        models: { model: { name: "model" } },
+      },
+    });
+    expect(rendered?.packageLock).toEqual({ lockfileVersion: 1, packages: { "x-pkg": "1.0.0" } });
+  });
+
   it("rejects invalid prepared OpenCode policy before starting the supervisor", async () => {
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
