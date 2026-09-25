@@ -1,8 +1,8 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { classifyDiagnostic } from "../../diagnostics";
 import { type Logger, nullLogger, safeText } from "../../log";
 
@@ -15,30 +15,19 @@ import {
 } from "../shared";
 import { type RenderedOpenCodeV1Config, writeOpenCodeConfig } from "./config";
 
+import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
 import {
-  buildOpenCodeEnvironment,
-  createOpenCodeFetch,
-  type OpenCodeEnvironmentOptions,
-  type OpenCodeFetch,
-} from "./environment";
+  HttpOpenCodeReadiness,
+  matchesVersion,
+  type OpenCodeHealth,
+  OpenCodeReadinessError,
+} from "./readiness";
+import { OpenCodeWorkspaceOwnershipError, resolveApprovedWorkspace } from "./workspace";
 
 /** Pinned because state/config isolation is verified against this CLI contract. */
 export const OPENCODE_VERSION = "1.18.29" as const;
 const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
-
-/** Capabilities provided by the pinned server/SDK protocol, not /global/health. */
-export const OPENCODE_V1_CAPABILITIES = ["sse", "sessions"] as const;
-
-export interface OpenCodeHealth {
-  healthy: boolean;
-  version: string;
-  capabilities?: readonly string[];
-}
-
-export interface OpenCodeReadiness {
-  check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth>;
-}
 
 export interface OpenCodeServerInfo extends OpenCodeHealth {
   baseUrl: string;
@@ -62,18 +51,11 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
   workspaceOwnerUid?: number;
-  requiredCapabilities?: readonly string[];
-  /** Probe the process group belonging to the child PID. */
-  processGroupExists?: (pid: number) => boolean;
   /** Bound verification after SIGKILL when a group ignores the grace signal. */
   killVerificationTimeoutMs?: number;
   /** Optional caller-owned state directory; otherwise one is created per start. */
   stateDirectory?: string;
-  readiness?: OpenCodeReadiness;
-  /** Trusted direct-loopback transport override for readiness checks. */
-  fetch?: OpenCodeFetch;
   spawnProcess?: OpenCodeSpawn;
-  signalProcess?: OpenCodeSignalProcess;
 }
 
 export type OpenCodeSpawn = (
@@ -82,39 +64,12 @@ export type OpenCodeSpawn = (
   options: SpawnOptions,
 ) => ChildProcess;
 
-export type OpenCodeSignalProcess = (pid: number, signal: NodeJS.Signals) => void;
-
 type RequiredOpenCodeSupervisorOption =
   | "command"
   | "hostname"
   | "startupTimeoutMs"
   | "shutdownTimeoutMs"
   | "killVerificationTimeoutMs";
-
-export class OpenCodeReadinessError extends Error {
-  constructor(
-    message: string,
-    readonly deterministic = false,
-  ) {
-    super(message);
-    this.name = "OpenCodeReadinessError";
-  }
-}
-
-/** Runner-owned setup error: only validated filesystem metadata is retained. */
-export class OpenCodeWorkspaceOwnershipError extends OpenCodeReadinessError {
-  constructor(
-    readonly directory: string,
-    readonly actualUid: number,
-    readonly expectedUid: number,
-  ) {
-    super(
-      `OpenCode worktree path ${directory} is owned by UID ${actualUid}, expected ${expectedUid}`,
-      true,
-    );
-    this.name = "OpenCodeWorkspaceOwnershipError";
-  }
-}
 
 /** The OpenCode process group survived SIGKILL; its processes may leak. */
 export class OpenCodeProcessLeakError extends Error {
@@ -140,7 +95,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     OpenCodeSupervisorOptions;
   private child?: ChildProcess;
   private server?: OpenCodeServerInfo;
-  private stopping = false;
   private stopPromise?: Promise<void>;
   private exited = false;
   private termSent = false;
@@ -285,14 +239,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         startupSignal,
         startupDeadline,
       );
-      const missingCapabilities = (this.options.requiredCapabilities ?? []).filter(
-        (capability) => !(OPENCODE_V1_CAPABILITIES as readonly string[]).includes(capability),
-      );
-      if (missingCapabilities.length > 0) {
-        throw new OpenCodeReadinessError(
-          `OpenCode readiness missing capabilities: ${missingCapabilities.join(", ")}`,
-        );
-      }
       const parsed = new URL(baseUrl);
       this.server = {
         ...health,
@@ -347,9 +293,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       await this.cleanupStateDirectory();
       return;
     }
-    if (this.stopping) return;
-
-    this.stopping = true;
     const child = this.child;
     try {
       const groupExists = (): boolean => this.processGroupExists(child);
@@ -368,7 +311,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       this.outputCleanup?.();
       this.child = undefined;
       this.server = undefined;
-      this.stopping = false;
       await this.cleanupStateDirectory();
     }
   }
@@ -383,19 +325,19 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
     if (signal === "SIGTERM") this.termSent = true;
-    signalProcessTree(child, signal, this.options.signalProcess);
+    signalProcessTree(child, signal);
   }
 
   private processGroupExists(child: ChildProcess): boolean {
     if (process.platform === "win32" || !child.pid) return false;
-    return (this.options.processGroupExists ?? defaultProcessGroupExists)(child.pid);
+    return defaultProcessGroupExists(child.pid);
   }
 
   private observeExit(child: ChildProcess): Promise<void> {
     return new Promise((resolve, reject) => {
       const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
         this.exited = true;
-        if (!this.stopping && !this._crashError) {
+        if (!this.termSent && !this._crashError) {
           const error = new Error(
             this.server
               ? `OpenCode server crashed after startup (code=${code ?? "null"}, signal=${signal ?? "none"})`
@@ -410,7 +352,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onError = (error: Error): void => {
         this.exited = true;
         const safeError = redactError(error);
-        if (!this.stopping) {
+        if (!this.termSent && !this._crashError) {
           this._crashError = this.withStartupOutput(safeError);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
@@ -581,7 +523,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     signal: AbortSignal,
     deadline: number,
   ): Promise<OpenCodeHealth> {
-    const readiness = this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch);
+    const readiness = new HttpOpenCodeReadiness();
     let lastError: unknown;
 
     while (Date.now() < deadline) {
@@ -628,148 +570,6 @@ export function appendBoundedOpenCodeOutput(output: string, chunk: Buffer | stri
   return `${output}${chunk.toString()}`.slice(-STARTUP_OUTPUT_LIMIT);
 }
 
-export class HttpOpenCodeReadiness implements OpenCodeReadiness {
-  private readonly fetchImpl: OpenCodeFetch;
-
-  constructor(fetchImpl?: OpenCodeFetch) {
-    this.fetchImpl = createOpenCodeFetch(fetchImpl);
-  }
-
-  async check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth> {
-    const healthResponse = await this.fetchImpl(`${baseUrl}/global/health`, { signal });
-    if (!healthResponse.ok) {
-      throw new OpenCodeReadinessError(
-        `OpenCode health returned HTTP ${healthResponse.status} at ${baseUrl}/global/health`,
-      );
-    }
-    const health = await readJson(healthResponse, "health");
-    if (
-      health.healthy !== true ||
-      typeof health.version !== "string" ||
-      health.version.length === 0
-    ) {
-      throw new OpenCodeReadinessError(
-        "OpenCode health response must contain healthy=true and version",
-      );
-    }
-
-    const pathUrl = new URL(`${baseUrl}/path`);
-    pathUrl.searchParams.set("directory", directory);
-    const pathResponse = await this.fetchImpl(pathUrl, { signal });
-    if (!pathResponse.ok) {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check returned HTTP ${pathResponse.status} at ${pathUrl}`,
-      );
-    }
-    const path = await readJson(pathResponse, "path");
-    if (typeof path.directory !== "string") {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check resolved ${String(path.directory)} instead of ${directory}`,
-        true,
-      );
-    }
-    const [expectedDirectory, actualDirectory] = await Promise.all([
-      realpathOrOriginal(directory),
-      realpathOrOriginal(path.directory),
-    ]);
-    if (actualDirectory !== expectedDirectory) {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check resolved ${path.directory} instead of ${directory}`,
-        true,
-      );
-    }
-
-    const capabilities = parseCapabilities(health.capabilities);
-    return {
-      healthy: true,
-      version: health.version,
-      ...(capabilities ? { capabilities } : {}),
-    };
-  }
-}
-
-async function resolveApprovedWorkspace(
-  directory: string,
-  workspaceRoot: string | undefined,
-  workspaceOwnerUid: number | undefined,
-): Promise<string> {
-  if (!isAbsolute(directory)) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path must be absolute, got ${directory}`,
-      true,
-    );
-  }
-  if (!workspaceRoot) {
-    throw new OpenCodeReadinessError("OpenCode workspace root is required", true);
-  }
-  if (!isAbsolute(workspaceRoot)) {
-    throw new OpenCodeReadinessError(
-      `OpenCode workspace root must be absolute, got ${workspaceRoot}`,
-      true,
-    );
-  }
-
-  let canonicalRoot: string;
-  let canonicalDirectory: string;
-  try {
-    [canonicalRoot, canonicalDirectory] = await Promise.all([
-      realpath(workspaceRoot),
-      realpath(directory),
-    ]);
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path must resolve to an accessible directory${detail}`,
-      true,
-    );
-  }
-
-  const relativeDirectory = relative(canonicalRoot, canonicalDirectory);
-  if (
-    relativeDirectory !== "" &&
-    (relativeDirectory === ".." ||
-      relativeDirectory.startsWith(`..${pathSeparator()}`) ||
-      isAbsolute(relativeDirectory))
-  ) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path ${canonicalDirectory} is outside approved workspace root ${canonicalRoot}`,
-      true,
-    );
-  }
-
-  let directoryStats: Awaited<ReturnType<typeof stat>>;
-  try {
-    directoryStats = await stat(canonicalDirectory);
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new OpenCodeReadinessError(`OpenCode worktree path must be stat-able${detail}`, true);
-  }
-  if (!directoryStats.isDirectory()) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path is not a directory: ${canonicalDirectory}`,
-      true,
-    );
-  }
-
-  const expectedOwnerUid = workspaceOwnerUid ?? currentUserUid();
-  if (expectedOwnerUid !== undefined && directoryStats.uid !== expectedOwnerUid) {
-    throw new OpenCodeWorkspaceOwnershipError(
-      canonicalDirectory,
-      directoryStats.uid,
-      expectedOwnerUid,
-    );
-  }
-  return canonicalDirectory;
-}
-
-function currentUserUid(): number | undefined {
-  return typeof process.getuid === "function" ? process.getuid() : undefined;
-}
-
-function pathSeparator(): string {
-  return process.platform === "win32" ? "\\" : "/";
-}
-
 function defaultSpawn(
   command: string,
   args: readonly string[],
@@ -790,15 +590,10 @@ function assertApprovedHostname(hostname: string): void {
   }
 }
 
-function signalProcessTree(
-  child: ChildProcess,
-  signal: NodeJS.Signals,
-  injectedSignal?: OpenCodeSignalProcess,
-): void {
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid && process.platform !== "win32") {
     try {
-      const signalProcessFn = injectedSignal ?? signalProcess;
-      signalProcessFn(-child.pid, signal);
+      signalProcess(-child.pid, signal);
       return;
     } catch (error) {
       if (!isNoSuchProcess(error)) throw error;
@@ -834,41 +629,6 @@ export function hashOpenCodeConfig(config: Readonly<Record<string, unknown>>): s
   return createHash("sha256").update(stableJson(config)).digest("hex");
 }
 
-function parseCapabilities(value: unknown): readonly string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new OpenCodeReadinessError("OpenCode health capabilities must be an array of strings");
-  }
-  return value;
-}
-
-function matchesVersion(version: string, expected: string | RegExp): boolean {
-  if (typeof expected === "string") return version === expected;
-  expected.lastIndex = 0;
-  return expected.test(version);
-}
-
-async function realpathOrOriginal(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
-async function readJson(response: Response, name: string): Promise<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch {
-    throw new OpenCodeReadinessError(`OpenCode ${name} response was not JSON`);
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new OpenCodeReadinessError(`OpenCode ${name} response was not an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(abortReason(signal));
   return new Promise((resolve, reject) => {
@@ -897,12 +657,10 @@ function waitForExit(
     let leaderExited = alreadyExited;
     let graceTimer: NodeJS.Timeout | undefined;
     let verificationTimer: NodeJS.Timeout | undefined;
-    let pollTimer: NodeJS.Timeout | undefined;
 
     const cleanup = (): void => {
       if (graceTimer) clearTimeout(graceTimer);
       if (verificationTimer) clearTimeout(verificationTimer);
-      if (pollTimer) clearInterval(pollTimer);
       child.removeListener("close", onExit);
       child.removeListener("exit", onExit);
       child.removeListener("error", onError);
@@ -919,11 +677,10 @@ function waitForExit(
       cleanup();
       reject(error instanceof Error ? error : new Error(String(error)));
     };
-    const groupGone = (): boolean => leaderExited && !processGroupExists();
     const check = (): void => {
-      if (settled) return;
+      if (settled || !leaderExited) return;
       try {
-        if (groupGone()) finish();
+        if (!processGroupExists()) finish();
       } catch (error) {
         fail(error);
       }
@@ -934,8 +691,6 @@ function waitForExit(
     };
     const onError = (error: Error): void => {
       leaderExited = true;
-      // An error means the leader cannot be waited on. Descendants still get
-      // the same group grace period and liveness check.
       check();
       if (settled) return;
       try {
@@ -945,6 +700,8 @@ function waitForExit(
       }
     };
     const forceKill = (): void => {
+      if (settled) return;
+      check();
       if (settled) return;
       try {
         onTimeout();
@@ -956,9 +713,7 @@ function waitForExit(
       if (settled) return;
       verificationTimer = setTimeout(() => {
         check();
-        if (!settled) {
-          fail(new OpenCodeProcessLeakError());
-        }
+        if (!settled) fail(new OpenCodeProcessLeakError());
       }, killVerificationTimeoutMs);
     };
 
@@ -967,7 +722,6 @@ function waitForExit(
       child.once("exit", onExit);
       child.once("error", onError);
     }
-    pollTimer = setInterval(check, 10);
     graceTimer = setTimeout(forceKill, timeoutMs);
     check();
   });
