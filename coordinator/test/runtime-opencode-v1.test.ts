@@ -2633,6 +2633,26 @@ describe("OpenCode process supervisor", () => {
     );
   });
 
+  it("aborts mid-startup when the caller cancels before the listener line", async () => {
+    const child = new FakeChild();
+    const caller = new AbortController();
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      startupTimeoutMs: 1_000,
+      spawnProcess: () => {
+        queueMicrotask(() => caller.abort(new Error("caller cancelled startup")));
+        return child as never;
+      },
+    });
+
+    await expect(supervisor.start(TEST_WORKSPACE, caller.signal)).rejects.toThrow(
+      "caller cancelled startup",
+    );
+    expect(child.killedWith).toBe("SIGTERM");
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.stderr.listenerCount("data")).toBe(0);
+  });
+
   it("does not retry a deterministic path mismatch", async () => {
     const child = new FakeChild();
     let requests = 0;
@@ -2975,6 +2995,70 @@ describe("OpenCode process supervisor", () => {
       await supervisor.stop();
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "kills a descendant that outlives a crashed leader and verifies the group is gone",
+    async () => {
+      stubSuccessfulReadinessFetch();
+      const directory = await mkdtemp(join(tmpdir(), "opencode-descendant-"));
+      const descendantPidPath = join(directory, "descendant.pid");
+      const descendantSource =
+        'process.on("SIGTERM", () => {}); setInterval(() => {}, 1_000); process.stdout.write("ready");';
+      const source = `
+        const fs = require("node:fs");
+        const { spawn } = require("node:child_process");
+        const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(descendantSource)}], {
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        descendant.stdout.once("data", () => {
+          if (!descendant.pid) throw new Error("descendant PID missing");
+          fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
+          console.log("server listening on http://127.0.0.1:41236");
+          setTimeout(() => process.exit(1), 500);
+        });
+      `;
+      let leader: ReturnType<typeof spawn> | undefined;
+      const supervisor = createTestSupervisor({
+        command: "/usr/local/bin/opencode-test",
+        startupTimeoutMs: 1_000,
+        shutdownTimeoutMs: 100,
+        killVerificationTimeoutMs: 1_500,
+        spawnProcess: (_command, _args, options) => {
+          leader = spawn(process.execPath, ["-e", source], options);
+          return leader;
+        },
+      });
+
+      try {
+        await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+        const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
+        const crashSignal = supervisor.crashSignal;
+        if (!crashSignal.aborted) {
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = (): void => {
+              clearTimeout(timeout);
+              resolve();
+            };
+            const timeout = setTimeout(() => {
+              crashSignal.removeEventListener("abort", onAbort);
+              reject(new Error("OpenCode crash was not observed"));
+            }, 1_500);
+            crashSignal.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+
+        expect(leader?.exitCode).toBe(1);
+        expect(() => process.kill(descendantPid, 0)).not.toThrow();
+        const startedAt = Date.now();
+        await supervisor.stop();
+        expect(Date.now() - startedAt).toBeLessThan(1_500);
+        expect(() => process.kill(descendantPid, 0)).toThrow();
+      } finally {
+        await supervisor.stop().catch(() => undefined);
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects a relative binary path before spawning a child", () => {
     expect(() => new OpenCodeServerSupervisor({ command: "opencode" })).toThrow(
