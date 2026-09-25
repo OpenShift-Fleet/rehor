@@ -1,7 +1,6 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { classifyDiagnostic } from "../../diagnostics";
@@ -54,7 +53,6 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   logger?: Logger;
   command?: string;
   hostname?: string;
-  port?: number;
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
@@ -76,7 +74,6 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   fetch?: OpenCodeFetch;
   spawnProcess?: OpenCodeSpawn;
   signalProcess?: OpenCodeSignalProcess;
-  allocatePort?: () => Promise<number>;
 }
 
 export type OpenCodeSpawn = (
@@ -223,8 +220,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
     const configHash = this.renderedConfig?.hash;
 
-    const allocatePortFn = this.options.allocatePort ?? allocatePort;
-    const port = this.options.port ?? (await allocatePortFn());
     const stateDirectory = await this.prepareStateDirectory();
     const environment = buildOpenCodeEnvironment({
       ...this.options,
@@ -253,7 +248,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const args = [
       "serve",
       `--hostname=${this.options.hostname}`,
-      `--port=${port}`,
+      "--port=0",
       "--print-logs",
       `--log-level=${(this.options.base ?? process.env).DEBUG === "true" ? "DEBUG" : "INFO"}`,
     ];
@@ -283,7 +278,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const startupSignal = AbortSignal.any([signal, this.crashSignal]);
     const startupDeadline = Date.now() + this.options.startupTimeoutMs;
     try {
-      const baseUrl = await this.waitForListening(child, startupSignal, port, startupDeadline);
+      const baseUrl = await this.waitForListening(child, startupSignal, startupDeadline);
       const health = await this.waitForReadiness(
         baseUrl,
         workspaceDirectory,
@@ -444,7 +439,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private waitForListening(
     child: ChildProcess,
     signal: AbortSignal,
-    expectedPort: number,
     deadline: number,
   ): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -524,10 +518,11 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
               );
               return;
             }
-            if (url.port !== String(expectedPort)) {
+            const port = Number(url.port);
+            if (!url.port || !Number.isInteger(port) || port < 1 || port > 65_535) {
               finish(
                 new OpenCodeReadinessError(
-                  `OpenCode server advertised unapproved port ${url.port || "default"}; expected ${expectedPort}`,
+                  `OpenCode server advertised invalid port ${url.port || "default"}`,
                 ),
               );
               return;
@@ -781,18 +776,6 @@ function defaultSpawn(
   options: SpawnOptions,
 ): ChildProcess {
   return spawn(command, [...args], options);
-}
-
-async function allocatePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const address = server.address();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  if (!address || typeof address === "string") throw new Error("failed to allocate OpenCode port");
-  return address.port;
 }
 
 function assertConfiguredBinary(command: string): void {
