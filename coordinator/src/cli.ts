@@ -8,6 +8,7 @@ import { CoordinatorHealthServer } from "./adapters/health";
 import { coordinatorExitCode } from "./cli-result";
 import { loadOpenCodeDeploymentConfig } from "./deployment-config";
 import { runCoordinator } from "./runner";
+import { shutdownAbortReason } from "./utils";
 
 interface CliOptions {
   label: string;
@@ -50,7 +51,7 @@ async function main(): Promise<number> {
   await health.start();
 
   const shutdown = new AbortController();
-  const onSignal = (): void => shutdown.abort("process signal");
+  const onSignal = (signal: NodeJS.Signals): void => shutdown.abort(shutdownAbortReason(signal));
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
 

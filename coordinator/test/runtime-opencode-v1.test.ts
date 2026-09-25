@@ -1014,7 +1014,7 @@ describe("OpenCode runtime", () => {
     });
   });
 
-  it("fails the run when completed-session cleanup reports an SDK error", async () => {
+  it("keeps a completed session completed and reports a cleanup failure as a diagnostic", async () => {
     const { runtime } = fakeRuntime({
       deleteError: new Error("delete rejected"),
       events: [
@@ -1028,9 +1028,12 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.find((event) => event.kind === "error")?.payload).toMatchObject({
+    expect(events.map((event) => event.kind)).toEqual(["run", "run", "cleanup", "terminal"]);
+    expect(events.find((event) => event.kind === "cleanup")?.payload).toEqual({
+      state: "failed",
       message: "delete rejected",
     });
+    expect(events.some((event) => event.kind === "error")).toBe(false);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
   });
 

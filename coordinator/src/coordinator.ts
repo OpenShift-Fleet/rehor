@@ -9,6 +9,7 @@ import {
 } from "./domain";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
+import { abortReasonKind, isRecord } from "./utils";
 
 export enum CoordinatorAbortKind {
   Cancelled = "cancelled",
@@ -356,12 +357,24 @@ function terminalState(
 }
 
 function terminalReason(cause: AbortCause | undefined, failure: unknown): string {
-  if (cause?.kind === CoordinatorAbortKind.TimedOut) return String(cause.reason ?? "run timed out");
+  if (cause?.kind === CoordinatorAbortKind.TimedOut)
+    return causeText(cause.reason, "run timed out");
   if (cause?.kind === CoordinatorAbortKind.Shutdown)
-    return String(cause.reason ?? "shutdown requested");
+    return causeText(cause.reason, "shutdown requested");
   if (cause?.kind === CoordinatorAbortKind.Cancelled)
-    return String(cause.reason ?? "run cancelled");
+    return causeText(cause.reason, "run cancelled");
   return describeError(failure ?? new CoordinatorError("runtime ended without terminal event"));
+}
+
+/** Human-readable abort reason; structured `{ kind, reason }` values unwrap to their detail. */
+function causeText(reason: unknown, fallback: string): string {
+  if (reason === undefined || reason === null) return fallback;
+  if (reason instanceof Error) return reason.message;
+  if (isRecord(reason)) {
+    if (reason.reason !== undefined) return causeText(reason.reason, fallback);
+    return typeof reason.kind === "string" ? reason.kind : fallback;
+  }
+  return String(reason);
 }
 
 function nextSequence(events: readonly RehorEvent[]): number {
@@ -374,23 +387,32 @@ function inferAbortKind(reason: unknown): CoordinatorAbortKind {
   if (reason instanceof Error && reason.name === "TimeoutError") {
     return CoordinatorAbortKind.TimedOut;
   }
-  if (reason === "shutdown" || reason === "SIGINT" || reason === "SIGTERM") {
+  // Structured reasons (`{ kind: "shutdown", reason }`) come from the loop's
+  // combined signal; bare strings from direct callers.
+  const kind = abortReasonKind(reason);
+  if (
+    kind === "shutdown" ||
+    kind === "interrupt" ||
+    kind === "interrupted" ||
+    kind === "SIGINT" ||
+    kind === "SIGTERM"
+  ) {
     return CoordinatorAbortKind.Shutdown;
   }
-  if (reason === "timeout" || reason === "timed_out") return CoordinatorAbortKind.TimedOut;
+  if (kind === "timeout" || kind === "timed_out") return CoordinatorAbortKind.TimedOut;
   return CoordinatorAbortKind.Cancelled;
 }
 
 function abortMessage(cause: AbortCause): string {
   switch (cause.kind) {
     case CoordinatorAbortKind.TimedOut:
-      return String(cause.reason ?? "run timed out");
+      return causeText(cause.reason, "run timed out");
     case CoordinatorAbortKind.Shutdown:
-      return String(cause.reason ?? "shutdown requested");
+      return causeText(cause.reason, "shutdown requested");
     case CoordinatorAbortKind.Cancelled:
-      return String(cause.reason ?? "run cancelled");
+      return causeText(cause.reason, "run cancelled");
     case CoordinatorAbortKind.Failed:
-      return String(cause.reason ?? "run failed");
+      return causeText(cause.reason, "run failed");
   }
 }
 

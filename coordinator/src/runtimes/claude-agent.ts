@@ -25,6 +25,15 @@ export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk
 export type ClaudeSettingSource = "user" | "project" | "local";
 export type ClaudeMcpServer = McpServerConfig;
 
+/**
+ * Minimal shape of the SDK `query()` entry point. Injected by tests and the
+ * runtime contract suite; production uses the Claude Agent SDK.
+ */
+export type ClaudeQueryFunction = (request: {
+  prompt: string;
+  options: Record<string, unknown>;
+}) => AsyncIterable<unknown> & { close(): void };
+
 /** Configuration owned by the adapter; Claude SDK types do not cross this boundary. */
 export interface ClaudeAgentRuntimeOptions {
   sdkVersion?: string;
@@ -37,7 +46,11 @@ export interface ClaudeAgentRuntimeOptions {
   persistSession?: boolean;
   env?: Readonly<Record<string, string | undefined>>;
   additionalDirectories?: readonly string[];
+  /** Replaces the SDK `query()` call; defaults to the Claude Agent SDK. */
+  query?: ClaudeQueryFunction;
 }
+
+const sdkQuery = query as unknown as ClaudeQueryFunction;
 
 const CAPABILITIES: RuntimeCapabilities = {
   runtimeId: "claude-agent-sdk",
@@ -92,6 +105,37 @@ type UsageSnapshot = {
   cost?: number;
 };
 
+/**
+ * Per-model usage built from assistant messages, for runs that end without a
+ * result message. Each API response reports only its own tokens, so responses
+ * are summed. The SDK repeats a response's usage on every content-block
+ * message it streams, so messages sharing an id replace one another.
+ */
+class AssistantUsage {
+  private readonly byModel = new Map<string, Map<string, TokenCounts>>();
+  private anonymous = 0;
+
+  record(model: string, messageId: string | undefined, counts: TokenCounts): void {
+    const responses = this.byModel.get(model) ?? new Map<string, TokenCounts>();
+    responses.set(messageId ?? `anonymous-${++this.anonymous}`, counts);
+    this.byModel.set(model, responses);
+  }
+
+  snapshots(): UsageSnapshot[] {
+    return [...this.byModel].map(([model, responses]) => {
+      const counts: TokenCounts = {};
+      for (const response of responses.values()) {
+        for (const [key, value] of Object.entries(response) as Array<
+          [keyof TokenCounts, number | undefined]
+        >) {
+          if (value !== undefined) counts[key] = (counts[key] ?? 0) + value;
+        }
+      }
+      return { model, counts };
+    });
+  }
+}
+
 /** Claude Agent SDK implementation of the provider-neutral AgentRuntime port. */
 export class ClaudeAgentRuntime implements AgentRuntime {
   private readonly options: ClaudeAgentRuntimeOptions;
@@ -131,7 +175,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         runtime.options.policyVersion ?? "claude-agent-sdk-v1",
       );
       const context: WorkContext = {};
-      const usage = new Map<string, UsageSnapshot>();
+      const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
       const pendingPolicyEvents: RehorEvent[] = [];
       let sessionRef: string | undefined;
@@ -229,7 +273,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           return;
         }
 
-        const sdkQuery = query({
+        const activeQuery = (runtime.options.query ?? sdkQuery)({
           prompt: input.prompt,
           options: {
             abortController: controller,
@@ -256,22 +300,17 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ),
           },
         });
-        state.query = sdkQuery;
+        state.query = activeQuery;
 
-        for await (const message of sdkQuery) {
+        for await (const message of activeQuery) {
           const reference = refFor(message);
 
           if (isResultMessage(message)) {
             for (const event of drainPolicyEvents()) yield event;
             const result = asObject(message);
             const resultUsage = collectResultUsage(result, input.provider.requestedModel);
-            for (const snapshot of resultUsage) {
-              usage.set(snapshot.model, snapshot);
+            for (const snapshot of resultUsage.length > 0 ? resultUsage : usage.snapshots()) {
               yield emitUsage(snapshot, false, result?.is_error === true);
-            }
-            if (resultUsage.length === 0) {
-              for (const snapshot of usage.values())
-                yield emitUsage(snapshot, false, result?.is_error === true);
             }
 
             turns = numberValue(result?.num_turns) ?? turns;
@@ -304,6 +343,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
         if (!terminalEmitted) {
           const wasAborted = signal.aborted || controller.signal.aborted;
+          for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
           yield terminal(
             wasAborted
               ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
@@ -316,7 +356,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         }
       } catch (error) {
         for (const event of drainPolicyEvents()) yield event;
-        for (const snapshot of usage.values()) yield emitUsage(snapshot, true, true);
+        for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
         if (!terminalEmitted) {
           const errorReason = errorMessage(error);
           const wasAborted = signal.aborted || controller.signal.aborted || isAbortError(error);
@@ -352,7 +392,9 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     this.stopped = true;
     if (!this.active) return;
     this.active.stopped = true;
-    if (!this.active.controller.signal.aborted) this.active.controller.abort("runtime stopped");
+    if (!this.active.controller.signal.aborted) {
+      this.active.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
+    }
     const query = this.active.query;
     this.active.query = undefined;
     try {
@@ -462,7 +504,7 @@ function translateMessage(
     reference?: string;
     context: WorkContext;
     toolStarts: Map<string, number>;
-    usage: Map<string, UsageSnapshot>;
+    usage: AssistantUsage;
     requestedModel: string;
   },
 ): RehorEvent[] {
@@ -505,8 +547,8 @@ function translateMessage(
     const model = stringValue(assistant?.model) ?? state.requestedModel;
     const blocks = Array.isArray(assistant?.content) ? assistant.content : [];
     const events: RehorEvent[] = [];
-    const partialUsage = usageFromRecord(model, asObject(assistant?.usage));
-    if (partialUsage) state.usage.set(model, partialUsage);
+    const responseUsage = usageFromRecord(model, asObject(assistant?.usage));
+    if (responseUsage) state.usage.record(model, stringValue(assistant?.id), responseUsage.counts);
 
     for (const block of blocks) {
       const value = asObject(block);
@@ -676,7 +718,16 @@ function isAbortError(value: unknown): boolean {
 function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
   const kind = abortKind(reason);
   if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  if (kind === "interrupt" || kind === "interrupted") return "interrupted";
+  // A process shutdown interrupts the attempt; it was not cancelled by the caller.
+  if (
+    kind === "shutdown" ||
+    kind === "SIGTERM" ||
+    kind === "SIGINT" ||
+    kind === "interrupt" ||
+    kind === "interrupted"
+  ) {
+    return "interrupted";
+  }
   const text = abortReasonText(abortCauseReason(reason)).toLowerCase();
   if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out")) {
     return "timed_out";

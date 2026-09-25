@@ -76,9 +76,20 @@ selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
 terminal event after preserving all accepted partial events. Timeout, caller
 cancellation, and shutdown signals map to `timed_out`, `cancelled`, and
-`interrupted` terminal states respectively. Projection hooks receive normalized
-events for the existing status, transcript, usage, and cost writers; they do
-not receive provider SDK objects.
+`interrupted` terminal states respectively. A shutdown keeps that meaning
+through the loop's combined signal: SIGTERM/SIGINT abort it with a
+`{ kind: "shutdown" }` reason, which both the coordinator and the runtime
+adapters classify as `interrupted` whatever the free-text reason says.
+Projection hooks receive normalized events for the existing status, transcript,
+usage, and cost writers; they do not receive provider SDK objects.
+
+Every production adapter emits `run` `{ state: "started" }` first, before any
+setup that can fail, and exactly one terminal event last. A completed terminal
+is never paired with an `error` event: if releasing an OpenCode session fails
+after the session completed, the adapter reports it as a `cleanup` event
+(`{ state: "failed", message, resourceLeak? }`) and the attempt stays
+`completed`. When a Claude run ends without a result message, its partial usage
+is the sum of every API response seen so far, not only the last one.
 
 `LegacyCompatibilityProjection` is the first compatibility mapping. It writes
 through transport-neutral ports for cycle runs, status, costs, transcript
@@ -346,7 +357,9 @@ cost data when an adapter emits partial usage events.
 - `src/projections/` — legacy compatibility mappings for cycle outputs
 - `src/testing/` — deterministic fake runtime for contract tests
 - `schema/` — versioned JSON wire schemas
-- `test/contract/` — lifecycle, schema, and compatibility tests
+- `test/contract/` — lifecycle, schema, and compatibility tests; `runtime-adapters.test.ts`
+  runs the AgentRuntime contract against the Claude and OpenCode adapters with
+  scripted SDK/server boundaries (`runtime-harnesses.ts`)
 
 ## Development
 

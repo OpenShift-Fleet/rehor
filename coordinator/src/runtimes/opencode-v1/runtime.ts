@@ -214,6 +214,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     );
 
     try {
+      // Emit before any setup can fail so every attempt, including one that
+      // never reaches a session, has a started record.
+      yield factory("run", { state: "started" });
       if (renderedConfig === undefined || effectiveModel === undefined) {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
@@ -281,7 +284,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         usageSnapshots: new Map(),
       };
 
-      yield factory("run", { state: "started" }, { runtimeSessionRef: sessionId });
       promptAttempted = true;
       unwrapSdkResponse(
         await boundedOperation(
@@ -413,7 +415,22 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       );
     }
 
-    if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
+    if (outcome.state === "completed") {
+      // The session's work finished; a cleanup failure does not undo it. Report
+      // it as a diagnostic so the event stream never pairs an `error` event
+      // with a completed terminal.
+      if (cleanupFailure) {
+        yield factory(
+          "cleanup",
+          {
+            state: "failed",
+            message: errorMessage(cleanupFailure) ?? "OpenCode cleanup failed",
+            ...(isResourceLeak(cleanupFailure) ? { resourceLeak: true } : {}),
+          },
+          { runtimeSessionRef: active.sessionId },
+        );
+      }
+    } else if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
       yield factory(
         "error",
         { message: errorMessage(failure) ?? "OpenCode runtime failed" },
@@ -1160,7 +1177,13 @@ function classifyAbort(
   const kind = abortKind(reason);
   if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
   if (kind === "cancel" || kind === "cancelled") return "cancelled";
-  if (kind === "shutdown" || kind === "interrupt" || kind === "interrupted") {
+  if (
+    kind === "shutdown" ||
+    kind === "SIGTERM" ||
+    kind === "SIGINT" ||
+    kind === "interrupt" ||
+    kind === "interrupted"
+  ) {
     return "interrupted";
   }
   if (crash || streamLost) return "interrupted";

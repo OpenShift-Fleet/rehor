@@ -8,6 +8,7 @@ import {
   type SleepSignal,
   sleep,
 } from "./scheduler";
+import { shutdownAbortReason } from "./utils";
 
 export enum LoopStopReason {
   Shutdown = "shutdown",
@@ -80,7 +81,9 @@ export function createLoopSignals(
   ): void => {
     if (controller.signal.aborted) return;
     stopReason = kind;
-    controller.abort(reason);
+    // Runtime attempts receive this combined signal, so a shutdown must stay
+    // recognisable as one: "process signal" alone would classify as cancelled.
+    controller.abort(kind === LoopStopReason.Shutdown ? shutdownAbortReason(reason) : reason);
   };
   const watch = (
     signal: AbortSignal | undefined,

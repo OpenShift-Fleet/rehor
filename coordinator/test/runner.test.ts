@@ -4,6 +4,10 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
+
 import { createCompatibilitySink } from "../src/adapters/compatibility";
 import type { CoordinatorResult } from "../src/coordinator";
 import type { PreparedCycleInput } from "../src/cycle-input";
@@ -18,7 +22,10 @@ import {
 import * as runtimeFactory from "../src/runtime-factory";
 import type { OpenCodeV1DeploymentConfig } from "../src/runtimes/opencode-v1";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  queryMock.mockReset();
+});
 
 const prepared: PreparedCycleInput = {
   config: {
@@ -397,6 +404,86 @@ describe("production runner boundary", () => {
         labels: { label: "hcc-ai-framework", phase: "cleanup" },
       }),
     );
+  });
+
+  it("gives the Claude rollback runtime the per-cycle MCP servers and tool list", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+    let sdkOptions: Record<string, unknown> | undefined;
+    queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      sdkOptions = options;
+      const messages = (async function* (): AsyncGenerator<unknown> {
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "Rolled back cycle finished",
+          num_turns: 1,
+          duration_ms: 5,
+          session_id: "session-rollback",
+          uuid: "sdk-result",
+        };
+      })();
+      return Object.assign(messages, { close: vi.fn() });
+    });
+    const bridge = {
+      prepareConfig: async () => ({
+        ...prepared.config,
+        model: "claude-sonnet-4-6",
+        runtimeId: "claude",
+        providerId: "vertex",
+        claudeMdPath: join(directory, "CLAUDE.md"),
+        claudeMdStrategy: InstructionStrategy.Ignore,
+        mcpServers: {
+          "mcp-atlassian": {
+            type: "http" as const,
+            // Python hands over both reference syntaxes; split so Biome accepts the literal.
+            url: "$" + "{JIRA_MCP_URL}",
+            headers: { Authorization: "Bearer {env:JIRA_MCP_TOKEN}" },
+          },
+          "bot-memory": { command: "memory-mcp", args: ["--port", "$" + "{MEMORY_PORT}"] },
+        },
+        allowedTools: ["Read", "Bash", "mcp__mcp-atlassian__*"],
+      }),
+      preflight: async () => ({
+        action: PreflightAction.Start,
+        prompt: "work found",
+        transcript: "work found",
+        scripts: [],
+      }),
+      cleanupBetweenCycles: async () => undefined,
+    };
+
+    const result = await runCoordinator({
+      scriptDir: resolve(process.cwd(), ".."),
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      dataDirectory: directory,
+      lockPath: join(directory, ".lock"),
+      sleepSignalPath: join(directory, "cycle-sleep.json"),
+      bridge,
+      environment: {
+        PATH: "/usr/bin",
+        JIRA_MCP_URL: "https://jira.example/mcp",
+        JIRA_MCP_TOKEN: "jira-token",
+        MEMORY_PORT: "8080",
+      },
+      writers: {},
+      once: true,
+      initialIntervalSeconds: 0,
+      initialIdleIntervalSeconds: 0,
+    });
+
+    expect(result).toMatchObject({ stopReason: "max_cycles", failures: 0 });
+    expect(queryMock).toHaveBeenCalledOnce();
+    expect(sdkOptions?.mcpServers).toEqual({
+      "mcp-atlassian": {
+        type: "http",
+        url: "https://jira.example/mcp",
+        headers: { Authorization: "Bearer jira-token" },
+      },
+      "bot-memory": { command: "memory-mcp", args: ["--port", "8080"] },
+    });
+    expect(sdkOptions?.allowedTools).toEqual(["Read", "Bash", "mcp__mcp-atlassian__*"]);
   });
 
   it("runs one prepared preflight cycle without starting a runtime on skip", async () => {
