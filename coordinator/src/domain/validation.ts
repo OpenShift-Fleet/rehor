@@ -11,7 +11,10 @@ addFormats(ajv);
 const validateRunSchema = ajv.compile(runSchema);
 const validateEventSchema = ajv.compile(eventSchema);
 
-export function parseRehorRun(value: unknown): RehorRun {
+declare const validatedRehorRun: unique symbol;
+export type ValidatedRehorRun = RehorRun & { readonly [validatedRehorRun]: true };
+
+export function parseRehorRun(value: unknown): ValidatedRehorRun {
   const cloned = cloneInput(value, "run");
   assertSchema(validateRunSchema, cloned, "run");
 
@@ -65,7 +68,7 @@ export function parseRehorRun(value: unknown): RehorRun {
         : { maxOutputTokens: run.limits.maxOutputTokens }),
     },
     preflightPayloadRef: run.preflightPayloadRef,
-  };
+  } as ValidatedRehorRun;
 }
 
 export function parseRehorEvent(value: unknown): RehorEvent {

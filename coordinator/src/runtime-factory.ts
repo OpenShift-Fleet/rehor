@@ -3,7 +3,7 @@ import {
   type CoordinatorResult,
   executeRunWithValidatedInput,
 } from "./coordinator";
-import { parseRehorRun, type RehorRun } from "./domain";
+import { parseRehorRun, type RehorRun, type ValidatedRehorRun } from "./domain";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { ConfigPreparationResult } from "./ports/python-bridge";
 import {
@@ -180,7 +180,7 @@ export async function executeConfiguredRun(
 async function executeValidatedSelectedRun(
   registry: RuntimeFactoryRegistry,
   selection: RuntimeSelection,
-  run: RehorRun,
+  run: ValidatedRehorRun,
   options: RuntimeExecutionOptions,
 ): Promise<CoordinatorResult> {
   const { preparedConfig, ...coordinatorOptions } = options;
