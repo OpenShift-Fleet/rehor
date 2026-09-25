@@ -254,6 +254,25 @@ describe("coordinator execution", () => {
     expect(result.error).toBeUndefined();
   });
 
+  it("classifies only a TimeoutError DOMException abort as timed_out", async () => {
+    const cancel = new AbortController();
+    const runtime = new HangingRuntime();
+    const pending = executeRun(runtime, run, { signal: cancel.signal });
+    cancel.abort(new DOMException("deadline elapsed", "TimeoutError"));
+    const result = await pending;
+
+    const untypedCancel = new AbortController();
+    const untypedRuntime = new HangingRuntime();
+    const untypedPending = executeRun(untypedRuntime, run, { signal: untypedCancel.signal });
+    const errorNamedTimeout = new Error("not a DOM timeout");
+    errorNamedTimeout.name = "TimeoutError";
+    untypedCancel.abort(errorNamedTimeout);
+    const untypedResult = await untypedPending;
+
+    expect(result.terminal.payload.state).toBe("timed_out");
+    expect(untypedResult.terminal.payload.state).toBe("cancelled");
+  });
+
   it("maps shutdown to interrupted and cancellation to cancelled", async () => {
     const shutdown = new AbortController();
     const shutdownRuntime = new HangingRuntime();

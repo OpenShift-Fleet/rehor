@@ -54,13 +54,16 @@ export function combineAbortSignals(
   const watch = (signal: AbortSignal | undefined, kind: "shutdown" | "cancelled"): void => {
     if (!signal) return;
     const onAbort = (): void => {
-      abort(
-        kind === "shutdown"
-          ? shutdownAbortReason(signal.reason)
-          : isAbortCause(signal.reason)
-            ? signal.reason
-            : abortCauseFrom(signal.reason, "cancelled"),
-      );
+      if (kind === "shutdown") {
+        const existing = isAbortCause(signal.reason) ? signal.reason : undefined;
+        abort(existing?.kind === "shutdown" ? existing : shutdownAbortReason(signal.reason));
+        return;
+      }
+      if (signal.reason instanceof DOMException && signal.reason.name === "TimeoutError") {
+        abort({ kind: "timed_out", reason: signal.reason });
+        return;
+      }
+      abort(abortCauseFrom(signal.reason, "cancelled"));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     listeners.push(() => signal.removeEventListener("abort", onAbort));

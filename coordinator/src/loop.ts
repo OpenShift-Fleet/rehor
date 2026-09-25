@@ -74,13 +74,22 @@ export function createLoopSignals(
   const combined = combineAbortSignals(options);
   let stopReason: LoopStopReason.Shutdown | LoopStopReason.Cancelled | undefined;
   const onAbort = (): void => {
-    if (combined.cause?.kind === "shutdown") stopReason = LoopStopReason.Shutdown;
-    else if (combined.cause?.kind === "cancelled") stopReason = LoopStopReason.Cancelled;
+    if (options.shutdownSignal?.aborted && combined.cause?.kind === "shutdown") {
+      stopReason = LoopStopReason.Shutdown;
+    } else if (options.signal?.aborted) {
+      stopReason = LoopStopReason.Cancelled;
+    } else if (combined.cause?.kind === "shutdown") {
+      stopReason = LoopStopReason.Shutdown;
+    } else {
+      stopReason = LoopStopReason.Cancelled;
+    }
   };
   if (combined.signal.aborted) onAbort();
   else combined.signal.addEventListener("abort", onAbort, { once: true });
 
   const trigger = (kind: "shutdown" | "cancelled", reason?: unknown): void => {
+    if (combined.signal.aborted) return;
+    stopReason = kind === "shutdown" ? LoopStopReason.Shutdown : LoopStopReason.Cancelled;
     combined.abort({ kind, reason });
   };
 
