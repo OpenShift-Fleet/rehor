@@ -1335,28 +1335,34 @@ describe("OpenCode runtime", () => {
     signalController.abort("cancelled");
     const events = await pending;
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "cancelled" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
     expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
   });
 
-  it("passes the runtime timeout to an active prompt and still stops the server", async () => {
-    const promptGate = new Promise<void>(() => undefined);
-    const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
+  it("leaves run timeout enforcement to the coordinator", async () => {
+    const promptGate = new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const { calls, runtime } = fakeRuntime({
+      promptGate,
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
 
     await runtime.start(new AbortController().signal);
-    const pending = collect(
+    const events = await collect(
       runtime.run(
-        { ...runtimeRun, limits: { ...runtimeRun.limits, timeoutMs: 20 } },
+        { ...runtimeRun, limits: { ...runtimeRun.limits, timeoutMs: 1 } },
         new AbortController().signal,
       ),
     );
-    await waitForCondition(() => calls.prompt.length === 1);
-    const events = await pending;
-    expect(events.at(-1)?.payload).toMatchObject({ state: "timed_out" });
-    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
-    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
   });
 
@@ -1998,7 +2004,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     expect(events.some((event) => event.kind === "persistence")).toBe(true);
     expect(calls.abort).toBe(0);
   });
@@ -2026,7 +2032,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("does not complete from a finished message while the root session remains busy", async () => {
@@ -2052,7 +2058,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("tracks child sessions without letting child idle complete the root run", async () => {
@@ -2177,7 +2183,7 @@ describe("OpenCode runtime", () => {
     });
   });
 
-  it("marks an unreconciled stream loss interrupted and persists partial state", async () => {
+  it("fails an unreconciled stream loss and persists partial state", async () => {
     const { calls, runtime } = fakeRuntime({
       events: [],
       streamError: new Error("SSE disconnected"),
@@ -2189,7 +2195,7 @@ describe("OpenCode runtime", () => {
 
     expect(events.map((event) => event.kind)).toEqual(["run", "persistence", "error", "terminal"]);
     expect(events.find((event) => event.kind === "terminal")?.payload).toMatchObject({
-      state: "interrupted",
+      state: "failed",
     });
     expect(events.find((event) => event.kind === "persistence")?.payload).toMatchObject({
       action: "partial-state",

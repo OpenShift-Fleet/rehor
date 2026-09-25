@@ -565,7 +565,7 @@ describe("ClaudeAgentRuntime", () => {
     expect(result.error).toBeUndefined();
   });
 
-  it("records runtime stop as interrupted", async () => {
+  it("reports runtime stop as failed", async () => {
     let resolveWaiting!: () => void;
     const waiting = new Promise<void>((resolve) => {
       resolveWaiting = resolve;
@@ -592,6 +592,6 @@ describe("ClaudeAgentRuntime", () => {
     await runtime.stop();
     const events = await promise;
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 });

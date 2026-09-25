@@ -2,11 +2,11 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import {
   abortCauseFrom,
-  abortCauseKind,
   createEventFactory,
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
+  type RuntimeTerminalState,
   type TokenCounts,
   type Usage,
 } from "../domain";
@@ -250,7 +250,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       };
 
       const terminal = (
-        stateName: "completed" | "failed" | "interrupted" | "cancelled" | "timed_out",
+        stateName: RuntimeTerminalState,
         resultText?: string,
         reason?: string,
         durationMs = Date.now() - startedAt,
@@ -272,7 +272,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         yield createEvent("run", { state: "started" });
 
         if (signal.aborted) {
-          yield terminal(abortState(signal.reason), undefined, abortReason(signal.reason));
+          yield terminal("failed", undefined, abortReason(signal.reason));
           return;
         }
 
@@ -348,9 +348,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           const wasAborted = signal.aborted || controller.signal.aborted;
           for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
           yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
+            "failed",
             undefined,
             wasAborted
               ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
@@ -366,13 +364,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           const reason = wasAborted
             ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
             : errorReason;
-          yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
-            undefined,
-            reason,
-          );
+          yield terminal("failed", undefined, reason);
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
@@ -716,19 +708,6 @@ function isResultMessage(message: unknown): boolean {
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
-}
-
-function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" | "failed" {
-  switch (abortCauseKind(reason)) {
-    case "shutdown":
-      return "interrupted";
-    case "timed_out":
-      return "timed_out";
-    case "failed":
-      return "failed";
-    default:
-      return "cancelled";
-  }
 }
 
 function abortReason(reason: unknown): string {

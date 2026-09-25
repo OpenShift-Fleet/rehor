@@ -122,12 +122,12 @@ payload shapes cannot drift from TypeScript validation.
 `executeRun()` owns one runtime attempt. It validates the run, starts the
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
-terminal event after preserving all accepted partial events. Timeout, caller
-cancellation, and shutdown signals map to `timed_out`, `cancelled`, and
-`interrupted` terminal states respectively. A shutdown keeps that meaning
-through the loop's combined signal: SIGTERM/SIGINT abort it with a
-`{ kind: "shutdown" }` reason, which both the coordinator and the runtime
-adapters classify as `interrupted` whatever the free-text reason says.
+terminal event after preserving all accepted partial events. The coordinator
+owns run timeouts and maps typed abort causes to terminal states: shutdown to
+`interrupted`, caller cancellation to `cancelled`, timeout
+to `timed_out`, and failed policy aborts to `failed`. The loop preserves typed
+causes through its combined signal; runtime adapters report only `completed` or
+`failed` terminals.
 Projection hooks receive normalized events for the existing status, transcript,
 usage, and cost writers; they do not receive provider SDK objects.
 

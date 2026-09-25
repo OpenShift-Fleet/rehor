@@ -45,6 +45,19 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     expect(result.error).toBeUndefined();
   });
 
+  it("reports an aborted provider run as failed; coordinator owns abort states", async () => {
+    const { runtime, waiting } = harness.blocksUntilAborted();
+    const cancel = new AbortController();
+    await runtime.start(new AbortController().signal);
+    const pending = collect(runtime.run(harness.run, cancel.signal));
+    await waiting;
+    cancel.abort({ kind: "timed_out", reason: "contract timeout" });
+    const events = await pending;
+
+    expectLifecycle(events);
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
+  });
+
   it("emits a started event even when setup fails before a session exists", async () => {
     const result = await executeRun(harness.failsBeforeSession(), harness.run);
 
@@ -125,7 +138,7 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
   });
 
   it.runIf(harness.name !== "fake")(
-    "ends an in-flight run with an interrupted terminal when the runtime is stopped",
+    "reports an in-flight run as failed when the runtime is stopped",
     async () => {
       const { runtime, waiting } = harness.blocksUntilAborted();
       await runtime.start(new AbortController().signal);
@@ -135,7 +148,7 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
       const events = await pending;
 
       expectLifecycle(events);
-      expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+      expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     },
   );
 

@@ -262,7 +262,8 @@ async function consumeEvents(
       if (!isAccepting()) return;
 
       const before = ledger.events.length;
-      const result = ledger.ingest(next.value);
+      const normalizedEvent = mapRuntimeTerminal(next.value, abortState.cause);
+      const result = ledger.ingest(normalizedEvent);
       if (!result.accepted) continue;
 
       const event = ledger.events[before];
@@ -272,6 +273,26 @@ async function consumeEvents(
   } finally {
     await iterator.return?.();
   }
+}
+
+function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): RehorEvent {
+  if (event.kind !== "terminal") return event;
+  const payload = event.payload as TerminalEventPayload;
+  const state = cause
+    ? terminalState(cause, undefined)
+    : payload.state === "completed" || payload.state === "failed"
+      ? payload.state
+      : "failed";
+  if (!cause && payload.state === state) return event;
+  const reason = cause ? terminalReason(cause, undefined) : payload.reason;
+  return {
+    ...event,
+    payload: {
+      ...payload,
+      state,
+      ...(reason === undefined ? {} : { reason }),
+    },
+  };
 }
 
 async function projectEvent(

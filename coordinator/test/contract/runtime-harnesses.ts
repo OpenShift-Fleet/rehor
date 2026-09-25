@@ -60,7 +60,7 @@ export function fakeHarness(): RuntimeContractHarness {
           yield createEvent("run", { state: "started" });
           waiting.resolve();
           await waitForAbort(signal, () => undefined);
-          throw new Error("Fake runtime aborted");
+          yield createEvent("terminal", { state: "failed", reason: "Fake runtime aborted" });
         })();
       return { runtime, waiting: waiting.promise };
     },
