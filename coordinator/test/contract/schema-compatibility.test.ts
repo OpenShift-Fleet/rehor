@@ -44,13 +44,13 @@ describe("versioned Rehor fixtures", () => {
     };
 
     expect(() => parseRehorRun({ ...run, sdk: { leaked: true } })).toThrow(
-      "run does not match schema",
+      /run does not match schema: \/ must NOT have additional properties/,
     );
     expect(() => parseRehorEvent({ ...eventFixture.events[0], occurredAt: "not-a-date" })).toThrow(
-      "event does not match schema",
+      /event does not match schema: \/occurredAt must match format "date-time"/,
     );
     expect(() => parseRehorEvent({ ...eventFixture.events[0], sdk: { leaked: true } })).toThrow(
-      "event does not match schema",
+      /event does not match schema: \/ must NOT have additional properties/,
     );
   });
 
