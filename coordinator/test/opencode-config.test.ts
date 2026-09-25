@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  OpenCodeConfigValidationError,
+  OPENCODE_CONFIG_SCHEMA,
+  type OpenCodeV1ConfigInput,
   renderOpenCodeV1Config,
   renderOpenCodeV1ConfigForCycle,
-  validateOpenCodeV1Config,
   writeOpenCodeConfig,
 } from "../src/runtimes/opencode-v1";
 
@@ -24,7 +24,34 @@ const allowedTools = [
   "mcp__bot-memory__*",
 ];
 
+const deploymentFixtures = [
+  ["default", new URL("../opencode-deployment.default.json", import.meta.url)],
+  ["example", new URL("../opencode-deployment.example.json", import.meta.url)],
+] as const;
+
 describe("OpenCode V1 config renderer", () => {
+  it("matches byte-for-byte snapshots for deployment fixtures", async () => {
+    const rendered = await Promise.all(
+      deploymentFixtures.map(async ([name, path]) => {
+        const deployment = JSON.parse(await readFile(path, "utf8")) as OpenCodeV1ConfigInput;
+        const result = renderOpenCodeV1Config({
+          ...deployment,
+          model: "rehor-openai/gpt-6-luna",
+        });
+        expect(result.config).toMatchObject({
+          $schema: OPENCODE_CONFIG_SCHEMA,
+          share: "disabled",
+          autoupdate: false,
+          lsp: false,
+          model: "rehor-openai/gpt-6-luna",
+          enabled_providers: ["rehor-openai"],
+        });
+        return [name, result.json];
+      }),
+    );
+
+    expect(rendered).toMatchSnapshot();
+  });
   it("renders validated provider, MCP, permissions, and pinned package configuration", () => {
     const rendered = renderOpenCodeV1Config({
       model: "rehor-openai-chat/gpt-4.1",
@@ -221,23 +248,11 @@ describe("OpenCode V1 config renderer", () => {
       expect(rendered.config.plugin).toEqual([`${name}@${version}`]);
       expect(rendered.packageLock).toEqual({ lockfileVersion: 1, packages: { [name]: version } });
 
-      for (const invalid of [`${name}@${version}`, `npm:${name}`]) {
-        expect(() =>
-          validateOpenCodeV1Config(
-            { ...rendered.config, provider: { "rehor-openai": { npm: invalid } } },
-            rendered.packageLock,
-          ),
-        ).toThrow(`must use bare bundled package '${name}'`);
-      }
-      expect(() =>
-        validateOpenCodeV1Config({ ...rendered.config, plugin: [name] }, rendered.packageLock),
-      ).toThrow(`must use pinned package '${name}@${version}'`);
-
       expect(() =>
         renderOpenCodeV1Config({
           model: "rehor-openai/model",
           providers: [{ id: "rehor-openai", npm: `${name}@0.0.1` }],
-          packageLock: rendered.packageLock,
+          packages: [{ name, version }],
         }),
       ).toThrow("conflicting pinned versions");
     }
@@ -255,14 +270,6 @@ describe("OpenCode V1 config renderer", () => {
       expect(rendered.config.provider).toMatchObject({
         "rehor-openai": { npm: `${name}@1.2.3` },
       });
-      for (const npm of [name, `${name}@9.9.9`]) {
-        expect(() =>
-          validateOpenCodeV1Config(
-            { ...rendered.config, provider: { "rehor-openai": { npm } } },
-            rendered.packageLock,
-          ),
-        ).toThrow(`must use pinned package '${name}@1.2.3'`);
-      }
       expect(() =>
         renderOpenCodeV1Config({
           model: "rehor-openai/model",
@@ -286,6 +293,15 @@ describe("OpenCode V1 config renderer", () => {
         }),
       ).toThrow(`cannot reference a blocked OpenCode environment variable '${environment}'`);
     }
+  });
+
+  it("rejects malformed environment variable names", () => {
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        providers: [{ id: "provider", options: { apiKey: "{env:INVALID-NAME}" } }],
+      }),
+    ).toThrow("contains invalid environment variable name 'INVALID-NAME'");
   });
 
   it("rejects provider and plugin references outside the explicit environment allowlist", () => {
@@ -448,6 +464,31 @@ describe("OpenCode V1 config renderer", () => {
     expect(rendered.requiredEnvironment).toEqual([]);
   });
 
+  it("preserves legacy provider and package-lock deployment JSON", () => {
+    const rendered = renderOpenCodeV1ConfigForCycle(
+      {
+        model: "model",
+        mcpServers: {},
+        openCodeMcpServers: {},
+        allowedTools: [],
+        optionalMcpServers: [],
+      },
+      "provider",
+      {
+        provider: { id: "provider", npm: "custom-provider" },
+        packageLock: {
+          lockfileVersion: 1,
+          packages: { "custom-provider": "1.2.3" },
+        },
+      },
+    );
+
+    expect(rendered.config).toMatchObject({
+      model: "provider/model",
+      provider: { provider: { npm: "custom-provider@1.2.3" } },
+    });
+  });
+
   it("skips MCP permissions for servers absent from the active cycle", () => {
     const rendered = renderOpenCodeV1Config({
       model: "provider/model",
@@ -553,13 +594,5 @@ describe("OpenCode V1 config renderer", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("exposes structured validation errors for invalid rendered config", () => {
-    const rendered = renderOpenCodeV1Config({ model: "provider/model" });
-
-    expect(() =>
-      validateOpenCodeV1Config({ ...rendered.config, lsp: true }, rendered.packageLock),
-    ).toThrow(OpenCodeConfigValidationError);
   });
 });
