@@ -18,6 +18,7 @@ import { FakeAgentRuntime } from "../../src/testing/fake-agent-runtime";
  */
 export interface RuntimeContractHarness {
   name: string;
+  enforcesTurnLimit: boolean;
   run: RehorRun;
   /** The provider session finishes successfully. */
   completed(): AgentRuntime;
@@ -48,6 +49,7 @@ export function fakeHarness(): RuntimeContractHarness {
 
   return {
     name: "fake",
+    enforcesTurnLimit: false,
     run,
     completed: () => new FakeAgentRuntime({ events: eventsFor(run) }),
     noWork: () => {
@@ -99,6 +101,7 @@ export function fakeHarness(): RuntimeContractHarness {
               content: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
             }),
           ),
+          createEvent("run", { state: "turn_started" }),
           createEvent("terminal", { state: "completed", resultText: "Contract cycle finished" }),
         ],
       });
@@ -160,6 +163,7 @@ export function claudeHarness(): RuntimeContractHarness {
 
   return {
     name: "claude",
+    enforcesTurnLimit: true,
     run,
     completed: () =>
       new ClaudeAgentRuntime({
@@ -211,51 +215,63 @@ export function claudeHarness(): RuntimeContractHarness {
     },
     toolCalls: (count) =>
       new ClaudeAgentRuntime({
-        query: scripted(async function* () {
-          for (let index = 0; index < count; index += 1) {
-            const toolUseId = `claude-tool-${index}`;
-            yield {
-              type: "assistant",
-              session_id: "session-budget",
-              message: {
-                model: "claude-opus-4-6",
-                content: [
-                  {
-                    type: "tool_use",
-                    id: toolUseId,
-                    name: "mcp__bot-memory__task_update",
-                    input: {
-                      jira_key: "REHOR-146",
-                      repo: "rehor",
-                      status: "pr_open",
-                      summary: "Follow-up A",
-                    },
-                  },
-                ],
-              },
-            };
-            yield {
-              type: "user",
-              session_id: "session-budget",
-              message: [
-                {
-                  type: "tool_result",
-                  tool_use_id: toolUseId,
-                  content: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
-                  is_error: false,
-                },
-              ],
-            };
-          }
-          yield {
-            type: "result",
-            subtype: "success",
-            result: "Contract cycle finished",
-            num_turns: count,
-            session_id: "session-budget",
-            uuid: "budget-result",
+        query: ({ options }) => {
+          const hooks = options.hooks as {
+            PostToolUse?: Array<{
+              hooks: Array<(...args: unknown[]) => Promise<Record<string, unknown>>>;
+            }>;
           };
-        }),
+          const postToolUse = hooks.PostToolUse?.[0]?.hooks[0];
+          return Object.assign(
+            (async function* (): AsyncGenerator<unknown> {
+              for (let index = 0; index < count; index += 1) {
+                const toolUseId = `claude-tool-${index}`;
+                yield {
+                  type: "assistant",
+                  session_id: "session-budget",
+                  message: {
+                    model: "claude-opus-4-6",
+                    content: [
+                      {
+                        type: "tool_use",
+                        id: toolUseId,
+                        name: "mcp__bot-memory__task_update",
+                        input: {
+                          jira_key: "REHOR-146",
+                          repo: "rehor",
+                          status: "pr_open",
+                          summary: "Follow-up A",
+                        },
+                      },
+                    ],
+                  },
+                };
+                await postToolUse?.({}, toolUseId, {});
+                yield {
+                  type: "user",
+                  session_id: "session-budget",
+                  message: [
+                    {
+                      type: "tool_result",
+                      tool_use_id: toolUseId,
+                      content: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
+                      is_error: false,
+                    },
+                  ],
+                };
+              }
+              yield {
+                type: "result",
+                subtype: count >= Number(options.maxTurns) ? "error_max_turns" : "success",
+                result: "Contract cycle finished",
+                num_turns: count,
+                session_id: "session-budget",
+                uuid: "budget-result",
+              };
+            })(),
+            { close: () => undefined },
+          );
+        },
       }),
   };
 }
@@ -345,6 +361,7 @@ export function openCodeHarness(): RuntimeContractHarness {
 
   return {
     name: "opencode-v1",
+    enforcesTurnLimit: false,
     run,
     completed: () => create({}),
     noWork: () =>
@@ -428,6 +445,18 @@ export function openCodeHarness(): RuntimeContractHarness {
                 },
               }) as unknown as OpenCodeEvent,
           ),
+          {
+            type: "message.updated",
+            properties: {
+              info: {
+                id: "budget-next-turn",
+                sessionID: "session-contract",
+                role: "assistant",
+                modelID: "gpt-5.6-luna",
+                time: { created: count + 1 },
+              },
+            },
+          } as unknown as OpenCodeEvent,
           {
             type: "session.idle",
             properties: { sessionID: "session-contract" },

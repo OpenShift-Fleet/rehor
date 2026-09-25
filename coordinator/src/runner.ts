@@ -394,8 +394,12 @@ export async function runCoordinator(
           );
           terminalLogged = true;
           if (result.error !== undefined) throw result.error;
+          const expectedTurnLimitFailure =
+            result.terminal.payload.state === "failed" &&
+            (result.terminal.payload.reason === "max_turns" ||
+              result.terminal.payload.reason === "error_max_turns");
           if (
-            result.terminal.payload.state === "failed" ||
+            (result.terminal.payload.state === "failed" && !expectedTurnLimitFailure) ||
             result.terminal.payload.state === "timed_out"
           ) {
             throw new Error(

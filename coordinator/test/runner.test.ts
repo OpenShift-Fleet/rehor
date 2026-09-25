@@ -274,6 +274,58 @@ describe("production runner boundary", () => {
     );
   });
 
+  it.each(["max_turns", "error_max_turns"])(
+    "returns expected turn-limit terminal %s without throwing from the cycle runner",
+    async (reason) => {
+      const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
+      const expected = {
+        terminal: { payload: { state: "failed", reason } },
+      } as CoordinatorResult;
+      const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue(expected);
+      const bridge = {
+        prepareConfig: async () => ({
+          ...prepared.config,
+          model: "claude-opus-4-6",
+          runtimeId: "claude",
+          providerId: "vertex",
+          claudeMdPath: join(directory, "CLAUDE.md"),
+          claudeMdStrategy: InstructionStrategy.Ignore,
+        }),
+        preflight: async () => ({
+          action: PreflightAction.Start,
+          prompt: "work found",
+          transcript: "work found",
+          scripts: [],
+        }),
+        cleanupBetweenCycles: async () => undefined,
+      };
+
+      try {
+        const result = await runCoordinator({
+          scriptDir: resolve(process.cwd(), ".."),
+          label: "hcc-ai-framework",
+          instanceId: "instance-1",
+          dataDirectory: directory,
+          lockPath: join(directory, ".lock"),
+          sleepSignalPath: join(directory, "cycle-sleep.json"),
+          bridge,
+          writers: {},
+          once: true,
+          initialIntervalSeconds: 0,
+          initialIdleIntervalSeconds: 0,
+        });
+
+        expect(result).toMatchObject({
+          stopReason: "max_cycles",
+          failures: 0,
+          results: [expected],
+        });
+      } finally {
+        execute.mockRestore();
+      }
+    },
+  );
+
   it("counts a failed CoordinatorResult as a run failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({

@@ -318,27 +318,88 @@ describe("ClaudeAgentRuntime", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("leaves turn-budget enforcement to the coordinator", async () => {
-    queryMock.mockReturnValue(
-      sdkQuery([
-        {
-          type: "result",
-          subtype: "success",
-          result: "Turn budget is coordinator-owned",
-          num_turns: 1,
-          session_id: "session-budget",
-          uuid: "sdk-budget",
-        },
-      ]),
-    );
-    const runtime = new ClaudeAgentRuntime();
-    await runtime.start(new AbortController().signal);
-    const events = await collect(runtime.run(run, new AbortController().signal));
-    const options = queryMock.mock.calls.at(-1)?.[0]?.options as Record<string, unknown>;
+  it("delivers coordinator budget notices in the matching PostToolUse hook and restores SDK maxTurns", async () => {
+    const budgetRun = { ...run, limits: { ...run.limits, maxTurns: 8 } };
+    let captured: Record<string, unknown> | undefined;
+    const hookResults: Record<string, unknown>[] = [];
+    queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
+      captured = options;
+      const hooks = options.hooks as {
+        PostToolUse?: Array<{
+          hooks: Array<(...args: unknown[]) => Promise<Record<string, unknown>>>;
+        }>;
+      };
+      const postToolUse = hooks?.PostToolUse?.[0]?.hooks[0];
+      return Object.assign(
+        (async function* (): AsyncGenerator<unknown> {
+          for (let index = 1; index <= budgetRun.limits.maxTurns; index += 1) {
+            const toolUseId = `budget-tool-${index}`;
+            yield {
+              type: "assistant",
+              message: {
+                model: budgetRun.provider.requestedModel,
+                content: [
+                  { type: "tool_use", id: toolUseId, name: "Bash", input: { command: "true" } },
+                ],
+              },
+              session_id: "session-budget",
+            };
+            if (!postToolUse) throw new Error("PostToolUse hook missing");
+            hookResults.push(await postToolUse({}, toolUseId, {}));
+            yield {
+              type: "user",
+              message: {
+                content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }],
+              },
+              session_id: "session-budget",
+            };
+          }
+          yield {
+            type: "result",
+            subtype: "error_max_turns",
+            is_error: true,
+            result: "Turn limit reached",
+            num_turns: budgetRun.limits.maxTurns,
+            session_id: "session-budget",
+          };
+        })(),
+        { close: vi.fn() },
+      );
+    });
 
-    expect(options).not.toHaveProperty("maxTurns");
-    expect(options).not.toHaveProperty("hooks");
-    expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
+    const result = await executeSelectedRun(
+      createDefaultRuntimeRegistry(),
+      { runtimeId: "claude" },
+      budgetRun,
+    );
+    const warning =
+      "TURN BUDGET WARNING: ~6/8 tool calls used, ~2 remaining. Save progress via task_update soon " +
+      "(summary + metadata with last_step, files_changed, next_step). Prioritize completing current step and saving state.";
+    const critical =
+      "TURN BUDGET CRITICAL: ~7/8 tool calls used, ~1 remaining. You MUST save progress NOW via " +
+      "task_update with current summary, last_step, files_changed, and next_step. Then wrap up or stop.";
+
+    expect(captured).toMatchObject({ maxTurns: 8 });
+    expect(hookResults).toHaveLength(8);
+    expect(hookResults.map((hook) => hook.systemMessage ?? null)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      warning,
+      critical,
+      null,
+    ]);
+    expect(result.capabilities?.enforcesTurnLimit).toBe(true);
+    expect(
+      result.events.filter(({ kind }) => kind === "policy").map(({ payload }) => payload.message),
+    ).toEqual([warning, critical]);
+    expect(result.terminal.payload).toMatchObject({
+      state: "failed",
+      reason: "error_max_turns",
+    });
+    expect(result.error).toBeUndefined();
   });
 
   it("preserves partial usage through coordinator timeout handling", async () => {

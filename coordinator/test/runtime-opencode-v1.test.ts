@@ -720,7 +720,14 @@ describe("OpenCode runtime", () => {
       responseStyle: "data",
       throwOnError: true,
     });
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "model", "run", "terminal"]);
+    expect(events.map((event) => event.kind)).toEqual([
+      "run",
+      "run",
+      "model",
+      "model",
+      "run",
+      "terminal",
+    ]);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
   });
@@ -1467,6 +1474,7 @@ describe("OpenCode runtime", () => {
       throwOnError: true,
     });
     expect(events.map((event) => event.kind)).toEqual([
+      "run",
       "run",
       "model",
       "model",

@@ -10,7 +10,7 @@ import {
   WorkContextTracker,
 } from "./domain";
 import { type AbortCause, abortCauseFrom } from "./domain/abort-cause";
-import type { AgentRuntime } from "./ports/agent-runtime";
+import type { AgentRuntime, AgentRuntimeRunContext } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
 import { type CombinedAbortSignals, combineAbortSignals, isRecord } from "./utils";
 
@@ -120,13 +120,17 @@ class TurnBudgetPolicy {
   constructor(private readonly run: RehorRun) {}
 
   observe(event: RehorEvent): TurnPolicyUpdate | undefined {
-    if (this.exhausted || event.kind !== "tool") return undefined;
+    if (event.kind !== "tool") return undefined;
     if (event.payload.state !== "completed" || event.payload.isError === true) return undefined;
 
     const id =
       typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
-    if (this.countedToolCalls.has(id)) return undefined;
-    this.countedToolCalls.add(id);
+    return this.complete(id);
+  }
+
+  complete(toolUseId: string): TurnPolicyUpdate | undefined {
+    if (this.exhausted || this.countedToolCalls.has(toolUseId)) return undefined;
+    this.countedToolCalls.add(toolUseId);
     this.usedTurns += 1;
 
     const maxTurns = this.run.limits.maxTurns;
@@ -164,6 +168,10 @@ class TurnBudgetPolicy {
 
     this.exhausted = this.usedTurns >= maxTurns;
     return { events, exhausted: this.exhausted };
+  }
+
+  get limitReached(): boolean {
+    return this.exhausted;
   }
 }
 
@@ -223,7 +231,7 @@ export async function executeRun(
         );
       }
 
-      if (!failure) {
+      if (!failure && capabilities) {
         const consumePromise = consumeEvents(
           runtime,
           run,
@@ -231,6 +239,7 @@ export async function executeRun(
           ledger,
           options.projection,
           workContext,
+          capabilities,
           () => acceptingEvents,
         );
         try {
@@ -325,20 +334,74 @@ async function consumeEvents(
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
   workContext: WorkContextTracker,
+  capabilities: RuntimeCapabilities,
   isAccepting: () => boolean,
 ): Promise<void> {
   const turnBudget = new TurnBudgetPolicy(run);
+  const pendingPolicyUpdates = new Map<string, TurnPolicyUpdate>();
+  const toolStarts = new Map<string, RehorEvent>();
   let coordinatorEventOffset = 0;
-  const iterator = runtime.run(run, abortState.signal)[Symbol.asyncIterator]();
+
+  const emitPolicyUpdate = async (
+    toolUseId: string,
+    update: TurnPolicyUpdate,
+    sourceEvent?: RehorEvent,
+  ): Promise<void> => {
+    if (update.events.length === 0) return;
+    const parent = sourceEvent ?? toolStarts.get(toolUseId);
+    const createEvent = createEventFactory(run, run.policyHash.value, {
+      startSequence: nextSequence(ledger.events) - 1,
+    });
+    for (const payload of update.events) {
+      const policyEvent = createEvent("policy", payload, {
+        ...(parent?.runtimeSessionRef ? { runtimeSessionRef: parent.runtimeSessionRef } : {}),
+        ...(parent ? { parentEventId: parent.eventId } : {}),
+      });
+      const policyBefore = ledger.events.length;
+      const policyResult = ledger.ingest(policyEvent);
+      if (!policyResult.accepted) continue;
+      coordinatorEventOffset += 1;
+      const acceptedPolicyEvent = ledger.events[policyBefore];
+      if (!acceptedPolicyEvent) {
+        throw new RuntimeContractError("accepted policy event was not retained by ledger");
+      }
+      await projectEvent(acceptedPolicyEvent, run, projection);
+    }
+  };
+
+  const flushPendingPolicyUpdates = async (): Promise<void> => {
+    for (const [toolUseId, update] of pendingPolicyUpdates) {
+      await emitPolicyUpdate(toolUseId, update);
+      pendingPolicyUpdates.delete(toolUseId);
+    }
+  };
+
+  const context: AgentRuntimeRunContext = {
+    onAbortCause(cause) {
+      abortState.trigger(cause);
+    },
+    onSuccessfulToolCall(toolUseId, notices) {
+      const update = turnBudget.complete(toolUseId);
+      if (!update) return;
+      if (update.events.length > 0) pendingPolicyUpdates.set(toolUseId, update);
+      const notice = update.events[0]?.message;
+      if (notice) notices.deliverNotice(notice);
+    },
+  };
+  const iterator = runtime.run(run, abortState.signal, context)[Symbol.asyncIterator]();
   try {
     while (true) {
       const next = await iterator.next();
-      if (next.done) return;
+      if (next.done) {
+        await flushPendingPolicyUpdates();
+        return;
+      }
       // Runtime adapters may emit a final partial usage snapshot and terminal
       // event while draining an SDK query after cancellation or timeout.
       // Keep accepting that bounded drain; stop accepting only once the
       // coordinator cleanup has completed.
       if (!isAccepting()) return;
+      if (next.value.kind === "terminal") await flushPendingPolicyUpdates();
 
       const before = ledger.events.length;
       const normalizedEvent = workContext.enrichTerminal(
@@ -356,29 +419,26 @@ async function consumeEvents(
       workContext.observe(event);
       await projectEvent(event, run, projection);
 
-      const turnUpdate = turnBudget.observe(event);
-      if (!turnUpdate) continue;
-      if (turnUpdate.events.length > 0) {
-        const createEvent = createEventFactory(run, run.policyHash.value, {
-          startSequence: nextSequence(ledger.events) - 1,
-        });
-        for (const payload of turnUpdate.events) {
-          const policyEvent = createEvent("policy", payload, {
-            ...(event.runtimeSessionRef ? { runtimeSessionRef: event.runtimeSessionRef } : {}),
-            parentEventId: event.eventId,
-          });
-          const policyBefore = ledger.events.length;
-          const policyResult = ledger.ingest(policyEvent);
-          if (!policyResult.accepted) continue;
-          coordinatorEventOffset += 1;
-          const acceptedPolicyEvent = ledger.events[policyBefore];
-          if (!acceptedPolicyEvent) {
-            throw new RuntimeContractError("accepted policy event was not retained by ledger");
-          }
-          await projectEvent(acceptedPolicyEvent, run, projection);
+      if (event.kind === "tool") {
+        const toolUseId =
+          typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
+        if (event.payload.state === "started") toolStarts.set(toolUseId, event);
+        if (event.payload.state === "completed") {
+          const callbackUpdate = pendingPolicyUpdates.get(toolUseId);
+          const turnUpdate = callbackUpdate ?? turnBudget.observe(event);
+          if (callbackUpdate) pendingPolicyUpdates.delete(toolUseId);
+          if (turnUpdate) await emitPolicyUpdate(toolUseId, turnUpdate, event);
+        } else {
+          turnBudget.observe(event);
         }
       }
-      if (turnUpdate.exhausted) {
+
+      if (
+        !capabilities.enforcesTurnLimit &&
+        event.kind === "run" &&
+        event.payload.state === "turn_started" &&
+        turnBudget.limitReached
+      ) {
         abortState.trigger({ kind: CoordinatorAbortKind.Failed, reason: "max_turns" });
       }
     }
@@ -538,6 +598,7 @@ function describeError(error: unknown): string {
 
 function shouldSurface(error: unknown, cause: AbortCause | undefined): boolean {
   if (error === undefined) return false;
+  if (cause?.kind === CoordinatorAbortKind.Failed && cause.reason === "max_turns") return false;
   // Runtime adapters commonly reject with their own abort-shaped error after
   // the coordinator has already classified the external cancellation.
   if (cause && cause.kind !== CoordinatorAbortKind.Failed) return false;

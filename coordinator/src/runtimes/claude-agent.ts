@@ -10,7 +10,7 @@ import {
   type TokenCounts,
   type Usage,
 } from "../domain";
-import type { AgentRuntime, McpServerConfig } from "../ports";
+import type { AgentRuntime, AgentRuntimeRunContext, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
 import { abortCauseReason, abortReasonText, abortError as makeAbortError } from "./shared";
 
@@ -51,6 +51,7 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "claude-agent-sdk-options-v1",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: true,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -143,7 +144,11 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     };
   }
 
-  run(input: RehorRun, signal: AbortSignal): AsyncIterable<RehorEvent> {
+  run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
     const runtime = this;
 
     return (async function* stream(): AsyncGenerator<RehorEvent> {
@@ -258,6 +263,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             abortController: controller,
             cwd: input.worktree.path,
             model: input.provider.requestedModel,
+            maxTurns: input.limits.maxTurns,
             permissionMode: runtime.options.permissionMode ?? "acceptEdits",
             settingSources: [...(runtime.options.settingSources ?? ["project"])],
             mcpServers: toSdkMcpServers(runtime.options.mcpServers ?? {}),
@@ -269,6 +275,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
+            hooks: createHooks(context, toolStarts),
           },
         });
         state.query = activeQuery;
@@ -370,6 +377,37 @@ export function createClaudeAgentRuntimeFactory(
   return {
     runtimeId: CLAUDE_RUNTIME_ID,
     create: () => new ClaudeAgentRuntime(options),
+  };
+}
+
+function createHooks(
+  context: AgentRuntimeRunContext | undefined,
+  toolStarts: Map<string, number>,
+): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
+  const postToolUse = async (...args: unknown[]): Promise<JsonObject> => {
+    const input = asObject(args[0]);
+    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
+    if (!toolUseId || !context?.onSuccessfulToolCall) return {};
+
+    let systemMessage: string | undefined;
+    context.onSuccessfulToolCall(toolUseId, {
+      deliverNotice(text) {
+        systemMessage = text;
+      },
+    });
+    return systemMessage === undefined ? {} : { systemMessage };
+  };
+
+  const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {
+    const input = asObject(args[0]);
+    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
+    if (toolUseId) toolStarts.delete(toolUseId);
+    return {};
+  };
+
+  return {
+    PostToolUse: [{ hooks: [postToolUse] }],
+    PostToolUseFailure: [{ hooks: [failedToolCleanup] }],
   };
 }
 

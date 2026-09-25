@@ -15,7 +15,7 @@ import {
 } from "../../domain";
 import type { RuntimeCapabilities } from "../../domain/capabilities";
 import { type Logger, nullLogger } from "../../log";
-import type { AgentRuntime } from "../../ports";
+import type { AgentRuntime, AgentRuntimeRunContext } from "../../ports";
 import {
   abortReason,
   assertPositiveInteger,
@@ -93,6 +93,7 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "1",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: false,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -184,7 +185,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     return CAPABILITIES;
   }
 
-  async *run(input: RehorRun, signal: AbortSignal): AsyncIterable<RehorEvent> {
+  async *run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
     if (!this.started) throw new Error("runtime must be started before run");
     if (this.stopped) throw new Error("stopped runtime must not stream events");
     if (this.hasRun) throw new Error("OpenCode V1 runtime supports one run per instance");
@@ -316,6 +321,16 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         );
         if (next.done) break;
         if (!isSessionEvent(next.value, normalization)) continue;
+        if (beginsNewTurn(next.value, normalization)) {
+          yield factory(
+            "run",
+            { state: "turn_started" },
+            {
+              runtimeSessionRef: eventSessionId(next.value) ?? normalization.rootSessionId,
+            },
+          );
+          if (signal.aborted) throw abortReason(signal);
+        }
 
         const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
         if (
@@ -1125,6 +1140,23 @@ function eventSessionId(event: OpenCodeEvent): string | undefined {
     return typeof sessionId === "string" ? sessionId : undefined;
   }
   return undefined;
+}
+
+function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boolean {
+  if (event.type === "message.updated") {
+    const info = record(event.properties.info);
+    return (
+      eventSessionId(event) === context.rootSessionId &&
+      info.role === "assistant" &&
+      typeof info.id === "string" &&
+      !context.seenMessages.has(info.id)
+    );
+  }
+  if (event.type === "message.part.updated") {
+    const part = record(event.properties.part);
+    return part.sessionID === context.rootSessionId && part.type === "step-start";
+  }
+  return false;
 }
 
 function partKey(part: JsonRecord): string {

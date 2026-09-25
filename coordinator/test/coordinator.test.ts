@@ -39,6 +39,7 @@ const capabilities: RuntimeCapabilities = {
   configVersion: "test",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: false,
   childSessions: false,
   toolSupport: true,
   mcpSupport: true,

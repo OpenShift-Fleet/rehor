@@ -144,7 +144,11 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
 
     expect(policies.map(({ payload }) => payload.state)).toEqual(["warning", "critical"]);
     expect(policies.map(({ payload }) => payload.usedTurns)).toEqual([6, 7]);
-    expect(result.terminal.payload).toMatchObject({ state: "failed", reason: "max_turns" });
+    expect(result.terminal.payload).toMatchObject({
+      state: "failed",
+      reason: harness.enforcesTurnLimit ? "error_max_turns" : "max_turns",
+    });
+    expect(result.error).toBeUndefined();
     const sequences = result.events.map(({ sequence }) => sequence);
     expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
     expect(new Set(sequences).size).toBe(sequences.length);
