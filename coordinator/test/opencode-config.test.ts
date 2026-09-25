@@ -357,6 +357,15 @@ describe("OpenCode V1 config renderer", () => {
     ).toThrow("contains invalid environment variable name 'INVALID-NAME'");
   });
 
+  it("rejects malformed environment references in non-secret provider fields", () => {
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        providers: [{ id: "provider", options: { baseURL: "https://x/{env:bad-name}" } }],
+      }),
+    ).toThrow("contains invalid environment variable name 'bad-name'");
+  });
+
   it("rejects provider and plugin references outside the explicit environment allowlist", () => {
     expect(() =>
       renderOpenCodeV1Config({

@@ -216,6 +216,8 @@ fails configuration validation. MCP environment references are fail-closed:
 only the non-secret `JIRA_MCP_URL` endpoint may be used in a remote URL; MCP
 headers and local MCP environments cannot reference the OpenCode child
 environment, and MCP references are never added to the agent passthrough list.
+Malformed `{env:...}` and `${...}` references are rejected in
+provider/plugin strings, including non-secret fields.
 The factory renders one immutable snapshot for the selected run. `OpenCodeV1Runtime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
 same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
