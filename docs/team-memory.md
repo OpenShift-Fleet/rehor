@@ -1,12 +1,12 @@
 # Team Memory (read-only MCP)
 
-Shared vector memory from the bot's learnings, review feedback, and codebase patterns — available to any Claude Code instance (local CLI, IDE extensions, Claud on OpenShift).
+Shared vector memory from the bot's learnings, review feedback, and codebase patterns — available to any MCP-compatible client.
 
 The public endpoint exposes **only** `memory_search` and `memory_list`. Write tools (`memory_store`, `memory_delete`, `task_*`, `bot_status_update`, Slack, etc.) stay on the internal bot MCP (`:8080`) and are not reachable from the Route.
 
-## Connect Claude Code
+## Connect an MCP client
 
-Add to your project's `.mcp.json` (or Claude Code project / user MCP settings):
+Add to your project's `.mcp.json` (or your client's MCP settings):
 
 ```json
 {
@@ -24,8 +24,7 @@ Add to your project's `.mcp.json` (or Claude Code project / user MCP settings):
 
 | Placeholder | Source |
 |-------------|--------|
-| `TEAM_MEMORY_URL` | OpenShift Route hostname (`devbot-team-memory`); stage: `devbot-team-memory-platform-frontend-ai-dev-stage.apps.rosa.hcmais01ue1.s9m2.p3.openshiftapps.com`; local: `localhost:8081` |
-| `MEMORY_API_KEY` | Vault path `insights/secrets/insights-dev/platform-experience-dev/ai-sdlc-credentials` field `team-memory-api-key` (synced as `devbot-secrets`); local compose default: `local-dev-memory-key` |
+| `MEMORY_API_KEY` | Bearer token stored in Vault under the deployment's secrets (field `team-memory-api-key`); the exact Vault path varies by deployment. Local compose default: `local-dev-memory-key` |
 
 **Local compose** (after `make memory-server`):
 
@@ -43,13 +42,13 @@ Add to your project's `.mcp.json` (or Claude Code project / user MCP settings):
 }
 ```
 
-Transport is **streamable HTTP** at `/mcp` (same as the bot MCP). Works on local CLI, VS Code / JetBrains extensions, and Claud.
+Transport is **streamable HTTP** at `/mcp` (same as the bot MCP). Works with any MCP-compatible client.
 
 Do **not** point human sessions at the internal bot endpoint (`http://devbot-memory-server:8080/mcp` or `http://localhost:8080/mcp`) — that surface includes write/task tools.
 
 ## Automatic usage via CLAUDE.md
 
-Connecting the MCP server only registers the tools. Claude Code will **not** search memory unless instructed. Add a section to each repo's `CLAUDE.md`.
+Connecting the MCP server only registers the tools. The client will **not** search memory unless instructed. Add a section to each repo's `CLAUDE.md`.
 
 ### Common preamble (all repo types)
 
