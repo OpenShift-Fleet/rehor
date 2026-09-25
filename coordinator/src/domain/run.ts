@@ -53,6 +53,8 @@ export interface RehorRun {
   instructionHash: ContentHash;
   configHash: ContentHash;
   policyHash: ContentHash;
+  /** Selected runtime adapter; optional for schema-v1 runs created before canary rollout. */
+  runtimeId?: string;
   provider: ProviderSelection;
   limits: RunLimits;
   preflightPayloadRef: string | null;

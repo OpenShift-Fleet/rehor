@@ -4,6 +4,7 @@ import {
   type ConfigPreparationResult,
   createDefaultRuntimeRegistry,
   createOpenCodeV1RuntimeFactory,
+  executeConfiguredRun,
   executeSelectedRun,
   InstructionStrategy,
   type RehorEvent,
@@ -32,6 +33,7 @@ const run: RehorRun = {
   instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
+  runtimeId: "claude",
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
   limits: { timeoutMs: 100, maxTurns: 20 },
   preflightPayloadRef: null,
@@ -39,6 +41,8 @@ const run: RehorRun = {
 
 const preparedConfig: ConfigPreparationResult = {
   model: "prepared-model",
+  runtimeId: "opencode-v1",
+  providerId: "rehor-openai",
   maxTurns: 10,
   intervalSeconds: 60,
   idleIntervalSeconds: 60,
@@ -235,6 +239,24 @@ describe("runtime selection", () => {
     const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
 
     expect(createdFor).toBe("run-factory");
+    expect(result.terminal.payload.state).toBe("completed");
+  });
+
+  it("uses the runtime selected on the per-instance run", async () => {
+    let selectedRuntime: string | undefined;
+    const registry = new RuntimeFactoryRegistry([
+      {
+        runtimeId: "opencode-v1",
+        create(context) {
+          selectedRuntime = context.selection.runtimeId;
+          return new FakeAgentRuntime({ events: [event(1), event(2, true)] });
+        },
+      },
+    ]);
+
+    const result = await executeConfiguredRun(registry, { ...run, runtimeId: "opencode-v1" });
+
+    expect(selectedRuntime).toBe("opencode-v1");
     expect(result.terminal.payload.state).toBe("completed");
   });
 });

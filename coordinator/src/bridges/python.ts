@@ -3,13 +3,18 @@ import type { Readable } from "node:stream";
 
 import { isInstructionStrategy } from "../instructions";
 import {
+  type CleanupBetweenCyclesRequest,
+  type CleanupBetweenCyclesResult,
   type ConfigPreparationRequest,
   type ConfigPreparationResult,
+  type IdlePreflightSkipRequest,
+  type IdlePreflightStartRequest,
   isPreflightAction,
   type PreflightRequest,
   type PreflightResult,
   type PreflightScriptResult,
   type PythonBridge,
+  type ScheduledMaintenanceRequest,
 } from "../ports/python-bridge";
 import type { McpServerConfig } from "../ports/runtime-config";
 import { abortError, isRecord } from "../utils";
@@ -58,6 +63,44 @@ export class PythonCoordinatorBridge implements PythonBridge {
       signal,
     );
     return parseConfigPreparationResult(result);
+  }
+
+  async runScheduledMaintenance(
+    input: ScheduledMaintenanceRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "scheduled_maintenance", ...input },
+      signal,
+    );
+  }
+
+  async idlePreflightSkip(input: IdlePreflightSkipRequest, signal?: AbortSignal): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "idle_skip", ...input },
+      signal,
+    );
+  }
+
+  async idlePreflightStart(input: IdlePreflightStartRequest, signal?: AbortSignal): Promise<void> {
+    await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "idle_start", ...input },
+      signal,
+    );
+  }
+
+  async cleanupBetweenCycles(
+    input: CleanupBetweenCyclesRequest,
+    signal?: AbortSignal,
+  ): Promise<CleanupBetweenCyclesResult> {
+    const result = await this.request(
+      { protocolVersion: PROTOCOL_VERSION, operation: "cleanup", ...input },
+      signal,
+    );
+    const diskFreeMb = isRecord(result) ? result.diskFreeMb : undefined;
+    return {
+      diskFreeMb: typeof diskFreeMb === "number" && Number.isFinite(diskFreeMb) ? diskFreeMb : null,
+    };
   }
 
   private async request(request: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
@@ -152,6 +195,8 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
   const envs = object.envs === null ? null : stringArray(object.envs, "config.envs");
   return {
     model: stringValue(object.model, "config.model"),
+    runtimeId: selectionId(object.runtimeId, "config.runtimeId"),
+    providerId: selectionId(object.providerId, "config.providerId"),
     maxTurns: positiveInteger(object.maxTurns, "config.maxTurns"),
     intervalSeconds: nonNegativeNumber(object.intervalSeconds, "config.intervalSeconds"),
     idleIntervalSeconds: nonNegativeNumber(
@@ -172,6 +217,9 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     remoteAgentDir: nullableString(object.remoteAgentDir, "config.remoteAgentDir"),
     sharedAgentDir: nullableString(object.sharedAgentDir, "config.sharedAgentDir"),
     claudeMdPath: stringValue(object.claudeMdPath, "config.claudeMdPath"),
+    ...(object.gitConfigGlobal === undefined
+      ? {}
+      : { gitConfigGlobal: nullableString(object.gitConfigGlobal, "config.gitConfigGlobal") }),
     mcpServers: parseMcpServers(object.mcpServers, "config.mcpServers"),
     openCodeMcpServers: parseRequiredOpenCodeMcpServers(object.openCodeMcpServers),
     allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
@@ -271,6 +319,14 @@ function finiteNumber(value: unknown, path: string): number {
 function stringValue(value: unknown, path: string): string {
   if (typeof value !== "string") throw new PythonBridgeError(`${path} must be a string`);
   return value;
+}
+
+function selectionId(value: unknown, path: string): string {
+  const selection = stringValue(value, path);
+  if (!/^[a-z][a-z0-9-]*$/.test(selection)) {
+    throw new PythonBridgeError(`${path} must be a lowercase runtime/provider identifier`);
+  }
+  return selection;
 }
 
 function nullableString(value: unknown, path: string): string | null {

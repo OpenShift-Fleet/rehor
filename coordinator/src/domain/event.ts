@@ -78,6 +78,9 @@ export function assertTerminalPayload(
       throw new RuntimeContractError(`event.payload.${key} must be a non-negative safe integer`);
     }
   }
+  if (payload.resourceLeak !== undefined && typeof payload.resourceLeak !== "boolean") {
+    throw new RuntimeContractError("event.payload.resourceLeak must be a boolean");
+  }
   if (
     payload.context !== undefined &&
     (typeof payload.context !== "object" || payload.context === null)

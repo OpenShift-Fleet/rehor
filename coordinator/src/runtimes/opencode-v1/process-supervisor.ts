@@ -101,6 +101,14 @@ export class OpenCodeReadinessError extends Error {
   }
 }
 
+/** The OpenCode process group survived SIGKILL; its processes may leak. */
+export class OpenCodeProcessLeakError extends Error {
+  constructor(message = "OpenCode process group remained alive after SIGKILL") {
+    super(message);
+    this.name = "OpenCodeProcessLeakError";
+  }
+}
+
 export interface OpenCodeServerController {
   readonly info: OpenCodeServerInfo | undefined;
   readonly crashError: Error | undefined;
@@ -896,7 +904,7 @@ function waitForExit(
       verificationTimer = setTimeout(() => {
         check();
         if (!settled) {
-          fail(new Error("OpenCode process group remained alive after SIGKILL"));
+          fail(new OpenCodeProcessLeakError());
         }
       }, killVerificationTimeoutMs);
     };

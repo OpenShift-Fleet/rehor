@@ -70,7 +70,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     profile_dir.mkdir(parents=True)
     shared_dir.mkdir(parents=True)
     (profile_dir / "instance.yaml").write_text(
-        "workflow: test-workflow\nsource: github\nenvs: [github]\nclaude_md:\n  strategy: append\n"
+        "workflow: test-workflow\nsource: github\nenvs: [github]\n"
+        "runtime: opencode-v1\nprovider: rehor-openai\n"
+        "claude_md:\n  strategy: append\n"
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
@@ -91,13 +93,28 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         '"chrome-devtools": {"command": "chrome-devtools-mcp"}}}'
     )
     (tmp_path / "config.json").write_text(
-        '{"claude": {"model": "test-model", "maxTurns": 10}, '
+        '{"claude": {"model": "claude-test-model", "maxTurns": 10}, '
+        '"opencode": {"model": "test-model"}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )
 
+    calls = []
+    git_config_global = str(tmp_path / ".gitconfig")
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
     monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, shared_dir))
+
+    def setup_git(script_dir):
+        calls.append(("setup_git", script_dir))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", git_config_global)
+
+    monkeypatch.setattr(runner, "setup_git", setup_git)
+
+    def sync_config_repo(label):
+        calls.append(("sync", label))
+        return profile_dir, shared_dir
+
+    monkeypatch.setattr(runner, "sync_config_repo", sync_config_repo)
     monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
     monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
     monkeypatch.setattr(merge, "install_skills", lambda *args: [])
@@ -111,6 +128,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         }
     )
 
+    assert calls[:2] == [("setup_git", tmp_path), ("sync", "hcc-ai-framework")]
     assert result["model"] == "test-model"
     assert result["maxTurns"] == 10
     assert result["intervalSeconds"] == 300
@@ -120,6 +138,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["workflow"] == "test-workflow"
     assert result["source"] == "github"
     assert result["envs"] == ["github"]
+    assert result["gitConfigGlobal"] == git_config_global
+    assert result["runtimeId"] == "opencode-v1"
+    assert result["providerId"] == "rehor-openai"
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)
@@ -187,6 +208,41 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
     assert handle(request)["model"] == "pinned-model"
 
 
+def test_prepare_bridge_validates_before_installing_skills(tmp_path, monkeypatch):
+    """A missing workflow is a structured bridge error and leaves skills untouched."""
+    import pytest
+
+    import bot.merge as merge
+    import bot.run as runner
+    from bot.coordinator_bridge import BridgeError
+
+    profile_dir = tmp_path / "profile" / "agent"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "instance.yaml").write_text("workflow: missing-workflow\n")
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "global-model", "maxTurns": 10}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60}, "jira": {"boardKey": "TEST"}}'
+    )
+    installed = []
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(runner, "setup_git", lambda script_dir: None)
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, None))
+    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: installed.append("claude_md"))
+    monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
+    monkeypatch.setattr(merge, "install_skills", lambda *args: installed.append("skills") or [])
+
+    with pytest.raises(BridgeError, match="validate_instance_config failed"):
+        handle(
+            {
+                "protocolVersion": 1,
+                "operation": "prepare",
+                "scriptDir": str(tmp_path),
+                "label": "hcc-ai-framework",
+            }
+        )
+    assert installed == []
+
+
 def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
     from bot.config import load_mcp_servers
 
@@ -227,10 +283,84 @@ def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_pat
     assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
 
 
+def test_bridge_maintenance_operations_preserve_idle_and_cleanup_hooks(tmp_path, monkeypatch):
+    import bot.idle_reminder as idle_reminder
+    import bot.run as runner
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    calls = []
+    monkeypatch.setattr(runner, "_try_slack_digest", lambda: calls.append(("digest",)))
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_skip",
+        lambda *args, **kwargs: calls.append(("skip", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_start",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+
+    def cleanup_between_cycles(script_dir):
+        calls.append(("cleanup", script_dir))
+        return 4096
+
+    monkeypatch.setattr(runner, "cleanup_between_cycles", cleanup_between_cycles)
+
+    request_base = {"protocolVersion": 1, "scriptDir": str(tmp_path), "instanceId": "instance-1"}
+    handle({"protocolVersion": 1, "scriptDir": str(tmp_path), "operation": "scheduled_maintenance"})
+    handle(
+        {
+            **request_base,
+            "operation": "idle_skip",
+            "idleCycleLimit": 4,
+            "cooldownSeconds": 3600,
+        }
+    )
+    handle({**request_base, "operation": "idle_start"})
+    cleanup = handle({"protocolVersion": 1, "operation": "cleanup", "scriptDir": str(tmp_path)})
+
+    assert cleanup == {"diskFreeMb": 4096}
+    assert calls == [
+        ("digest",),
+        ("skip", ("instance-1",), {"idle_cycle_limit": 4, "cooldown_seconds": 3600}),
+        ("start", ("instance-1",), {}),
+        ("cleanup", tmp_path),
+    ]
+
+
 def test_bridge_rejects_unknown_operation():
     try:
         handle({"protocolVersion": 1, "operation": "unknown"})
     except ValueError as exc:
-        assert str(exc) == "operation must be 'preflight' or 'prepare'"
+        assert (
+            str(exc) == "operation must be preflight, prepare, scheduled_maintenance, idle_skip, idle_start, or cleanup"
+        )
     else:
         raise AssertionError("unknown operation should fail")
+
+
+def test_scheduled_maintenance_keeps_bridge_stdout_machine_readable(tmp_path, monkeypatch, capsys):
+    import io
+    import json
+    import sys
+
+    import bot.run as runner
+    from bot import coordinator_bridge
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://example.invalid/slack")
+    monkeypatch.setenv("SLACK_DIGEST_HOUR", "99")
+    request = {
+        "protocolVersion": 1,
+        "operation": "scheduled_maintenance",
+        "scriptDir": str(tmp_path),
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request)))
+
+    assert coordinator_bridge.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "protocolVersion": 1,
+        "ok": True,
+        "result": None,
+    }

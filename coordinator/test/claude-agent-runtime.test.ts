@@ -227,10 +227,14 @@ describe("ClaudeAgentRuntime", () => {
       GH_TOKEN: "gh-secret",
       GITHUB_TOKEN: "github-secret",
       GITLAB_TOKEN: "gitlab-secret",
+      JIRA_API_TOKEN: "jira-api-secret",
+      JIRA_MCP_TOKEN: "jira-mcp-secret",
+      JIRA_USERNAME: "jira-user",
       GPG_PRIVATE_KEY_B64: "private-key",
       GPG_SIGNING_KEY: "signing-key",
       SSO_USERNAME: "sso-user",
       SSO_PASSWORD: "sso-password",
+      REHOR_MODEL_PROXY_TOKEN: "proxy-secret",
       GIT_AUTHOR_NAME: "author",
       GIT_AUTHOR_EMAIL: "author@example.com",
       GIT_COMMITTER_NAME: "committer",
@@ -238,6 +242,7 @@ describe("ClaudeAgentRuntime", () => {
     };
     for (const [name, value] of Object.entries(sensitiveValues)) vi.stubEnv(name, value);
     vi.stubEnv("PATH", "/safe/path");
+    vi.stubEnv("GIT_CONFIG_GLOBAL", "/work/.gitconfig");
 
     let captured: Record<string, unknown> | undefined;
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
@@ -258,7 +263,10 @@ describe("ClaudeAgentRuntime", () => {
     await collect(runtime.run(run, new AbortController().signal));
 
     const environment = captured?.env as Record<string, string | undefined>;
-    expect(environment).toMatchObject({ PATH: "/safe/path" });
+    expect(environment).toMatchObject({
+      PATH: "/safe/path",
+      GIT_CONFIG_GLOBAL: "/work/.gitconfig",
+    });
     for (const name of Object.keys(sensitiveValues)) {
       expect(environment).not.toHaveProperty(name);
     }
@@ -371,6 +379,7 @@ describe("ClaudeAgentRuntime", () => {
       ),
     });
     expect(metrics).toContainEqual({
+      type: "counter",
       name: "devbot_turn_budget_event_total",
       value: 1,
       labels: { label: run.label, level: "warning" },
@@ -436,5 +445,153 @@ describe("ClaudeAgentRuntime", () => {
     expect(costs).toHaveLength(1);
     expect(costs[0]).toMatchObject({ inputTokens: 7, outputTokens: 3 });
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("sums usage across API responses when a run fails before its result", async () => {
+    const assistant = (id: string, usage: Record<string, number>, text: string) => ({
+      type: "assistant",
+      message: {
+        id,
+        model: "claude-opus-4-6",
+        usage,
+        content: [{ type: "text", text }],
+      },
+      session_id: "session-usage",
+      uuid: `sdk-${id}-${text}`,
+    });
+    const iterator = (async function* (): AsyncGenerator<unknown> {
+      // One API response streamed as two content-block messages repeats its usage.
+      yield assistant("msg-1", { input_tokens: 100, output_tokens: 5 }, "first block");
+      yield assistant("msg-1", { input_tokens: 100, output_tokens: 20 }, "second block");
+      yield assistant(
+        "msg-2",
+        { input_tokens: 150, output_tokens: 30, cache_read_input_tokens: 90 },
+        "next turn",
+      );
+      throw new Error("SDK subprocess exited");
+    })();
+    queryMock.mockReturnValue(Object.assign(iterator, { close: vi.fn() }));
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(run, new AbortController().signal));
+    const usage = events.filter(({ kind }) => kind === "usage");
+
+    expect(usage).toHaveLength(1);
+    expect(usage[0]?.payload).toMatchObject({
+      returnedModel: "claude-opus-4-6",
+      tokenCounts: { input: 250, output: 50, cacheRead: 90 },
+      partial: true,
+      incomplete: true,
+    });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
+  });
+
+  it("reports summed usage when the SDK stream ends without a result", async () => {
+    queryMock.mockReturnValue(
+      sdkQuery([
+        {
+          type: "assistant",
+          message: {
+            id: "msg-1",
+            model: "claude-opus-4-6",
+            usage: { input_tokens: 10, output_tokens: 1 },
+            content: [],
+          },
+        },
+        {
+          type: "assistant",
+          message: {
+            id: "msg-2",
+            model: "claude-opus-4-6",
+            usage: { input_tokens: 12, output_tokens: 2 },
+            content: [],
+          },
+        },
+      ]),
+    );
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(run, new AbortController().signal));
+
+    expect(events.find(({ kind }) => kind === "usage")?.payload).toMatchObject({
+      tokenCounts: { input: 22, output: 3 },
+      partial: true,
+    });
+    expect(events.at(-1)?.payload).toMatchObject({
+      state: "failed",
+      reason: "agent runtime ended without a result",
+    });
+  });
+
+  it("records a process shutdown as interrupted, not cancelled", async () => {
+    let sdkSignal: AbortSignal | undefined;
+    let resolveWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      resolveWaiting = resolve;
+    });
+    const iterator = (async function* (): AsyncGenerator<unknown> {
+      yield { type: "system", subtype: "init", session_id: "session-04", uuid: "sdk-init" };
+      const signal = sdkSignal;
+      if (!signal) throw new Error("SDK signal not initialized");
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+        resolveWaiting();
+      });
+      throw new Error("aborted by SDK");
+    })();
+    queryMock.mockImplementation(
+      ({ options }: { options: { abortController: AbortController } }) => {
+        sdkSignal = options.abortController.signal;
+        return Object.assign(iterator, { close: vi.fn() });
+      },
+    );
+
+    const shutdown = new AbortController();
+    const promise = executeSelectedRun(
+      createDefaultRuntimeRegistry(),
+      { runtimeId: "claude" },
+      run,
+      {
+        shutdownSignal: shutdown.signal,
+      },
+    );
+    await waiting;
+    shutdown.abort("SIGTERM");
+    const result = await promise;
+
+    expect(result.terminal.payload).toMatchObject({ state: "interrupted" });
+    expect(result.error).toBeUndefined();
+  });
+
+  it("records runtime stop as interrupted", async () => {
+    let resolveWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      resolveWaiting = resolve;
+    });
+    queryMock.mockImplementation(
+      ({ options }: { options: { abortController: AbortController } }) => {
+        const signal = options.abortController.signal;
+        const iterator = (async function* (): AsyncGenerator<unknown> {
+          yield { type: "system", subtype: "init", session_id: "session-05", uuid: "sdk-init" };
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+            resolveWaiting();
+          });
+          throw new Error("aborted by SDK");
+        })();
+        return Object.assign(iterator, { close: vi.fn() });
+      },
+    );
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const promise = collect(runtime.run(run, new AbortController().signal));
+    await waiting;
+    await runtime.stop();
+    const events = await promise;
+
+    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
   });
 });

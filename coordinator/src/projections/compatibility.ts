@@ -16,9 +16,13 @@ import type {
 } from "../ports/compatibility";
 import type { CoordinatorProjection } from "../ports/projection";
 
+const DURATION_BUCKETS = [30, 60, 120, 300, 600, 900, 1200, 1800] as const;
+
 interface ProjectionState {
   startedAt: string;
   runtimeSessionRef: string | null;
+  runtimeReadyObserved: boolean;
+  runtimeSessionObserved: boolean;
   usages: Map<string, Usage>;
 }
 
@@ -43,7 +47,13 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const key = attemptKey(event, run);
     if (this.completedAttempts.has(key)) return;
     const state = this.stateFor(event, run);
-    if (event.runtimeSessionRef) state.runtimeSessionRef = event.runtimeSessionRef;
+    if (event.runtimeSessionRef) {
+      state.runtimeSessionRef = event.runtimeSessionRef;
+      if (!state.runtimeSessionObserved) {
+        state.runtimeSessionObserved = true;
+        await observeRuntimeSessionMetric(this.writers.metrics, run);
+      }
+    }
     if (event.kind === "usage") this.recordUsage(state, event);
 
     await this.writers.transcripts?.append({
@@ -55,6 +65,10 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       event,
       run,
     });
+    if (event.kind === "run" && !state.runtimeReadyObserved) {
+      state.runtimeReadyObserved = true;
+      await observeRuntimeHealthMetric(this.writers.metrics, run, "ready");
+    }
     await observePolicyMetric(this.writers.metrics, event, run);
     const status = statusForEvent(event, run);
     if (status) await this.writers.status?.write(status);
@@ -91,6 +105,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
         totals,
         durationMs,
         noWork,
+        payload.resourceLeak === true,
       );
     } finally {
       this.state.delete(key);
@@ -105,6 +120,8 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const state: ProjectionState = {
       startedAt: event.occurredAt,
       runtimeSessionRef: null,
+      runtimeReadyObserved: false,
+      runtimeSessionObserved: false,
       usages: new Map(),
     };
     this.state.set(key, state);
@@ -142,10 +159,42 @@ async function observePolicyMetric(
   const level = stringPayload(event.payload, "state");
   if (level !== "warning" && level !== "critical") return;
   await writer.observe({
+    type: "counter",
     name: "devbot_turn_budget_event_total",
     value: 1,
     labels: { label: run.label, level },
   });
+}
+
+async function observeRuntimeSessionMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    type: "counter",
+    name: "devbot_runtime_sessions_total",
+    value: 1,
+    labels: runtimeMetricLabels(run),
+  });
+}
+
+async function observeRuntimeHealthMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+  status: "ready" | "healthy" | "failed",
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    type: "counter",
+    name: "devbot_runtime_health_total",
+    value: 1,
+    labels: { ...runtimeMetricLabels(run), status },
+  });
+}
+
+function runtimeMetricLabels(run: RehorRun): { runtime: string; provider: string } {
+  return { runtime: run.runtimeId ?? "unknown", provider: run.provider.id };
 }
 
 function statusForEvent(event: RehorEvent, run: RehorRun): StatusUpdate | null {
@@ -224,6 +273,8 @@ function buildCostRecord(
     repository: context?.repository ?? null,
     workType: context?.workType ?? null,
     summary: context?.summary ?? null,
+    runtimeId: run.runtimeId,
+    providerId: run.provider.id,
   };
 }
 
@@ -263,6 +314,7 @@ async function observeTerminalMetrics(
   totals: UsageTotals,
   durationMs: number,
   noWork: boolean,
+  resourceLeak: boolean,
 ): Promise<void> {
   if (!writer) return;
   const labels = { model: totals.model, label: run.label, workflow: run.workflowId };
@@ -271,23 +323,95 @@ async function observeTerminalMetrics(
   // empty string falls back too, and a no-work cycle is not relabelled "idle".
   const durationLabels = { label: run.label, work_type: workType || "unknown" };
   const points: MetricPoint[] = [
-    { name: "devbot_cycles_total", value: 1, labels: { ...labels, status: metricStatus } },
     {
+      type: "counter",
+      name: "devbot_cycles_total",
+      value: 1,
+      labels: { ...labels, status: metricStatus },
+    },
+    {
+      type: "histogram",
       name: "devbot_cycle_duration_seconds",
       value: durationMs / 1000,
       labels: durationLabels,
+      buckets: DURATION_BUCKETS,
     },
-    { name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
-    { name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
-    { name: "devbot_cycle_output_tokens_total", value: totals.outputTokens, labels },
-    { name: "devbot_cycle_cache_read_tokens_total", value: totals.cacheReadTokens, labels },
-    { name: "devbot_cycle_cache_write_tokens_total", value: totals.cacheWriteTokens, labels },
+    { type: "counter", name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
+    { type: "counter", name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
+    {
+      type: "counter",
+      name: "devbot_cycle_output_tokens_total",
+      value: totals.outputTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_read_tokens_total",
+      value: totals.cacheReadTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_write_tokens_total",
+      value: totals.cacheWriteTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_runtime_health_total",
+      value: 1,
+      labels: {
+        ...runtimeMetricLabels(run),
+        status: state === "completed" ? "healthy" : "failed",
+      },
+    },
+    {
+      type: "histogram",
+      name: "devbot_runtime_duration_seconds",
+      value: durationMs / 1000,
+      labels: { ...runtimeMetricLabels(run), state },
+      buckets: DURATION_BUCKETS,
+    },
   ];
+  // bot/agent.py counts every completed session as `ctx.work_type or "triage_only"`;
+  // a timed-out Python cycle never reaches it and bumps the timeout counter instead.
+  if (state === "timed_out") {
+    points.push({
+      type: "counter",
+      name: "devbot_cycle_timeout_total",
+      value: 1,
+      labels: { label: run.label },
+    });
+  } else {
+    points.push({
+      type: "counter",
+      name: "devbot_work_type_total",
+      value: 1,
+      labels: { label: run.label, work_type: workType || "triage_only" },
+    });
+  }
+  if (state === "interrupted" || state === "cancelled" || state === "timed_out") {
+    points.push({
+      type: "counter",
+      name: "devbot_runtime_interruptions_total",
+      value: 1,
+      labels: { ...runtimeMetricLabels(run), state },
+    });
+  }
+  if (resourceLeak) {
+    points.push({
+      type: "counter",
+      name: "devbot_runtime_resource_leaks_total",
+      value: 1,
+      labels: runtimeMetricLabels(run),
+    });
+  }
   if (
     metricStatus === "idle" &&
     totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens > 0
   ) {
     points.push({
+      type: "counter",
       name: "devbot_idle_with_tokens_total",
       value: 1,
       labels: { label: run.label, workflow: run.workflowId },

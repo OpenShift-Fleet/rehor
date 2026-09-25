@@ -82,9 +82,10 @@ boundary inside each bot pod.
 ## Coordinator Boundary
 
 The TypeScript code in `coordinator/` is Rehor's provider-neutral control
-plane. It does not replace the Python runner yet and does not contain an
-OpenCode adapter. It defines the stable boundary that both the current Claude
-runtime and future OpenCode runtime must implement.
+plane. It does not replace the Python runner by default, but it now contains
+the OpenCode adapter and an opt-in production runner. `BOT_EXECUTION_ENGINE=coordinator`
+selects that path; Python remains the rollback/default engine. Both runtimes
+implement the same stable boundary.
 
 The coordinator owns run identity, assembled prompt, workspace and provider
 attribution, limits, cancellation, normalized event ordering, terminal state,
@@ -109,8 +110,10 @@ for invariants, compatibility mapping, and development commands.
 
 ## OpenCode Server Lifecycle
 
-OpenCode supports runner-owned and client-only modes. The following is an API
-shape example, not production supervisor code:
+OpenCode supports runner-owned and client-only modes. The following SDK calls
+show the client surface; the production supervisor and adapter live in
+`coordinator/src/runtimes/opencode-v1/` and enforce loopback, workspace, version,
+configuration-hash, and cleanup checks:
 
 ```ts
 import { createOpencode } from "@opencode-ai/sdk"
@@ -202,17 +205,19 @@ into the proxy deployment.
 OpenCode in bot pod
   → http://devbot-proxy:8450/v1/chat/completions
      or http://devbot-proxy:8450/v1/responses
-  → proxy authenticates bot request
-  → proxy validates provider/model
+  → NetworkPolicy restricts which bot pods can reach the gateway
+  → proxy replaces the bot-side Authorization value and validates provider/model
   → proxy adds Authorization: Bearer <OpenAI key>
   → https://api.openai.com (same path, unchanged)
   → streaming response back to OpenCode
 ```
 
-The bot must not receive `OPENAI_API_KEY`. The OpenCode provider config should
-use a bot-to-proxy credential or network policy as its authentication boundary.
-If a credential is required, use a separate short-lived proxy token, not the
-OpenAI key.
+The bot must not receive `OPENAI_API_KEY`. `REHOR_MODEL_PROXY_TOKEN` is the
+placeholder API-key value required by the OpenCode provider client; the current
+proxy overwrites inbound `Authorization` and does not authenticate this value.
+NetworkPolicy controls gateway reachability. Any request-level client
+authentication would require a separate proxy implementation and must not use
+the OpenAI key.
 
 ### Implementation Shape
 
@@ -296,29 +301,53 @@ Example bot-side `opencode.json`:
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "rehor-openai": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Rehor OpenAI Proxy",
+      "npm": "@ai-sdk/openai@4.0.73",
+      "name": "Rehor OpenAI Responses",
       "options": {
-        "baseURL": "http://devbot-proxy:8450/v1",
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
       "models": {
-        "gpt-5.4": { "name": "GPT-5.4" },
-        "gpt-5.4-mini": { "name": "GPT-5.4 Mini" },
-        "gpt-5.4-nano": { "name": "GPT-5.4 Nano" }
+        "gpt-6-luna": { "name": "GPT-6 Luna", "reasoning": true }
+      }
+    },
+    "rehor-openai-chat": {
+      "npm": "@ai-sdk/openai-compatible@3.0.54",
+      "name": "Rehor OpenAI Chat Completions",
+      "options": {
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-4.1": { "name": "GPT-4.1" },
+        "gpt-4.1-mini": { "name": "GPT-4.1 Mini" },
+        "gpt-4o": {
+          "name": "GPT-4o",
+          "reasoning": false,
+          "limit": { "context": 128000, "output": 16384 }
+        }
       }
     }
   },
-  "model": "rehor-openai/gpt-5.4",
-  "small_model": "rehor-openai/gpt-5.4-nano",
+  "model": "rehor-openai/gpt-6-luna",
   "enabled_providers": ["rehor-openai"],
   "share": "disabled"
 }
 ```
 
-Exact model IDs remain deployment configuration. Do not hardcode model names
-until OpenAI account access, pricing, tool support, and regional requirements
-are confirmed.
+GPT-6 Luna uses the native Responses route. OpenCode's `rehor-openai-chat`
+route retains Chat Completions for compatible models; pinning
+`@ai-sdk/openai-compatible@3.0.54` fixes request-parameter casing and terminal
+finish-reason handling. GPT-4o's explicit output limit prevents OpenCode from
+requesting more than its 16384-token maximum. Runtime-generated config also
+pins `@ai-sdk/openai@4.0.73` and supports both provider IDs in one offline
+package closure.
+
+The OpenCode+`rehor-openai` default lives in `config.json` under
+`opencode.model` and is `gpt-6-luna`; OpenCode+Vertex and the Python/Claude/
+Vertex rollback keep `claude.model`. The Chat Completions provider requires an
+explicit declared model. Deployment allowlists, pricing, tool support, and
+regional requirements remain deployment-owned.
 
 ### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
 
@@ -362,7 +391,10 @@ version bump must update the supervisor contract tests before the pin changes.
 Package installation is not a runtime responsibility: the image
 must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
 The default Claude runtime registry and production runtime selection remain
-unchanged.
+unchanged. Instance configuration now carries independent `runtime` and
+`provider` values through the Python bridge as `runtimeId` and `providerId`;
+`executeConfiguredRun()` consumes that normalized selection when the future
+TypeScript runner is enabled. See the [canary rollout runbook](../operations/rehor-146-opencode-canary.md).
 
 OpenCode receives the generated root `CLAUDE.md` and project `.claude/skills`
 through its project discovery path. Persona selection remains in the existing
@@ -394,7 +426,7 @@ This is a provider and credential migration, not only a URL change.
 - `OPENAI_API_KEY` proxy-only environment variable.
 - `OPENAI_ALLOWED_MODELS` or provider-neutral model allowlist.
 - `OPENAI_BASE_URL` with default `https://api.openai.com/v1`.
-- `REHOR_MODEL_PROXY_TOKEN` for bot-to-proxy authentication, if required.
+- `REHOR_MODEL_PROXY_URL` for the internal gateway and `REHOR_MODEL_PROXY_TOKEN` as the provider client's placeholder API key. The proxy overwrites the latter; NetworkPolicy controls reachability.
 - OpenAI request ID and usage metrics.
 - OpenAI rate-limit and retry handling.
 
