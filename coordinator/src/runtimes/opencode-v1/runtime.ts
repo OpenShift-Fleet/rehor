@@ -215,7 +215,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
-    let maxTurnsReached = false;
     const workContext = initialTerminalContext(input);
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
@@ -324,10 +323,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         );
         if (next.done) break;
         if (!isSessionEvent(next.value, normalization)) continue;
-        if (maxTurnsReached && beginsNewTurn(next.value, normalization)) {
-          active.controller.abort({ kind: "failed", reason: "max_turns" });
-          throw abortReason(active.controller.signal);
-        }
 
         const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
         if (
@@ -348,7 +343,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (normalized.turns > 0) turns += normalized.turns;
         for (const event of normalized.events) yield event;
         if (normalized.resultText !== undefined) resultText = normalized.resultText;
-        if (normalized.turns > 0) maxTurnsReached = turns >= input.limits.maxTurns;
         if (normalized.outcome) {
           outcome = {
             state: normalized.outcome,
@@ -1130,23 +1124,6 @@ function isSessionEvent(event: OpenCodeEvent, context: NormalizationContext): bo
   }
   const sessionId = eventSessionId(event);
   return sessionId !== undefined && context.sessionIds.has(sessionId);
-}
-
-function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boolean {
-  if (event.type === "message.updated") {
-    const info = record(event.properties.info);
-    return (
-      eventSessionId(event) === context.rootSessionId &&
-      info.role === "assistant" &&
-      typeof info.id === "string" &&
-      !context.seenMessages.has(info.id)
-    );
-  }
-  if (event.type === "message.part.updated") {
-    const part = record(event.properties.part);
-    return part.sessionID === context.rootSessionId && part.type === "step-start";
-  }
-  return false;
 }
 
 function eventSessionId(event: OpenCodeEvent): string | undefined {

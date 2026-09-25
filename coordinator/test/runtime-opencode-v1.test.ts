@@ -1201,7 +1201,7 @@ describe("OpenCode runtime", () => {
     expect(calls.abort).toBe(0);
   });
 
-  it("interrupts a new turn after maxTurns is reached", async () => {
+  it("leaves maxTurns enforcement to the coordinator", async () => {
     const { calls, runtime } = fakeRuntime({
       events: [
         asOpenCodeEvent({
@@ -1224,9 +1224,13 @@ describe("OpenCode runtime", () => {
               sessionID: "session-opencode",
               role: "assistant",
               modelID: "gpt-5.6-luna",
-              time: { created: 3 },
+              time: { created: 3, completed: 4 },
             },
           },
+        }),
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
         }),
       ],
     });
@@ -1235,54 +1239,7 @@ describe("OpenCode runtime", () => {
     const run = { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } };
     const events = await collect(runtime.run(run, new AbortController().signal));
 
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
-    expect(events.at(-1)?.payload).toMatchObject({
-      state: "failed",
-      reason: "max_turns",
-      turns: 1,
-    });
-    expect(calls.abort).toBe(0);
-  });
-
-  it("interrupts a step-start new turn after maxTurns is reached", async () => {
-    const { calls, runtime } = fakeRuntime({
-      events: [
-        asOpenCodeEvent({
-          type: "message.updated",
-          properties: {
-            info: {
-              id: "first-message",
-              sessionID: "session-opencode",
-              role: "assistant",
-              modelID: "gpt-5.6-luna",
-              time: { created: 1, completed: 2 },
-            },
-          },
-        }),
-        asOpenCodeEvent({
-          type: "message.part.updated",
-          properties: {
-            part: {
-              id: "second-step",
-              messageID: "second-message",
-              sessionID: "session-opencode",
-              type: "step-start",
-            },
-          },
-        }),
-      ],
-    });
-
-    await runtime.start(new AbortController().signal);
-    const run = { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } };
-    const events = await collect(runtime.run(run, new AbortController().signal));
-
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
-    expect(events.at(-1)?.payload).toMatchObject({
-      state: "failed",
-      reason: "max_turns",
-      turns: 1,
-    });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed", turns: 2 });
     expect(calls.abort).toBe(0);
   });
 

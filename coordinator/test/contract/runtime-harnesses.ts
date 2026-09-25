@@ -25,6 +25,8 @@ export interface RuntimeContractHarness {
   failsBeforeSession(): AgentRuntime;
   /** A session starts and then waits until the attempt is aborted. */
   blocksUntilAborted(): { runtime: AgentRuntime; waiting: Promise<void> };
+  /** A session reports this many successful normalized tool completions. */
+  toolCalls(count: number): AgentRuntime;
   /** The session finishes, then releasing its resources fails. */
   completedWithCleanupFailure?(): AgentRuntime;
 }
@@ -63,6 +65,22 @@ export function fakeHarness(): RuntimeContractHarness {
           yield createEvent("terminal", { state: "failed", reason: "Fake runtime aborted" });
         })();
       return { runtime, waiting: waiting.promise };
+    },
+    toolCalls: (count) => {
+      const createEvent = createEventFactory(run, "fake-runtime-v1");
+      return new FakeAgentRuntime({
+        events: [
+          createEvent("run", { state: "started" }),
+          ...Array.from({ length: count }, (_, index) =>
+            createEvent("tool", {
+              state: "completed",
+              toolUseId: `fake-tool-${index}`,
+              name: "fake_tool",
+            }),
+          ),
+          createEvent("terminal", { state: "completed", resultText: "Contract cycle finished" }),
+        ],
+      });
     },
   };
 }
@@ -157,6 +175,44 @@ export function claudeHarness(): RuntimeContractHarness {
       });
       return { runtime, waiting: waiting.promise };
     },
+    toolCalls: (count) =>
+      new ClaudeAgentRuntime({
+        query: scripted(async function* () {
+          for (let index = 0; index < count; index += 1) {
+            const toolUseId = `claude-tool-${index}`;
+            yield {
+              type: "assistant",
+              session_id: "session-budget",
+              message: {
+                model: "claude-opus-4-6",
+                content: [
+                  {
+                    type: "tool_use",
+                    id: toolUseId,
+                    name: "Bash",
+                    input: { command: "true" },
+                  },
+                ],
+              },
+            };
+            yield {
+              type: "user",
+              session_id: "session-budget",
+              message: [
+                { type: "tool_result", tool_use_id: toolUseId, content: "ok", is_error: false },
+              ],
+            };
+          }
+          yield {
+            type: "result",
+            subtype: "success",
+            result: "Contract cycle finished",
+            num_turns: count,
+            session_id: "session-budget",
+            uuid: "budget-result",
+          };
+        }),
+      }),
   };
 }
 
@@ -164,6 +220,7 @@ interface OpenCodeScript {
   serverStartError?: Error;
   deleteError?: Error;
   blockUntilAborted?: () => void;
+  events?: OpenCodeEvent[];
 }
 
 export function openCodeHarness(): RuntimeContractHarness {
@@ -210,10 +267,11 @@ export function openCodeHarness(): RuntimeContractHarness {
         await waitForAbort(signal, script.blockUntilAborted);
         throw new Error("OpenCode event stream aborted");
       }
-      yield {
-        type: "session.idle",
-        properties: { sessionID: sessionId },
-      } as unknown as OpenCodeEvent;
+      for (const event of script.events ?? [
+        { type: "session.idle", properties: { sessionID: sessionId } } as unknown as OpenCodeEvent,
+      ]) {
+        yield event;
+      }
     };
     const client = {
       event: {
@@ -250,6 +308,46 @@ export function openCodeHarness(): RuntimeContractHarness {
       const waiting = deferred();
       return { runtime: create({ blockUntilAborted: waiting.resolve }), waiting: waiting.promise };
     },
+    toolCalls: (count) =>
+      create({
+        events: [
+          {
+            type: "message.updated",
+            properties: {
+              info: {
+                id: "budget-message",
+                sessionID: "session-contract",
+                role: "assistant",
+                modelID: "gpt-5.6-luna",
+                time: { created: 1 },
+              },
+            },
+          } as unknown as OpenCodeEvent,
+          ...Array.from(
+            { length: count },
+            (_, index) =>
+              ({
+                type: "message.part.updated",
+                properties: {
+                  part: {
+                    id: `budget-tool-${index}`,
+                    messageID: "budget-message",
+                    sessionID: "session-contract",
+                    type: "tool",
+                    tool: "task_update",
+                    callID: `budget-call-${index}`,
+                    state: {
+                      status: "completed",
+                      input: { status: "done" },
+                      output: "ok",
+                      time: { start: index, end: index + 1 },
+                    },
+                  },
+                },
+              }) as unknown as OpenCodeEvent,
+          ),
+        ],
+      }),
     completedWithCleanupFailure: () =>
       create({ deleteError: new Error("session delete rejected") }),
   };

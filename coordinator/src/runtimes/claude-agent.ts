@@ -178,7 +178,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       const context: WorkContext = {};
       const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
-      const pendingPolicyEvents: RehorEvent[] = [];
       let sessionRef: string | undefined;
       let turns = 0;
       let terminalEmitted = false;
@@ -212,10 +211,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ? { rawEventRef: { reference: `claude-agent-sdk:${uuid}`, redacted: true } }
             : {}),
         });
-      };
-
-      const drainPolicyEvents = function* (): Generator<RehorEvent> {
-        while (pendingPolicyEvents.length > 0) yield pendingPolicyEvents.shift() as RehorEvent;
       };
 
       const emitUsage = (
@@ -282,7 +277,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             abortController: controller,
             cwd: input.worktree.path,
             model: input.provider.requestedModel,
-            maxTurns: input.limits.maxTurns,
             permissionMode: runtime.options.permissionMode ?? "acceptEdits",
             settingSources: [...(runtime.options.settingSources ?? ["project"])],
             mcpServers: toSdkMcpServers(runtime.options.mcpServers ?? {}),
@@ -294,13 +288,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
-            hooks: createHooks(
-              input.limits.maxTurns,
-              input.label,
-              pendingPolicyEvents,
-              createEvent,
-              toolStarts,
-            ),
           },
         });
         state.query = activeQuery;
@@ -309,7 +296,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           const reference = refFor(message);
 
           if (isResultMessage(message)) {
-            for (const event of drainPolicyEvents()) yield event;
             const result = asObject(message);
             const resultUsage = collectResultUsage(result, input.provider.requestedModel);
             for (const snapshot of resultUsage.length > 0 ? resultUsage : usage.snapshots()) {
@@ -341,7 +327,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           })) {
             yield event;
           }
-          for (const event of drainPolicyEvents()) yield event;
         }
 
         if (!terminalEmitted) {
@@ -356,7 +341,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           );
         }
       } catch (error) {
-        for (const event of drainPolicyEvents()) yield event;
         for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
         if (!terminalEmitted) {
           const errorReason = errorMessage(error);
@@ -409,86 +393,6 @@ export function createClaudeAgentRuntimeFactory(
   return {
     runtimeId: CLAUDE_RUNTIME_ID,
     create: () => new ClaudeAgentRuntime(options),
-  };
-}
-
-function createHooks(
-  maxTurns: number,
-  label: string,
-  pendingEvents: RehorEvent[],
-  createEvent: ReturnType<typeof createEventFactory>,
-  toolStarts: Map<string, number>,
-): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
-  let count = 0;
-  let warned = false;
-  let critical = false;
-  const warningAt = Math.max(1, Math.floor(maxTurns * 0.75));
-  const criticalAt = Math.max(1, Math.floor(maxTurns * 0.9));
-
-  const hook = async (): Promise<JsonObject> => {
-    count += 1;
-    const remaining = Math.max(0, maxTurns - count);
-    if (count >= criticalAt && !critical) {
-      critical = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "critical",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. You MUST save progress NOW via ` +
-            "task_update with current summary, last_step, files_changed, and next_step. " +
-            "Then wrap up or stop.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. You MUST save progress NOW via ` +
-          "task_update with current summary, last_step, files_changed, and next_step. " +
-          "Then wrap up or stop.",
-      };
-    }
-    if (count >= warningAt && !warned) {
-      warned = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "warning",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. Save progress via task_update soon ` +
-            "(summary + metadata with last_step, files_changed, next_step). " +
-            "Prioritize completing current step and saving state.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. Save progress via task_update soon ` +
-          "(summary + metadata with last_step, files_changed, next_step). " +
-          "Prioritize completing current step and saving state.",
-      };
-    }
-    return {};
-  };
-
-  const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {
-    const input = asObject(args[0]);
-    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
-    if (toolUseId) toolStarts.delete(toolUseId);
-    return {};
-  };
-
-  return {
-    // Match Python: failed tool calls clean up timing state but do not consume
-    // a turn-budget count.
-    PostToolUse: [{ hooks: [hook] }],
-    PostToolUseFailure: [{ hooks: [failedToolCleanup] }],
   };
 }
 

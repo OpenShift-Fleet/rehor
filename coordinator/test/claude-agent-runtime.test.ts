@@ -156,7 +156,6 @@ describe("ClaudeAgentRuntime", () => {
     expect(captured).toMatchObject({
       cwd: "/work/rehor",
       model: "claude-opus-4-6",
-      maxTurns: 20,
       permissionMode: "acceptEdits",
       allowedTools: ["Bash", "Read", "Edit"],
       mcpServers: { "mcp-atlassian": { type: "http", url: "http://jira-mcp" } },
@@ -319,71 +318,27 @@ describe("ClaudeAgentRuntime", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("counts successful tools for detailed turn-budget policy events", async () => {
-    type TestHook = (...args: unknown[]) => Promise<Record<string, unknown>>;
-    type TestSdkOptions = {
-      hooks: Record<string, Array<{ hooks: TestHook[] }>>;
-    };
-    const metrics: Array<Record<string, unknown>> = [];
-    queryMock.mockImplementation(({ options }: { options: TestSdkOptions }) => {
-      const postToolUse = options.hooks.PostToolUse?.[0]?.hooks[0];
-      const postToolUseFailure = options.hooks.PostToolUseFailure?.[0]?.hooks[0];
-      if (!postToolUse || !postToolUseFailure) throw new Error("turn-budget hooks not configured");
-      const hookResults: Array<Promise<Record<string, unknown>>> = [];
-      for (let index = 0; index < 5; index += 1) {
-        hookResults.push(postToolUse({}, `success-${index}`, {}));
-      }
-      hookResults.push(postToolUseFailure({}, "failure-1", {}));
-      hookResults.push(postToolUse({}, "success-5", {}));
-      const close = vi.fn();
-      const iterator = (async function* (): AsyncGenerator<unknown> {
-        await Promise.all(hookResults);
-        yield {
+  it("leaves turn-budget enforcement to the coordinator", async () => {
+    queryMock.mockReturnValue(
+      sdkQuery([
+        {
           type: "result",
           subtype: "success",
-          result: "Saved progress",
-          num_turns: 6,
+          result: "Turn budget is coordinator-owned",
+          num_turns: 1,
           session_id: "session-budget",
           uuid: "sdk-budget",
-        };
-      })();
-      return Object.assign(iterator, { close });
-    });
-
-    const projection = new LegacyCompatibilityProjection({
-      metrics: {
-        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
-      },
-    });
-    const budgetRun = {
-      ...run,
-      runId: "run-budget",
-      attemptId: "attempt-budget",
-      limits: { ...run.limits, maxTurns: 8 },
-    };
-    const result = await executeSelectedRun(
-      createDefaultRuntimeRegistry(),
-      { runtimeId: "claude" },
-      budgetRun,
-      { projection },
+        },
+      ]),
     );
-    const policies = result.events.filter(({ kind }) => kind === "policy");
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(run, new AbortController().signal));
+    const options = queryMock.mock.calls.at(-1)?.[0]?.options as Record<string, unknown>;
 
-    expect(policies).toHaveLength(1);
-    expect(policies[0]?.payload).toMatchObject({
-      state: "warning",
-      usedTurns: 6,
-      maxTurns: 8,
-      message: expect.stringContaining(
-        "Save progress via task_update soon (summary + metadata with last_step, files_changed, next_step)",
-      ),
-    });
-    expect(metrics).toContainEqual({
-      type: "counter",
-      name: "devbot_turn_budget_event_total",
-      value: 1,
-      labels: { label: run.label, level: "warning" },
-    });
+    expect(options).not.toHaveProperty("maxTurns");
+    expect(options).not.toHaveProperty("hooks");
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
   });
 
   it("preserves partial usage through coordinator timeout handling", async () => {

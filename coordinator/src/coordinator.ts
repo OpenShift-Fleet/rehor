@@ -1,4 +1,5 @@
 import {
+  createEventFactory,
   EventLedger,
   parseRehorRun,
   type RehorEvent,
@@ -92,6 +93,76 @@ class AbortState {
   dispose(): void {
     this.removeAbortListener();
     this.combined.dispose();
+  }
+}
+
+interface TurnPolicyEvent extends Record<string, unknown> {
+  state: "warning" | "critical";
+  label: string;
+  usedTurns: number;
+  maxTurns: number;
+  message: string;
+}
+
+interface TurnPolicyUpdate {
+  events: TurnPolicyEvent[];
+  exhausted: boolean;
+}
+
+class TurnBudgetPolicy {
+  private readonly countedToolCalls = new Set<string>();
+  private usedTurns = 0;
+  private warned = false;
+  private critical = false;
+  private exhausted = false;
+
+  constructor(private readonly run: RehorRun) {}
+
+  observe(event: RehorEvent): TurnPolicyUpdate | undefined {
+    if (this.exhausted || event.kind !== "tool") return undefined;
+    if (event.payload.state !== "completed" || event.payload.isError === true) return undefined;
+
+    const id =
+      typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
+    if (this.countedToolCalls.has(id)) return undefined;
+    this.countedToolCalls.add(id);
+    this.usedTurns += 1;
+
+    const maxTurns = this.run.limits.maxTurns;
+    const warningAt = Math.floor(maxTurns * 0.75);
+    const criticalAt = Math.floor(maxTurns * 0.9);
+    const remaining = Math.max(0, maxTurns - this.usedTurns);
+    const events: TurnPolicyEvent[] = [];
+    if (this.usedTurns >= criticalAt && !this.critical) {
+      this.critical = true;
+      events.push({
+        state: "critical",
+        label: this.run.label,
+        usedTurns: this.usedTurns,
+        maxTurns,
+        message:
+          `TURN BUDGET CRITICAL: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
+          `~${remaining} remaining. You MUST save progress NOW via ` +
+          "task_update with current summary, last_step, files_changed, and next_step. " +
+          "Then wrap up or stop.",
+      });
+    } else if (this.usedTurns >= warningAt && !this.warned) {
+      this.warned = true;
+      events.push({
+        state: "warning",
+        label: this.run.label,
+        usedTurns: this.usedTurns,
+        maxTurns,
+        message:
+          `TURN BUDGET WARNING: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
+          `~${remaining} remaining. Save progress via task_update soon ` +
+          "(summary + metadata with last_step, files_changed, next_step). " +
+          "Prioritize completing current step and saving state.",
+      });
+    }
+
+    this.exhausted = this.usedTurns >= maxTurns;
+    return { events, exhausted: this.exhausted };
   }
 }
 
@@ -250,6 +321,8 @@ async function consumeEvents(
   projection: CoordinatorProjection | undefined,
   isAccepting: () => boolean,
 ): Promise<void> {
+  const turnBudget = new TurnBudgetPolicy(run);
+  let coordinatorEventOffset = 0;
   const iterator = runtime.run(run, abortState.signal)[Symbol.asyncIterator]();
   try {
     while (true) {
@@ -263,12 +336,42 @@ async function consumeEvents(
 
       const before = ledger.events.length;
       const normalizedEvent = mapRuntimeTerminal(next.value, abortState.cause);
-      const result = ledger.ingest(normalizedEvent);
+      const sequencedEvent = sequenceAfterCoordinatorEvents(
+        normalizedEvent,
+        coordinatorEventOffset,
+      );
+      const result = ledger.ingest(sequencedEvent);
       if (!result.accepted) continue;
 
       const event = ledger.events[before];
       if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
       await projectEvent(event, run, projection);
+
+      const turnUpdate = turnBudget.observe(event);
+      if (!turnUpdate) continue;
+      if (turnUpdate.events.length > 0) {
+        const createEvent = createEventFactory(run, run.policyHash.value, {
+          startSequence: nextSequence(ledger.events) - 1,
+        });
+        for (const payload of turnUpdate.events) {
+          const policyEvent = createEvent("policy", payload, {
+            ...(event.runtimeSessionRef ? { runtimeSessionRef: event.runtimeSessionRef } : {}),
+            parentEventId: event.eventId,
+          });
+          const policyBefore = ledger.events.length;
+          const policyResult = ledger.ingest(policyEvent);
+          if (!policyResult.accepted) continue;
+          coordinatorEventOffset += 1;
+          const acceptedPolicyEvent = ledger.events[policyBefore];
+          if (!acceptedPolicyEvent) {
+            throw new RuntimeContractError("accepted policy event was not retained by ledger");
+          }
+          await projectEvent(acceptedPolicyEvent, run, projection);
+        }
+      }
+      if (turnUpdate.exhausted) {
+        abortState.trigger({ kind: CoordinatorAbortKind.Failed, reason: "max_turns" });
+      }
     }
   } finally {
     await iterator.return?.();
@@ -293,6 +396,10 @@ function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): R
       ...(reason === undefined ? {} : { reason }),
     },
   };
+}
+
+function sequenceAfterCoordinatorEvents(event: RehorEvent, offset: number): RehorEvent {
+  return offset === 0 ? event : { ...event, sequence: event.sequence + offset };
 }
 
 async function projectEvent(

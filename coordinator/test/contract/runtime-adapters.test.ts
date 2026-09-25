@@ -4,6 +4,7 @@ import { executeRun } from "../../src/coordinator";
 import type { RehorEvent } from "../../src/domain";
 import { createLoopSignals } from "../../src/loop";
 import type { AgentRuntime } from "../../src/ports/agent-runtime";
+import { LegacyCompatibilityProjection } from "../../src/projections/compatibility";
 import {
   claudeHarness,
   fakeHarness,
@@ -123,6 +124,41 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     expect(typedResult.terminal.payload).toMatchObject({
       state: "timed_out",
       reason: "ordinary prose",
+    });
+  });
+
+  it("enforces max turns from successful normalized tool events", async () => {
+    const maxTurns = 8;
+    const metrics: Array<Record<string, unknown>> = [];
+    const projection = new LegacyCompatibilityProjection({
+      metrics: {
+        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
+      },
+    });
+    const result = await executeRun(
+      harness.toolCalls(maxTurns),
+      { ...harness.run, limits: { ...harness.run.limits, maxTurns } },
+      { projection },
+    );
+    const policies = result.events.filter(({ kind }) => kind === "policy");
+
+    expect(policies.map(({ payload }) => payload.state)).toEqual(["warning", "critical"]);
+    expect(policies.map(({ payload }) => payload.usedTurns)).toEqual([6, 7]);
+    expect(result.terminal.payload).toMatchObject({ state: "failed", reason: "max_turns" });
+    const sequences = result.events.map(({ sequence }) => sequence);
+    expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
+    expect(new Set(sequences).size).toBe(sequences.length);
+    expect(metrics).toContainEqual({
+      type: "counter",
+      name: "devbot_turn_budget_event_total",
+      value: 1,
+      labels: { label: harness.run.label, level: "warning" },
+    });
+    expect(metrics).toContainEqual({
+      type: "counter",
+      name: "devbot_turn_budget_event_total",
+      value: 1,
+      labels: { label: harness.run.label, level: "critical" },
     });
   });
 

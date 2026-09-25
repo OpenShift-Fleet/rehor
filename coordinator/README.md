@@ -123,11 +123,12 @@ payload shapes cannot drift from TypeScript validation.
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
 terminal event after preserving all accepted partial events. The coordinator
-owns run timeouts and maps typed abort causes to terminal states: shutdown to
-`interrupted`, caller cancellation to `cancelled`, timeout
-to `timed_out`, and failed policy aborts to `failed`. The loop preserves typed
-causes through its combined signal; runtime adapters report only `completed` or
-`failed` terminals.
+owns run timeouts, successful tool-call budgets, and terminal mapping. It emits
+turn-budget warnings at 75%, critical events at 90%, then aborts at `maxTurns`
+with `failed/max_turns`. Typed abort causes map to terminal states: shutdown to
+`interrupted`, caller cancellation to `cancelled`, timeout to `timed_out`, and
+failed policy aborts to `failed`. Runtime adapters report only `completed` or
+`failed` terminals and do not enforce turn budgets.
 Projection hooks receive normalized events for the existing status, transcript,
 usage, and cost writers; they do not receive provider SDK objects.
 
