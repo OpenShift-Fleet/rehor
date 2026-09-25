@@ -420,13 +420,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
               dropping = false;
             }
           }
-          // The CLI announcement may arrive without a trailing newline.
-          if (
-            !dropping &&
-            !settled &&
-            /^(?:opencode )?server listening on https?:\/\/[^\s]+:\d+\/?$/i.test(pending)
-          )
-            onLine(pending);
         };
       };
       const onLine = (line: string): void => {
