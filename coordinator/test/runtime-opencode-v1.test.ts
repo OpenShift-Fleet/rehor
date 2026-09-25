@@ -34,6 +34,7 @@ import {
 } from "../src/runtimes/opencode-v1";
 import { boundedOperation } from "../src/runtimes/shared";
 import { metricsProjection } from "./contract/runtime-harnesses";
+import { assertOpenCodeConfigInvariants } from "./opencode-config-invariants";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -293,6 +294,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
       model: configured.model ?? runtimeRun.provider.requestedModel,
       providerId: configured.providerId ?? runtimeRun.provider.id,
     });
+    if (renderedConfig) assertOpenCodeConfigInvariants(renderedConfig.config);
   } catch (error) {
     renderError = error;
   }

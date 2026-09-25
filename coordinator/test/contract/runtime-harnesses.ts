@@ -11,6 +11,7 @@ import {
   renderOpenCodeV1Config,
 } from "../../src/runtimes/opencode-v1";
 import { FakeAgentRuntime } from "../../src/testing/fake-agent-runtime";
+import { assertOpenCodeConfigInvariants } from "../opencode-config-invariants";
 
 const TASK_UPDATE_INPUT = {
   jira_key: "REHOR-146",
@@ -311,6 +312,7 @@ export function openCodeHarness(): RuntimeContractHarness {
       type: "session.idle",
       properties: { sessionID: "session-contract" },
     }) as unknown as OpenCodeEvent;
+  assertOpenCodeConfigInvariants(renderedConfig.config);
 
   const create = (script: OpenCodeScript): AgentRuntime => {
     const server: OpenCodeServerInfo = {
