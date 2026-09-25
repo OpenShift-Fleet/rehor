@@ -11,6 +11,7 @@ import {
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
 import {
+  normalizeDeploymentConfig,
   type OpenCodeV1DeploymentConfig,
   OpenCodeV1Runtime,
   type OpenCodeV1RuntimeOptions,
@@ -121,7 +122,7 @@ export function createOpenCodeV1RuntimeFactory(
               configured,
             )
           : renderOpenCodeV1Config({
-              ...configured,
+              ...normalizeDeploymentConfig(configured),
               model: configured.model ?? context.run.provider.requestedModel,
               providerId: configured.providerId ?? context.run.provider.id,
             });
