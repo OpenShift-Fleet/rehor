@@ -21,6 +21,8 @@ export interface RuntimeContractHarness {
   run: RehorRun;
   /** The provider session finishes successfully. */
   completed(): AgentRuntime;
+  /** The provider session completes with a recognized no-work result. */
+  noWork(): AgentRuntime;
   /** Setup fails before any provider session exists. */
   failsBeforeSession(): AgentRuntime;
   /** A session starts and then waits until the attempt is aborted. */
@@ -48,6 +50,18 @@ export function fakeHarness(): RuntimeContractHarness {
     name: "fake",
     run,
     completed: () => new FakeAgentRuntime({ events: eventsFor(run) }),
+    noWork: () => {
+      const createEvent = createEventFactory(run, "fake-runtime-v1");
+      return new FakeAgentRuntime({
+        events: [
+          createEvent("run", { state: "started" }),
+          createEvent("terminal", {
+            state: "completed",
+            resultText: "No actionable work was found.",
+          }),
+        ],
+      });
+    },
     failsBeforeSession: () =>
       new FakeAgentRuntime({
         events: eventsFor(run).slice(0, 1),
@@ -75,7 +89,14 @@ export function fakeHarness(): RuntimeContractHarness {
             createEvent("tool", {
               state: "completed",
               toolUseId: `fake-tool-${index}`,
-              name: "fake_tool",
+              name: "mcp__bot-memory__task_update",
+              input: {
+                jira_key: "REHOR-146",
+                repo: "rehor",
+                status: "pr_open",
+                summary: "Follow-up A",
+              },
+              content: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
             }),
           ),
           createEvent("terminal", { state: "completed", resultText: "Contract cycle finished" }),
@@ -156,6 +177,19 @@ export function claudeHarness(): RuntimeContractHarness {
           };
         }),
       }),
+    noWork: () =>
+      new ClaudeAgentRuntime({
+        query: scripted(async function* () {
+          yield {
+            type: "result",
+            subtype: "success",
+            result: "No actionable work was found.",
+            num_turns: 1,
+            session_id: "session-contract",
+            uuid: "no-work-result",
+          };
+        }),
+      }),
     failsBeforeSession: () =>
       new ClaudeAgentRuntime({
         query: () => {
@@ -189,8 +223,13 @@ export function claudeHarness(): RuntimeContractHarness {
                   {
                     type: "tool_use",
                     id: toolUseId,
-                    name: "Bash",
-                    input: { command: "true" },
+                    name: "mcp__bot-memory__task_update",
+                    input: {
+                      jira_key: "REHOR-146",
+                      repo: "rehor",
+                      status: "pr_open",
+                      summary: "Follow-up A",
+                    },
                   },
                 ],
               },
@@ -199,7 +238,12 @@ export function claudeHarness(): RuntimeContractHarness {
               type: "user",
               session_id: "session-budget",
               message: [
-                { type: "tool_result", tool_use_id: toolUseId, content: "ok", is_error: false },
+                {
+                  type: "tool_result",
+                  tool_use_id: toolUseId,
+                  content: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
+                  is_error: false,
+                },
               ],
             };
           }
@@ -303,6 +347,39 @@ export function openCodeHarness(): RuntimeContractHarness {
     name: "opencode-v1",
     run,
     completed: () => create({}),
+    noWork: () =>
+      create({
+        events: [
+          {
+            type: "message.updated",
+            properties: {
+              info: {
+                id: "no-work-message",
+                sessionID: "session-contract",
+                role: "assistant",
+                modelID: "gpt-5.6-luna",
+                time: { created: 1 },
+              },
+            },
+          } as unknown as OpenCodeEvent,
+          {
+            type: "message.part.updated",
+            properties: {
+              part: {
+                id: "no-work-text",
+                messageID: "no-work-message",
+                sessionID: "session-contract",
+                type: "text",
+                text: "No actionable work was found.",
+              },
+            },
+          } as unknown as OpenCodeEvent,
+          {
+            type: "session.idle",
+            properties: { sessionID: "session-contract" },
+          } as unknown as OpenCodeEvent,
+        ],
+      }),
     failsBeforeSession: () => create({ serverStartError: new Error("OpenCode server not ready") }),
     blocksUntilAborted: () => {
       const waiting = deferred();
@@ -334,18 +411,27 @@ export function openCodeHarness(): RuntimeContractHarness {
                     messageID: "budget-message",
                     sessionID: "session-contract",
                     type: "tool",
-                    tool: "task_update",
+                    tool: "bot-memory_task_update",
                     callID: `budget-call-${index}`,
                     state: {
                       status: "completed",
-                      input: { status: "done" },
-                      output: "ok",
+                      input: {
+                        jira_key: "REHOR-146",
+                        repo: "rehor",
+                        status: "pr_open",
+                        summary: "Follow-up A",
+                      },
+                      output: JSON.stringify({ id: 42, external_key: "REHOR-146" }),
                       time: { start: index, end: index + 1 },
                     },
                   },
                 },
               }) as unknown as OpenCodeEvent,
           ),
+          {
+            type: "session.idle",
+            properties: { sessionID: "session-contract" },
+          } as unknown as OpenCodeEvent,
         ],
       }),
     completedWithCleanupFailure: () =>

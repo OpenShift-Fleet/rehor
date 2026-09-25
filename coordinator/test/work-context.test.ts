@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { TerminalWorkContext } from "../src/domain/terminal-state";
-import { extractTaskResult, extractToolContext } from "../src/runtimes/shared";
+import { extractTaskResult, extractToolContext } from "../src/domain/work-context";
 
 describe.each(["mcp__bot-memory__", "bot-memory_"])("work context (%s)", (prefix) => {
   it("keeps status-selected work across unrelated lookup, notification, and memory calls", () => {

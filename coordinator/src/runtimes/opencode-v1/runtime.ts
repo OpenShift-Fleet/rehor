@@ -14,17 +14,12 @@ import {
   type RuntimeTerminalState,
 } from "../../domain";
 import type { RuntimeCapabilities } from "../../domain/capabilities";
-import type { TerminalWorkContext } from "../../domain/terminal-state";
 import { type Logger, nullLogger } from "../../log";
 import type { AgentRuntime } from "../../ports";
 import {
   abortReason,
   assertPositiveInteger,
   boundedOperation,
-  extractTaskResult,
-  extractToolContext,
-  isNoWork,
-  lastMeaningfulLine,
   redactSensitiveText,
 } from "../shared";
 import type { RenderedOpenCodeV1Config } from "./config";
@@ -215,7 +210,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
-    const workContext = initialTerminalContext(input);
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     try {
@@ -276,7 +270,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       normalization = {
         rootSessionId: sessionId,
         requestedModel: effectiveModel.value,
-        workContext,
         resultTextParts: new Map(),
         messageRoles: new Map(),
         countedMessages: new Set(),
@@ -401,11 +394,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         reason: errorMessage(failure) ?? "OpenCode runtime failed",
       };
     }
-    if (!workContext.summary && resultText) {
-      const summary = lastMeaningfulLine(resultText);
-      if (summary) workContext.summary = summary;
-    }
-
     if (outcome.state !== "completed") {
       yield factory(
         "persistence",
@@ -453,13 +441,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         state: outcome.state,
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         ...(resultText ? { resultText } : {}),
-        noWork: isNoWork(resultText),
         turns,
         durationMs: Date.now() - startedAt,
         ...(isResourceLeak(failure) || isResourceLeak(cleanupFailure)
           ? { resourceLeak: true }
           : {}),
-        ...(Object.keys(workContext).length > 0 ? { context: workContext } : {}),
       },
       { runtimeSessionRef: active.sessionId },
     );
@@ -564,7 +550,6 @@ interface UsageSnapshot {
 interface NormalizationContext {
   rootSessionId: string;
   requestedModel: string;
-  workContext: TerminalWorkContext;
   resultTextParts: Map<string, string>;
   messageRoles: Map<string, string>;
   countedMessages: Set<string>;
@@ -928,8 +913,6 @@ function normalizeOpenCodeEvent(
         const name = stringValue(part.tool, "unknown");
         const input = recordOrUndefined(state.input);
         const finished = state.status === "completed" || state.status === "error";
-        extractToolContext(name, input, context.workContext);
-        if (state.status === "completed") extractTaskResult(state.output, context.workContext);
         const start = numberValue(recordOrUndefined(state.time)?.start);
         const end = numberValue(recordOrUndefined(state.time)?.end);
         const phase = finished ? "completed" : "started";
@@ -1142,15 +1125,6 @@ function eventSessionId(event: OpenCodeEvent): string | undefined {
     return typeof sessionId === "string" ? sessionId : undefined;
   }
   return undefined;
-}
-
-function initialTerminalContext(input: RehorRun): TerminalWorkContext {
-  if (!input.task) return {};
-  const taskId = Number(input.task.id);
-  return {
-    ...(Number.isSafeInteger(taskId) && taskId > 0 ? { taskId } : {}),
-    ...(input.task.key ? { externalKey: input.task.key } : {}),
-  };
 }
 
 function partKey(part: JsonRecord): string {

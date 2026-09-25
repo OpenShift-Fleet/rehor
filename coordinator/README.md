@@ -128,7 +128,9 @@ turn-budget warnings at 75%, critical events at 90%, then aborts at `maxTurns`
 with `failed/max_turns`. Typed abort causes map to terminal states: shutdown to
 `interrupted`, caller cancellation to `cancelled`, timeout to `timed_out`, and
 failed policy aborts to `failed`. Runtime adapters report only `completed` or
-`failed` terminals and do not enforce turn budgets.
+`failed` terminals and do not enforce turn budgets. `WorkContextTracker` derives
+terminal task context and no-work state from normalized tool and result events
+before projection.
 Projection hooks receive normalized events for the existing status, transcript,
 usage, and cost writers; they do not receive provider SDK objects.
 

@@ -83,7 +83,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const payload = event.payload;
     const context = payload.context;
     const totals = aggregateUsage(state.usages, run);
-    const noWork = payload.noWork === true || containsNoWork(payload.resultText ?? "");
+    const noWork = payload.noWork === true;
     const isError = payload.state !== "completed";
     const durationMs = payload.durationMs ?? elapsedMs(state.startedAt, event.occurredAt);
     const cycleType = resolveCycleType(context?.workType, isError);
@@ -475,21 +475,6 @@ function resolveCycleType(workType: string | undefined, isError: boolean): strin
   if (isError) return "error";
   if (workType) return WORK_TYPE_TO_CYCLE_TYPE.get(workType) ?? "task_work";
   return "triage_only";
-}
-
-function containsNoWork(text: string): boolean {
-  const lower = text.toLowerCase();
-  return [
-    "no_work_found",
-    "no work found",
-    "no work available",
-    "nothing to do",
-    "nothing to pick up",
-    "no tickets",
-    "no unassigned",
-    "no assigned tickets",
-    "0 unassigned",
-  ].some((pattern) => lower.includes(pattern));
 }
 
 function attemptKey(event: RehorEvent, run: RehorRun): string {

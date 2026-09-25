@@ -7,3 +7,4 @@ export * from "./run";
 export * from "./terminal-state";
 export * from "./usage";
 export * from "./validation";
+export * from "./work-context";

@@ -7,6 +7,7 @@ import {
   type RuntimeCapabilities,
   RuntimeContractError,
   type TerminalEventPayload,
+  WorkContextTracker,
 } from "./domain";
 import { type AbortCause, abortCauseFrom } from "./domain/abort-cause";
 import type { AgentRuntime } from "./ports/agent-runtime";
@@ -180,6 +181,7 @@ export async function executeRun(
 ): Promise<CoordinatorResult> {
   const run = parseRehorRun(input);
   const ledger = new EventLedger(run);
+  const workContext = new WorkContextTracker(run);
   const wallClockNow = options.now ?? Date.now;
   const elapsedNow = options.monotonicNow ?? options.now ?? monotonicClock;
   const startedAt = elapsedNow();
@@ -228,6 +230,7 @@ export async function executeRun(
           abortState,
           ledger,
           options.projection,
+          workContext,
           () => acceptingEvents,
         );
         try {
@@ -283,13 +286,15 @@ export async function executeRun(
   }
 
   if (!ledger.terminalEvent) {
-    const terminal = createTerminalEvent(
-      run,
-      nextSequence(ledger.events),
-      terminalState(abortState.cause, failure),
-      terminalReason(abortState.cause, failure),
-      Math.max(0, Math.floor(elapsedNow() - startedAt)),
-      wallClockNow,
+    const terminal = workContext.enrichTerminal(
+      createTerminalEvent(
+        run,
+        nextSequence(ledger.events),
+        terminalState(abortState.cause, failure),
+        terminalReason(abortState.cause, failure),
+        Math.max(0, Math.floor(elapsedNow() - startedAt)),
+        wallClockNow,
+      ),
     );
     ledger.ingest(terminal);
     try {
@@ -319,6 +324,7 @@ async function consumeEvents(
   abortState: AbortState,
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
+  workContext: WorkContextTracker,
   isAccepting: () => boolean,
 ): Promise<void> {
   const turnBudget = new TurnBudgetPolicy(run);
@@ -335,7 +341,9 @@ async function consumeEvents(
       if (!isAccepting()) return;
 
       const before = ledger.events.length;
-      const normalizedEvent = mapRuntimeTerminal(next.value, abortState.cause);
+      const normalizedEvent = workContext.enrichTerminal(
+        mapRuntimeTerminal(next.value, abortState.cause),
+      );
       const sequencedEvent = sequenceAfterCoordinatorEvents(
         normalizedEvent,
         coordinatorEventOffset,
@@ -345,6 +353,7 @@ async function consumeEvents(
 
       const event = ledger.events[before];
       if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
+      workContext.observe(event);
       await projectEvent(event, run, projection);
 
       const turnUpdate = turnBudget.observe(event);

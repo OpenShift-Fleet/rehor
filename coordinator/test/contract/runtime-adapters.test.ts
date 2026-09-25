@@ -162,6 +162,27 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     });
   });
 
+  it("tracks task context from normalized tool events", async () => {
+    const result = await executeRun(harness.toolCalls(1), harness.run);
+
+    expect(result.terminal.payload).toMatchObject({
+      state: "completed",
+      context: {
+        taskId: 42,
+        externalKey: "REHOR-146",
+        repository: "rehor",
+        workType: "new_ticket",
+        summary: "Follow-up A",
+      },
+    });
+  });
+
+  it("marks no-work from normalized terminal text", async () => {
+    const result = await executeRun(harness.noWork(), harness.run);
+
+    expect(result.terminal.payload).toMatchObject({ state: "completed", noWork: true });
+  });
+
   it("records the run timeout as timed_out", async () => {
     const { runtime } = harness.blocksUntilAborted();
     const result = await executeRun(runtime, {

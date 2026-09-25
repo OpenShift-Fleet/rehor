@@ -12,15 +12,7 @@ import {
 } from "../domain";
 import type { AgentRuntime, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
-import {
-  abortCauseReason,
-  abortReasonText,
-  extractTaskResult,
-  extractToolContext,
-  isNoWork,
-  lastMeaningfulLine,
-  abortError as makeAbortError,
-} from "./shared";
+import { abortCauseReason, abortReasonText, abortError as makeAbortError } from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
@@ -90,14 +82,6 @@ type RuntimeState = {
   controller: AbortController;
   query?: RuntimeQuery;
   stopped: boolean;
-};
-
-type WorkContext = {
-  taskId?: number;
-  externalKey?: string;
-  repository?: string;
-  workType?: string;
-  summary?: string;
 };
 
 type UsageSnapshot = {
@@ -175,7 +159,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         input,
         runtime.options.policyVersion ?? "claude-agent-sdk-v1",
       );
-      const context: WorkContext = {};
       const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
       let sessionRef: string | undefined;
@@ -255,10 +238,8 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           state: stateName,
           ...(reason ? { reason } : {}),
           ...(resultText ? { resultText } : {}),
-          ...(resultText ? { noWork: isNoWork(resultText) } : {}),
           turns,
           durationMs: Math.max(0, durationMs),
-          ...(Object.keys(context).length > 0 ? { context } : {}),
         };
         return makeSdkEvent("terminal", payload, undefined);
       };
@@ -304,9 +285,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
             turns = numberValue(result?.num_turns) ?? turns;
             const resultText = stringValue(result?.result);
-            if (!context.summary && resultText) {
-              context.summary = lastMeaningfulLine(resultText);
-            }
             const successful = result?.subtype === "success" && result?.is_error !== true;
             yield terminal(
               successful ? "completed" : "failed",
@@ -320,7 +298,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           for (const event of translateMessage(message, {
             makeEvent: (kind, payload, model) => makeSdkEvent(kind, payload, message, model),
             reference,
-            context,
             toolStarts,
             usage,
             requestedModel: input.provider.requestedModel,
@@ -401,7 +378,6 @@ function translateMessage(
   state: {
     makeEvent: (kind: string, payload: JsonObject, model?: string) => RehorEvent;
     reference?: string;
-    context: WorkContext;
     toolStarts: Map<string, number>;
     usage: AssistantUsage;
     requestedModel: string;
@@ -462,7 +438,6 @@ function translateMessage(
         const id = stringValue(value?.id);
         const name = stringValue(value?.name) ?? blockType;
         if (id) state.toolStarts.set(id, Date.now());
-        extractToolContext(name, asObject(value?.input), state.context);
         events.push(
           state.makeEvent(
             "tool",
@@ -493,7 +468,6 @@ function translateMessage(
       const id = stringValue(value?.tool_use_id);
       const started = id ? state.toolStarts.get(id) : undefined;
       if (id) state.toolStarts.delete(id);
-      extractTaskResult(value?.content, state.context);
       events.push(
         state.makeEvent("tool", {
           state: "completed",
