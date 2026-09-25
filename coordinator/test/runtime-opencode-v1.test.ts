@@ -2657,6 +2657,7 @@ describe("OpenCode process supervisor", () => {
       json: '{"nested":{"a":"stable","b":true},"z":1}\n',
       hash: hashOpenCodeConfig(config),
       packageLock,
+      effectiveModel: { providerID: "provider", modelID: "model", value: "provider/model" },
       requiredEnvironment: ["REHOR_MODEL_PROXY_TOKEN"],
     };
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
