@@ -450,13 +450,9 @@ async function consumeEvents(
 function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): RehorEvent {
   if (event.kind !== "terminal") return event;
   const payload = event.payload as TerminalEventPayload;
-  const state = cause
-    ? terminalState(cause, undefined)
-    : payload.state === "completed" || payload.state === "failed"
-      ? payload.state
-      : "failed";
-  if (!cause && payload.state === state) return event;
-  const reason = cause ? terminalReason(cause, undefined) : payload.reason;
+  if (payload.state !== "failed" || !cause) return event;
+  const state = terminalState(cause, undefined);
+  const reason = terminalReason(cause, undefined);
   return {
     ...event,
     payload: {

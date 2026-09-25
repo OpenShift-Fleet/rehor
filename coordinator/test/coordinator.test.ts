@@ -135,6 +135,21 @@ describe("coordinator execution", () => {
     expect(result.error).toBeUndefined();
   });
 
+  it("does not relabel a completed runtime terminal when abort races ingestion", async () => {
+    const cancel = new AbortController();
+    const runtime = new FakeAgentRuntime();
+    runtime.run = (input) =>
+      (async function* (): AsyncGenerator<RehorEvent> {
+        yield event({ runId: input.runId, attemptId: input.attemptId });
+        cancel.abort({ kind: "cancelled", reason: "late cancellation" });
+        yield terminal();
+      })();
+
+    const result = await executeRun(runtime, run, { signal: cancel.signal });
+
+    expect(result.terminal.payload.state).toBe("completed");
+  });
+
   it("completes normally when the runtime trails a usage event after the terminal", async () => {
     const projection: CoordinatorProjection & { events: RehorEvent[]; terminals: RehorEvent[] } = {
       events: [],
@@ -217,6 +232,26 @@ describe("coordinator execution", () => {
     expect(runtime.startCalls).toBe(1);
     expect(runtime.runCalls).toBe(1);
     expect(runtime.stopCalls).toBe(1);
+  });
+
+  it("preserves a completed runtime terminal when external abort arrives during delivery", async () => {
+    const cancel = new AbortController();
+    const base = new FakeAgentRuntime({ events: [event(), terminal()] });
+    const runtime: AgentRuntime = {
+      start: (signal) => base.start(signal),
+      async *run(input, signal, _context) {
+        for await (const current of base.run(input, signal)) {
+          if (current.kind === "terminal") cancel.abort("late external cancel");
+          yield current;
+        }
+      },
+      stop: () => base.stop(),
+    };
+
+    const result = await executeRun(runtime, run, { signal: cancel.signal });
+
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
   });
 
   it("maps shutdown to interrupted and cancellation to cancelled", async () => {
