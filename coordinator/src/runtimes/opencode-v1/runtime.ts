@@ -215,6 +215,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
+    let streamLost = false;
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     try {
@@ -225,7 +226,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
-      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller, "failed");
+      detachCrash = linkCrash(this.supervisor.crashSignal, active.controller, context);
       const directory = server.directory;
       const client = this.clientFactory(server, directory, this.clientEnvironment);
       active.client = client;
@@ -318,8 +319,14 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           active.controller.signal,
           undefined,
           "OpenCode event stream",
-        );
-        if (next.done) break;
+        ).catch((error: unknown) => {
+          streamLost = true;
+          throw error;
+        });
+        if (next.done) {
+          streamLost = true;
+          break;
+        }
         if (!isSessionEvent(next.value, normalization)) continue;
         if (beginsNewTurn(next.value, normalization)) {
           yield factory(
@@ -393,6 +400,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (reconciled.outcome) {
           outcome = { state: reconciled.outcome, reason: reconciled.reason };
           failure = undefined;
+        } else if (streamLost) {
+          const cause = { kind: "shutdown", reason: "opencode_crash" } as const;
+          context?.onAbortCause?.(cause);
         }
       }
     } finally {
@@ -1161,6 +1171,21 @@ function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boo
 
 function partKey(part: JsonRecord): string {
   return `${stringValue(part.sessionID, "unknown-session")}:${stringValue(part.id, "unknown-part")}`;
+}
+
+function linkCrash(
+  source: AbortSignal,
+  target: AbortController,
+  context: AgentRuntimeRunContext | undefined,
+): () => void {
+  const onAbort = (): void => {
+    const cause = { kind: "shutdown", reason: "opencode_crash" } as const;
+    context?.onAbortCause?.(cause);
+    if (!target.signal.aborted) target.abort(source.reason);
+  };
+  if (source.aborted) onAbort();
+  else source.addEventListener("abort", onAbort, { once: true });
+  return () => source.removeEventListener("abort", onAbort);
 }
 
 function linkAbort(

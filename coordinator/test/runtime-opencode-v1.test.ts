@@ -2100,6 +2100,47 @@ describe("OpenCode runtime", () => {
     expect(events.at(-1)?.payload).toMatchObject({ turns: 1 });
   });
 
+  it("maps an OpenCode server crash to an interrupted run and counts the interruption", async () => {
+    const crash = new Error("server process crashed");
+    const { runtime } = fakeRuntime({
+      events: [],
+      streamError: new Error("SSE closed after crash"),
+      crashError: crash,
+    });
+    const metrics: Array<Record<string, unknown>> = [];
+    const projection = new LegacyCompatibilityProjection({
+      metrics: {
+        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
+      },
+    });
+
+    const result = await executeRun(runtime, runtimeRun, { projection });
+
+    expect(result.terminal.payload).toMatchObject({
+      state: "interrupted",
+      reason: "opencode_crash",
+    });
+    expect(result.error).toBeUndefined();
+    expect(metrics).toContainEqual({
+      type: "counter",
+      name: "devbot_runtime_interruptions_total",
+      value: 1,
+      labels: { runtime: "unknown", provider: runtimeRun.provider.id, state: "interrupted" },
+    });
+  });
+
+  it("maps unreconciled OpenCode SSE loss to an interrupted run", async () => {
+    const { runtime } = fakeRuntime({ events: [], streamError: new Error("SSE disconnected") });
+
+    const result = await executeRun(runtime, runtimeRun);
+
+    expect(result.terminal.payload).toMatchObject({
+      state: "interrupted",
+      reason: "opencode_crash",
+    });
+    expect(result.error).toBeUndefined();
+  });
+
   it("preserves partial evidence and fails when the server crashes", async () => {
     const crash = new Error("server process crashed");
     const { runtime } = fakeRuntime({
