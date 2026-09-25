@@ -29,10 +29,10 @@ const NO_WORK_PATTERNS = [
 /** Builds terminal work metadata and no-work state from normalized events. */
 export class WorkContextTracker {
   private readonly context: TerminalWorkContext = {};
-  private readonly pendingTools = new Map<string, { name: string; input?: JsonRecord }>();
+  private readonly startedTools = new Set<string>();
 
   constructor(run: RehorRun) {
-    if (!run.task) return;
+    if (!run.task || run.runtimeId !== "opencode-v1") return;
     const taskId = Number(run.task.id);
     if (Number.isSafeInteger(taskId) && taskId > 0) this.context.taskId = taskId;
     if (run.task.key) this.context.externalKey = run.task.key;
@@ -49,17 +49,14 @@ export class WorkContextTracker {
     const input = asRecord(payload.input);
 
     if (payload.state === "started") {
-      if (input) extractToolContext(name, input, this.context);
-      this.pendingTools.set(id, { name, ...(input ? { input } : {}) });
+      extractToolContext(name, input, this.context);
+      this.startedTools.add(id);
       return;
     }
     if (payload.state !== "completed") return;
 
-    const pending = this.pendingTools.get(id);
-    const completedInput = input ?? pending?.input;
-    if (completedInput) extractToolContext(name || pending?.name || "", completedInput, this.context);
-    if (payload.isError !== true) extractTaskResult(payload.content, this.context);
-    this.pendingTools.delete(id);
+    if (!this.startedTools.has(id)) extractToolContext(name, input, this.context);
+    extractTaskResult(payload.content, this.context);
   }
 
   enrichTerminal<T extends RehorEvent>(event: T): T {
