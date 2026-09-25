@@ -340,6 +340,7 @@ async function consumeEvents(
   const turnBudget = new TurnBudgetPolicy(run);
   const pendingPolicyUpdates = new Map<string, TurnPolicyUpdate>();
   const toolStarts = new Map<string, RehorEvent>();
+  const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
   const emitPolicyUpdate = async (
@@ -365,6 +366,7 @@ async function consumeEvents(
       if (!acceptedPolicyEvent) {
         throw new RuntimeContractError("accepted policy event was not retained by ledger");
       }
+      acceptedSequences.add(acceptedPolicyEvent.sequence);
       await projectEvent(acceptedPolicyEvent, run, projection);
     }
   };
@@ -410,13 +412,14 @@ async function consumeEvents(
       const sequencedEvent = sequenceAfterCoordinatorEvents(
         normalizedEvent,
         coordinatorEventOffset,
-        ledger.events,
+        acceptedSequences,
       );
       const result = ledger.ingest(sequencedEvent);
       if (!result.accepted) continue;
 
       const event = ledger.events[before];
       if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
+      acceptedSequences.add(event.sequence);
       workContext.observe(event);
       await projectEvent(event, run, projection);
 
@@ -429,8 +432,6 @@ async function consumeEvents(
           const turnUpdate = callbackUpdate ?? turnBudget.observe(event);
           if (callbackUpdate) pendingPolicyUpdates.delete(toolUseId);
           if (turnUpdate) await emitPolicyUpdate(toolUseId, turnUpdate, event);
-        } else {
-          turnBudget.observe(event);
         }
       }
 
@@ -467,10 +468,9 @@ function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): R
 function sequenceAfterCoordinatorEvents(
   event: RehorEvent,
   offset: number,
-  acceptedEvents: readonly RehorEvent[],
+  acceptedSequences: ReadonlySet<number>,
 ): RehorEvent {
   if (offset === 0) return event;
-  const acceptedSequences = new Set(acceptedEvents.map(({ sequence }) => sequence));
   let sequence = event.sequence + offset;
   while (acceptedSequences.has(sequence)) sequence += 1;
   return { ...event, sequence };
