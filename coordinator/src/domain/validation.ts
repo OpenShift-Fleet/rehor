@@ -139,8 +139,8 @@ function deepFreeze<T>(value: T): T {
 
 function assertSchema(validate: ValidateFunction, value: unknown, path: string): void {
   if (validate(value)) return;
-  const errors = (validate.errors ?? []).map(
-    ({ instancePath, message }) => `${instancePath || "/"} ${message ?? "is invalid"}`,
-  );
+  const errors = (validate.errors ?? [])
+    .filter(({ keyword }) => keyword !== "if")
+    .map(({ instancePath, message }) => `${instancePath || "/"} ${message ?? "is invalid"}`);
   throw new RuntimeContractError(`${path} does not match schema: ${errors.join("; ")}`);
 }

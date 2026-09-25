@@ -543,6 +543,57 @@ describe("RehorEvent contract", () => {
     ).toThrow("event does not match schema");
   });
 
+  it("rejects non-finite usage and terminal numbers without conditional-schema noise", () => {
+    const usage = event({
+      kind: "usage",
+      payload: {
+        requestedModel: run.provider.requestedModel,
+        tokenCounts: { input: 1 },
+        partial: false,
+        final: true,
+        estimated: false,
+        incomplete: false,
+        cost: { amount: 0, currency: "USD", source: "provider" },
+      },
+    });
+    const terminal = event({ kind: "terminal", payload: { state: "completed", turns: 1 } });
+    const nonFinite = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
+    const expectRejectedWithoutConditionalNoise = (input: RehorEvent): void => {
+      let thrown: unknown;
+      try {
+        parseRehorEvent(input);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(RuntimeContractError);
+      if (thrown instanceof RuntimeContractError) {
+        expect(thrown.message).not.toContain('must match "then" schema');
+      }
+    };
+
+    for (const amount of nonFinite) {
+      expectRejectedWithoutConditionalNoise({
+        ...usage,
+        payload: {
+          ...usage.payload,
+          cost: { amount, currency: "USD", source: "provider" },
+        },
+      });
+    }
+    for (const count of nonFinite) {
+      expectRejectedWithoutConditionalNoise({
+        ...usage,
+        payload: { ...usage.payload, tokenCounts: { input: count } },
+      });
+    }
+    for (const turns of nonFinite) {
+      expectRejectedWithoutConditionalNoise({
+        ...terminal,
+        payload: { ...terminal.payload, turns },
+      });
+    }
+  });
+
   it("preserves unknown event kinds and redacted references", () => {
     const unknown = parseRehorEvent(
       event({
