@@ -35,7 +35,7 @@ RUN uv run python -c "from sentence_transformers import SentenceTransformer; Sen
 # Offline mode — model is baked in, no network/cache writes needed at runtime
 ENV HF_HUB_OFFLINE=1
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 # Run python directly from the pre-built venv — avoids uv cache init permission
 # issues with OpenShift arbitrary UIDs (astral-sh/uv#10023)

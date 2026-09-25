@@ -9,6 +9,7 @@ import uvicorn
 from fastmcp import FastMCP
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -41,9 +42,7 @@ async def lifespan(app):
 
 def build_app() -> tuple[Starlette, Starlette]:
     """Construct FastMCP, register tools and routes, and return (app, metrics_app)."""
-    mcp = FastMCP(
-        name="Bot Memory",
-    )
+    mcp = FastMCP(name="Bot Memory")
 
     # Register MCP tools
     from .tools.cycles import register_cycle_tools
@@ -60,30 +59,25 @@ def build_app() -> tuple[Starlette, Starlette]:
     register_cycle_tools(mcp)
     register_konflux_tools(mcp)
 
-    # Health check
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    # Dashboard UI
     @mcp.custom_route("/", methods=["GET"])
     async def dashboard(request: Request) -> HTMLResponse:
         html = (STATIC_DIR / "index.html").read_text()
         return HTMLResponse(html)
 
-    # Static files
     @mcp.custom_route("/static/{path:path}", methods=["GET"])
     async def static_files(request: Request) -> FileResponse:
         file_path = STATIC_DIR / request.path_params["path"]
         return FileResponse(file_path)
 
-    # Static assets (Vite build output)
     @mcp.custom_route("/assets/{path:path}", methods=["GET"])
     async def asset_files(request: Request) -> FileResponse:
         file_path = STATIC_DIR / "assets" / request.path_params["path"]
         return FileResponse(file_path)
 
-    # REST API for the dashboard
     from .api import (
         api_analytics,
         api_bot_status,
@@ -132,7 +126,6 @@ def build_app() -> tuple[Starlette, Starlette]:
     mcp.custom_route("/api/cycle-runs/by-task", methods=["GET"])(api_cycle_runs_by_task)
     mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(api_cycle_run_transcript)
 
-    # Build the MCP app (handles /mcp endpoint + custom routes)
     mcp_app = mcp.http_app(transport="streamable-http")
 
     @asynccontextmanager
@@ -145,8 +138,17 @@ def build_app() -> tuple[Starlette, Starlette]:
 
     metrics_app = Starlette(routes=[Route("/metrics", metrics_endpoint)])
 
-    # Wrap in an outer Starlette app so we can add WebSocket + lifespan
-    from starlette.middleware import Middleware
+    async def ws_events(websocket: WebSocket):
+        await websocket.accept()
+        queue = bus.subscribe()
+        try:
+            while True:
+                event = await queue.get()
+                await websocket.send_text(event.to_sse_json())
+        except Exception:
+            pass
+        finally:
+            bus.unsubscribe(queue)
 
     app = Starlette(
         lifespan=combined_lifespan,
@@ -159,32 +161,49 @@ def build_app() -> tuple[Starlette, Starlette]:
     return app, metrics_app
 
 
-# WebSocket for live updates
-async def ws_events(websocket: WebSocket):
-    await websocket.accept()
-    queue = bus.subscribe()
-    try:
-        while True:
-            event = await queue.get()
-            await websocket.send_text(event.to_sse_json())
-    except Exception:
-        pass
-    finally:
-        bus.unsubscribe(queue)
-
-
 if __name__ == "__main__":
     from .log import setup_logging
 
     setup_logging()
 
     try:
+        from .auth import BearerAuthMiddleware
+        from .readonly_server import readonly_mcp
+
         app, metrics_app = build_app()
 
+        readonly_mcp_app = readonly_mcp.http_app(transport="streamable-http")
+
+        @asynccontextmanager
+        async def readonly_lifespan(app):
+            # Session manager only — model/DB already loaded by combined_lifespan.
+            async with readonly_mcp_app.lifespan(app):
+                yield
+
+        readonly_app = Starlette(
+            lifespan=readonly_lifespan,
+            middleware=[Middleware(BearerAuthMiddleware)],
+            routes=[Mount("/", app=readonly_mcp_app)],
+        )
+
         async def serve():
+            # Start main first so model/DB init completes before readonly accepts traffic.
             main_server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8080, log_config=None))
+            readonly_config = uvicorn.Config(readonly_app, host="0.0.0.0", port=8081, log_config=None)
             metrics_server = uvicorn.Server(uvicorn.Config(metrics_app, host="0.0.0.0", port=9091, log_config=None))
-            await asyncio.gather(main_server.serve(), metrics_server.serve())
+
+            main_task = asyncio.create_task(main_server.serve())
+            metrics_task = asyncio.create_task(metrics_server.serve())
+
+            # Wait until main has finished startup (model + DB ready).
+            while not main_server.started:
+                if main_task.done():
+                    await main_task  # re-raise startup failure
+                    return
+                await asyncio.sleep(0.05)
+
+            readonly_server = uvicorn.Server(readonly_config)
+            await asyncio.gather(main_task, readonly_server.serve(), metrics_task)
 
         asyncio.run(serve())
     except Exception:
