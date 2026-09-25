@@ -104,17 +104,58 @@ adapter. `executeSelectedRun()` feeds the selected adapter into the existing
 and cleanup behavior.
 
 `createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
-runtime ID `claude`. Pass the `config` returned by `prepareCycleInput()` to
-forward the legacy allowed-tool and additional MCP-server configuration:
+runtime ID `claude` and remains the production default. Its options are
+Claude-specific; the reference-preserving `ConfigPreparationResult` is not
+passed directly to it because the legacy Python runner still owns resolved
+MCP credentials.
+
+OpenCode is available as an explicit adapter, but is not added to the default
+registry or selected by production configuration yet. Pass the prepared cycle
+configuration through `executeSelectedRun()`; the OpenCode factory renders its
+MCP, tool, optional-server, and model inputs while keeping deployment-owned
+provider/plugin fields separate:
 
 ```ts
 const prepared = await prepareCycleInput(bridge, cycleOptions);
-const registry = createDefaultRuntimeRegistry(prepared.config);
-const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
+const registry = new RuntimeFactoryRegistry([
+  createOpenCodeV1RuntimeFactory({
+    config: {
+      ...deploymentOpenCodeConfig,
+      providerId: "rehor-openai",
+    },
+  }),
+]);
+const result = await executeSelectedRun(
+  registry,
+  { runtimeId: "opencode-v1" },
+  run,
+  { preparedConfig: prepared.config },
+);
 ```
 
-The Python runner remains the active production entry point until a TypeScript
-runner canary is enabled.
+`renderOpenCodeV1ConfigForCycle()` is the lower-level equivalent for callers
+that need the deterministic artifact before constructing a runtime. It consumes
+the reference-only `openCodeMcpServers` view from preparation. The bridge's
+`optionalMcpServers` list is explicit: missing grants for those persona-specific
+servers are omitted, while a missing MCP server referenced by any other grant
+fails configuration validation. MCP environment references are fail-closed:
+only the non-secret `JIRA_MCP_URL` endpoint may be used in a remote URL; MCP
+headers and local MCP environments cannot reference the OpenCode child
+environment, and MCP references are never added to the agent passthrough list.
+The factory renders one immutable snapshot for the selected run. `OpenCodeV1Runtime`
+uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
+same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
+there is no mutable server-side configuration merge. Provider/plugin package
+versions must be exact and are emitted in the per-cycle lockfile artifact. The
+Python runner remains the active production
+entry point until a TypeScript runner canary is enabled. `ConfigPreparationResult`
+requires separate `mcpServers` and `openCodeMcpServers` fields; the coordinator
+rejects an older response instead of silently substituting resolved Claude MCP
+values into OpenCode. The supervisor pins
+OpenCode `1.18.29`; this version is part of the tested contract because it honors
+`OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`, and `OPENCODE_DB` as the per-cycle
+isolation controls. A version bump requires refreshing the lifecycle and state
+isolation tests before changing the pin.
 
 ## Cycle input preparation
 
