@@ -30,6 +30,11 @@ GH_URL_RE = re.compile(r"https://github\.com/[^\s\]\)>,]+/pull/\d+")
 GL_URL_RE = re.compile(r"https://gitlab\.cee\.redhat\.com/[^\s\]\)>,]+/merge_requests/\d+")
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, msg, headers, new_url):
+        return None
+
+
 def load_dotenv(path: Path) -> None:
     """Load simple KEY=VALUE entries without executing .env as shell code."""
     if not path.exists():
@@ -58,8 +63,43 @@ class HttpClient:
         query = urllib.parse.urlencode(params or {})
         url = f"{self.base_url}/{path.lstrip('/')}" + (f"?{query}" if query else "")
         request = urllib.request.Request(url, headers={"Accept": "application/json", **self.headers})
-        with urllib.request.urlopen(request, timeout=60) as response:
+        opener = (
+            urllib.request.build_opener(NoRedirectHandler())
+            if "Authorization" in self.headers
+            else urllib.request.build_opener()
+        )
+        with opener.open(request, timeout=60) as response:
             return json.loads(response.read().decode())
+
+
+def memory_headers():
+    token = os.environ.get("REHOR_MEMORY_TOKEN")
+    if not token:
+        service_account = os.environ.get("REHOR_MEMORY_SERVICE_ACCOUNT")
+        if service_account:
+            namespace = os.environ.get(
+                "REHOR_MEMORY_SERVICE_ACCOUNT_NAMESPACE",
+                "platform-frontend-ai-dev-stage",
+            )
+            duration = os.environ.get("REHOR_MEMORY_TOKEN_DURATION", "1h")
+            result = subprocess.run(
+                [
+                    "oc",
+                    "create",
+                    "token",
+                    service_account,
+                    "--namespace",
+                    namespace,
+                    f"--duration={duration}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode:
+                raise RuntimeError(f"oc create token failed: {result.stderr.strip()}")
+            token = result.stdout.strip()
+    return {"Authorization": f"Bearer {token}"} if token else None
 
 
 def jira_client():
@@ -93,7 +133,7 @@ def fetch_jira(client, filter_id: str):
 
 
 def fetch_memory(api: str, include_cycles: bool):
-    client = HttpClient(api)
+    client = HttpClient(api, memory_headers())
     instances = client.get("instances")
     costs = client.get("costs", {"days": 3650, "limit": 10000})
     analytics = client.get("analytics", {"days": 3650})

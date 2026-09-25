@@ -24,6 +24,16 @@ GL_AUTHOR_ID
 GITLAB_HOST
 ```
 
+For live memory API access, use short-lived tokens generated from a local OpenShift context:
+
+```text
+REHOR_MEMORY_SERVICE_ACCOUNT=devbot-memory-server
+REHOR_MEMORY_SERVICE_ACCOUNT_NAMESPACE=platform-frontend-ai-dev-stage
+REHOR_MEMORY_TOKEN_DURATION=1h
+```
+
+The collector runs `oc create token` for each invocation. `REHOR_MEMORY_TOKEN` remains supported as a direct-token override, but long-lived tokens should not be stored.
+
 `.env.report` is gitignored. Never put tokens in source, reports, or raw exports.
 
 ## Run
