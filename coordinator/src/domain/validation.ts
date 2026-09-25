@@ -12,9 +12,10 @@ const validateRunSchema = ajv.compile(runSchema);
 const validateEventSchema = ajv.compile(eventSchema);
 
 export function parseRehorRun(value: unknown): RehorRun {
-  assertSchema(validateRunSchema, value, "run");
+  const cloned = cloneInput(value, "run");
+  assertSchema(validateRunSchema, cloned, "run");
 
-  const run = structuredClone(value) as RehorRun;
+  const run = cloned as RehorRun;
   return {
     schemaVersion: run.schemaVersion,
     runId: run.runId,
@@ -68,9 +69,10 @@ export function parseRehorRun(value: unknown): RehorRun {
 }
 
 export function parseRehorEvent(value: unknown): RehorEvent {
-  assertSchema(validateEventSchema, value, "event");
+  const cloned = cloneInput(value, "event");
+  assertSchema(validateEventSchema, cloned, "event");
 
-  const event = structuredClone(value) as RehorEvent;
+  const event = cloned as RehorEvent;
   return {
     schemaVersion: event.schemaVersion,
     eventId: event.eventId,
@@ -108,6 +110,14 @@ export function parseRehorEvent(value: unknown): RehorEvent {
  * buffer between events; a retained reference would corrupt ledger state and
  * break idempotent redelivery.
  */
+function cloneInput<T>(value: T, path: string): T {
+  try {
+    return structuredClone(value);
+  } catch {
+    throw new RuntimeContractError(`${path} must be structured-cloneable`);
+  }
+}
+
 function clonePayload(payload: Record<string, unknown>): Readonly<Record<string, unknown>> {
   let copy: Record<string, unknown>;
   try {
