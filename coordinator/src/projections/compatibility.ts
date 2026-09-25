@@ -1,9 +1,4 @@
-import {
-  assertTerminalEvent,
-  assertUsagePayload,
-  type RehorEvent,
-  type RehorTerminalEvent,
-} from "../domain/event";
+import { assertTerminalEvent, type RehorEvent, type RehorTerminalEvent } from "../domain/event";
 import type { RehorRun } from "../domain/run";
 import type { TerminalWorkContext } from "../domain/terminal-state";
 import type { Usage } from "../domain/usage";
@@ -137,7 +132,6 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
   }
 
   private recordUsage(state: ProjectionState, event: RehorEvent): void {
-    assertUsagePayload(event.payload);
     const usage = event.payload as Usage;
     const model = usage.returnedModel ?? usage.requestedModel;
     const previous = state.usages.get(model);
