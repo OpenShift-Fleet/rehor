@@ -34,6 +34,8 @@ const config: ConfigPreparationResult = {
   remoteAgentDir: null,
   sharedAgentDir: null,
   claudeMdPath: "/tmp/CLAUDE.md",
+  mcpServers: {},
+  openCodeMcpServers: {},
 };
 
 function preflight(action: PreflightResult["action"]): PreflightResult {
@@ -189,7 +191,9 @@ describe("cycle preparation", () => {
     );
     const mcpChanged = await prepareCycleInput(
       new FakeBridge(preflight(PreflightAction.Start), {
-        mcpServers: { "mcp-example": { type: "http", url: "http://mcp.example" } },
+        openCodeMcpServers: {
+          "mcp-example": { type: "http", url: "http://mcp.example" },
+        },
       }),
       options,
     );
@@ -197,9 +201,16 @@ describe("cycle preparation", () => {
       new FakeBridge(preflight(PreflightAction.Start), { allowedTools: ["Bash"] }),
       options,
     );
+    const optionalMcpChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        optionalMcpServers: ["optional-persona-mcp"],
+      }),
+      options,
+    );
 
     expect(mcpChanged.configHash.value).not.toBe(baseline.configHash.value);
     expect(toolsChanged.configHash.value).not.toBe(baseline.configHash.value);
+    expect(optionalMcpChanged.configHash.value).not.toBe(baseline.configHash.value);
   });
 
   it("keeps the current no-preflight triage prompt", () => {
@@ -227,6 +238,45 @@ describe("Python preflight bridge", () => {
     expect(result?.scripts).toEqual([
       { name: "01-test.py", status: "start", content: "bridge work" },
     ]);
+  });
+
+  it("rejects config preparation without a dedicated OpenCode MCP view", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rehor-python-config-required-"));
+    const executable = join(root, "bridge-fixture");
+    const response = {
+      protocolVersion: 1,
+      ok: true,
+      result: {
+        model: "test-model",
+        maxTurns: 10,
+        intervalSeconds: 300,
+        idleIntervalSeconds: 300,
+        cycleTimeoutSeconds: 1_800,
+        idleReminderCooldownSeconds: 1_728_000,
+        workflow: "test-workflow",
+        source: "test",
+        envs: null,
+        activeEnvs: [],
+        claudeMdStrategy: "append",
+        idleCycleLimit: 0,
+        remoteAgentDir: null,
+        sharedAgentDir: null,
+        claudeMdPath: join(root, "CLAUDE.md"),
+        mcpServers: {},
+        allowedTools: [],
+        optionalMcpServers: [],
+      },
+    };
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringify(response))}));\n`,
+      { mode: 0o755 },
+    );
+
+    const bridge = new PythonCoordinatorBridge({ executable, cwd: root });
+    await expect(bridge.prepareConfig({ scriptDir: root, label: "test-label" })).rejects.toThrow(
+      "config.openCodeMcpServers is required",
+    );
   });
 
   it("parses MCP transports and allowed tools from config preparation", async () => {
@@ -268,7 +318,11 @@ describe("Python preflight bridge", () => {
           },
           "sse-server": { type: "sse", url: "https://mcp.example/events" },
         },
+        openCodeMcpServers: {
+          "project-server": { type: "http", url: "$" + "{JIRA_MCP_URL}" },
+        },
         allowedTools: ["Bash", "mcp__mcp-atlassian__jira_get_issue"],
+        optionalMcpServers: ["hcc-patternfly-data-view"],
       },
     };
     await writeFile(
@@ -281,6 +335,8 @@ describe("Python preflight bridge", () => {
     const result = await bridge.prepareConfig({ scriptDir: root, label: "test-label" });
 
     expect(result.mcpServers).toEqual(response.result.mcpServers);
+    expect(result.openCodeMcpServers).toEqual(response.result.openCodeMcpServers);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
+    expect(result.optionalMcpServers).toEqual(response.result.optionalMcpServers);
   });
 });

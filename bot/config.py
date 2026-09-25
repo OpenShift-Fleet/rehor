@@ -14,6 +14,8 @@ import yaml
 
 from .constants import _DEFAULT_COOLDOWN_SECONDS
 
+OPEN_CODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL"
+
 
 @dataclass
 class Config:
@@ -193,12 +195,21 @@ def load_config(script_dir: Path) -> Config:
     )
 
 
-def load_mcp_servers(script_dir: Path) -> dict:
-    """Load and merge MCP servers from bot and persona configs.
+def load_mcp_servers(
+    script_dir: Path,
+    *,
+    resolve_env: bool = True,
+    include_project: bool = False,
+) -> dict:
+    """Load the complete merged MCP configuration for each runtime.
 
-    The root .mcp.json (bot-memory, chrome-devtools) is loaded automatically
-    by the SDK via setting_sources=["project"]. This function loads additional
-    servers: bot-specific (bot/mcp.json for mcp-atlassian) and per-persona.
+    Claude Code can discover the project-level ``.mcp.json`` itself, but the
+    provider-neutral coordinator cannot rely on that ambient discovery. The
+    OpenCode bridge opts into ``include_project=True`` so it receives the
+    protected project servers explicitly; the legacy default remains unchanged.
+
+    ``resolve_env=False`` preserves ``${VAR}`` references for the OpenCode
+    renderer; the resolved default remains for the legacy Claude path.
     """
     servers: dict = {}
 
@@ -209,7 +220,7 @@ def load_mcp_servers(script_dir: Path) -> dict:
         with open(bot_mcp) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     merged_mcp = script_dir / "data" / "merged-mcp.json"
     if merged_mcp.exists():
@@ -217,14 +228,58 @@ def load_mcp_servers(script_dir: Path) -> dict:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
             if name not in servers:
-                servers[name] = _resolve_env_vars(cfg)
+                servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
         with open(mcp_file) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
+
+    # Project-level servers are protected by the merge contract and must win
+    # over optional persona definitions. This explicit result is consumed by
+    # the OpenCode renderer; Claude's project discovery remains compatible.
+    root_mcp = script_dir / ".mcp.json"
+    if include_project and root_mcp.exists():
+        with open(root_mcp) as f:
+            data = json.load(f)
+        for name, cfg in data.get("mcpServers", {}).items():
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
     return servers
+
+
+def discover_optional_mcp_servers(
+    script_dir: Path,
+    active_envs: list[str] | tuple[str, ...] = (),
+) -> list[str]:
+    """Return MCP servers supplied by optional persona and environment layers."""
+    names: set[str] = set()
+
+    for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
+        with open(mcp_file) as f:
+            data = json.load(f)
+        servers = data.get("mcpServers", {})
+        if isinstance(servers, dict):
+            names.update(name for name in servers if isinstance(name, str))
+
+    # Environment manifests declare MCP servers under provides.mcp_servers.
+    for env in active_envs:
+        names.update(_manifest_mcp_server_names(script_dir / "presets" / "envs" / env / "manifest.yaml"))
+
+    return sorted(names)
+
+
+def _manifest_mcp_server_names(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    with open(path) as f:
+        manifest = yaml.safe_load(f) or {}
+    provided = manifest.get("provides", {}).get("mcp_servers", {})
+    if isinstance(provided, dict):
+        return {name for name in provided if isinstance(name, str)}
+    if isinstance(provided, list):
+        return {name for name in provided if isinstance(name, str)}
+    return set()
 
 
 def _resolve_env_vars(obj):
@@ -357,6 +412,9 @@ SECRET_ENV_VARS = [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",
+    "JIRA_API_TOKEN",
+    "JIRA_MCP_TOKEN",
+    "JIRA_USERNAME",
     "GPG_PRIVATE_KEY_B64",
     "GPG_SIGNING_KEY",
     "SSO_USERNAME",

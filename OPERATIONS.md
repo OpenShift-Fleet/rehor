@@ -25,9 +25,21 @@ The memory server dashboard at `http://localhost:8080` shows:
 
 ### Logs
 
+Both the bot runner and the memory server emit structured JSON lines (one JSON object per line) containing standard fields (`timestamp`, `level`, `logger`, `message`, `run_id`, `task_key`, `model`, `cost`).
+
+- **Viewing logs locally:** Pipe through `jq` to pretty-print or filter:
+  ```bash
+  tail -f data/bot.log | jq .
+  tail -f data/bot.log | jq -c 'select(.level == "ERROR")'
+  tail -f data/bot.log | jq -c 'select(.task_key == "RHCLOUD-12345")'
+  ```
+- **Log rotation:** `data/bot.log` rotates automatically via `RotatingFileHandler` (10 MiB per file, 5 backups: active file plus 5 backups, capped at ~60 MiB total). Memory-server logs to stdout only.
+- **Memory-server correlation fields:** In the memory server, cycle-specific correlation keys (`run_id`, `task_key`, `model`, `cost`) are intentionally emitted as JSON `null`. The schema is kept identical to the bot runner to maintain a single unified Kibana mapping without requiring distributed HTTP request correlation.
+- **Cluster ingest vs local files:** In OpenShift / AppSRE deployments, log aggregation pipelines ingest container stdout directly. Host/container runtime policies manage stdout rotation; `data/bot.log` serves local debugging and PVC volume retention.
+
 ```bash
-make logs           # Tail bot.log
-podman compose logs -f bot          # Container logs
+make logs                             # Tail bot.log
+podman compose logs -f bot            # Container logs
 podman compose logs -f memory-server  # Memory server logs
 ```
 
