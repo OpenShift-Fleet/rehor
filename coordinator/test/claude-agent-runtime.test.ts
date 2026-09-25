@@ -307,7 +307,7 @@ describe("ClaudeAgentRuntime", () => {
     const close = vi.fn();
     const iterator = (async function* (): AsyncGenerator<unknown> {
       yield { type: "system", subtype: "init", session_id: "session-02", uuid: "sdk-init" };
-      throw new Error("SDK unavailable");
+      throw new Error("SDK unavailable token=abc");
     })();
     queryMock.mockReturnValue(Object.assign(iterator, { close }));
 
@@ -315,7 +315,10 @@ describe("ClaudeAgentRuntime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(run, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "failed", reason: "SDK unavailable" });
+    expect(events.at(-1)?.payload).toMatchObject({
+      state: "failed",
+      reason: "SDK unavailable token=[REDACTED]",
+    });
     expect(close).toHaveBeenCalledOnce();
   });
 
