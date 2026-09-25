@@ -657,10 +657,12 @@ function waitForExit(
     let leaderExited = alreadyExited;
     let graceTimer: NodeJS.Timeout | undefined;
     let verificationTimer: NodeJS.Timeout | undefined;
+    let groupPollTimer: NodeJS.Timeout | undefined;
 
     const cleanup = (): void => {
       if (graceTimer) clearTimeout(graceTimer);
       if (verificationTimer) clearTimeout(verificationTimer);
+      if (groupPollTimer) clearInterval(groupPollTimer);
       child.removeListener("close", onExit);
       child.removeListener("exit", onExit);
       child.removeListener("error", onError);
@@ -685,12 +687,17 @@ function waitForExit(
         fail(error);
       }
     };
+    const startGroupPolling = (): void => {
+      if (!groupPollTimer) groupPollTimer = setInterval(check, 25);
+    };
     const onExit = (): void => {
       leaderExited = true;
+      startGroupPolling();
       check();
     };
     const onError = (error: Error): void => {
       leaderExited = true;
+      startGroupPolling();
       check();
       if (settled) return;
       try {
@@ -721,6 +728,8 @@ function waitForExit(
       child.once("close", onExit);
       child.once("exit", onExit);
       child.once("error", onError);
+    } else {
+      startGroupPolling();
     }
     graceTimer = setTimeout(forceKill, timeoutMs);
     check();

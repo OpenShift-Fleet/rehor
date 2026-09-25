@@ -10,7 +10,7 @@ import {
   type Event as OpenCodeEvent,
   type OpencodeClient,
 } from "@opencode-ai/sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeRun, LegacyCompatibilityProjection } from "../src";
 import { runtimeErrorDetails } from "../src/diagnostics";
 import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
@@ -2321,6 +2321,23 @@ describe("OpenCode runtime", () => {
   });
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+function stubSuccessfulReadinessFetch(): void {
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const body =
+      url.pathname === "/global/health"
+        ? { healthy: true, version: "1.18.29" }
+        : { directory: url.searchParams.get("directory") };
+    return new Response(JSON.stringify(body), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+}
+
 const TEST_WORKSPACE = process.cwd();
 
 function createTestSupervisor(
@@ -2807,6 +2824,38 @@ describe("OpenCode process supervisor", () => {
     await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
       "unapproved protocol https:",
     );
+  });
+
+  it("returns after a SIGTERM descendant exits during the shutdown grace period", async () => {
+    stubSuccessfulReadinessFetch();
+    const source = `
+      const { spawn } = require("node:child_process");
+      const descendant = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 400); process.stdout.write("ready");';
+      const descendantProcess = spawn(process.execPath, ["-e", descendant], { stdio: ["ignore", "pipe", "ignore"] });
+      descendantProcess.stdout.once("data", () => {
+        process.on("SIGTERM", () => process.exit(0));
+        setInterval(() => {}, 1_000);
+        console.log("server listening on http://127.0.0.1:41236");
+      });
+    `;
+    let leader: ReturnType<typeof spawn> | undefined;
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      startupTimeoutMs: 1_000,
+      shutdownTimeoutMs: 3_000,
+      killVerificationTimeoutMs: 1_000,
+      spawnProcess: (_command, _args, options) => {
+        leader = spawn(process.execPath, ["-e", source], options);
+        return leader;
+      },
+    });
+
+    await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+    const startedAt = Date.now();
+    await supervisor.stop();
+
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(leader?.exitCode).toBe(0);
   });
 
   it("kills a process that survives SIGTERM and verifies the group is gone", async () => {
