@@ -1,6 +1,49 @@
+import type { RuntimeTerminalState, TokenCounts, Usage, UsageCost } from "../domain";
 import { isAbortCause } from "../domain/abort-cause";
 
-type JsonRecord = Record<string, unknown>;
+export type JsonRecord = Record<string, unknown>;
+
+export function buildTerminalPayload(input: {
+  state: RuntimeTerminalState;
+  reason?: string;
+  resultText?: string;
+  turns: number;
+  durationMs: number;
+  resourceLeak?: boolean;
+}): JsonRecord {
+  return {
+    state: input.state,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.resultText ? { resultText: input.resultText } : {}),
+    turns: input.turns,
+    durationMs: input.durationMs,
+    ...(input.resourceLeak ? { resourceLeak: true } : {}),
+  };
+}
+
+export function usagePayload(
+  requestedModel: string,
+  tokenCounts: TokenCounts,
+  options: {
+    returnedModel?: string;
+    partial: boolean;
+    final: boolean;
+    estimated: boolean;
+    incomplete: boolean;
+    cost?: UsageCost;
+  },
+): Usage {
+  return {
+    requestedModel,
+    ...(options.returnedModel ? { returnedModel: options.returnedModel } : {}),
+    tokenCounts,
+    partial: options.partial,
+    final: options.final,
+    estimated: options.estimated,
+    incomplete: options.incomplete,
+    ...(options.cost === undefined ? {} : { cost: options.cost }),
+  };
+}
 
 /** Stable JSON for hashes and deterministic diagnostics. Undefined object fields are omitted. */
 export function stableJson(value: unknown): string {
@@ -118,8 +161,34 @@ export function abortError(reason: unknown, fallback = "runtime aborted"): Error
   return error;
 }
 
-function asObject(value: unknown): JsonRecord | undefined {
+export function asObject(value: unknown): JsonRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as JsonRecord)
     : undefined;
+}
+
+export function stringValue(value: unknown): string | undefined;
+export function stringValue(value: unknown, fallback: string): string;
+export function stringValue(value: unknown, fallback?: string): string | undefined {
+  if (typeof value !== "string") return fallback;
+  if (fallback === undefined && value.length === 0) return undefined;
+  return value;
+}
+
+export function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function errorMessage(
+  value: unknown,
+  options: { serializeUnknown?: boolean } = {},
+): string | undefined {
+  if (value instanceof Error) return redactSensitiveText(value.message);
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (!options.serializeUnknown || value === undefined) return undefined;
+  try {
+    return redactSensitiveText(JSON.stringify(value) ?? String(value));
+  } catch {
+    return redactSensitiveText(String(value));
+  }
 }
