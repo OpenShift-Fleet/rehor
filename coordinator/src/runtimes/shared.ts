@@ -1,3 +1,4 @@
+import { isAbortCause } from "../domain/abort-cause";
 import type { TerminalWorkContext } from "../domain/terminal-state";
 
 type JsonRecord = Record<string, unknown>;
@@ -73,9 +74,12 @@ export function boundedOperation<T>(
   if (deadline !== undefined) {
     const remaining = deadline - Date.now();
     if (remaining > 0) {
-      timer = setTimeout(() => deadlineController.abort(deadlineError), remaining);
+      timer = setTimeout(
+        () => deadlineController.abort({ kind: "timed_out", reason: deadlineError }),
+        remaining,
+      );
     } else {
-      deadlineController.abort(deadlineError);
+      deadlineController.abort({ kind: "timed_out", reason: deadlineError });
     }
   }
 
@@ -118,6 +122,7 @@ export function assertPositiveInteger(value: number, name: string, prefix = "Run
 }
 
 export function abortReasonText(reason: unknown, fallback = "runtime aborted"): string {
+  if (isAbortCause(reason)) return abortReasonText(reason.reason, fallback);
   if (reason instanceof Error) return reason.message;
   if (typeof reason === "string") return reason;
   const object = asObject(reason);
@@ -127,17 +132,8 @@ export function abortReasonText(reason: unknown, fallback = "runtime aborted"): 
   return [kind, detail].filter(Boolean).join(": ") || fallback;
 }
 
-export function abortKind(reason: unknown): string | undefined {
-  if (typeof reason === "string") return reason;
-  const object = asObject(reason);
-  if (!object) return undefined;
-  if (typeof object.kind === "string") return object.kind;
-  return "reason" in object ? abortKind(object.reason) : undefined;
-}
-
 export function abortCauseReason(reason: unknown): unknown {
-  const object = asObject(reason);
-  return object && "reason" in object ? object.reason : reason;
+  return isAbortCause(reason) ? reason.reason : reason;
 }
 
 export function abortReason(signal: AbortSignal, fallback = "runtime aborted"): Error {

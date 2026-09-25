@@ -431,7 +431,7 @@ describe("ClaudeAgentRuntime", () => {
       { signal: controller.signal, projection },
     );
     await abortListenerReady;
-    controller.abort("timeout");
+    controller.abort({ kind: "timed_out", reason: "timeout" });
     const result = await promise;
     const usage = result.events.find(({ kind }) => kind === "usage");
 

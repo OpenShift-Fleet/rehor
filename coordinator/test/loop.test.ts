@@ -258,6 +258,7 @@ describe("loop signals", () => {
     const signals = createLoopSignals({ signal: cancel.signal });
     cancel.abort("cancel");
     expect(signals.signal.aborted).toBe(true);
+    expect(signals.signal.reason).toEqual({ kind: "cancelled", reason: "cancel" });
     expect(signals.stopReason).toBe("cancelled");
     signals.dispose();
 

@@ -1237,8 +1237,8 @@ describe("OpenCode runtime", () => {
 
     expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
     expect(events.at(-1)?.payload).toMatchObject({
-      state: "timed_out",
-      reason: "max_turns: maximum turn limit reached",
+      state: "failed",
+      reason: "max_turns",
       turns: 1,
     });
     expect(calls.abort).toBe(0);
@@ -1279,8 +1279,8 @@ describe("OpenCode runtime", () => {
 
     expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
     expect(events.at(-1)?.payload).toMatchObject({
-      state: "timed_out",
-      reason: "max_turns: maximum turn limit reached",
+      state: "failed",
+      reason: "max_turns",
       turns: 1,
     });
     expect(calls.abort).toBe(0);
@@ -2129,7 +2129,7 @@ describe("OpenCode runtime", () => {
     expect(events.at(-1)?.payload).toMatchObject({ turns: 1 });
   });
 
-  it("preserves partial evidence and interrupts when the server crashes", async () => {
+  it("preserves partial evidence and fails when the server crashes", async () => {
     const crash = new Error("server process crashed");
     const { runtime } = fakeRuntime({
       events: [
@@ -2165,7 +2165,7 @@ describe("OpenCode runtime", () => {
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
     expect(events.at(-1)?.payload).toMatchObject({
-      state: "interrupted",
+      state: "failed",
       resultText: "partial answer",
     });
     expect(events.find((event) => event.kind === "persistence")?.payload).toMatchObject({

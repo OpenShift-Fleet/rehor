@@ -7,16 +7,18 @@ import {
   RuntimeContractError,
   type TerminalEventPayload,
 } from "./domain";
+import { type AbortCause, abortCauseFrom } from "./domain/abort-cause";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
-import { abortReasonKind, isRecord } from "./utils";
+import { type CombinedAbortSignals, combineAbortSignals, isRecord } from "./utils";
 
-export enum CoordinatorAbortKind {
-  Cancelled = "cancelled",
-  Shutdown = "shutdown",
-  TimedOut = "timed_out",
-  Failed = "failed",
-}
+export const CoordinatorAbortKind = {
+  Cancelled: "cancelled",
+  Shutdown: "shutdown",
+  TimedOut: "timed_out",
+  Failed: "failed",
+} as const;
+export type CoordinatorAbortKind = AbortCause["kind"];
 
 export interface CoordinatorOptions {
   /** Aborts the attempt as cancelled. */
@@ -48,11 +50,6 @@ export class CoordinatorError extends Error {
   }
 }
 
-interface AbortCause {
-  kind: CoordinatorAbortKind;
-  reason?: unknown;
-}
-
 class CoordinatorAbort extends Error {
   constructor(readonly cause: AbortCause) {
     super(abortMessage(cause));
@@ -61,49 +58,40 @@ class CoordinatorAbort extends Error {
 }
 
 class AbortState {
-  readonly controller = new AbortController();
   readonly abortPromise: Promise<AbortCause>;
 
-  private causeValue: AbortCause | undefined;
-  private readonly listeners: Array<() => void> = [];
-  private resolveAbort!: (cause: AbortCause) => void;
+  private readonly combined: CombinedAbortSignals;
+  private removeAbortListener: () => void = () => undefined;
 
   constructor(signal: AbortSignal | undefined, shutdownSignal: AbortSignal | undefined) {
+    this.combined = combineAbortSignals({ signal, shutdownSignal });
     this.abortPromise = new Promise<AbortCause>((resolve) => {
-      this.resolveAbort = resolve;
+      const onAbort = (): void => {
+        resolve(this.cause ?? abortCauseFrom(this.signal.reason, "cancelled"));
+      };
+      if (this.signal.aborted) onAbort();
+      else {
+        this.signal.addEventListener("abort", onAbort, { once: true });
+        this.removeAbortListener = () => this.signal.removeEventListener("abort", onAbort);
+      }
     });
-
-    this.watch(shutdownSignal, (reason) => ({ kind: CoordinatorAbortKind.Shutdown, reason }));
-    this.watch(signal, (reason) => ({ kind: inferAbortKind(reason), reason }));
   }
 
   get signal(): AbortSignal {
-    return this.controller.signal;
+    return this.combined.signal;
   }
 
   get cause(): AbortCause | undefined {
-    return this.causeValue;
+    return this.combined.cause;
   }
 
   trigger(cause: AbortCause): void {
-    if (this.controller.signal.aborted) return;
-    this.causeValue = cause;
-    this.controller.abort(cause);
-    this.resolveAbort(cause);
+    this.combined.abort(cause);
   }
 
   dispose(): void {
-    for (const remove of this.listeners) remove();
-    this.listeners.length = 0;
-  }
-
-  private watch(signal: AbortSignal | undefined, cause: (reason: unknown) => AbortCause): void {
-    if (!signal) return;
-
-    const onAbort = (): void => this.trigger(cause(signal.reason));
-    signal.addEventListener("abort", onAbort, { once: true });
-    this.listeners.push(() => signal.removeEventListener("abort", onAbort));
-    if (signal.aborted) onAbort();
+    this.removeAbortListener();
+    this.combined.dispose();
   }
 }
 
@@ -146,7 +134,9 @@ export async function executeRun(
 
   try {
     if (abortState.signal.aborted) {
-      failure = new CoordinatorAbort(abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled });
+      failure = new CoordinatorAbort(
+        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
+      );
     } else {
       try {
         capabilities = await raceWithAbort(() => runtime.start(abortState.signal), abortState);
@@ -156,7 +146,7 @@ export async function executeRun(
 
       if (!failure && abortState.signal.aborted) {
         failure = new CoordinatorAbort(
-          abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled },
+          abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
         );
       }
 
@@ -188,7 +178,9 @@ export async function executeRun(
     }
 
     if (!failure && abortState.signal.aborted) {
-      failure = new CoordinatorAbort(abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled });
+      failure = new CoordinatorAbort(
+        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
+      );
     }
 
     if (!ledger.terminalEvent && !failure) {
@@ -352,6 +344,7 @@ function terminalState(
   if (cause?.kind === CoordinatorAbortKind.TimedOut) return "timed_out";
   if (cause?.kind === CoordinatorAbortKind.Shutdown) return "interrupted";
   if (cause?.kind === CoordinatorAbortKind.Cancelled) return "cancelled";
+  if (cause?.kind === CoordinatorAbortKind.Failed) return "failed";
   if (failure) return "failed";
   return "failed";
 }
@@ -363,6 +356,7 @@ function terminalReason(cause: AbortCause | undefined, failure: unknown): string
     return causeText(cause.reason, "shutdown requested");
   if (cause?.kind === CoordinatorAbortKind.Cancelled)
     return causeText(cause.reason, "run cancelled");
+  if (cause?.kind === CoordinatorAbortKind.Failed) return causeText(cause.reason, "run failed");
   return describeError(failure ?? new CoordinatorError("runtime ended without terminal event"));
 }
 
@@ -381,26 +375,6 @@ function nextSequence(events: readonly RehorEvent[]): number {
   let maximum = 0;
   for (const event of events) maximum = Math.max(maximum, event.sequence);
   return maximum + 1;
-}
-
-function inferAbortKind(reason: unknown): CoordinatorAbortKind {
-  if (reason instanceof Error && reason.name === "TimeoutError") {
-    return CoordinatorAbortKind.TimedOut;
-  }
-  // Structured reasons (`{ kind: "shutdown", reason }`) come from the loop's
-  // combined signal; bare strings from direct callers.
-  const kind = abortReasonKind(reason);
-  if (
-    kind === "shutdown" ||
-    kind === "interrupt" ||
-    kind === "interrupted" ||
-    kind === "SIGINT" ||
-    kind === "SIGTERM"
-  ) {
-    return CoordinatorAbortKind.Shutdown;
-  }
-  if (kind === "timeout" || kind === "timed_out") return CoordinatorAbortKind.TimedOut;
-  return CoordinatorAbortKind.Cancelled;
 }
 
 function abortMessage(cause: AbortCause): string {

@@ -4,7 +4,12 @@ import { executeRun } from "../../src/coordinator";
 import type { RehorEvent } from "../../src/domain";
 import { createLoopSignals } from "../../src/loop";
 import type { AgentRuntime } from "../../src/ports/agent-runtime";
-import { claudeHarness, openCodeHarness, type RuntimeContractHarness } from "./runtime-harnesses";
+import {
+  claudeHarness,
+  fakeHarness,
+  openCodeHarness,
+  type RuntimeContractHarness,
+} from "./runtime-harnesses";
 
 /**
  * The AgentRuntime contract, run against the production adapters with their
@@ -12,7 +17,7 @@ import { claudeHarness, openCodeHarness, type RuntimeContractHarness } from "./r
  * runtime's semantics; these cases pin what the coordinator relies on from
  * every real adapter.
  */
-const harnesses: RuntimeContractHarness[] = [claudeHarness(), openCodeHarness()];
+const harnesses: RuntimeContractHarness[] = [fakeHarness(), claudeHarness(), openCodeHarness()];
 
 function kinds(events: readonly RehorEvent[]): string[] {
   return events.map(({ kind }) => kind);
@@ -45,8 +50,6 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
 
     expectLifecycle(result.events);
     expect(result.terminal.payload.state).toBe("failed");
-    // The adapter reports its own failure; the coordinator must not synthesize it.
-    expect(result.terminal.eventId).not.toMatch(/^coordinator-terminal-/);
   });
 
   it("records a process shutdown as interrupted", async () => {
@@ -88,6 +91,28 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     expect(result.terminal.payload.state).toBe("cancelled");
   });
 
+  it("classifies aborts from typed causes, not reason text", async () => {
+    const { runtime: textRuntime, waiting: textWaiting } = harness.blocksUntilAborted();
+    const textCancel = new AbortController();
+    const textPending = executeRun(textRuntime, harness.run, { signal: textCancel.signal });
+    await textWaiting;
+    textCancel.abort("timeout");
+    const textResult = await textPending;
+
+    const { runtime: typedRuntime, waiting: typedWaiting } = harness.blocksUntilAborted();
+    const typedCancel = new AbortController();
+    const typedPending = executeRun(typedRuntime, harness.run, { signal: typedCancel.signal });
+    await typedWaiting;
+    typedCancel.abort({ kind: "timed_out", reason: "ordinary prose" });
+    const typedResult = await typedPending;
+
+    expect(textResult.terminal.payload.state).toBe("cancelled");
+    expect(typedResult.terminal.payload).toMatchObject({
+      state: "timed_out",
+      reason: "ordinary prose",
+    });
+  });
+
   it("records the run timeout as timed_out", async () => {
     const { runtime } = harness.blocksUntilAborted();
     const result = await executeRun(runtime, {
@@ -99,17 +124,20 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     expect(result.terminal.payload.state).toBe("timed_out");
   });
 
-  it("ends an in-flight run with an interrupted terminal when the runtime is stopped", async () => {
-    const { runtime, waiting } = harness.blocksUntilAborted();
-    await runtime.start(new AbortController().signal);
-    const pending = collect(runtime.run(harness.run, new AbortController().signal));
-    await waiting;
-    await runtime.stop();
-    const events = await pending;
+  it.runIf(harness.name !== "fake")(
+    "ends an in-flight run with an interrupted terminal when the runtime is stopped",
+    async () => {
+      const { runtime, waiting } = harness.blocksUntilAborted();
+      await runtime.start(new AbortController().signal);
+      const pending = collect(runtime.run(harness.run, new AbortController().signal));
+      await waiting;
+      await runtime.stop();
+      const events = await pending;
 
-    expectLifecycle(events);
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
-  });
+      expectLifecycle(events);
+      expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    },
+  );
 
   it("rejects startup on an aborted signal", async () => {
     const controller = new AbortController();

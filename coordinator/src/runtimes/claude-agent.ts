@@ -1,6 +1,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import {
+  abortCauseFrom,
+  abortCauseKind,
   createEventFactory,
   type RehorEvent,
   type RehorRun,
@@ -12,7 +14,6 @@ import type { AgentRuntime, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
 import {
   abortCauseReason,
-  abortKind,
   abortReasonText,
   extractTaskResult,
   extractToolContext,
@@ -183,7 +184,9 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       let terminalEmitted = false;
 
       const onAbort = (): void => {
-        if (!controller.signal.aborted) controller.abort(signal.reason);
+        if (!controller.signal.aborted) {
+          controller.abort(abortCauseFrom(signal.reason, "cancelled"));
+        }
       };
       signal.addEventListener("abort", onAbort, { once: true });
 
@@ -715,25 +718,17 @@ function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
 }
 
-function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
-  const kind = abortKind(reason);
-  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  // A process shutdown interrupts the attempt; it was not cancelled by the caller.
-  if (
-    kind === "shutdown" ||
-    kind === "SIGTERM" ||
-    kind === "SIGINT" ||
-    kind === "interrupt" ||
-    kind === "interrupted"
-  ) {
-    return "interrupted";
+function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" | "failed" {
+  switch (abortCauseKind(reason)) {
+    case "shutdown":
+      return "interrupted";
+    case "timed_out":
+      return "timed_out";
+    case "failed":
+      return "failed";
+    default:
+      return "cancelled";
   }
-  const text = abortReasonText(abortCauseReason(reason)).toLowerCase();
-  if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out")) {
-    return "timed_out";
-  }
-  if (text.includes("interrupt")) return "interrupted";
-  return "cancelled";
 }
 
 function abortReason(reason: unknown): string {

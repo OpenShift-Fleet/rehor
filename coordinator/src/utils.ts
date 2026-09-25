@@ -1,3 +1,5 @@
+import { type AbortCause, abortCauseFrom, isAbortCause } from "./domain/abort-cause";
+
 export function assertFinite(value: number, name: string): void {
   if (!Number.isFinite(value)) throw new RangeError(`${name} must be finite`);
 }
@@ -22,26 +24,63 @@ export function abortError(reason: unknown, fallbackMessage: string): Error {
   return error;
 }
 
-/**
- * Abort reason for a process shutdown (SIGTERM/SIGINT). The `kind` survives
- * signal chaining, so the coordinator and runtime adapters classify the attempt
- * as interrupted rather than cancelled whatever the human-readable reason says.
- */
-export interface ShutdownAbortReason {
-  kind: "shutdown";
-  reason?: unknown;
-}
+/** Typed abort reason for SIGTERM/SIGINT. */
+export type ShutdownAbortReason = AbortCause & { kind: "shutdown" };
 
 export function shutdownAbortReason(reason?: unknown): ShutdownAbortReason {
-  return reason === undefined ? { kind: "shutdown" } : { kind: "shutdown", reason };
+  return { kind: "shutdown", reason };
 }
 
-/** Kind of a structured abort reason (`{ kind }`, possibly nested), or a string reason itself. */
-export function abortReasonKind(reason: unknown): string | undefined {
-  if (typeof reason === "string") return reason;
-  if (!isRecord(reason)) return undefined;
-  if (typeof reason.kind === "string") return reason.kind;
-  return "reason" in reason ? abortReasonKind(reason.reason) : undefined;
+export interface CombinedAbortSignals {
+  readonly signal: AbortSignal;
+  readonly cause: AbortCause | undefined;
+  abort(cause: AbortCause): void;
+  dispose(): void;
+}
+
+/** Combines cancellation and shutdown inputs while keeping every abort typed. */
+export function combineAbortSignals(
+  options: { signal?: AbortSignal; shutdownSignal?: AbortSignal } = {},
+): CombinedAbortSignals {
+  const controller = new AbortController();
+  let causeValue: AbortCause | undefined;
+  const listeners: Array<() => void> = [];
+
+  const abort = (cause: AbortCause): void => {
+    if (controller.signal.aborted) return;
+    causeValue = cause;
+    controller.abort(cause);
+  };
+  const watch = (signal: AbortSignal | undefined, kind: "shutdown" | "cancelled"): void => {
+    if (!signal) return;
+    const onAbort = (): void => {
+      abort(
+        kind === "shutdown"
+          ? shutdownAbortReason(signal.reason)
+          : isAbortCause(signal.reason)
+            ? signal.reason
+            : abortCauseFrom(signal.reason, "cancelled"),
+      );
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    listeners.push(() => signal.removeEventListener("abort", onAbort));
+    if (signal.aborted) onAbort();
+  };
+
+  watch(options.shutdownSignal, "shutdown");
+  watch(options.signal, "cancelled");
+
+  return {
+    signal: controller.signal,
+    get cause() {
+      return causeValue;
+    },
+    abort,
+    dispose() {
+      for (const remove of listeners) remove();
+      listeners.length = 0;
+    },
+  };
 }
 
 function describeAbortReason(reason: unknown): string {

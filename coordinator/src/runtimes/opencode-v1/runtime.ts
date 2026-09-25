@@ -4,13 +4,19 @@ import {
   type OpencodeClient,
 } from "@opencode-ai/sdk";
 import { providerDiagnostic, runtimeErrorDetails } from "../../diagnostics";
-import { createEventFactory, type RehorEvent, type RehorRun } from "../../domain";
+import {
+  type AbortCauseKind,
+  abortCauseFrom,
+  abortCauseKind,
+  createEventFactory,
+  type RehorEvent,
+  type RehorRun,
+} from "../../domain";
 import type { RuntimeCapabilities } from "../../domain/capabilities";
 import type { TerminalState, TerminalWorkContext } from "../../domain/terminal-state";
 import { type Logger, nullLogger } from "../../log";
 import type { AgentRuntime } from "../../ports";
 import {
-  abortKind,
   abortReason,
   assertPositiveInteger,
   boundedOperation,
@@ -214,7 +220,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     const timeout = setTimeout(
-      () => active.controller.abort({ kind: "timeout", reason: "run timeout" }),
+      () => active.controller.abort({ kind: "timed_out", reason: "run timeout" }),
       input.limits.timeoutMs,
     );
 
@@ -226,7 +232,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
-      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller);
+      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller, "failed");
       const directory = server.directory;
       const client = this.clientFactory(server, directory, this.clientEnvironment);
       active.client = client;
@@ -327,10 +333,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         }
         if (!isSessionEvent(next.value, normalization)) continue;
         if (maxTurnsReached && beginsNewTurn(next.value, normalization)) {
-          active.controller.abort({
-            kind: "max_turns",
-            reason: "maximum turn limit reached",
-          });
+          active.controller.abort({ kind: "failed", reason: "max_turns" });
           throw abortReason(active.controller.signal);
         }
 
@@ -381,7 +384,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         promptAttempted &&
         !signal.aborted &&
         !this.supervisor.crashError &&
-        shouldReconcile(active.controller.signal.reason)
+        shouldReconcile(active.controller.signal)
       ) {
         streamLost = true;
         const reconciled = await reconcileSession(
@@ -457,7 +460,12 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           { runtimeSessionRef: active.sessionId },
         );
       }
-    } else if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
+    } else if (
+      failure &&
+      !maxTurnsReached &&
+      outcome.state !== "cancelled" &&
+      outcome.state !== "timed_out"
+    ) {
       yield factory(
         "error",
         { message: errorMessage(failure) ?? "OpenCode runtime failed" },
@@ -495,7 +503,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     const deadline = Date.now() + this.cleanupTimeoutMs;
     const deadlineController = new AbortController();
     const deadlineTimer = setTimeout(
-      () => deadlineController.abort(new Error("OpenCode cleanup deadline exceeded")),
+      () =>
+        deadlineController.abort({
+          kind: "timed_out",
+          reason: new Error("OpenCode cleanup deadline exceeded"),
+        }),
       this.cleanupTimeoutMs,
     );
     const cleanupSignal = deadlineController.signal;
@@ -609,7 +621,10 @@ async function reconcileSession(
 
   const controller = new AbortController();
   const signal = AbortSignal.any([active.controller.signal, controller.signal]);
-  const timer = setTimeout(() => controller.abort("reconciliation timeout"), timeoutMs);
+  const timer = setTimeout(
+    () => controller.abort({ kind: "timed_out", reason: "reconciliation timeout" }),
+    timeoutMs,
+  );
   const events: RehorEvent[] = [];
   let turns = 0;
 
@@ -748,17 +763,8 @@ async function reconcileSession(
   }
 }
 
-function shouldReconcile(reason: unknown): boolean {
-  const kind = abortKind(reason);
-  return (
-    kind !== "timeout" &&
-    kind !== "shutdown" &&
-    kind !== "cancel" &&
-    kind !== "cancelled" &&
-    kind !== "interrupt" &&
-    kind !== "interrupted" &&
-    kind !== "max_turns"
-  );
+function shouldReconcile(signal: AbortSignal): boolean {
+  return abortCauseKind(signal.reason) === undefined;
 }
 
 function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationContext): void {
@@ -1200,25 +1206,28 @@ function classifyAbort(
   controllerReason: unknown,
   streamLost: boolean,
 ): TerminalState {
-  const reason = signal.aborted ? signal.reason : controllerReason;
-  const kind = abortKind(reason);
-  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  if (kind === "cancel" || kind === "cancelled") return "cancelled";
-  if (
-    kind === "shutdown" ||
-    kind === "SIGTERM" ||
-    kind === "SIGINT" ||
-    kind === "interrupt" ||
-    kind === "interrupted"
-  ) {
-    return "interrupted";
+  const reason =
+    controllerReason ?? (signal.aborted ? abortCauseFrom(signal.reason, "cancelled") : undefined);
+  switch (abortCauseKind(reason)) {
+    case "shutdown":
+      return "interrupted";
+    case "cancelled":
+      return "cancelled";
+    case "timed_out":
+      return "timed_out";
+    case "failed":
+      return "failed";
   }
   if (crash || streamLost) return "interrupted";
   return "failed";
 }
 
-function linkAbort(source: AbortSignal, target: AbortController): () => void {
-  const onAbort = (): void => target.abort(source.reason);
+function linkAbort(
+  source: AbortSignal,
+  target: AbortController,
+  fallbackKind: AbortCauseKind = "cancelled",
+): () => void {
+  const onAbort = (): void => target.abort(abortCauseFrom(source.reason, fallbackKind));
   if (source.aborted) onAbort();
   else source.addEventListener("abort", onAbort, { once: true });
   return () => source.removeEventListener("abort", onAbort);

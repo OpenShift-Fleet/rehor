@@ -1,6 +1,6 @@
 import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
 
-import type { RehorRun } from "../../src/domain";
+import { createEventFactory, type RehorEvent, type RehorRun } from "../../src/domain";
 import type { AgentRuntime } from "../../src/ports/agent-runtime";
 import { ClaudeAgentRuntime, type ClaudeQueryFunction } from "../../src/runtimes/claude-agent";
 import {
@@ -9,6 +9,7 @@ import {
   OpenCodeV1Runtime,
   renderOpenCodeV1Config,
 } from "../../src/runtimes/opencode-v1";
+import { FakeAgentRuntime } from "../../src/testing/fake-agent-runtime";
 
 /**
  * Scripts one production adapter through the situations the AgentRuntime
@@ -26,6 +27,44 @@ export interface RuntimeContractHarness {
   blocksUntilAborted(): { runtime: AgentRuntime; waiting: Promise<void> };
   /** The session finishes, then releasing its resources fails. */
   completedWithCleanupFailure?(): AgentRuntime;
+}
+
+export function fakeHarness(): RuntimeContractHarness {
+  const run: RehorRun = {
+    ...baseRun,
+    provider: { id: "fake-provider", requestedModel: "fake-model" },
+  };
+  const eventsFor = (currentRun: RehorRun): RehorEvent[] => {
+    const createEvent = createEventFactory(currentRun, "fake-runtime-v1");
+    return [
+      createEvent("run", { state: "started" }),
+      createEvent("terminal", { state: "completed", resultText: "Contract cycle finished" }),
+    ];
+  };
+
+  return {
+    name: "fake",
+    run,
+    completed: () => new FakeAgentRuntime({ events: eventsFor(run) }),
+    failsBeforeSession: () =>
+      new FakeAgentRuntime({
+        events: eventsFor(run).slice(0, 1),
+        error: new Error("Fake runtime setup failed"),
+      }),
+    blocksUntilAborted: () => {
+      const waiting = deferred();
+      const runtime = new FakeAgentRuntime();
+      runtime.run = (input, signal) =>
+        (async function* (): AsyncGenerator<RehorEvent> {
+          const createEvent = createEventFactory(input, "fake-runtime-v1");
+          yield createEvent("run", { state: "started" });
+          waiting.resolve();
+          await waitForAbort(signal, () => undefined);
+          throw new Error("Fake runtime aborted");
+        })();
+      return { runtime, waiting: waiting.promise };
+    },
+  };
 }
 
 const baseRun: Omit<RehorRun, "provider"> = {
