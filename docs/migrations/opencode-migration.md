@@ -320,6 +320,55 @@ Exact model IDs remain deployment configuration. Do not hardcode model names
 until OpenAI account access, pricing, tool support, and regional requirements
 are confirmed.
 
+### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
+
+The coordinator's `runtimes/opencode-v1/config.ts` owns the translation from
+provider-neutral cycle data to this OpenCode V1 subset. The runtime factory
+receives the Python preparation through the `preparedConfig` option on
+`executeSelectedRun()` and calls `renderOpenCodeV1ConfigForCycle()` with the
+prepared model, allowed tools, optional servers, and `openCodeMcpServers` data.
+Deployment-owned
+provider/plugin fields remain separate. `mcpServers` and `openCodeMcpServers` are mandatory,
+separate bridge views; an absent OpenCode view is a protocol error, never a
+fallback to resolved Claude values. The renderer:
+
+- normalizes bare models with the deployment provider ID;
+- maps stdio MCP to `local` and HTTP/SSE MCP to `remote`;
+- converts Claude-style allowed tools to explicit OpenCode permissions,
+  denies unlisted built-ins and configured MCP servers, and skips grants only
+  for MCP servers explicitly marked optional by the prepared cycle;
+- converts provider/plugin `${VAR}` values to OpenCode `{env:VAR}` references
+  only when `VAR` is in the explicit `OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST`
+  (`REHOR_MODEL_PROXY_TOKEN` today), and returns required variables without
+  serializing resolved credentials; MCP URLs may reference only the non-secret
+  `JIRA_MCP_URL` endpoint, while MCP headers and local MCP environments cannot
+  use environment references;
+- rejects unknown tools, malformed transports, untrusted MCP environment
+  references, literal credentials, and unpinned package references;
+- emits stable JSON, a content hash, and
+  `opencode-packages.lock.json` containing every exact provider/plugin package
+  version.
+
+The runtime factory renders one immutable snapshot for the selected run and
+validates it before constructing the supervisor. `OpenCodeV1Runtime` derives
+prompt submission and Rehor event attribution from that same effective
+provider/model. The supervisor receives the snapshot in its constructor and
+writes the snapshot to a per-cycle config directory,
+sets `OPENCODE_CONFIG`, isolates OpenCode's global home/config/database paths,
+and enables offline npm resolution plus the pinned runtime's update/download
+safeguards. The pinned `1.18.29` release is a tested dependency: its
+`OPENCODE_TEST_HOME` behavior is required for per-cycle state isolation. A
+version bump must update the supervisor contract tests before the pin changes.
+Package installation is not a runtime responsibility: the image
+must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
+The default Claude runtime registry and production runtime selection remain
+unchanged.
+
+OpenCode receives the generated root `CLAUDE.md` and project `.claude/skills`
+through its project discovery path. Persona selection remains in the existing
+instruction assembly/preflight boundary; arbitrary global `CLAUDE.md`,
+`AGENTS.md`, skills, and plugin configuration are not inherited.
+
 Provider selection remains independent from runtime selection. During canary,
 OpenCode may select either the existing Vertex route or the OpenAI gateway
 (`@ai-sdk/openai-compatible` → Chat Completions, `@ai-sdk/openai` → Responses).

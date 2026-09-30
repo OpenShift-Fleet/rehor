@@ -76,7 +76,20 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     workflow_dir.mkdir(parents=True)
     bot_dir = tmp_path / "bot"
     bot_dir.mkdir()
-    (bot_dir / "mcp.json").write_text('{"mcpServers": {"mcp-atlassian": {"type": "http", "url": "http://jira-mcp"}}}')
+    (bot_dir / "mcp.json").write_text(
+        '{"mcpServers": {"mcp-atlassian": {"type": "http", '
+        '"url": "${JIRA_MCP_URL}", '
+        '"headers": {"Authorization": "Bearer ${JIRA_MCP_TOKEN}"}}}}'
+    )
+    persona_dir = tmp_path / "personas" / "frontend"
+    persona_dir.mkdir(parents=True)
+    (persona_dir / "mcp.json").write_text('{"mcpServers": {"hcc-patternfly-data-view": {"command": "hcc-pf-mcp"}}}')
+    monkeypatch.setenv("JIRA_MCP_URL", "https://jira.example/mcp")
+    monkeypatch.setenv("JIRA_MCP_TOKEN", "secret-value")
+    (tmp_path / ".mcp.json").write_text(
+        '{"mcpServers": {"bot-memory": {"type": "http", "url": "http://memory-server/mcp"}, '
+        '"chrome-devtools": {"command": "chrome-devtools-mcp"}}}'
+    )
     (tmp_path / "config.json").write_text(
         '{"claude": {"model": "test-model", "maxTurns": 10}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
@@ -112,8 +125,24 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["remoteAgentDir"] == str(profile_dir)
     assert result["sharedAgentDir"] == str(shared_dir)
     assert result["mcpServers"] == {
-        "mcp-atlassian": {"type": "http", "url": "http://jira-mcp"},
+        "mcp-atlassian": {
+            "type": "http",
+            "url": "https://jira.example/mcp",
+            "headers": {"Authorization": "Bearer secret-value"},
+        },
+        "hcc-patternfly-data-view": {"command": "hcc-pf-mcp"},
     }
+    assert result["openCodeMcpServers"] == {
+        "mcp-atlassian": {
+            "type": "http",
+            "url": "${JIRA_MCP_URL}",
+            "headers": {"Authorization": "Bearer ${JIRA_MCP_TOKEN}"},
+        },
+        "hcc-patternfly-data-view": {"command": "hcc-pf-mcp"},
+        "bot-memory": {"type": "http", "url": "http://memory-server/mcp"},
+        "chrome-devtools": {"command": "chrome-devtools-mcp"},
+    }
+    assert result["optionalMcpServers"] == ["hcc-patternfly-data-view"]
     assert "Bash" in result["allowedTools"]
 
 
@@ -156,6 +185,46 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
 
     (profile_dir / "instance.yaml").write_text("workflow: test-workflow\nmodel: pinned-model\n")
     assert handle(request)["model"] == "pinned-model"
+
+
+def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
+    from bot.config import load_mcp_servers
+
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "mcp.json").write_text(
+        '{"mcpServers": {"jira": {"type": "http", "url": "${JIRA_URL}", '
+        '"headers": {"Authorization": "Bearer ${JIRA_TOKEN}"}}}}'
+    )
+    monkeypatch.setenv("JIRA_URL", "https://jira.example/mcp")
+    monkeypatch.setenv("JIRA_TOKEN", "secret-value")
+
+    resolved = load_mcp_servers(tmp_path)
+    references = load_mcp_servers(tmp_path, resolve_env=False)
+
+    assert resolved["jira"]["url"] == "https://jira.example/mcp"
+    assert resolved["jira"]["headers"]["Authorization"] == "Bearer secret-value"
+    assert references["jira"]["url"] == "${JIRA_URL}"
+    assert references["jira"]["headers"]["Authorization"] == "Bearer ${JIRA_TOKEN}"
+
+
+def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_path):
+    from pathlib import Path
+
+    from bot.config import discover_optional_mcp_servers
+
+    (tmp_path / "personas" / "frontend").mkdir(parents=True)
+    (tmp_path / "personas" / "frontend" / "mcp.json").write_text(
+        '{"mcpServers": {"persona-mcp": {"command": "persona-mcp"}}}'
+    )
+    env_dir = tmp_path / "presets" / "envs" / "browser"
+    env_dir.mkdir(parents=True)
+    (env_dir / "manifest.yaml").write_text("provides:\n  mcp_servers:\n    browser-mcp:\n      type: stdio\n")
+
+    assert discover_optional_mcp_servers(tmp_path, ["browser"]) == ["browser-mcp", "persona-mcp"]
+
+    repository_root = Path(__file__).resolve().parents[2]
+    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
 
 
 def test_bridge_rejects_unknown_operation():

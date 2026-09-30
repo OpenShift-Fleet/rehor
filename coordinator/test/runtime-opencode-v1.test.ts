@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import {
   createOpencodeClient,
@@ -24,7 +24,10 @@ import {
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
   type OpenCodeSpawn,
+  type OpenCodeV1ConfigInput,
   OpenCodeV1Runtime,
+  type RenderedOpenCodeV1Config,
+  renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
 import { boundedOperation } from "../src/runtimes/shared";
 
@@ -100,6 +103,7 @@ interface FakeRuntimeOptions {
   deleteGate?: Promise<unknown>;
   cleanupTimeoutMs?: number;
   crashError?: Error;
+  config?: Omit<OpenCodeV1ConfigInput, "model"> & { model?: string };
 }
 
 interface FactoryCall {
@@ -112,6 +116,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
   const calls = {
     abort: 0,
     delete: 0,
+    start: 0,
     messages: 0,
     stop: 0,
     pathGet: [] as unknown[],
@@ -151,6 +156,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
       return crashError;
     },
     async start() {
+      calls.start += 1;
       activeServer = server;
       return server;
     },
@@ -221,9 +227,23 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     calls.factory.push({ server, directory, environment });
     return client;
   };
+  let renderedConfig: RenderedOpenCodeV1Config | undefined;
+  let renderError: unknown;
+  try {
+    const configured = options.config ?? {};
+    renderedConfig = renderOpenCodeV1Config({
+      ...configured,
+      model: configured.model ?? runtimeRun.provider.requestedModel,
+      providerId: configured.providerId ?? runtimeRun.provider.id,
+    });
+  } catch (error) {
+    renderError = error;
+  }
   const runtime = new OpenCodeV1Runtime({
-    supervisor,
+    supervisor: () => supervisor,
     clientFactory,
+    renderedConfig,
+    renderError,
     ...(options.cleanupTimeoutMs === undefined
       ? {}
       : { cleanupTimeoutMs: options.cleanupTimeoutMs }),
@@ -302,9 +322,18 @@ describe("OpenCode environment", () => {
         SECRET_TOKEN: "must-not-leak",
         OPENCODE_CONFIG_CONTENT: "ambient-config-must-not-leak",
         NODE_OPTIONS: "--require=/tmp/preload.cjs",
+        NPM_CONFIG_REGISTRY: "https://registry.example.invalid",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
+        AWS_SECRET_ACCESS_KEY: "must-not-leak",
+        DATABASE_URL: "must-not-leak",
       },
-      passthrough: ["REHOR_MODEL_PROXY_TOKEN"],
+      passthrough: [
+        "REHOR_MODEL_PROXY_TOKEN",
+        "OPENCODE_CONFIG_CONTENT",
+        "NPM_CONFIG_REGISTRY",
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+      ],
       noProxyHosts: ["model-gateway"],
     });
 
@@ -321,8 +350,26 @@ describe("OpenCode environment", () => {
     expect(environment.NO_PROXY).toContain("model-gateway");
     expect(environment.no_proxy).toBe(environment.NO_PROXY);
     expect(environment.SECRET_TOKEN).toBeUndefined();
+    expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+    expect(environment.DATABASE_URL).toBeUndefined();
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(environment.NODE_OPTIONS).toBeUndefined();
+    expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
+  });
+
+  it("keeps MCP endpoint references available without allowing arbitrary MCP variables", () => {
+    const environment = buildOpenCodeEnvironment({
+      base: {
+        JIRA_MCP_URL: "http://jira-mcp:8444/mcp",
+        GITHUB_TOKEN: "<REDACTED>",
+        JIRA_MCP_TOKEN: "<REDACTED>",
+      },
+      passthrough: ["GITHUB_TOKEN", "JIRA_MCP_TOKEN"],
+    });
+
+    expect(environment.JIRA_MCP_URL).toBe("http://jira-mcp:8444/mcp");
+    expect(environment.GITHUB_TOKEN).toBeUndefined();
+    expect(environment.JIRA_MCP_TOKEN).toBeUndefined();
   });
 
   it("preserves external proxy use while adding required internal bypasses", () => {
@@ -580,6 +627,11 @@ describe("OpenCode runtime", () => {
     });
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
+    expect(runtime.renderedConfiguration?.config).toMatchObject({
+      model: "rehor-openai/gpt-5.6-luna",
+      enabled_providers: ["rehor-openai"],
+    });
+    expect(runtime.renderedConfiguration?.hash).toEqual(expect.stringMatching(/^[a-f0-9]{64}$/));
     expect(calls.factory).toHaveLength(1);
     expect(calls.factory[0]).toMatchObject({
       server: { baseUrl: "http://127.0.0.1:41236" },
@@ -626,6 +678,100 @@ describe("OpenCode runtime", () => {
     expect(events.map((event) => event.kind)).toEqual(["run", "model", "model", "run", "terminal"]);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
+  });
+
+  it("uses the effective configured model without changing run provider attribution", async () => {
+    const { calls, runtime } = fakeRuntime({
+      config: {
+        model: "override-model",
+        providerId: "override-provider",
+        providers: [
+          {
+            id: "override-provider",
+            npm: "override-provider-package",
+            options: { apiKey: "$" + "{REHOR_MODEL_PROXY_TOKEN}" },
+          },
+        ],
+        packages: [{ name: "override-provider-package", version: "1.0.0" }],
+      },
+      events: [
+        asOpenCodeEvent({
+          type: "message.updated",
+          properties: {
+            info: {
+              id: "override-message",
+              sessionID: "session-opencode",
+              role: "assistant",
+              providerID: "override-provider",
+              modelID: "override-model",
+              time: { created: 1, completed: 2 },
+              tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 0, write: 0 } },
+              cost: 0.01,
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
+
+    const result = await executeRun(runtime, runtimeRun);
+
+    expect(result.error).toBeUndefined();
+    const configured = runtime.renderedConfiguration?.config;
+    expect(configured).toMatchObject({
+      model: "override-provider/override-model",
+      enabled_providers: ["override-provider"],
+    });
+    if (!configured) throw new Error("rendered configuration missing");
+    expect(runtime.renderedConfiguration?.hash).toBe(hashOpenCodeConfig(configured));
+    expect(runtime.renderedConfiguration?.requiredEnvironment).toEqual(["REHOR_MODEL_PROXY_TOKEN"]);
+    expect(runtime.renderedConfiguration?.packageLock).toEqual({
+      lockfileVersion: 1,
+      packages: { "override-provider-package": "1.0.0" },
+    });
+    expect(calls.prompt[0]).toMatchObject({
+      body: {
+        model: { providerID: "override-provider", modelID: "override-model" },
+      },
+    });
+
+    const runAndTerminal = result.events.filter(
+      (event) => event.kind === "run" || event.kind === "terminal",
+    );
+    expect(runAndTerminal.length).toBeGreaterThan(0);
+    expect(
+      runAndTerminal.every(
+        (event) =>
+          event.provider === runtimeRun.provider.id &&
+          event.model === "override-provider/override-model",
+      ),
+    ).toBe(true);
+    expect(result.events.find((event) => event.kind === "model")).toMatchObject({
+      provider: runtimeRun.provider.id,
+      model: "override-model",
+    });
+    expect(result.events.find((event) => event.kind === "usage")).toMatchObject({
+      provider: runtimeRun.provider.id,
+      model: "override-model",
+      payload: { requestedModel: "override-provider/override-model" },
+    });
+  });
+
+  it("rejects invalid rendered configuration before starting the supervisor", async () => {
+    const { calls, runtime } = fakeRuntime({
+      config: { allowedTools: ["UnknownTool"] },
+      events: [],
+    });
+
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+
+    expect(calls.start).toBe(0);
+    expect(calls.factory).toHaveLength(0);
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("primes the SSE stream before creating the OpenCode session", async () => {
@@ -2359,6 +2505,17 @@ describe("OpenCode process supervisor", () => {
   it("starts one loopback server with explicit cwd and environment, then reaps it", async () => {
     const child = new FakeChild();
     const config = { z: 1, nested: { b: true, a: "stable" } };
+    const packageLock = {
+      lockfileVersion: 1 as const,
+      packages: { "provider-package": "1.0.0" },
+    };
+    const renderedConfig = {
+      config,
+      json: '{"nested":{"a":"stable","b":true},"z":1}\n',
+      hash: hashOpenCodeConfig(config),
+      packageLock,
+      requiredEnvironment: ["REHOR_MODEL_PROXY_TOKEN"],
+    };
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
     let spawnCall:
       | { command: string; args: readonly string[]; options: Parameters<OpenCodeSpawn>[2] }
@@ -2375,9 +2532,11 @@ describe("OpenCode process supervisor", () => {
     const supervisor = createTestSupervisor({
       command: "/usr/local/bin/opencode-test",
       port: 41234,
-      base: { PATH: "/bin", HTTP_PROXY: "http://proxy:3128" },
-      config,
-      expectedConfigHash: hashOpenCodeConfig({ nested: { a: "stable", b: true }, z: 1 }),
+      base: {
+        PATH: "/bin",
+        HTTP_PROXY: "http://proxy:3128",
+        REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
+      },
       requiredCapabilities: ["sse", "sessions"],
       signalProcess: (pid, signal) => {
         signals.push({ pid, signal });
@@ -2388,6 +2547,7 @@ describe("OpenCode process supervisor", () => {
         // /global/health on the pinned server exposes only health and version.
         check: async () => ({ healthy: true, version: "1.18.29" }),
       },
+      renderedConfig,
     });
 
     const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
@@ -2400,6 +2560,15 @@ describe("OpenCode process supervisor", () => {
     });
     expect(child.stdout.listenerCount("data")).toBe(1);
     expect(child.stderr.listenerCount("data")).toBe(1);
+    if (!spawnCall) throw new Error("OpenCode process was not spawned");
+    const configPath = String((spawnCall.options.env as NodeJS.ProcessEnv).OPENCODE_CONFIG);
+    const packageLockPath = join(dirname(configPath), "opencode-packages.lock.json");
+    await expect(readFile(configPath, "utf8")).resolves.toBe(
+      '{"nested":{"a":"stable","b":true},"z":1}\n',
+    );
+    await expect(readFile(packageLockPath, "utf8")).resolves.toBe(
+      '{"lockfileVersion":1,"packages":{"provider-package":"1.0.0"}}\n',
+    );
 
     expect(spawnCall).toMatchObject({
       command: "/usr/local/bin/opencode-test",
@@ -2410,7 +2579,16 @@ describe("OpenCode process supervisor", () => {
         env: expect.objectContaining({
           HTTP_PROXY: "http://proxy:3128",
           NO_PROXY: expect.stringContaining("127.0.0.1"),
-          OPENCODE_CONFIG_CONTENT: '{"nested":{"a":"stable","b":true},"z":1}',
+          OPENCODE_CONFIG: expect.stringMatching(/\/opencode\.json$/),
+          OPENCODE_CONFIG_DIR: expect.stringMatching(/rehor-opencode-/),
+          OPENCODE_DB: expect.stringMatching(/rehor-opencode-.*\/opencode\.db$/),
+          OPENCODE_TEST_HOME: expect.stringMatching(/rehor-opencode-/),
+          NPM_CONFIG_OFFLINE: "true",
+          OPENCODE_DISABLE_AUTOUPDATE: "1",
+          OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+          OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+          OPENCODE_DISABLE_MODELS_FETCH: "1",
+          REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
         }),
       },
     });
@@ -2419,6 +2597,8 @@ describe("OpenCode process supervisor", () => {
     expect(child.killedWith).toBe("SIGTERM");
     expect(signals).toEqual([{ pid: -1234, signal: "SIGTERM" }]);
     expect(supervisor.info).toBeUndefined();
+    await expect(readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(packageLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(child.stdout.listenerCount("data")).toBe(0);
     expect(child.stderr.listenerCount("data")).toBe(0);
   });
@@ -2570,47 +2750,6 @@ describe("OpenCode process supervisor", () => {
     expect(() => new OpenCodeServerSupervisor({ command: "opencode" })).toThrow(
       "OpenCode binary path must be absolute",
     );
-  });
-
-  it("requires an expected config hash before spawning configured OpenCode", async () => {
-    let spawned = false;
-    const child = new FakeChild();
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      port: 41249,
-      startupTimeoutMs: 20,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
-      config: { mode: "safe" },
-      signalProcess: (_pid, signal) => child.kill(signal),
-      spawnProcess: () => {
-        spawned = true;
-        return child as never;
-      },
-    });
-
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "expected config hash",
-    );
-    expect(spawned).toBe(false);
-  });
-
-  it("rejects an unverified config hash before spawning a child", async () => {
-    let spawned = false;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      config: { mode: "safe" },
-      expectedConfigHash: "0".repeat(64),
-      spawnProcess: () => {
-        spawned = true;
-        return new FakeChild() as never;
-      },
-    });
-
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "does not match expected",
-    );
-    expect(spawned).toBe(false);
   });
 
   it("rejects a server whose health version differs from the pinned runtime", async () => {

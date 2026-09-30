@@ -172,8 +172,10 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     remoteAgentDir: nullableString(object.remoteAgentDir, "config.remoteAgentDir"),
     sharedAgentDir: nullableString(object.sharedAgentDir, "config.sharedAgentDir"),
     claudeMdPath: stringValue(object.claudeMdPath, "config.claudeMdPath"),
-    mcpServers: parseMcpServers(object.mcpServers ?? {}, "config.mcpServers"),
+    mcpServers: parseMcpServers(object.mcpServers, "config.mcpServers"),
+    openCodeMcpServers: parseRequiredOpenCodeMcpServers(object.openCodeMcpServers),
     allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
+    optionalMcpServers: stringArray(object.optionalMcpServers ?? [], "config.optionalMcpServers"),
   };
 }
 
@@ -189,6 +191,13 @@ function arrayValue(value: unknown, path: string): unknown[] {
 
 function stringArray(value: unknown, path: string): string[] {
   return arrayValue(value, path).map((entry, index) => stringValue(entry, `${path}[${index}]`));
+}
+
+function parseRequiredOpenCodeMcpServers(value: unknown): Record<string, McpServerConfig> {
+  if (value === undefined) {
+    throw new PythonBridgeError("config.openCodeMcpServers is required");
+  }
+  return parseMcpServers(value, "config.openCodeMcpServers");
 }
 
 function parseMcpServers(value: unknown, path: string): Record<string, McpServerConfig> {

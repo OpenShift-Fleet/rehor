@@ -29,6 +29,8 @@ function prepared(action: PreflightAction): PreparedCycleInput {
       remoteAgentDir: null,
       sharedAgentDir: null,
       claudeMdPath: "/tmp/CLAUDE.md",
+      mcpServers: {},
+      openCodeMcpServers: {},
     },
     instructions: {
       content: "instructions",
