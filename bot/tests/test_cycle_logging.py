@@ -1,6 +1,8 @@
 """Tests for cycle, tool, and cost logging"""
 
 import asyncio
+import io
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -161,3 +163,56 @@ def test_parallel_tools_pair_by_id(caplog):
     )
     assert "[tool] Bash: one completed in" in caplog.text
     assert "[tool] Bash: two completed in" in caplog.text
+
+
+def test_cycle_done_json_formatter_keys():
+    from bot.log import JsonFormatter, bind, clear
+
+    clear()
+    bind(run_id="test-run-uuid", model="claude-opus-4")
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JsonFormatter())
+    agent_logger = logging.getLogger("bot.agent")
+    old_level = agent_logger.level
+    agent_logger.addHandler(handler)
+    agent_logger.setLevel(logging.INFO)
+
+    tool = ToolUseBlock(
+        id="tool_1",
+        name="mcp__bot-memory__bot_status_update",
+        input={"jira_key": "REHOR-41", "repo": "test-repo"},
+    )
+    tool_result = ToolResultBlock(tool_use_id="tool_1", content="ok")
+
+    try:
+        asyncio.run(
+            _run(
+                [
+                    AssistantMessage(content=[tool], model="claude-opus-4"),
+                    AssistantMessage(content=[tool_result], model="claude-opus-4"),
+                    _result(),
+                ]
+            )
+        )
+    finally:
+        agent_logger.setLevel(old_level)
+        agent_logger.removeHandler(handler)
+        handler.close()
+        clear()
+
+    lines = [line for line in stream.getvalue().strip().splitlines() if line.strip()]
+    cycle_done_lines = []
+    for line in lines:
+        data = json.loads(line)
+        if "Cycle done:" in data["message"]:
+            cycle_done_lines.append(data)
+
+    assert len(cycle_done_lines) == 1
+    record = cycle_done_lines[0]
+    assert record["run_id"] == "test-run-uuid"
+    assert record["task_key"] == "REHOR-41"
+    assert record["model"] == "claude-opus-4"
+    assert record["cost"] == 0.25
+    assert record["level"] == "INFO"

@@ -10,6 +10,16 @@ import {
 } from "../domain";
 import type { AgentRuntime, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
+import {
+  abortCauseReason,
+  abortKind,
+  abortReasonText,
+  extractTaskResult,
+  extractToolContext,
+  isNoWork,
+  lastMeaningfulLine,
+  abortError as makeAbortError,
+} from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
@@ -41,18 +51,6 @@ const CAPABILITIES: RuntimeCapabilities = {
   structuredOutput: true,
   usageGuarantee: "partial-and-final",
 };
-
-const NO_WORK_PATTERNS = [
-  "NO_WORK_FOUND",
-  "no work found",
-  "no work available",
-  "nothing to do",
-  "nothing to pick up",
-  "no tickets",
-  "no unassigned",
-  "no assigned tickets",
-  "0 unassigned",
-];
 
 const SANITIZED_ENV_VARS = new Set([
   "GH_TOKEN",
@@ -663,83 +661,8 @@ function toSdkMcpServers(servers: Readonly<Record<string, ClaudeMcpServer>>) {
   );
 }
 
-function extractToolContext(
-  name: string,
-  input: JsonObject | undefined,
-  context: WorkContext,
-): void {
-  if (!input) return;
-  if (typeof input.jira_key === "string") context.externalKey = input.jira_key;
-  if (typeof input.repo === "string") context.repository = input.repo;
-  if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
-  if (name === "Bash" && typeof input.command === "string") {
-    if (input.command.includes("gh pr checks") || input.command.includes("glab ci view")) {
-      context.workType = context.workType ?? "ci_fix";
-    } else if (input.command.includes("gh pr view") || input.command.includes("glab mr view")) {
-      context.workType = context.workType ?? "pr_review";
-    }
-  }
-  if (name.endsWith("task_add")) context.workType = context.workType ?? "new_ticket";
-  if (name.endsWith("task_update")) {
-    if (input.status === "pr_open") context.workType = "new_ticket";
-    if (input.status === "pr_changes") context.workType = "pr_review";
-    if (input.status === "done") context.workType = context.workType ?? "pr_review";
-  }
-  if (name.includes("jira_transition_issue")) context.workType = context.workType ?? "new_ticket";
-  if (name.endsWith("memory_delete")) context.workType = context.workType ?? "memory_housekeeping";
-  const progress = asObject(input.progress);
-  if (progress) {
-    if (typeof progress.jira_key === "string") context.externalKey ??= progress.jira_key;
-    if (typeof progress.repo === "string") context.repository ??= progress.repo;
-  }
-}
-
-function extractTaskResult(value: unknown, context: WorkContext): void {
-  const texts: string[] = [];
-  if (typeof value === "string") texts.push(value);
-  if (Array.isArray(value)) {
-    for (const part of value) {
-      const record = asObject(part);
-      if (typeof record?.text === "string") texts.push(record.text);
-    }
-  }
-  for (const text of texts) {
-    try {
-      const parsed = JSON.parse(text) as unknown;
-      const object = asObject(parsed);
-      if (!object) continue;
-      if (
-        typeof object.id === "number" &&
-        object.id > 0 &&
-        ("external_key" in object || "jira_key" in object)
-      ) {
-        context.taskId = object.id;
-      } else if (typeof object.task_id === "number" && object.task_id > 0) {
-        context.taskId = object.task_id;
-      }
-    } catch {
-      // Tool output is not required to be JSON.
-    }
-  }
-}
-
 function isResultMessage(message: unknown): boolean {
   return stringValue(asObject(message)?.type) === "result";
-}
-
-function lastMeaningfulLine(text: string): string | undefined {
-  const lines = text
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const last = lines.at(-1);
-  return last ? last.slice(0, 200) : undefined;
-}
-
-function isNoWork(text: string): boolean {
-  const lower = text.toLowerCase();
-  return NO_WORK_PATTERNS.some((pattern) => lower.includes(pattern.toLowerCase()));
 }
 
 function isAbortError(value: unknown): boolean {
@@ -747,26 +670,23 @@ function isAbortError(value: unknown): boolean {
 }
 
 function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
-  const text = errorMessage(abortCauseReason(reason)).toLowerCase();
-  if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out"))
+  const kind = abortKind(reason);
+  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
+  if (kind === "interrupt" || kind === "interrupted") return "interrupted";
+  const text = abortReasonText(abortCauseReason(reason)).toLowerCase();
+  if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out")) {
     return "timed_out";
+  }
   if (text.includes("interrupt")) return "interrupted";
   return "cancelled";
 }
 
 function abortReason(reason: unknown): string {
-  return errorMessage(abortCauseReason(reason)) || "runtime aborted";
-}
-
-function abortCauseReason(reason: unknown): unknown {
-  const record = asObject(reason);
-  return record && "reason" in record ? record.reason : reason;
+  return abortReasonText(abortCauseReason(reason));
 }
 
 function abortError(reason: unknown): Error {
-  const error = new Error(abortReason(reason));
-  error.name = "AbortError";
-  return error;
+  return makeAbortError(abortCauseReason(reason));
 }
 
 function errorMessage(value: unknown): string {

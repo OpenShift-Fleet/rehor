@@ -118,6 +118,10 @@ def upstream_repo(repo_name):
             if key.endswith(suffix):
                 entry = cfg
                 break
+            upstream = cfg.get("upstream", "")
+            if upstream and _parse_repo_path(upstream).endswith(suffix):
+                entry = cfg
+                break
     up = entry.get("upstream", "")
     if not up:
         return "", entry.get("host", "github")
