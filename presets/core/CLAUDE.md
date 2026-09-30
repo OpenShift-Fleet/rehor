@@ -174,3 +174,16 @@ Script reads `$SLACK_WEBHOOK_URL` from env. No webhook → silent no-op. 48h coo
 
 - **Mark reviewed tasks**: Nothing actionable + task in input → `task_update last_addressed` to now before ending cycle.
 - **Use runtime env vars**: Skills MUST use existing runtime env vars (see deploy/template.yaml). Never introduce custom `BOT_*` vars if runtime provides equivalent. Use `GH_USER_NAME` (not `BOT_GITHUB_USERNAME`), `BOT_JIRA_EMAIL` (not `JIRA_USER`), `BOT_CONFIG_PATH` (already exists). Check deployment config before adding new env var requirements.
+
+## OpenShell Filesystem Access
+
+Runner may execute inside an OpenShell `Sandbox`. Treat filesystem access as explicit allowlist:
+
+- Read source, runner config, and installed tooling under `/home/botuser/app`.
+- Read and write cloned project repositories under `/home/botuser/repos`.
+- Read and write caches, cycle state, merged config, and reports under `/home/botuser/data`.
+- Read and write temporary files under `/tmp`.
+- Read system/runtime paths needed by tools (`/usr`, `/lib`, `/etc`, `/proc`, `/dev`); never modify them.
+- Do not read or write credential locations (`~/.ssh`, `~/.gnupg`, `~/.config/gh`, `~/.config/gcloud`, `~/.aws`, `sa-key.json`) or search for secrets.
+- Do not write outside `/home/botuser/repos`, `/home/botuser/data`, and `/tmp` unless runner bootstrap explicitly requires it.
+- Keep implementation changes inside checked-out repositories under `/home/botuser/repos`; do not edit runner source or instance config to solve target-repo work.
