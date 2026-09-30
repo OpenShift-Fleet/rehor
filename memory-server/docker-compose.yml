@@ -20,9 +20,11 @@ services:
       dockerfile: memory-server/Dockerfile
     ports:
       - "8080:8080"
+      - "8081:8081"
     environment:
       DATABASE_URL: postgresql://bot:bot@postgres:5432/bot_memory
       JIRA_URL: https://redhat.atlassian.net
+      MEMORY_API_KEY: ${MEMORY_API_KEY:-local-dev-memory-key}
     volumes:
       - ./bot_memory_server/static:/app/bot_memory_server/static
     depends_on:

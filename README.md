@@ -284,6 +284,8 @@ make memory-server-stop         # Stop
 
 Dashboard at **http://localhost:8080** — tasks, memories, semantic search, 3D embedding map. Live WebSocket updates.
 
+**Read-only team memory** (for human Claude Code sessions) is on **http://localhost:8081/mcp** with Bearer auth. See [docs/team-memory.md](docs/team-memory.md) for `.mcp.json` setup and CLAUDE.md snippets.
+
 ### Browser for visual verification
 
 For UI changes, the bot uses chrome-devtools MCP to take screenshots. Start a Chrome/Chromium instance with remote debugging:
@@ -360,6 +362,10 @@ The bot has persistent memory via MCP:
 
 - **Task tracking** — structured records of active work with status, PR links, and progress metadata. Hard cap of 10 concurrent active tasks. When interrupted mid-cycle, the bot saves progress (`last_step`, `next_step`, `files_changed`) so the next cycle resumes seamlessly.
 - **RAG memory** — vector-searchable knowledge base of learnings from completed tickets, PR review feedback, and codebase patterns. The bot searches this before starting any new ticket, so it improves over time.
+
+### Team memory (human Claude Code)
+
+A separate read-only MCP endpoint (`:8081`) exposes only `memory_search` and `memory_list` so local CLI, IDE extensions, and Claud can query the same Postgres/pgvector store without write or task tools. Setup, Bearer auth, OpenShift Route, and copy-paste `CLAUDE.md` snippets (frontend / backend / config): **[docs/team-memory.md](docs/team-memory.md)**.
 
 ### Exporting and importing memory
 
