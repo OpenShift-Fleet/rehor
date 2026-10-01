@@ -24,6 +24,8 @@ export interface TerminalEventPayload extends Readonly<Record<string, unknown>> 
   noWork?: boolean;
   turns?: number;
   durationMs?: number;
+  /** True when runtime cleanup detected a child/process-group leak. */
+  resourceLeak?: boolean;
   context?: TerminalWorkContext;
 }
 

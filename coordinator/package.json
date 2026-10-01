@@ -12,8 +12,12 @@
       "import": "./dist/index.js"
     }
   },
+  "bin": {
+    "rehor-coordinator": "./dist/cli.js"
+  },
   "scripts": {
     "test": "vitest run",
+    "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
     "build": "vite build && tsc -p tsconfig.build.json"
   },

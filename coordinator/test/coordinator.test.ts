@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   type AgentRuntime,
   type CoordinatorProjection,
+  createLoopSignals,
   executeRun,
   type RehorEvent,
   type RehorRun,
@@ -234,6 +235,25 @@ describe("coordinator execution", () => {
     expect(cancelResult.terminal.payload.state).toBe("cancelled");
     expect(shutdownRuntime.stopCalls).toBe(1);
     expect(cancelRuntime.stopCalls).toBe(1);
+  });
+
+  it("keeps a loop shutdown recognisable as interrupted through the combined loop signal", async () => {
+    // The production loop hands runtimes one combined signal. A SIGTERM with a
+    // free-text reason must still classify as a shutdown, not a cancellation.
+    const processShutdown = new AbortController();
+    const loopSignals = createLoopSignals({ shutdownSignal: processShutdown.signal });
+    const runtime = new HangingRuntime();
+    const pending = executeRun(runtime, run, { signal: loopSignals.signal });
+    processShutdown.abort("process signal");
+    const result = await pending;
+    loopSignals.dispose();
+
+    expect(loopSignals.stopReason).toBe("shutdown");
+    expect(result.terminal.payload).toMatchObject({
+      state: "interrupted",
+      reason: "process signal",
+    });
+    expect(result.error).toBeUndefined();
   });
 
   it("does not start an already-cancelled runtime but still cleans it up", async () => {

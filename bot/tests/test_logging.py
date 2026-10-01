@@ -515,7 +515,7 @@ def test_cycle_body_exception_logged_and_does_not_exit(monkeypatch):
     monkeypatch.setattr("bot.run.sync_config_repo", lambda *args: (None, None))
     monkeypatch.setattr(
         "bot.run.load_instance_config",
-        lambda *args: MagicMock(workflow="jira-sprint"),
+        lambda *args: MagicMock(workflow="jira-sprint", runtime="claude", provider="vertex"),
     )
     monkeypatch.setattr("bot.run.install_skills", lambda *args, **kwargs: None)
     monkeypatch.setattr("bot.run.validate_manifest", lambda *args, **kwargs: None)
