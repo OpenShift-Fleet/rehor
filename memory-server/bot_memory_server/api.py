@@ -139,7 +139,9 @@ async def api_task_delete(request: Request) -> JSONResponse:
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
     row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 RETURNING *",
+        "UPDATE tasks SET status = 'archived'::task_status, outcome_report_id = NULL,"
+        " archived_at = CASE WHEN status = 'archived'::task_status THEN COALESCE(archived_at, NOW()) ELSE NOW() END"
+        " WHERE external_key = $1 RETURNING *",
         key,
     )
     if not row:
@@ -165,6 +167,8 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " archived_at = NULL, outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'archived'::task_status"
         " RETURNING *",
@@ -202,6 +206,7 @@ async def api_task_pause(request: Request) -> JSONResponse:
 
     row = await pool.fetchrow(
         "UPDATE tasks SET status = 'paused'::task_status,"
+        " last_addressed = NOW(),"
         " paused_reason = $2,"
         " metadata = jsonb_set(COALESCE(metadata, '{}'), '{status_before_pause}', to_jsonb(status::text))"
         " WHERE external_key = $1 AND status = ANY($3)"
@@ -238,6 +243,7 @@ async def api_task_unpause(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'paused'::task_status"
         " RETURNING *",

@@ -1,7 +1,34 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class OutcomeEvidence(BaseModel):
+    """One provider/workflow fact with LLM-assigned, bounded evidence resolution."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    source: str
+    reference: str
+    resolution: Literal["accepted", "rejected", "unknown"]
+    disposition: str
+    reason: str
+    author_type: Literal["human", "workflow", "agent", "automation"] | None = Field(
+        default=None,
+        alias="authorType",
+    )
+
+
+class OutcomeArtifact(BaseModel):
+    """Shared artifact identity with provider-specific facts retained as extras."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    type: str
+    url: str | None = None
+    id: str | None = None
+    supersedes: list[str] = Field(default_factory=list)
 
 
 class Task(BaseModel):

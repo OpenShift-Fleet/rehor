@@ -150,7 +150,8 @@ export function extractToolContext(
   context: TerminalWorkContext,
 ): void {
   if (!input) return;
-  if (typeof input.jira_key === "string" && input.jira_key) context.externalKey = input.jira_key;
+  const externalKey = input.external_key ?? input.jira_key;
+  if (typeof externalKey === "string" && externalKey) context.externalKey = externalKey;
   if (typeof input.repo === "string" && input.repo) context.repository = input.repo;
   if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
 

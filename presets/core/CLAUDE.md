@@ -95,7 +95,8 @@ MCP server `bot-memory` provides task tracking (cap 10 active) + RAG memory (vec
 | `task_get` | Get task by `external_key` + `source_type` |
 | `task_add` | Add task. **Fails if ≥10 active.** Params: `external_key, repo, branch, status, source_type?, title?, summary?, metadata?, instance_id?` |
 | `task_update` | Update: `external_key, source_type?, status?, last_addressed?, paused_reason?, title?, summary?, metadata?` (metadata merged) |
-| `task_remove` | Archive task (sets `archived`, preserves history) |
+| `task_outcome_report` | Record `artifacts`, `evidence`, `notes` before archival; every evidence item shares `source`, `reference`, `resolution` (`accepted`, `rejected`, `unknown`), `disposition`, `reason`, optional `authorType`; optional `verified_at`, `run_id`, `reporting_cycle_id`, `attempt`, `workflow`, `reported_by`; set `correction=true` for append-only correction |
+| `task_remove` | Archive only after an outcome report is staged; fails closed if no report exists |
 | `task_check_capacity` | `{active, max: 10, has_capacity}`. Params: `instance_id?` |
 | `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`, `instance_id?` |
 
@@ -103,7 +104,9 @@ Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `p
 
 **"Release Pending" = Done** from bot's perspective. Don't pick up/check/re-open.
 
-**Archival**: Never hard-delete. PR merged + ticket → "Release Pending" → `task_update` status `archived`.
+**Outcome reporting and archival**: `task_outcome_report` requires same-shaped evidence entries: `source`, `reference`, `resolution` (`accepted`, `rejected`, `unknown`), `disposition`, `reason`, optional `authorType`. LLM labels each evidence item from source facts/comments; do not submit final task decision. Reducer priority: any `rejected` → rejected; else any `unknown` → inconclusive; else all `accepted` → accepted. `Won't Do` disposition defaults to accepted/no-op unless human/workflow evidence says otherwise. For replacement PR/MR, put `supersedes: [oldArtifactUrl]` on replacement; old artifact becomes obsolete but task does not. Task becomes obsolete only when its own source says so.
+
+Never hard-delete. `task_add` and `task_update` cannot set `archived`. After reporting, call `task_remove`; it fails if no report was staged. Use `task_outcome_report(correction=true)` to append correction. Manual/admin archive remains unreported.
 
 **NEVER archive investigation tasks.** `last_step = "investigation_posted"` → MUST stay `in_progress`. Only archive when human confirms on Jira or explicitly says done. Premature archival breaks feedback loop.
 

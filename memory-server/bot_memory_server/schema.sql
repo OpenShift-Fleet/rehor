@@ -26,12 +26,60 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch          TEXT,
     title           TEXT,
     summary         TEXT,
+    outcome_report_id BIGINT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_addressed  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    archived_at     TIMESTAMPTZ,
     paused_reason   TEXT,
     metadata        JSONB DEFAULT '{}',
     UNIQUE(external_key, source_type)
 );
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS outcome_report_id BIGINT;
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+UPDATE tasks
+SET archived_at = last_addressed
+WHERE status = 'archived'::task_status AND archived_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS task_outcome_reports (
+    id                      BIGSERIAL PRIMARY KEY,
+    task_id                 INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+    decision                TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected', 'obsolete', 'inconclusive')),
+    confidence              TEXT NOT NULL CHECK (confidence IN ('conclusive', 'inconclusive')),
+    reason                  TEXT NOT NULL,
+    reported_by             TEXT NOT NULL DEFAULT 'agent',
+    reported_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_at             TIMESTAMPTZ,
+    artifacts               JSONB NOT NULL DEFAULT '[]',
+    evidence                JSONB NOT NULL DEFAULT '[]',
+    canonical_repositories  JSONB NOT NULL DEFAULT '[]',
+    notes                   TEXT,
+    run_id                  TEXT,
+    reporting_cycle_id      BIGINT,
+    attempt                 INTEGER,
+    workflow                TEXT,
+    instance_id             TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_outcome_reports_task_latest
+    ON task_outcome_reports (task_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_task_outcome_reports_reported_at
+    ON task_outcome_reports (reported_at DESC);
+CREATE INDEX IF NOT EXISTS idx_task_outcome_reports_repositories
+    ON task_outcome_reports USING GIN (canonical_repositories);
+
+DO $$ BEGIN
+    ALTER TABLE tasks
+        ADD CONSTRAINT tasks_current_outcome_report_fk
+        FOREIGN KEY (outcome_report_id) REFERENCES task_outcome_reports(id) ON DELETE RESTRICT;
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_outcome_report_id ON tasks (outcome_report_id);
+COMMENT ON COLUMN tasks.outcome_report_id IS
+    'Outcome report staged for or selected by current archive; history remains in task_outcome_reports.';
 
 CREATE TABLE IF NOT EXISTS memories (
     id              SERIAL PRIMARY KEY,
@@ -198,6 +246,8 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
 
 -- Migration: add input_prompt to existing cycle_runs tables
 ALTER TABLE cycle_runs ADD COLUMN IF NOT EXISTS input_prompt TEXT;
+CREATE INDEX IF NOT EXISTS idx_cycle_runs_task_started
+    ON cycle_runs (task_id, started_at, id);
 
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan

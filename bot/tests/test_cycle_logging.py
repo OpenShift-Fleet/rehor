@@ -4,12 +4,13 @@ import asyncio
 import io
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
 
-from bot.agent import run_cycle
+from bot.agent import CycleContext, _extract_context, run_cycle
 from bot.config import Config
 from bot.costs import summarize_result
 
@@ -216,3 +217,16 @@ def test_cycle_done_json_formatter_keys():
     assert record["model"] == "claude-opus-4"
     assert record["cost"] == 0.25
     assert record["level"] == "INFO"
+
+
+def test_task_outcome_report_context_uses_generic_external_key():
+    context = CycleContext()
+    _extract_context(
+        SimpleNamespace(
+            name="mcp__bot-memory__task_outcome_report",
+            input={"external_key": "DEMO-OUTCOME-1", "repo": "org/demo"},
+        ),
+        context,
+    )
+    assert context.jira_key == "DEMO-OUTCOME-1"
+    assert context.repo == "org/demo"

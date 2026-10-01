@@ -15,6 +15,7 @@ import jsonschema
 import pytest
 import yaml
 from bot_memory_server.api import _cycle, _cycle_run, _memory, _task
+from bot_memory_server.task_outcomes import _serialize_task
 
 OPENAPI_PATH = Path(__file__).resolve().parent.parent.parent / "shared" / "openapi.yaml"
 
@@ -145,6 +146,54 @@ def _fake_cycle_row(**overrides):
     return row
 
 
+def _fake_task_outcome_row(**overrides):
+    now = datetime.now(UTC)
+    row = {
+        "task_id": 7,
+        "external_key": "TEST-OUTCOME-001",
+        "source_type": "jira",
+        "source_url": "https://issues.redhat.com/browse/TEST-OUTCOME-001",
+        "task_status": "archived",
+        "repo": "org/repo",
+        "title": "Outcome task",
+        "summary": "Merged change",
+        "created_at": now,
+        "last_addressed": now,
+        "archived_at": now,
+        "task_artifacts": "[]",
+        "outcome_id": 11,
+        "decision": "accepted",
+        "confidence": "conclusive",
+        "reason": "merged",
+        "reported_by": "agent",
+        "reported_at": now,
+        "verified_at": None,
+        "outcome_artifacts": json.dumps([{"type": "github_pr", "url": "https://github.com/org/repo/pull/1"}]),
+        "evidence": json.dumps(
+            [
+                {
+                    "source": "github",
+                    "reference": "https://github.com/org/repo/pull/1",
+                    "resolution": "accepted",
+                    "disposition": "MERGED",
+                    "reason": "Merged PR",
+                }
+            ]
+        ),
+        "canonical_repositories": json.dumps(["org/repo"]),
+        "notes": None,
+        "run_id": "run-1",
+        "reporting_cycle_id": 4,
+        "attempt": 1,
+        "workflow": "jira-sprint",
+        "instance_id": "bot-1",
+        "state": "accepted",
+        "event_at": now,
+    }
+    row.update(overrides)
+    return row
+
+
 # --------------- item schema tests ---------------
 
 
@@ -199,6 +248,47 @@ class TestTaskItemSchema:
         result["unexpected_field"] = "boom"
         with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
             _validate(result, "TaskItem")
+
+
+class TestTaskOutcomeSchema:
+    def test_outcome_detail_matches_openapi(self):
+        result = _serialize_task(_fake_task_outcome_row())
+        result["outcomeHistory"] = [result["outcome"]]
+        result["taskCycles"] = [
+            {
+                "id": 21,
+                "cycleType": "task_work",
+                "instanceId": "test-instance",
+                "startedAt": datetime.now(UTC).isoformat(),
+                "finishedAt": datetime.now(UTC).isoformat(),
+            }
+        ]
+        result["outcome"]["reportingCycleId"] = 21
+        _validate(result, "TaskOutcomeTask")
+
+    def test_unreported_task_matches_openapi(self):
+        result = _serialize_task(
+            _fake_task_outcome_row(
+                task_status="archived",
+                outcome_id=None,
+                decision=None,
+                confidence=None,
+                reason=None,
+                reported_by=None,
+                reported_at=None,
+                verified_at=None,
+                outcome_artifacts=None,
+                evidence=None,
+                canonical_repositories=json.dumps(["org/repo"]),
+                notes=None,
+                run_id=None,
+                reporting_cycle_id=None,
+                attempt=None,
+                workflow=None,
+                state="unreported",
+            )
+        )
+        _validate(result, "TaskOutcomeTask")
 
 
 class TestMemoryItemSchema:

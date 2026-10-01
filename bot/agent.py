@@ -363,29 +363,23 @@ async def run_cycle(
 
 
 def _extract_context(block, ctx: CycleContext) -> None:
-    """Extract jira_key, repo, and work_type from MCP tool calls."""
+    """Extract external task identity, repo, and work_type from tool calls."""
     name = getattr(block, "name", "")
     inp = getattr(block, "input", {}) or {}
 
-    # bot_status_update carries jira_key and repo
-    if name == "mcp__bot-memory__bot_status_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
+    if name.startswith("mcp__bot-memory__"):
+        external_key = inp.get("external_key") or inp.get("jira_key")
+        if external_key:
+            ctx.jira_key = external_key
         if inp.get("repo"):
             ctx.repo = inp["repo"]
 
     # task_add tells us it's a new ticket
-    elif name == "mcp__bot-memory__task_add":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
-        if inp.get("repo"):
-            ctx.repo = inp["repo"]
+    if name == "mcp__bot-memory__task_add":
         ctx.work_type = ctx.work_type or "new_ticket"
 
     # task_update with status changes tells us what kind of work
     elif name == "mcp__bot-memory__task_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
         status = inp.get("status")
         if status == "pr_open":
             ctx.work_type = "new_ticket"
@@ -417,8 +411,9 @@ def _extract_context(block, ctx: CycleContext) -> None:
     elif name == "mcp__bot-memory__progress_store":
         progress = inp.get("progress") or {}
         if isinstance(progress, dict):
-            if progress.get("jira_key"):
-                ctx.jira_key = ctx.jira_key or progress["jira_key"]
+            external_key = progress.get("external_key") or progress.get("jira_key")
+            if external_key:
+                ctx.jira_key = ctx.jira_key or external_key
             if progress.get("repo"):
                 ctx.repo = ctx.repo or progress["repo"]
 
