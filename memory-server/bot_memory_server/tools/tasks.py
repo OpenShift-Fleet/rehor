@@ -9,15 +9,34 @@ from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
 from ..events import Event, bus
 from ..models import OutcomeArtifact, OutcomeEvidence, Task
-from ..task_outcomes import _outcome_from_row, record_task_outcome
+from ..task_outcomes import ARCHIVE_EVIDENCE_GUIDANCE, ARCHIVE_RECOVERY, archive_task, record_task_outcome
 
 ACTIVE_STATUSES = ("in_progress", "pr_open", "pr_changes")
 MAX_ACTIVE = 10
-_OUTCOME_ARCHIVE_GUIDANCE = (
-    "Call task_outcome_report first for the same task with artifacts, evidence items "
-    "(source, reference, resolution: accepted|rejected|unknown, disposition, reason), and notes; "
-    "then retry task_remove. Do not provide a final task decision."
-)
+_OUTCOME_ARCHIVE_GUIDANCE = f"{ARCHIVE_RECOVERY} {ARCHIVE_EVIDENCE_GUIDANCE}"
+# Only these metadata keys describe scheduling/progress bookkeeping, not evidence.
+# Every other key is conservatively evidence-relevant, including prs, related_items,
+# repos, commits, files_changed, workflow, evidence, review and CI results. Compare
+# actual values after the shallow merge; identical writes never stale a report.
+_OUTCOME_BOOKKEEPING_KEYS = frozenset({"last_step", "next_step", "status_before_pause"})
+
+
+def _json_values_equal(left, right) -> bool:
+    """JSONB value equality: numeric representations match, booleans are not numbers."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_values_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_json_values_equal(a, b) for a, b in zip(left, right, strict=True))
+    return left == right
+
+
+def _metadata_changes_evidence(current: dict, updates: dict) -> bool:
+    return any(
+        key not in _OUTCOME_BOOKKEEPING_KEYS and (key not in current or not _json_values_equal(current[key], value))
+        for key, value in updates.items()
+    )
 
 
 def _row_to_task(row) -> dict:
@@ -197,8 +216,8 @@ def register_task_tools(mcp: FastMCP):
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
         if status == "archived":
             raise ValueError(
-                "Cannot create a task as archived. Create it with a non-archived status first; "
-                f"{_OUTCOME_ARCHIVE_GUIDANCE}"
+                f"{ARCHIVE_RECOVERY} Cannot create a task as archived. "
+                f"Create it with a non-archived status first; {ARCHIVE_EVIDENCE_GUIDANCE}"
             )
         pool = get_pool()
 
@@ -275,12 +294,16 @@ def register_task_tools(mcp: FastMCP):
         summary: human-readable description of current state/what was done.
         metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs).
             Merged with existing metadata.
+            Changed values invalidate staged outcomes except last_step, next_step and status_before_pause.
+            Status changes invalidate outcomes except completion to done and identical status writes.
         For multi-repo tickets, use metadata.prs to track all PRs/MRs:
         {"prs": [{"repo": "repo1", "number": 42, "url": "...", "host": "github"}]}
         For related work items, use metadata.related_items:
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
         if status == "archived":
-            raise ValueError(f"Cannot set status='archived' directly. {_OUTCOME_ARCHIVE_GUIDANCE}")
+            raise ValueError(
+                f"{_OUTCOME_ARCHIVE_GUIDANCE} Cannot set status='archived' directly; do not retry task_update."
+            )
         pool = get_pool()
 
         sets = []
@@ -293,8 +316,13 @@ def register_task_tools(mcp: FastMCP):
             params.append(status)
             if last_addressed is None:
                 sets.append("last_addressed = NOW()")
+            # SET expressions read the previous status. Completion preserves the
+            # report staged immediately beforehand; every other real transition
+            # (including pause/resume and active review changes) needs fresh evidence.
             sets.append(
-                "outcome_report_id = CASE WHEN status = 'archived'::task_status THEN NULL ELSE outcome_report_id END"
+                "outcome_report_id = CASE WHEN status = 'archived'::task_status "
+                f"OR (status != ${idx}::task_status AND ${idx}::task_status != 'done'::task_status) "
+                "THEN NULL ELSE outcome_report_id END"
             )
             sets.append("archived_at = CASE WHEN status = 'archived'::task_status THEN NULL ELSE archived_at END")
         if last_addressed is not None:
@@ -313,36 +341,53 @@ def register_task_tools(mcp: FastMCP):
             idx += 1
             sets.append(f"summary = ${idx}")
             params.append(summary)
+        if not sets and metadata is None:
+            raise ValueError("No fields to update")
+
         if metadata is not None:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
-            idx += 1
-            sets.append(f"metadata = metadata || ${idx}::jsonb")
-            params.append(json.dumps(metadata))
-
-        if metadata is not None and any(key in metadata for key in ("prs", "related_items")):
-            current = await pool.fetchrow(
-                "SELECT metadata FROM tasks WHERE external_key = $1 AND source_type = $2",
-                external_key,
-                source_type,
-            )
-            if current:
+            if not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+            # Serialize with report staging and archival on the same task row.
+            # Never rebuild artifacts from an unlocked snapshot or lose concurrent
+            # metadata updates while deciding whether the selected report is stale.
+            async with pool.acquire() as conn, conn.transaction():
+                current = await conn.fetchrow(
+                    "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
+                    external_key,
+                    source_type,
+                )
+                if not current:
+                    raise ValueError(f"Task {external_key} not found")
                 cur_meta = current["metadata"]
                 if isinstance(cur_meta, str):
                     cur_meta = json.loads(cur_meta)
                 cur_meta = cur_meta or {}
-                if metadata is not None:
-                    cur_meta.update(metadata)
-                new_artifacts = build_artifacts(cur_meta)
+                if _metadata_changes_evidence(cur_meta, metadata):
+                    sets = [item for item in sets if not item.startswith("outcome_report_id =")]
+                    sets.append("outcome_report_id = NULL")
+                merged = {**cur_meta, **metadata}
                 idx += 1
-                sets.append(f"artifacts = ${idx}")
-                params.append(json.dumps(new_artifacts))
-
-        if not sets:
-            raise ValueError("No fields to update")
-
-        query = f"UPDATE tasks SET {', '.join(sets)} WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
-        row = await pool.fetchrow(query, external_key, *params, source_type)
+                sets.append(f"metadata = ${idx}::jsonb")
+                params.append(json.dumps(merged))
+                if any(
+                    key in metadata and (key not in cur_meta or not _json_values_equal(cur_meta[key], metadata[key]))
+                    for key in ("prs", "related_items")
+                ):
+                    idx += 1
+                    sets.append(f"artifacts = ${idx}")
+                    params.append(json.dumps(build_artifacts(merged)))
+                query = (
+                    f"UPDATE tasks SET {', '.join(sets)} "
+                    f"WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
+                )
+                row = await conn.fetchrow(query, external_key, *params, source_type)
+        else:
+            query = (
+                f"UPDATE tasks SET {', '.join(sets)} WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
+            )
+            row = await pool.fetchrow(query, external_key, *params, source_type)
         if not row:
             raise ValueError(f"Task {external_key} not found")
         result = _row_to_task(row)
@@ -376,9 +421,11 @@ def register_task_tools(mcp: FastMCP):
         """Record evidence before archival; reports are append-only.
         Set correction=true to append a corrected report to an already archived task.
         Each evidence item uses the same fields: source, reference, resolution
-        (accepted/rejected/unknown), disposition, reason, optional authorType. LLM fills resolution/reason
+        (accepted/rejected/unknown), disposition, reason, optional authorType and kind (state/comment;
+        default state). LLM fills resolution/reason
         from source evidence; do not send a final task decision. Human/workflow comments are authoritative;
-        agent/automation comments are ignored.
+        agent/automation comments (kind=comment) are ignored. State evidence remains authoritative
+        regardless of authorType.
         A staged report does not archive the task; call task_remove afterward. Manual dashboard archive
         remains unreported.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
@@ -419,49 +466,25 @@ def register_task_tools(mcp: FastMCP):
     @mcp.tool()
     async def task_remove(external_key: str, source_type: str = "jira") -> dict:
         """Archive a task only after task_outcome_report has staged its required outcome.
-        Repeated archive attempts fail; set correction=true on task_outcome_report to correct.
+        Repeated archive attempts preserve the selected valid report and lifecycle timestamps.
+        Set correction=true on task_outcome_report to correct an archived report.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
         pool = get_pool()
-        async with pool.acquire() as conn, conn.transaction():
-            task = await conn.fetchrow(
-                "SELECT id, status, outcome_report_id FROM tasks "
-                "WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
-                external_key,
-                source_type,
-            )
-            if not task:
-                raise ValueError(f"Task {external_key} not found")
-            if task["status"] == "archived":
-                raise ValueError(f"Task {external_key} is already archived")
-            if task["outcome_report_id"] is None:
-                raise ValueError(
-                    f"Task {external_key} requires task_outcome_report before archival. {_OUTCOME_ARCHIVE_GUIDANCE}"
-                )
-
-            report = await conn.fetchrow(
-                "SELECT * FROM task_outcome_reports WHERE id = $1 AND task_id = $2",
-                task["outcome_report_id"],
-                task["id"],
-            )
-            if not report:
-                raise ValueError(f"Task {external_key} has an invalid staged outcome report")
-            row = await conn.fetchrow(
-                "UPDATE tasks SET status = 'archived'::task_status, archived_at = NOW() WHERE id = $1 RETURNING *",
-                task["id"],
-            )
-
+        row, outcome, changed = await archive_task(pool, external_key=external_key, source_type=source_type)
+        assert outcome is not None  # Strict archives always return a validated report.
         result = _row_to_task(row)
-        result["outcome"] = _outcome_from_row(report)
-        await bus.publish(
-            Event(
-                "task_archived",
-                {
-                    "external_key": external_key,
-                    "decision": report["decision"],
-                    "confidence": report["confidence"],
-                },
+        result["outcome"] = outcome
+        if changed:
+            await bus.publish(
+                Event(
+                    "task_archived",
+                    {
+                        "external_key": external_key,
+                        "decision": outcome["decision"],
+                        "confidence": outcome["confidence"],
+                    },
+                )
             )
-        )
         return result
 
     @mcp.tool()

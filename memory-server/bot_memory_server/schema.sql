@@ -1,5 +1,144 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 
+-- Outcome repository extraction is shared by live SQL rollups and report writes.
+-- No extensions beyond the schema's existing vector dependency are required.
+CREATE OR REPLACE FUNCTION outcome_url_decode(value TEXT) RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    bytes BYTEA := ''::bytea;
+    result TEXT := '';
+    i INTEGER := 1;
+    start_at INTEGER;
+    first_byte INTEGER;
+    next_byte INTEGER;
+    width INTEGER;
+    consumed INTEGER;
+BEGIN
+    WHILE i <= char_length(value) LOOP
+        IF substr(value, i, 3) ~ '^%[0-9A-Fa-f]{2}$' THEN
+            bytes := bytes || decode(substr(value, i + 1, 2), 'hex');
+            i := i + 3;
+        ELSE
+            bytes := bytes || convert_to(substr(value, i, 1), 'UTF8');
+            i := i + 1;
+        END IF;
+    END LOOP;
+    -- Decode UTF-8 with replacement, like urllib.parse.unquote(errors='replace').
+    i := 0;
+    WHILE i < octet_length(bytes) LOOP
+        start_at := i;
+        first_byte := get_byte(bytes, i);
+        width := CASE WHEN first_byte < 128 THEN 1
+                      WHEN first_byte BETWEEN 194 AND 223 THEN 2
+                      WHEN first_byte BETWEEN 224 AND 239 THEN 3
+                      WHEN first_byte BETWEEN 240 AND 244 THEN 4 ELSE 0 END;
+        consumed := 1;
+        WHILE consumed < width AND i + consumed < octet_length(bytes) LOOP
+            next_byte := get_byte(bytes, i + consumed);
+            EXIT WHEN next_byte NOT BETWEEN 128 AND 191;
+            EXIT WHEN consumed = 1 AND (
+                (first_byte = 224 AND next_byte < 160) OR
+                (first_byte = 237 AND next_byte > 159) OR
+                (first_byte = 240 AND next_byte < 144) OR
+                (first_byte = 244 AND next_byte > 143));
+            consumed := consumed + 1;
+        END LOOP;
+        IF width > 0 AND consumed = width AND first_byte <> 0 THEN
+            result := result || convert_from(substr(bytes, start_at + 1, consumed), 'UTF8');
+        ELSE
+            -- PostgreSQL text cannot hold NUL; treat it as invalid repository text.
+            result := result || chr(65533);
+        END IF;
+        i := i + consumed;
+    END LOOP;
+    RETURN result;
+END $$;
+
+CREATE OR REPLACE FUNCTION outcome_strip(value TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE STRICT AS $$
+    -- Exactly Python str.strip() whitespace, independent of database locale.
+    SELECT btrim(value, E' \t\n\r\f\013' || chr(28) || chr(29) || chr(30) || chr(31) ||
+        chr(133) || chr(160) || chr(5760) || chr(8192) || chr(8193) || chr(8194) ||
+        chr(8195) || chr(8196) || chr(8197) || chr(8198) || chr(8199) || chr(8200) ||
+        chr(8201) || chr(8202) || chr(8232) || chr(8233) || chr(8239) || chr(8287) || chr(12288))
+$$;
+
+CREATE OR REPLACE FUNCTION outcome_normalize_repository(value TEXT) RETURNS TEXT
+LANGUAGE sql IMMUTABLE STRICT AS $$
+    SELECT nullif(outcome_strip(btrim(outcome_strip(regexp_replace(
+        outcome_strip(btrim(outcome_strip(split_part(split_part(value, '?', 1), '#', 1)), '/')),
+        '\.git$', '')), '/')), '')
+$$;
+
+CREATE OR REPLACE FUNCTION outcome_repository_from_url(value TEXT) RETURNS TEXT
+LANGUAGE plpgsql IMMUTABLE STRICT AS $$
+DECLARE
+    path TEXT;
+    marker TEXT[];
+    segments TEXT[];
+BEGIN
+    path := split_part(split_part(outcome_strip(value), '?', 1), '#', 1);
+    path := regexp_replace(path, '^[A-Za-z][A-Za-z0-9+.-]*://[^/]*', '');
+    path := btrim(outcome_url_decode(path), '/');
+    marker := regexp_match(path, '^(.*?)(/-/merge_requests/|/merge_requests/)');
+    IF marker IS NOT NULL THEN
+        RETURN outcome_normalize_repository(marker[1]);
+    END IF;
+    segments := string_to_array(path, '/');
+    IF cardinality(segments) >= 4 AND segments[3] IN ('pull', 'pulls') THEN
+        RETURN outcome_normalize_repository(segments[1] || '/' || segments[2]);
+    END IF;
+    RETURN NULL;
+END $$;
+
+CREATE OR REPLACE FUNCTION outcome_canonical_repositories(task_repo TEXT, artifacts JSONB) RETURNS JSONB
+LANGUAGE sql IMMUTABLE AS $$
+    WITH extracted AS (
+        SELECT item.position,
+            CASE
+                WHEN jsonb_typeof(item.value->'url') = 'string'
+                    AND outcome_strip(item.value->>'url') <> ''
+                    THEN jsonb_build_array('url', outcome_strip(item.value->>'url'))
+                WHEN jsonb_typeof(item.value->'type') = 'string'
+                    AND outcome_strip(item.value->>'type') <> ''
+                    AND jsonb_typeof(item.value->'id') = 'string'
+                    AND outcome_strip(item.value->>'id') <> ''
+                    THEN jsonb_build_array('id', outcome_strip(item.value->>'type'), outcome_strip(item.value->>'id'))
+                ELSE jsonb_build_array('position', item.position)
+            END AS identity,
+            (SELECT outcome_normalize_repository(item.value->>keys.key)
+             FROM unnest(ARRAY['baseRepo', 'base_repo', 'targetProject', 'target_project',
+                 'targetRepo', 'target_repo', 'canonicalRepo', 'canonical_repo'])
+                 WITH ORDINALITY AS keys(key, position)
+             WHERE jsonb_typeof(item.value->keys.key) = 'string'
+                 AND outcome_normalize_repository(item.value->>keys.key) IS NOT NULL
+             ORDER BY keys.position LIMIT 1) AS explicit_repo,
+            CASE WHEN jsonb_typeof(item.value->'url') = 'string'
+                  THEN outcome_repository_from_url(item.value->>'url') END AS url_repo,
+            CASE WHEN jsonb_typeof(item.value->'repo') = 'string' AND NOT EXISTS (
+                SELECT 1 FROM unnest(ARRAY['headRepo', 'head_repo', 'headProject', 'head_project',
+                    'sourceRepo', 'source_repo', 'sourceProject', 'source_project', 'forkRepo', 'fork_repo']) AS keys(key)
+                WHERE item.value->keys.key IS NOT NULL
+                    AND item.value->keys.key NOT IN ('null'::jsonb, 'false'::jsonb,
+                        '0'::jsonb, '""'::jsonb, '[]'::jsonb, '{}'::jsonb)
+            ) THEN outcome_normalize_repository(item.value->>'repo') END AS legacy_repo
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(artifacts) = 'array'
+            THEN artifacts ELSE '[]'::jsonb END) WITH ORDINALITY AS item(value, position)
+        WHERE jsonb_typeof(item.value) = 'object'
+    ), candidates AS (
+        SELECT identity, position, COALESCE(explicit_repo, url_repo, legacy_repo) AS repo,
+            CASE WHEN explicit_repo IS NOT NULL THEN 0 WHEN url_repo IS NOT NULL THEN 1 ELSE 2 END AS rank
+        FROM extracted
+    ), ranked AS (
+        SELECT repo, row_number() OVER (PARTITION BY identity ORDER BY rank, position DESC) AS priority
+        FROM candidates WHERE repo IS NOT NULL
+    ), repositories AS (SELECT DISTINCT repo COLLATE "C" AS repo FROM ranked WHERE priority = 1)
+    SELECT COALESCE(jsonb_agg(repo ORDER BY repo),
+        CASE WHEN outcome_normalize_repository(task_repo) IS NULL THEN '[]'::jsonb
+             ELSE jsonb_build_array(outcome_normalize_repository(task_repo)) END)
+    FROM repositories
+$$;
+
 DO $$ BEGIN
     CREATE TYPE task_status AS ENUM (
         'in_progress', 'pr_open', 'pr_changes', 'paused', 'done', 'archived'
@@ -61,6 +200,25 @@ CREATE TABLE IF NOT EXISTS task_outcome_reports (
     workflow                TEXT,
     instance_id             TEXT
 );
+
+CREATE OR REPLACE FUNCTION outcome_report_repositories() RETURNS TRIGGER
+LANGUAGE plpgsql AS $$
+BEGIN
+    -- Snapshot raw legacy PR metadata too: build_artifacts intentionally retains
+    -- only display/identity fields, and must not become a metadata migration.
+    SELECT outcome_canonical_repositories(
+        t.repo, COALESCE(t.artifacts, '[]'::jsonb) ||
+        CASE WHEN jsonb_typeof(t.metadata->'prs') = 'array'
+             THEN t.metadata->'prs' ELSE '[]'::jsonb END || NEW.artifacts
+    ) INTO NEW.canonical_repositories
+    FROM tasks t WHERE t.id = NEW.task_id;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS task_outcome_report_repositories ON task_outcome_reports;
+CREATE TRIGGER task_outcome_report_repositories
+    BEFORE INSERT ON task_outcome_reports
+    FOR EACH ROW EXECUTE FUNCTION outcome_report_repositories();
 
 CREATE INDEX IF NOT EXISTS idx_task_outcome_reports_task_latest
     ON task_outcome_reports (task_id, id DESC);

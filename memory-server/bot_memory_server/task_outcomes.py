@@ -3,17 +3,125 @@
 import json
 import re
 from datetime import UTC, date, datetime, timedelta
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .db import get_pool
+from .models import OutcomeArtifact, OutcomeEvidence
 from .outcome_classifier import classify_task_outcome
 
 _DECISION_FILTERS = {"accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip"}
 _CONFIDENCE_FILTERS = {"conclusive", "inconclusive"}
 _MAX_LIMIT = 100
+ARCHIVE_RECOVERY = (
+    "Archive failed; ignore DONE. Call task_outcome_report for same task (artifacts,evidence,notes), "
+    "then task_remove. Do not rerun skill; other steps may have completed."
+)
+ARCHIVE_EVIDENCE_GUIDANCE = (
+    "Call task_outcome_report first: each evidence item needs source, reference, "
+    "resolution: accepted|rejected|unknown, disposition, reason; then retry task_remove. "
+    "Do not provide a final task decision. For an already archived task, set correction=true."
+)
+
+
+class TaskArchiveError(ValueError):
+    """Archive failure with a recovery prefix safe for truncated legacy script output."""
+
+    def __init__(self, detail: str, *, external_key: str, source_type: str | None, status_code: int = 409):
+        self.payload = {
+            "error": ARCHIVE_RECOVERY,
+            "detail": detail,
+            "evidence": ARCHIVE_EVIDENCE_GUIDANCE,
+            "external_key": external_key,
+            "source_type": source_type,
+        }
+        self.status_code = status_code
+        super().__init__(f"{ARCHIVE_RECOVERY} {detail} {ARCHIVE_EVIDENCE_GUIDANCE}")
+
+
+def _validated_archive_outcome(report, task) -> dict:
+    """Validate selected report and serialize it before any lifecycle mutation."""
+    if not report or report["id"] != task["outcome_report_id"] or report["task_id"] != task["id"]:
+        raise ValueError("invalid staged outcome report identity")
+    outcome = _outcome_from_row(report)
+    if outcome["decision"] not in {"accepted", "rejected", "obsolete", "inconclusive"}:
+        raise ValueError("invalid outcome decision")
+    expected_confidence = "inconclusive" if outcome["decision"] == "inconclusive" else "conclusive"
+    if (
+        outcome["confidence"] != expected_confidence
+        or not isinstance(outcome["reason"], str)
+        or not outcome["reason"].strip()
+    ):
+        raise ValueError("invalid outcome confidence or reason")
+    for field, model in (("artifacts", OutcomeArtifact), ("evidence", OutcomeEvidence)):
+        # Inspect raw JSON too: null/object must not become an empty valid list.
+        values = _json_value(report[field])
+        if not isinstance(values, list):
+            raise ValueError(f"invalid outcome {field}")
+        for value in values:
+            model.model_validate(value)
+    repositories = _json_value(report["canonical_repositories"])
+    if not isinstance(repositories, list) or any(not isinstance(repo, str) for repo in repositories):
+        raise ValueError("invalid canonical repositories")
+    json.dumps(outcome)
+    return outcome
+
+
+async def archive_task(pool, *, external_key: str, source_type: str | None = None, manual: bool = False):
+    """Archive exactly one identity; strict retries preserve report/history/timestamps."""
+    async with pool.acquire() as conn, conn.transaction():
+        if source_type is None:
+            matches = await conn.fetch(
+                "SELECT * FROM tasks WHERE external_key = $1 ORDER BY id FOR UPDATE", external_key
+            )
+            if len(matches) > 1:
+                raise TaskArchiveError(
+                    "Ambiguous task key; specify source_type.", external_key=external_key, source_type=None
+                )
+            task = matches[0] if matches else None
+        else:
+            task = await conn.fetchrow(
+                "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
+                external_key,
+                source_type,
+            )
+        if not task:
+            raise TaskArchiveError(
+                f"Task {external_key} not found", external_key=external_key, source_type=source_type, status_code=404
+            )
+        outcome = None
+        if not manual:
+            if task["outcome_report_id"] is None:
+                raise TaskArchiveError(
+                    "Task requires task_outcome_report before archival.",
+                    external_key=external_key,
+                    source_type=task["source_type"],
+                )
+            report = await conn.fetchrow(
+                "SELECT * FROM task_outcome_reports WHERE id = $1 AND task_id = $2",
+                task["outcome_report_id"],
+                task["id"],
+            )
+            try:
+                outcome = _validated_archive_outcome(report, task)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise TaskArchiveError(
+                    "Task has an invalid staged outcome report; replace it with fresh evidence.",
+                    external_key=external_key,
+                    source_type=task["source_type"],
+                ) from exc
+            if task["status"] == "archived":
+                return task, outcome, False
+        clear_pointer = "outcome_report_id = NULL, " if manual else ""
+        row = await conn.fetchrow(
+            f"UPDATE tasks SET status = 'archived'::task_status, {clear_pointer}"
+            "archived_at = CASE WHEN status = 'archived'::task_status THEN COALESCE(archived_at, NOW()) ELSE NOW() END "
+            "WHERE id = $1 RETURNING *",
+            task["id"],
+        )
+    return row, outcome, True
 
 
 def _json_value(value):
@@ -22,60 +130,106 @@ def _json_value(value):
     return value
 
 
-def canonical_repositories(task_repo: str | None, artifacts: list[dict]) -> list[str]:
-    """Resolve PR/MR base repositories, excluding fork/source repositories."""
-    repositories = []
-    seen = set()
+_REPOSITORY_KEYS = (
+    "baseRepo",
+    "base_repo",
+    "targetProject",
+    "target_project",
+    "targetRepo",
+    "target_repo",
+    "canonicalRepo",
+    "canonical_repo",
+)
+_SOURCE_REPOSITORY_KEYS = (
+    "headRepo",
+    "head_repo",
+    "headProject",
+    "head_project",
+    "sourceRepo",
+    "source_repo",
+    "sourceProject",
+    "source_project",
+    "forkRepo",
+    "fork_repo",
+)
 
-    for artifact in artifacts:
+
+def _normalize_repository(repository: str | None) -> str | None:
+    """Keep in sync with outcome_normalize_repository in schema.sql."""
+    if not isinstance(repository, str):
+        return None
+    repository = re.split(r"[?#]", repository, maxsplit=1)[0].strip().strip("/").strip()
+    repository = repository.removesuffix(".git").strip().strip("/").strip()
+    return repository or None
+
+
+def canonical_repositories(task_repo: str | None, artifacts: list[dict]) -> list[str]:
+    """Explicit target > decoded PR/MR URL > unambiguous legacy repo > task repo.
+
+    A bare legacy repo is usable only without a head/source/fork marker. SQL's
+    outcome_canonical_repositories implements the same ordered extraction.
+    Duplicate URLs (or typed IDs without URLs) select the strongest candidate,
+    with later inputs winning ties; unidentified artifacts remain independent.
+    """
+    selected = {}
+
+    for position, artifact in enumerate(artifacts):
+        if not isinstance(artifact, dict):
+            continue
         repository = next(
-            (
-                artifact.get(key)
-                for key in (
-                    "baseRepo",
-                    "base_repo",
-                    "targetProject",
-                    "target_project",
-                    "targetRepo",
-                    "target_repo",
-                    "canonicalRepo",
-                    "canonical_repo",
-                )
-                if artifact.get(key)
-            ),
+            (normalized for key in _REPOSITORY_KEYS if (normalized := _normalize_repository(artifact.get(key)))),
             None,
         )
+        rank = 0
         if not repository:
             repository = _repository_from_url(artifact.get("url"))
+            rank = 1
+        if not repository and not any(artifact.get(key) for key in _SOURCE_REPOSITORY_KEYS):
+            repository = _normalize_repository(artifact.get("repo"))
+            rank = 2
         if repository:
-            repository = str(repository).strip().strip("/")
-            if repository and repository not in seen:
-                seen.add(repository)
-                repositories.append(repository)
+            url = artifact.get("url")
+            artifact_type = artifact.get("type")
+            artifact_id = artifact.get("id")
+            if isinstance(url, str) and url.strip():
+                identity = ("url", url.strip())
+            elif (
+                isinstance(artifact_type, str)
+                and artifact_type.strip()
+                and isinstance(artifact_id, str)
+                and artifact_id.strip()
+            ):
+                identity = ("id", artifact_type.strip(), artifact_id.strip())
+            else:
+                identity = ("position", position)
+            previous = selected.get(identity)
+            if previous is None or rank <= previous[0]:
+                selected[identity] = (rank, repository)
 
-    if not repositories and task_repo:
-        task_repo = task_repo.strip().strip("/")
+    seen = {repository for _, repository in selected.values()}
+    if not seen:
+        task_repo = _normalize_repository(task_repo)
         if task_repo:
-            repositories.append(task_repo)
-    return repositories
+            seen.add(task_repo)
+    return sorted(seen)
 
 
 def _repository_from_url(url: str | None) -> str | None:
-    if not url:
+    if not isinstance(url, str) or not url:
         return None
-    parsed = urlparse(url)
-    path = unquote(parsed.path).strip("/")
+    path = re.split(r"[?#]", url.strip(), maxsplit=1)[0]
+    path = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/]*", "", path)
+    path = unquote(path).replace("\x00", "\ufffd").strip("/")
     if not path:
         return None
 
     gitlab_marker = re.search(r"/-/merge_requests/|/merge_requests/", path)
     if gitlab_marker:
-        project = path[: gitlab_marker.start()].strip("/")
-        return project or None
+        return _normalize_repository(path[: gitlab_marker.start()])
 
     segments = path.split("/")
     if len(segments) >= 4 and segments[2] in {"pull", "pulls"}:
-        return "/".join(segments[:2]).removesuffix(".git")
+        return _normalize_repository("/".join(segments[:2]))
     return None
 
 
@@ -150,6 +304,8 @@ async def record_task_outcome(
     confidence = outcome["confidence"]
     reason = outcome["reason"]
 
+    # PostgreSQL's BEFORE INSERT trigger also includes persisted task artifacts
+    # and raw metadata.prs, without changing artifact extras or this bind contract.
     report = await conn.fetchrow(
         """
         INSERT INTO task_outcome_reports (
@@ -225,41 +381,10 @@ WITH task_outcomes AS (
         o.verified_at,
         o.artifacts AS outcome_artifacts,
         o.evidence,
-        COALESCE(o.canonical_repositories, (
-            SELECT COALESCE(
-                jsonb_agg(candidates.repo ORDER BY candidates.repo),
-                CASE WHEN t.repo IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(t.repo) END
-            )
-            FROM (
-                SELECT DISTINCT NULLIF(BTRIM(COALESCE(
-                    item.value->>'baseRepo',
-                    item.value->>'base_repo',
-                    item.value->>'targetProject',
-                    item.value->>'target_project',
-                    item.value->>'targetRepo',
-                    item.value->>'target_repo',
-                    item.value->>'canonicalRepo',
-                    item.value->>'canonical_repo',
-                    CASE
-                        WHEN item.value->>'url' ~* '^https?://[^/]+/[^/]+/[^/]+/pulls?/' THEN
-                            regexp_replace(item.value->>'url', '^https?://[^/]+/([^/]+/[^/]+)/pulls?/.*$', '\\1')
-                        WHEN item.value->>'url' ~* '^https?://[^/]+/.+/-/merge_requests/' THEN
-                            regexp_replace(item.value->>'url', '^https?://[^/]+/(.+)/-/merge_requests/.*$', '\\1')
-                        WHEN item.value->>'url' ~* '^https?://[^/]+/.+/merge_requests/' THEN
-                            regexp_replace(item.value->>'url', '^https?://[^/]+/(.+)/merge_requests/.*$', '\\1')
-                    END,
-                    item.value->>'repo'
-                )), '') AS repo
-                FROM (
-                    SELECT artifact.value FROM jsonb_array_elements(COALESCE(t.artifacts, '[]'::jsonb)) AS artifact(value)
-                    UNION ALL
-                    SELECT legacy_pr.value FROM jsonb_array_elements(
-                        CASE WHEN jsonb_typeof(t.metadata->'prs') = 'array'
-                             THEN t.metadata->'prs' ELSE '[]'::jsonb END
-                    ) AS legacy_pr(value)
-                ) AS item
-            ) AS candidates
-            WHERE candidates.repo IS NOT NULL
+        COALESCE(o.canonical_repositories, outcome_canonical_repositories(
+            t.repo, COALESCE(t.artifacts, '[]'::jsonb) ||
+            CASE WHEN jsonb_typeof(t.metadata->'prs') = 'array'
+                 THEN t.metadata->'prs' ELSE '[]'::jsonb END
         )) AS canonical_repositories,
         o.notes,
         o.run_id,

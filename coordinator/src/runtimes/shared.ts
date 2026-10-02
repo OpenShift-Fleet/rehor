@@ -2,6 +2,14 @@ import type { TerminalWorkContext } from "../domain/terminal-state";
 
 type JsonRecord = Record<string, unknown>;
 
+const WORK_SELECTION_TOOLS = new Set([
+  "bot_status_update",
+  "task_add",
+  "task_update",
+  "task_outcome_report",
+  "task_remove",
+]);
+
 const NO_WORK_PATTERNS = [
   "NO_WORK_FOUND",
   "no actionable work",
@@ -150,14 +158,25 @@ export function extractToolContext(
   context: TerminalWorkContext,
 ): void {
   if (!input) return;
-  const externalKey = input.external_key ?? input.jira_key;
-  if (typeof externalKey === "string" && externalKey) context.externalKey = externalKey;
-  if (typeof input.repo === "string" && input.repo) context.repository = input.repo;
-  if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
+  // Claude uses mcp__server__tool; OpenCode uses server_tool.
+  const tool = name.startsWith("mcp__bot-memory__")
+    ? name.slice("mcp__bot-memory__".length)
+    : name.startsWith("bot-memory_")
+      ? name.slice("bot-memory_".length)
+      : undefined;
+  if (tool && WORK_SELECTION_TOOLS.has(tool)) {
+    const externalKey = input.external_key || input.jira_key;
+    if (typeof externalKey === "string" && externalKey) {
+      if (externalKey !== context.externalKey) context.taskId = undefined;
+      context.externalKey = externalKey;
+    }
+    if (typeof input.repo === "string" && input.repo) context.repository = input.repo;
+    if (typeof input.summary === "string") context.summary = input.summary.slice(0, 200);
+  }
 
-  if (name.endsWith("task_add")) {
+  if (tool === "task_add") {
     context.workType = context.workType ?? "new_ticket";
-  } else if (name.endsWith("task_update")) {
+  } else if (tool === "task_update") {
     if (input.status === "pr_open") context.workType = "new_ticket";
     if (input.status === "pr_changes") context.workType = "pr_review";
     if (input.status === "done") context.workType = context.workType ?? "pr_review";
@@ -174,12 +193,20 @@ export function extractToolContext(
     context.workType = context.workType ?? "memory_housekeeping";
   }
 
-  const progress = asObject(input.progress);
+  const progress = tool === "progress_store" ? asObject(input.progress) : undefined;
   if (progress) {
-    if (typeof progress.jira_key === "string" && progress.jira_key) {
-      context.externalKey ??= progress.jira_key;
+    const externalKey = progress.external_key || progress.jira_key;
+    if (typeof externalKey === "string" && externalKey && !context.externalKey) {
+      context.taskId = undefined;
+      context.externalKey = externalKey;
     }
-    if (typeof progress.repo === "string" && progress.repo) context.repository ??= progress.repo;
+    if (
+      typeof progress.repo === "string" &&
+      progress.repo &&
+      (!externalKey || externalKey === context.externalKey)
+    ) {
+      context.repository ??= progress.repo;
+    }
   }
 }
 
@@ -197,6 +224,8 @@ export function extractTaskResult(value: unknown, context: TerminalWorkContext):
       const parsed = JSON.parse(text) as unknown;
       const object = asObject(parsed);
       if (!object) continue;
+      const externalKey = object.external_key || object.jira_key;
+      if (context.externalKey && externalKey && externalKey !== context.externalKey) continue;
       if (
         typeof object.id === "number" &&
         object.id > 0 &&

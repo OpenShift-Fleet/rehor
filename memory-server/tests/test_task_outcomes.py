@@ -1,6 +1,8 @@
 """Unit and API contract tests for task outcome reporting."""
 
 import json
+import re
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -10,6 +12,7 @@ from bot_memory_server.api import api_task_delete
 from bot_memory_server.models import OutcomeArtifact, OutcomeEvidence
 from bot_memory_server.outcome_classifier import classify_task_outcome
 from bot_memory_server.task_outcomes import (
+    ARCHIVE_RECOVERY,
     api_task_outcome_detail,
     api_task_outcomes,
     api_task_outcomes_summary,
@@ -267,6 +270,7 @@ class FakeConnection:
             "artifacts": "[]",
             "status": "archived" if archived else "in_progress",
             "outcome_report_id": 100 if archived else None,
+            "archived_at": NOW if archived else None,
             "repo": "org/repo",
             "branch": "bot/test",
             "title": "Archive test",
@@ -280,17 +284,30 @@ class FakeConnection:
         self.report_args = None
         self.report_row = None
         self.queries = []
+        self.other_tasks = []
 
     @asynccontextmanager
     async def transaction(self):
         yield
+
+    async def fetch(self, query, *args):
+        self.queries.append((query, args))
+        assert "SELECT * FROM tasks" in query and "FOR UPDATE" in query
+        return [row for row in [self.existing, *self.other_tasks] if row["external_key"] == args[0]]
 
     async def fetchrow(self, query, *args):
         self.queries.append((query, args))
         if "SELECT id, status, outcome_report_id FROM tasks" in query:
             return {key: self.existing[key] for key in ("id", "status", "outcome_report_id")}
         if "SELECT * FROM tasks" in query:
-            return self.existing
+            return next(
+                (
+                    row
+                    for row in [self.existing, *self.other_tasks]
+                    if row["external_key"] == args[0] and row["source_type"] == args[1]
+                ),
+                None,
+            )
         if "INSERT INTO task_outcome_reports" in query:
             self.report_args = args
             self.report_row = {
@@ -319,7 +336,10 @@ class FakeConnection:
         if "SELECT * FROM task_outcome_reports" in query:
             return self.report_row
         if "UPDATE tasks SET status" in query:
-            updated = {**self.existing, "status": "archived", "archived_at": NOW}
+            assert "WHERE id = $1" in query
+            updated = {**self.existing, "status": "archived", "archived_at": self.existing["archived_at"] or NOW}
+            if "outcome_report_id = NULL" in query:
+                updated["outcome_report_id"] = None
             self.existing = updated
             return updated
         raise AssertionError(f"Unexpected query: {query}")
@@ -352,6 +372,7 @@ async def test_mcp_archive_requires_staged_report_and_appends_run_context():
             )
         error_text = getattr(failed_archive.content[0], "text", "")
         assert failed_archive.is_error
+        assert ARCHIVE_RECOVERY in error_text[:200]
         assert "Call task_outcome_report first" in error_text
         assert "resolution: accepted|rejected|unknown" in error_text
         assert "then retry task_remove" in error_text
@@ -432,6 +453,598 @@ async def test_task_add_and_update_cannot_bypass_outcome_required_archive():
         )
     with pytest.raises(ValueError, match="task_remove"):
         await tools["task_update"](external_key="ARCHIVE-GUARD-1", status="archived")
+
+
+def _report_arguments(source_type="jira", **overrides):
+    return {
+        "external_key": "ARCHIVE-1",
+        "source_type": source_type,
+        "artifacts": [],
+        "evidence": [
+            {
+                "source": "custom",
+                "reference": "ARCHIVE-1",
+                "resolution": "accepted",
+                "disposition": "Completed",
+                "reason": "Verified completion",
+            }
+        ],
+        "notes": "Verified after legacy script failed",
+        **overrides,
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_rest_failure_recovers_via_mcp_report_and_archive_without_rerunning_skill():
+    conn = FakeConnection()
+    pool = FakeConnectionPool(conn)
+    mcp = FastMCP(name="legacy-archive-recovery")
+    register_task_tools(mcp)
+    before = dict(conn.existing)
+    with (
+        patch("bot_memory_server.api.get_pool", return_value=pool),
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.api.bus.publish", new_callable=AsyncMock) as publish,
+    ):
+        async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+            failure = await rest.delete("/api/tasks/ARCHIVE-1")
+            assert failure.status_code == 409
+            assert next(iter(failure.json())) == "error"
+            assert ARCHIVE_RECOVERY in failure.text[:200]
+            assert len(json.dumps({"error": ARCHIVE_RECOVERY})) <= 200
+            assert failure.json()["source_type"] == "jira"
+            assert failure.json()["external_key"] == "ARCHIVE-1"
+            assert "resolution: accepted|rejected|unknown" in failure.json()["evidence"]
+            assert conn.existing == before
+            publish.assert_not_awaited()
+            assert not any(query.lstrip().startswith("UPDATE") for query, _ in conn.queries)
+
+            async with Client(mcp) as agent:
+                report = await agent.call_tool("task_outcome_report", _report_arguments())
+                assert not report.is_error
+                assert conn.existing["status"] == "in_progress"
+                archive = await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1"})
+                assert not archive.is_error
+                selected = dict(conn.existing)
+                history = dict(conn.report_row)
+                writes = len([q for q, _ in conn.queries if q.lstrip().startswith("UPDATE")])
+                events = publish.await_count
+                retry = await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1"})
+                assert not retry.is_error
+                rest_retry = await rest.delete("/api/tasks/ARCHIVE-1")
+                assert rest_retry.status_code == 200
+                assert conn.existing == selected
+                assert conn.report_row == history
+                assert len([q for q, _ in conn.queries if q.lstrip().startswith("UPDATE")]) == writes
+                assert publish.await_count == events
+    assert selected["outcome_report_id"] == history["id"]
+    assert selected["last_addressed"] == before["last_addressed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_type", ["jira", "manual"])
+async def test_default_rest_archive_preserves_staged_report_and_scopes_identity(source_type):
+    conn = FakeConnection()
+    conn.existing["source_type"] = source_type
+    pool = FakeConnectionPool(conn)
+    mcp = FastMCP(name="staged-rest-archive")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.api.get_pool", return_value=pool),
+        patch("bot_memory_server.api.bus.publish", new_callable=AsyncMock),
+    ):
+        async with Client(mcp) as agent:
+            await agent.call_tool("task_outcome_report", _report_arguments(source_type))
+        history = dict(conn.report_row)
+        other = {**conn.existing, "id": 43, "source_type": "github", "outcome_report_id": 202}
+        conn.other_tasks.append(other)
+        async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+            ambiguous = await rest.delete("/api/tasks/ARCHIVE-1")
+            assert ambiguous.status_code == 409
+            assert "specify source_type" in ambiguous.json()["detail"]
+            manual_ambiguous = await rest.delete("/api/tasks/ARCHIVE-1?manual=true")
+            assert manual_ambiguous.status_code == 409
+            assert (await rest.delete("/api/tasks/ARCHIVE-1?source_type=missing")).status_code == 404
+            assert conn.existing["status"] == "in_progress"
+            archived = await rest.delete(f"/api/tasks/ARCHIVE-1?source_type={source_type}")
+            assert archived.status_code == 200
+            assert archived.json()["task"]["source_type"] == source_type
+    assert conn.existing["outcome_report_id"] == history["id"]
+    assert conn.report_row == history
+    assert conn.other_tasks == [other]
+    assert other["status"] == "in_progress" and other["outcome_report_id"] == 202
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("staged", [False, True])
+async def test_explicit_manual_archive_clears_only_selected_pointer_and_remains_unreported(staged):
+    conn = FakeConnection()
+    pool = FakeConnectionPool(conn)
+    mcp = FastMCP(name="explicit-manual-archive")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.api.get_pool", return_value=pool),
+        patch("bot_memory_server.api.bus.publish", new_callable=AsyncMock),
+    ):
+        async with Client(mcp) as agent:
+            if staged:
+                await agent.call_tool("task_outcome_report", _report_arguments())
+            history = dict(conn.report_row) if staged else None
+            async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+                archive = await rest.delete("/api/tasks/ARCHIVE-1?manual=true")
+                assert archive.status_code == 200
+                assert conn.existing["outcome_report_id"] is None
+                selected = dict(conn.existing)
+                assert (await rest.delete("/api/tasks/ARCHIVE-1?manual=true")).status_code == 200
+                assert conn.existing == selected
+                strict = await rest.delete("/api/tasks/ARCHIVE-1")
+                assert strict.status_code == 409
+                assert ARCHIVE_RECOVERY in strict.text[:200]
+            strict_mcp = await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1"}, raise_on_error=False)
+            assert strict_mcp.is_error
+            assert ARCHIVE_RECOVERY in strict_mcp.content[0].text[:200]
+            assert conn.existing == selected
+            assert conn.report_row == history
+            # Archived/unreported recovery explicitly appends a correction before strict retry.
+            await agent.call_tool("task_outcome_report", _report_arguments(correction=True))
+            await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1"})
+            assert conn.existing["archived_at"] == selected["archived_at"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing_pointer",
+        "missing_report",
+        "wrong_task",
+        "wrong_report",
+        "invalid_json",
+        "object_evidence",
+        "null_artifacts",
+        "bad_artifact",
+        "bad_resolution",
+        "empty_reason",
+        "bad_decision",
+        "bad_confidence",
+        "bad_repositories",
+        "missing_field",
+    ],
+)
+@pytest.mark.parametrize("protocol", ["rest", "mcp"])
+async def test_invalid_staged_reports_fail_before_mutation(corruption, protocol):
+    conn = FakeConnection()
+    pool = FakeConnectionPool(conn)
+    mcp = FastMCP(name="corrupt-archive-guard")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.api.get_pool", return_value=pool),
+        patch("bot_memory_server.api.bus.publish", new_callable=AsyncMock) as publish,
+    ):
+        async with Client(mcp) as agent:
+            await agent.call_tool("task_outcome_report", _report_arguments())
+            if corruption == "missing_pointer":
+                conn.existing["outcome_report_id"] = None
+            elif corruption == "missing_report":
+                conn.report_row = None
+            elif corruption == "missing_field":
+                del conn.report_row["reported_at"]
+            else:
+                field, value = {
+                    "wrong_task": ("task_id", 43),
+                    "wrong_report": ("id", 102),
+                    "invalid_json": ("evidence", "{"),
+                    "object_evidence": ("evidence", "{}"),
+                    "null_artifacts": ("artifacts", "null"),
+                    "bad_artifact": ("artifacts", '[{"url":"x"}]'),
+                    "bad_resolution": (
+                        "evidence",
+                        json.dumps([{**_report_arguments()["evidence"][0], "resolution": "bad"}]),
+                    ),
+                    "empty_reason": ("reason", " "),
+                    "bad_decision": ("decision", "bad"),
+                    "bad_confidence": ("confidence", "inconclusive"),
+                    "bad_repositories": ("canonical_repositories", "{}"),
+                }[corruption]
+                conn.report_row[field] = value
+            before = dict(conn.existing)
+            report_before = dict(conn.report_row) if conn.report_row else None
+            conn.queries.clear()
+            publish.reset_mock()
+            if protocol == "mcp":
+                failure = await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1"}, raise_on_error=False)
+                assert failure.is_error
+                assert ARCHIVE_RECOVERY in failure.content[0].text[:200]
+            else:
+                async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+                    failure = await rest.delete("/api/tasks/ARCHIVE-1")
+                    assert failure.status_code == 409
+                    assert ARCHIVE_RECOVERY in failure.text[:200]
+            assert conn.existing == before
+            assert conn.report_row == report_before
+            assert not any(query.lstrip().startswith("UPDATE") for query, _ in conn.queries)
+            publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_task_update_archive_protocol_redirects_in_first_200_chars():
+    mcp = FastMCP(name="task-update-archive-recovery")
+    register_task_tools(mcp)
+    async with Client(mcp) as agent:
+        failure = await agent.call_tool(
+            "task_update", {"external_key": "ARCHIVE-1", "status": "archived"}, raise_on_error=False
+        )
+    assert failure.is_error
+    assert ARCHIVE_RECOVERY in failure.content[0].text[:200]
+    assert "do not retry task_update" in failure.content[0].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["manual=1", "manual=yes", "source_type="])
+async def test_invalid_archive_query_is_rejected_before_database_access(query):
+    pool = FakeConnectionPool(FakeConnection())
+    with patch("bot_memory_server.api.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+            assert (await rest.delete(f"/api/tasks/ARCHIVE-1?{query}")).status_code == 400
+    assert not pool.conn.queries
+
+
+class SQLiteTaskPool:
+    """Execute production task SQL, adapting PostgreSQL casts, row locks and RETURNING.
+
+    This checks CASE/parameter/old-row semantics without simulating lifecycle logic.
+    Writes use rowid lookups instead of requiring SQLite 3.35's RETURNING support.
+    PostgreSQL enums, foreign keys and locking remain covered by real_database tests.
+    """
+
+    def __init__(self, row):
+        self.conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("NOW", 0, lambda: NOW.isoformat())
+        columns = ", ".join(f"{key} {'INTEGER' if key in {'id', 'outcome_report_id'} else 'TEXT'}" for key in row)
+        self.conn.execute(f"CREATE TABLE tasks ({columns})")
+        self.conn.execute("CREATE TABLE task_outcome_reports (id INTEGER, task_id INTEGER, evidence TEXT)")
+        self.conn.execute("INSERT INTO task_outcome_reports VALUES (101, 42, 'original evidence')")
+        placeholders = ", ".join("?" for _ in row)
+        for values in (row, {**row, "id": 43, "source_type": "manual"}):
+            self.conn.execute(
+                f"INSERT INTO tasks VALUES ({placeholders})",
+                tuple(value.isoformat() if isinstance(value, datetime) else value for value in values.values()),
+            )
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self):
+        self.conn.execute("BEGIN")
+        with self.conn:
+            yield
+
+    async def fetchrow(self, query, *args):
+        query = query.replace("::task_status", "").replace(" FOR UPDATE", "")
+        params = {
+            str(index): value.isoformat() if isinstance(value, datetime) else value
+            for index, value in enumerate(args, 1)
+        }
+        statement, returning = re.subn(r"\s+RETURNING\s+\*\s*;?\s*$", "", query, flags=re.IGNORECASE)
+        if returning:
+            row = self._write_and_fetchrow(statement.strip(), params)
+        else:
+            assert not re.search(r"\bRETURNING\b", query, re.IGNORECASE), "Only RETURNING * is supported"
+            row = self.conn.execute(query, params).fetchone()
+        return dict(row) if row else None
+
+    def _write_and_fetchrow(self, statement, params):
+        """Adapt only single-row VALUES inserts and identity-filtered updates.
+
+        Keep named $n bindings: WHERE placeholders need not start at $1 or appear
+        in argument order. Capture UPDATE identities before executing the original
+        SET expressions, since those expressions can change the lookup fields.
+        Neither lookup nor write commits; transaction() retains rollback control.
+        """
+        insert = re.fullmatch(
+            r"INSERT\s+INTO\s+(tasks|task_outcome_reports)\s*\([^()]+\)\s*VALUES\s*\([^()]+\)",
+            statement,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if insert:
+            table = insert[1]
+            cursor = self.conn.execute(statement, params)
+            rowid = cursor.lastrowid
+        else:
+            identity = r"(?:id|task_id|external_key|source_type)\s*=\s*\$\d+"
+            update = re.fullmatch(
+                rf"UPDATE\s+(tasks|task_outcome_reports)\s+SET\s+.+?\s+WHERE\s+({identity}(?:\s+AND\s+{identity})*)",
+                statement,
+                re.IGNORECASE | re.DOTALL,
+            )
+            assert update, f"Unsupported RETURNING SQL shape: {statement}"
+            table, where = update.groups()
+            matches = self.conn.execute(f"SELECT rowid FROM {table} WHERE {where} ORDER BY rowid", params).fetchall()
+            self.conn.execute(statement, params)
+            if not matches:
+                return None
+            rowid = matches[0][0]
+        return self.conn.execute(f"SELECT * FROM {table} WHERE rowid = ?", (rowid,)).fetchone()
+
+
+class SQLiteArchivePool(SQLiteTaskPool):
+    """Execute report and archive SQL against isolated storage, never the db fixture."""
+
+    def __init__(self, row):
+        super().__init__(row)
+        self.conn.execute("DELETE FROM tasks WHERE id = 43")
+        self.conn.execute("DROP TABLE task_outcome_reports")
+        columns = (
+            "id INTEGER PRIMARY KEY, task_id INTEGER, decision TEXT, confidence TEXT, reason TEXT, "
+            "reported_by TEXT, reported_at TEXT DEFAULT (NOW()), verified_at TEXT, artifacts TEXT, "
+            "evidence TEXT, canonical_repositories TEXT, notes TEXT, run_id TEXT, reporting_cycle_id INTEGER, "
+            "attempt INTEGER, workflow TEXT, instance_id TEXT"
+        )
+        self.conn.execute(f"CREATE TABLE task_outcome_reports ({columns})")
+        self.queries = []
+        self.conn.set_trace_callback(self.queries.append)
+
+    async def fetchrow(self, query, *args):
+        row = await super().fetchrow(query.replace("::jsonb", ""), *args)
+        if row:
+            for field in ("created_at", "last_addressed", "archived_at", "reported_at", "verified_at"):
+                if row.get(field):
+                    row[field] = datetime.fromisoformat(row[field])
+        return row
+
+    async def fetch(self, query, *args):
+        row = await self.fetchrow(query, *args)
+        return [row] if row else []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_type", [SQLiteTaskPool, SQLiteArchivePool])
+async def test_sqlite_adapter_insert_returns_inserted_row_without_native_returning(pool_type):
+    pool = pool_type(FakeConnection().existing)
+    queries = []
+    pool.conn.set_trace_callback(queries.append)
+    try:
+        # Duplicate external identity ensures retrieval uses the inserted rowid.
+        row = await pool.fetchrow(
+            "INSERT INTO tasks (id, external_key, source_type, status, last_addressed) "
+            "VALUES ($10, $2, $3, $4::task_status, $5) RETURNING *;",
+            None,
+            "ARCHIVE-1",
+            "jira",
+            "done",
+            NOW,
+            None,
+            None,
+            None,
+            None,
+            100,
+        )
+        assert row["id"] == 100
+        assert row["external_key"] == "ARCHIVE-1"
+        assert row["status"] == "done"
+        assert row["last_addressed"] == (NOW if pool_type is SQLiteArchivePool else NOW.isoformat())
+        assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in queries)
+        assert sum(query.startswith("INSERT") for query in queries) == 1
+    finally:
+        pool.conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_type", [SQLiteTaskPool, SQLiteArchivePool])
+@pytest.mark.parametrize("lookup", ["id = $1", "external_key = $3 AND source_type = $10"])
+async def test_sqlite_adapter_update_preserves_old_row_sql_and_identity(pool_type, lookup):
+    pool = pool_type({**FakeConnection().existing, "status": "done", "outcome_report_id": 101})
+    queries = []
+    pool.conn.set_trace_callback(queries.append)
+    try:
+        row = await pool.fetchrow(
+            "UPDATE tasks SET status = $2::task_status, external_key = $4, "
+            "outcome_report_id = CASE WHEN status = 'done'::task_status AND $2 != 'done' "
+            f"THEN NULL ELSE outcome_report_id END WHERE {lookup} RETURNING *",
+            42,
+            "in_progress",
+            "ARCHIVE-1",
+            "RENAMED-1",
+            None,
+            None,
+            None,
+            None,
+            None,
+            "jira",
+        )
+        assert row["id"] == 42
+        assert row["external_key"] == "RENAMED-1"
+        assert row["status"] == "in_progress"
+        assert row["outcome_report_id"] is None
+        assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in queries)
+        assert sum(query.startswith("UPDATE") for query in queries) == 1
+        other = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 43)
+        if pool_type is SQLiteTaskPool:
+            assert other["external_key"] == "ARCHIVE-1"
+            assert other["status"] == "done"
+            assert other["outcome_report_id"] == 101
+    finally:
+        pool.conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table", "lookup", "field", "first_id"),
+    [
+        ("tasks", "external_key = $1", "summary", 42),
+        ("task_outcome_reports", "task_id = $1", "evidence", 101),
+    ],
+)
+async def test_sqlite_adapter_update_returns_first_match_and_updates_all_matches(table, lookup, field, first_id):
+    pool = SQLiteTaskPool(FakeConnection().existing)
+    if table == "task_outcome_reports":
+        pool.conn.execute("INSERT INTO task_outcome_reports VALUES (102, 42, 'other evidence')")
+    queries = []
+    pool.conn.set_trace_callback(queries.append)
+    try:
+        row = await pool.fetchrow(
+            f"UPDATE {table} SET {field} = $2 WHERE {lookup} RETURNING *",
+            "ARCHIVE-1" if table == "tasks" else 42,
+            "updated",
+        )
+        assert row["id"] == first_id
+        assert row[field] == "updated"
+        assert [item[0] for item in pool.conn.execute(f"SELECT {field} FROM {table} ORDER BY rowid")] == [
+            "updated",
+            "updated",
+        ]
+        assert sum(query.startswith("UPDATE") for query in queries) == 1
+        assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in queries)
+    finally:
+        pool.conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_type", [SQLiteTaskPool, SQLiteArchivePool])
+async def test_sqlite_adapter_no_match_returns_none_and_writes_rollback(pool_type):
+    pool = pool_type(FakeConnection().existing)
+    queries = []
+    pool.conn.set_trace_callback(queries.append)
+    try:
+        before = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+        assert await pool.fetchrow("UPDATE tasks SET status = $2 WHERE id = $1 RETURNING *", 999, "done") is None
+        assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42) == before
+        with pytest.raises(RuntimeError, match="abort"):
+            async with pool.transaction():
+                updated = await pool.fetchrow("UPDATE tasks SET status = $2 WHERE id = $1 RETURNING *", 42, "done")
+                assert updated["status"] == "done"
+                inserted = await pool.fetchrow(
+                    "INSERT INTO task_outcome_reports (task_id, evidence) VALUES ($1, $2) RETURNING *",
+                    42,
+                    "rolled back evidence",
+                )
+                assert inserted["task_id"] == 42
+                assert inserted["evidence"] == "rolled back evidence"
+                raise RuntimeError("abort")
+        assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42) == before
+        assert (
+            await pool.fetchrow("SELECT * FROM task_outcome_reports WHERE evidence = $1", "rolled back evidence")
+            is None
+        )
+        assert "ROLLBACK" in queries
+        assert sum(query.startswith("UPDATE") for query in queries) == 2
+        assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in queries)
+    finally:
+        pool.conn.close()
+
+
+@pytest.mark.asyncio
+async def test_report_and_strict_rest_archive_execute_sql_transaction_and_preserve_history():
+    pool = SQLiteArchivePool({**FakeConnection().existing, "source_type": "manual"})
+    mcp = FastMCP(name="strict-archive-sql")
+    register_task_tools(mcp)
+    try:
+        with (
+            patch("bot_memory_server.api.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+            patch("bot_memory_server.api.bus.publish", new_callable=AsyncMock),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as rest:
+                before = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+                assert (await rest.delete("/api/tasks/ARCHIVE-1")).status_code == 409
+                assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42) == before
+                async with Client(mcp) as agent:
+                    await agent.call_tool("task_outcome_report", _report_arguments("manual"))
+                    staged = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+                    history = await pool.fetchrow("SELECT * FROM task_outcome_reports WHERE task_id = $1", 42)
+                    assert staged["status"] == "in_progress"
+                    assert staged["outcome_report_id"] == history["id"]
+                    assert (await rest.delete("/api/tasks/ARCHIVE-1")).status_code == 200
+                    archived = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+                    assert archived["status"] == "archived"
+                    assert archived["outcome_report_id"] == history["id"]
+                    assert archived["last_addressed"] == before["last_addressed"]
+                    assert archived["archived_at"] == NOW
+                    assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in pool.queries)
+                    pool.queries.clear()
+                    assert (await rest.delete("/api/tasks/ARCHIVE-1")).status_code == 200
+                    await agent.call_tool("task_remove", {"external_key": "ARCHIVE-1", "source_type": "manual"})
+                    assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42) == archived
+                    assert await pool.fetchrow("SELECT * FROM task_outcome_reports WHERE task_id = $1", 42) == history
+                    assert not any(query.startswith(("UPDATE", "INSERT")) for query in pool.queries)
+    finally:
+        pool.conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous_status", "status", "clears_report"),
+    [
+        ("done", "in_progress", True),
+        ("done", "pr_open", True),
+        ("done", "pr_changes", True),
+        ("done", "paused", True),
+        ("done", "done", False),
+        ("done", None, False),
+        ("in_progress", "done", False),
+        ("pr_open", "done", False),
+        ("pr_changes", "done", False),
+        ("paused", "done", False),
+        ("archived", "in_progress", True),
+        ("archived", "paused", True),
+        ("archived", "done", True),
+    ],
+)
+async def test_mcp_update_executes_reopen_sql_and_rejects_stale_archive(previous_status, status, clears_report):
+    row = {
+        **FakeConnection().existing,
+        "status": previous_status,
+        "outcome_report_id": 101,
+        "archived_at": NOW if previous_status == "archived" else None,
+    }
+    pool = SQLiteTaskPool(row)
+    queries = []
+    pool.conn.set_trace_callback(queries.append)
+    mcp = FastMCP(name="task-outcome-reopen-sql-tests")
+    register_task_tools(mcp)
+    try:
+        with (
+            patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+        ):
+            async with Client(mcp) as client:
+                arguments = {
+                    "external_key": "ARCHIVE-1",
+                    "summary": "Work changed after review",
+                    "last_addressed": NOW.isoformat(),
+                }
+                if status is not None:
+                    arguments["status"] = status
+                await client.call_tool("task_update", arguments)
+                updated = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+                assert updated is not None
+                assert updated["status"] == (status or previous_status)
+                assert updated["summary"] == "Work changed after review"
+                assert updated["outcome_report_id"] == (None if clears_report else 101)
+                assert updated["archived_at"] is None
+                if clears_report:
+                    archive = await client.call_tool("task_remove", {"external_key": "ARCHIVE-1"}, raise_on_error=False)
+                    assert archive.is_error
+                    assert "requires task_outcome_report" in getattr(archive.content[0], "text", "")
+                    after_archive = await pool.fetchrow("SELECT status FROM tasks WHERE id = $1", 42)
+                    assert after_archive is not None
+                    assert after_archive["status"] == status
+
+        other_source = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 43)
+        assert other_source is not None
+        assert other_source["status"] == previous_status
+        assert other_source["outcome_report_id"] == 101
+        history = pool.conn.execute("SELECT * FROM task_outcome_reports").fetchall()
+        assert [tuple(item) for item in history] == [(101, 42, "original evidence")]
+        assert not any(re.search(r"\bRETURNING\b", query, re.IGNORECASE) for query in queries)
+    finally:
+        pool.conn.close()
 
 
 def test_canonical_repo_normalization_prefers_target_over_fork():
@@ -535,22 +1148,24 @@ def test_wont_do_defaults_success_but_human_evidence_overrides():
     assert classify_task_outcome(artifacts=[], evidence=evidence, task_reference="TASK-1")["decision"] == "rejected"
 
 
-def test_supersedes_marks_old_artifact_obsolete_without_failing_task():
+@pytest.mark.parametrize("supersedes_ref", ["pr-old", "https://github.com/acme/app/pull/1"])
+@pytest.mark.parametrize("evidence_ref", ["pr-old", "https://github.com/acme/app/pull/1"])
+def test_supersedes_marks_old_artifact_obsolete_without_failing_task(supersedes_ref, evidence_ref):
     artifacts = [
         {"id": "pr-old", "type": "github_pr", "url": "https://github.com/acme/app/pull/1"},
         {
             "id": "pr-new",
             "type": "github_pr",
             "url": "https://github.com/acme/app/pull/2",
-            "supersedes": ["pr-old"],
+            "supersedes": [supersedes_ref],
         },
     ]
     outcome = classify_task_outcome(
         artifacts=artifacts,
         evidence=[
             {
-                "source": "GitHub",
-                "reference": "pr-old",
+                "source": "custom-review",
+                "reference": evidence_ref,
                 "resolution": "rejected",
                 "disposition": "Closed",
                 "reason": "old PR closed",
@@ -566,7 +1181,28 @@ def test_supersedes_marks_old_artifact_obsolete_without_failing_task():
         task_reference="TASK-1",
     )
     assert outcome["decision"] == "accepted"
+    assert outcome["reason"] == "replacement merged"
+    assert outcome["confidence"] == "conclusive"
     assert outcome["artifacts"][0]["artifactState"] == "obsolete"
+    assert "artifactState" not in artifacts[0]
+
+
+def test_supersedes_replaced_chain_excludes_all_old_id_and_url_evidence():
+    artifacts = [
+        {"id": "old", "url": "https://example.test/old"},
+        {"id": "middle", "url": "https://example.test/middle", "supersedes": ["https://example.test/old"]},
+        {"id": "new", "url": "https://example.test/new", "supersedes": ["middle"]},
+    ]
+    evidence = [
+        {"source": "custom", "reference": reference, "resolution": "rejected", "reason": "replaced work rejected"}
+        for reference in ("old", "https://example.test/old", "middle", "https://example.test/middle")
+    ] + [{"source": "custom", "reference": "new", "resolution": "accepted", "reason": "replacement accepted"}]
+    outcome = classify_task_outcome(artifacts=artifacts, evidence=evidence, task_reference="TASK-1")
+    reordered = classify_task_outcome(artifacts=list(reversed(artifacts)), evidence=evidence, task_reference="TASK-1")
+
+    assert outcome["decision"] == reordered["decision"] == "accepted"
+    assert outcome["reason"] == reordered["reason"] == "replacement accepted"
+    assert [item.get("artifactState") for item in outcome["artifacts"]] == ["obsolete", "obsolete", None]
 
 
 def test_task_obsolete_requires_task_reference_disposition():
@@ -630,6 +1266,78 @@ async def test_invalid_date_range_is_rejected_before_database_access():
             response = await client.get("/api/task-outcomes/summary?from=2026-10-02&to=2026-10-01")
     assert response.status_code == 400
     assert not pool.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reopened_status", ["in_progress", "pr_open", "pr_changes", "paused"])
+async def test_done_reopen_requires_fresh_report_through_real_database(db, reopened_status):
+    await db.execute(SCHEMA_PATH.read_text())
+    task_id = await db.fetchval(
+        "INSERT INTO tasks (external_key, source_type, status, repo, branch) "
+        "VALUES ('REOPEN-DB-1', 'manual', 'done', 'org/repo', 'bot/reopen') RETURNING id"
+    )
+
+    class ConnectionPool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield db
+
+        async def fetchrow(self, query, *args):
+            return await db.fetchrow(query, *args)
+
+    mcp = FastMCP(name="task-outcome-reopen-db-tests")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=ConnectionPool()),
+        patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+    ):
+        async with Client(mcp) as client:
+            task = {"external_key": "REOPEN-DB-1", "source_type": "manual"}
+            report = {
+                **task,
+                "artifacts": [],
+                "evidence": [
+                    {
+                        "source": "custom-review",
+                        "reference": "REOPEN-DB-1",
+                        "resolution": "accepted",
+                        "disposition": "Completed",
+                        "reason": "Original work accepted",
+                    }
+                ],
+                "notes": "Before reopening",
+            }
+            await client.call_tool("task_outcome_report", report)
+            original = await db.fetchrow("SELECT * FROM task_outcome_reports WHERE task_id = $1", task_id)
+            await client.call_tool("task_update", {**task, "status": "done"})
+            assert await db.fetchval("SELECT outcome_report_id FROM tasks WHERE id = $1", task_id) == original["id"]
+
+            await client.call_tool("task_update", {**task, "status": reopened_status, "summary": "New work needed"})
+            assert await db.fetchval("SELECT outcome_report_id FROM tasks WHERE id = $1", task_id) is None
+            failed_archive = await client.call_tool("task_remove", task, raise_on_error=False)
+            assert failed_archive.is_error
+            assert "requires task_outcome_report" in getattr(failed_archive.content[0], "text", "")
+            assert await db.fetchval("SELECT status::text FROM tasks WHERE id = $1", task_id) == reopened_status
+            assert await db.fetchrow("SELECT * FROM task_outcome_reports WHERE id = $1", original["id"]) == original
+
+            report["notes"] = "Fresh verification after work changed"
+            report["evidence"][0]["resolution"] = "rejected"
+            report["evidence"][0]["reason"] = "Reopened work rejected"
+            await client.call_tool("task_outcome_report", report)
+            fresh_id = await db.fetchval("SELECT outcome_report_id FROM tasks WHERE id = $1", task_id)
+            assert fresh_id != original["id"]
+            await client.call_tool("task_update", {**task, "status": "done"})
+            assert await db.fetchval("SELECT outcome_report_id FROM tasks WHERE id = $1", task_id) == fresh_id
+            await client.call_tool("task_remove", task)
+            archived = await db.fetchrow("SELECT status::text, outcome_report_id FROM tasks WHERE id = $1", task_id)
+            assert dict(archived) == {"status": "archived", "outcome_report_id": fresh_id}
+            assert await db.fetchval("SELECT COUNT(*) FROM task_outcome_reports WHERE task_id = $1", task_id) == 2
+            assert await db.fetchrow("SELECT * FROM task_outcome_reports WHERE id = $1", original["id"]) == original
+
+            await client.call_tool("task_update", {**task, "status": reopened_status})
+            reopened = await db.fetchrow("SELECT outcome_report_id, archived_at FROM tasks WHERE id = $1", task_id)
+            assert dict(reopened) == {"outcome_report_id": None, "archived_at": None}
+            assert await db.fetchval("SELECT COUNT(*) FROM task_outcome_reports WHERE task_id = $1", task_id) == 2
 
 
 @pytest.mark.asyncio
@@ -758,9 +1466,9 @@ async def test_archive_report_flows_through_real_database_and_reporting_api(db):
             ],
             reported_by="migration",
         )
-    with patch("bot_memory_server.api.get_pool", return_value=db):
+    with patch("bot_memory_server.api.get_pool", return_value=ConnectionPool()):
         async with AsyncClient(transport=ASGITransport(app=manual_archive_app), base_url="http://test") as client:
-            manual_archive = await client.delete("/api/tasks/MANUAL-DB-1")
+            manual_archive = await client.delete("/api/tasks/MANUAL-DB-1?manual=true")
 
     with patch("bot_memory_server.task_outcomes.get_pool", return_value=db):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

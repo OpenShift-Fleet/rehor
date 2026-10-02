@@ -14,9 +14,21 @@ class OutcomeEvidence(BaseModel):
     resolution: Literal["accepted", "rejected", "unknown"]
     disposition: str
     reason: str
+    kind: Literal["state", "comment"] = Field(
+        default="state",
+        description=(
+            "Evidence category: state for provider/workflow facts, comment for authored commentary. "
+            "Omitted kind defaults to state for compatibility; callers must set comment for comments."
+        ),
+    )
     author_type: Literal["human", "workflow", "agent", "automation"] | None = Field(
         default=None,
         alias="authorType",
+        description=(
+            "Author category, used only for comment evidence: agent/automation comments are ignored; "
+            "human/workflow comments are authoritative. Missing authorType remains authoritative for compatibility. "
+            "State evidence is valid regardless of authorType."
+        ),
     )
 
 

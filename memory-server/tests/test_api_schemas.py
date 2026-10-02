@@ -15,7 +15,7 @@ import jsonschema
 import pytest
 import yaml
 from bot_memory_server.api import _cycle, _cycle_run, _memory, _task
-from bot_memory_server.task_outcomes import _serialize_task
+from bot_memory_server.task_outcomes import ARCHIVE_RECOVERY, TaskArchiveError, _serialize_task
 
 OPENAPI_PATH = Path(__file__).resolve().parent.parent.parent / "shared" / "openapi.yaml"
 
@@ -53,6 +53,23 @@ def _resolve_refs(schema: dict, all_schemas: dict) -> dict:
     if isinstance(schema, list):
         return [_resolve_refs(item, all_schemas) for item in schema]
     return schema
+
+
+def test_archive_openapi_contract_covers_strict_recovery_and_explicit_manual_mode():
+    spec = yaml.safe_load(OPENAPI_PATH.read_text())
+    operation = spec["paths"]["/api/tasks/{key}"]["delete"]
+    params = {param["name"]: param for param in operation["parameters"]}
+    assert params["manual"]["in"] == "query"
+    assert params["manual"]["schema"] == {"type": "boolean", "default": False}
+    assert params["manual"]["required"] is False
+    assert params["source_type"]["required"] is False
+    schema = operation["responses"]["409"]["content"]["application/json"]["schema"]
+    for source_type in (None, "jira"):
+        error = TaskArchiveError("Missing report", external_key="ARCHIVE-1", source_type=source_type)
+        jsonschema.validate(error.payload, _resolve_refs(schema, _SCHEMAS))
+        assert next(iter(error.payload)) == "error"
+        assert error.payload["error"] == ARCHIVE_RECOVERY
+        assert ARCHIVE_RECOVERY in json.dumps(error.payload)[:200]
 
 
 # --------------- fake row builders ---------------

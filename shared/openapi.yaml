@@ -153,10 +153,21 @@ paths:
     delete:
       operationId: archiveTask
       summary: Archive (soft-delete) a task
+      description: Requires a valid staged outcome report by default. Reported retries preserve the selected report and timestamps. Use manual=true only for explicit manual/dashboard archival, which clears the selected report pointer and remains unreported; report history is preserved.
       parameters:
         - name: key
           in: path
           required: true
+          schema: { type: string }
+        - name: manual
+          in: query
+          required: false
+          description: Explicit manual/dashboard archive without an outcome report.
+          schema: { type: boolean, default: false }
+        - name: source_type
+          in: query
+          required: false
+          description: Task source identity. Omit only when the external key identifies exactly one task; ambiguous keys are rejected.
           schema: { type: string }
       responses:
         '200':
@@ -170,6 +181,29 @@ paths:
                   archived: { type: boolean }
                   external_key: { type: string }
                   task: { $ref: '#/components/schemas/TaskItem' }
+        '400':
+          description: Invalid manual or source_type query parameter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Missing or invalid outcome report, or ambiguous task key. Error leads with recovery instructions visible in the first 200 response characters; detail, evidence schema guidance, external_key and source_type follow. Task remains unchanged.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      detail: { type: string }
+                      evidence: { type: string }
+                      external_key: { type: string }
+                      source_type: { type: string, nullable: true }
 
   /api/tasks/{key}/pause:
     post:
@@ -768,7 +802,21 @@ components:
         resolution: { type: string, enum: [accepted, rejected, unknown] }
         disposition: { type: string }
         reason: { type: string }
-        authorType: { type: string, enum: [human, workflow, agent, automation], nullable: true }
+        kind:
+          type: string
+          enum: [state, comment]
+          default: state
+          description: >-
+            Evidence category: state for provider/workflow facts, comment for authored commentary.
+            Omitted kind defaults to state for compatibility; callers must set comment for comments.
+        authorType:
+          type: string
+          enum: [human, workflow, agent, automation]
+          nullable: true
+          description: >-
+            Author category, used only for comment evidence: agent/automation comments are ignored;
+            human/workflow comments are authoritative. Missing authorType remains authoritative for compatibility.
+            State evidence is valid regardless of authorType.
       additionalProperties: false
 
     TaskOutcomeTask:
