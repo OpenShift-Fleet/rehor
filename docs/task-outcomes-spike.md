@@ -84,7 +84,15 @@ Add `task_outcome_report` with required artifact/evidence/notes fields. Existing
 - `evidence`: each item has `source`, `reference`, `resolution`, `disposition`, `reason`, and optional `authorType`
 - `notes`
 
-The `task_remove` MCP tool fails closed when no report has been staged. The task's `outcome_report_id` points to the report selected for its current archive; corrections append a new report and move the pointer, leaving prior reports unchanged. Manual/admin archive clears the pointer and remains unreported.
+The `task_remove` MCP tool fails closed when no report has been staged. The task's `outcome_report_id` points to the report selected for its current archive; corrections append a new report and move the pointer, leaving prior reports unchanged. Default REST DELETE also requires a staged report. Only explicit dashboard/manual DELETE with `manual=true` clears the pointer and remains unreported; agents must not use that bypass. Reported `task_remove` archive retries are idempotent and revalidate the selected task-owned report without clearing its pointer or changing its archive timestamp.
+
+### Failed skill recovery
+
+Archive errors must front-load actionable recovery instructions within the first 200 characters because legacy clients truncate error text: ignore misleading `DONE`, stage `task_outcome_report`, then retry archive only. Any tool/script error overrides `DONE` or a zero exit code. Older deployed scripts may already have transitioned Jira, notified Slack, and deleted branches despite a failed archive; inspect completed steps rather than blindly rerunning the skill.
+
+The agent stages `artifacts`, uniform evidence (`source`, `reference`, bounded `resolution`, raw `disposition`, `reason`, optional `authorType`), and nullable `notes` from verified input/context (`correction=true` if already archived), then retries `task_remove` for the same external key and source type. It never fabricates acceptance or submits a final task decision. Missing facts remain a blocker. Transport failures require inspecting task state before retrying.
+
+If cleanup is pending after archive succeeds, sprint/kanban wrap-up scripts provide `--resume-cleanup`: load the archived task with `task_get`, skip Jira transition/comment, and use strict idempotent `task_remove` to verify the selected report before Slack/branch cleanup. Missing/corrupt state or an unreported archive blocks cleanup. `--skip-slack` avoids repeating an already-completed notification; branch deletion tolerates already-deleted branches. `--dry-run` performs read-only lookup and defers the report guard until a real run. Legacy cleanup already complete means retry archive only, with no cleanup rerun.
 
 ## Review Decisions
 

@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 from .db import get_pool
 from .embeddings import embed
 from .events import Event, bus
+from .task_outcomes import TaskArchiveError, archive_task
 from .tools.tasks import ACTIVE_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -133,20 +134,23 @@ async def api_tasks(request: Request) -> JSONResponse:
 
 
 async def api_task_delete(request: Request) -> JSONResponse:
-    """Archive a task by key (soft delete — preserves history)."""
+    """Archive a reported workflow task; manual=true explicitly archives unreported."""
     pool = get_pool()
     key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
-    row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'archived'::task_status, outcome_report_id = NULL,"
-        " archived_at = CASE WHEN status = 'archived'::task_status THEN COALESCE(archived_at, NOW()) ELSE NOW() END"
-        " WHERE external_key = $1 RETURNING *",
-        key,
-    )
-    if not row:
-        return JSONResponse({"error": f"Task {key} not found"}, status_code=404)
-    await bus.publish(Event("task_archived", {"external_key": key}))
+    manual = request.query_params.get("manual", "false").casefold()
+    if manual not in {"true", "false"}:
+        return JSONResponse({"error": "manual must be true or false"}, status_code=400)
+    source_type = request.query_params.get("source_type")
+    if source_type == "":
+        return JSONResponse({"error": "source_type must not be empty"}, status_code=400)
+    try:
+        row, _, changed = await archive_task(pool, external_key=key, source_type=source_type, manual=manual == "true")
+    except TaskArchiveError as exc:
+        return JSONResponse(exc.payload, status_code=exc.status_code)
+    if changed:
+        await bus.publish(Event("task_archived", {"external_key": key, "source_type": row["source_type"]}))
     return JSONResponse({"archived": True, "external_key": key, "task": _task(row)})
 
 

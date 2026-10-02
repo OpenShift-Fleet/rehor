@@ -9,11 +9,119 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .db import get_pool
+from .models import OutcomeArtifact, OutcomeEvidence
 from .outcome_classifier import classify_task_outcome
 
 _DECISION_FILTERS = {"accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip"}
 _CONFIDENCE_FILTERS = {"conclusive", "inconclusive"}
 _MAX_LIMIT = 100
+ARCHIVE_RECOVERY = (
+    "Archive failed; ignore DONE. Call task_outcome_report for same task (artifacts,evidence,notes), "
+    "then task_remove. Do not rerun skill; other steps may have completed."
+)
+ARCHIVE_EVIDENCE_GUIDANCE = (
+    "Call task_outcome_report first: each evidence item needs source, reference, "
+    "resolution: accepted|rejected|unknown, disposition, reason; then retry task_remove. "
+    "Do not provide a final task decision. For an already archived task, set correction=true."
+)
+
+
+class TaskArchiveError(ValueError):
+    """Archive failure with a recovery prefix safe for truncated legacy script output."""
+
+    def __init__(self, detail: str, *, external_key: str, source_type: str | None, status_code: int = 409):
+        self.payload = {
+            "error": ARCHIVE_RECOVERY,
+            "detail": detail,
+            "evidence": ARCHIVE_EVIDENCE_GUIDANCE,
+            "external_key": external_key,
+            "source_type": source_type,
+        }
+        self.status_code = status_code
+        super().__init__(f"{ARCHIVE_RECOVERY} {detail} {ARCHIVE_EVIDENCE_GUIDANCE}")
+
+
+def _validated_archive_outcome(report, task) -> dict:
+    """Validate selected report and serialize it before any lifecycle mutation."""
+    if not report or report["id"] != task["outcome_report_id"] or report["task_id"] != task["id"]:
+        raise ValueError("invalid staged outcome report identity")
+    outcome = _outcome_from_row(report)
+    if outcome["decision"] not in {"accepted", "rejected", "obsolete", "inconclusive"}:
+        raise ValueError("invalid outcome decision")
+    expected_confidence = "inconclusive" if outcome["decision"] == "inconclusive" else "conclusive"
+    if (
+        outcome["confidence"] != expected_confidence
+        or not isinstance(outcome["reason"], str)
+        or not outcome["reason"].strip()
+    ):
+        raise ValueError("invalid outcome confidence or reason")
+    for field, model in (("artifacts", OutcomeArtifact), ("evidence", OutcomeEvidence)):
+        # Inspect raw JSON too: null/object must not become an empty valid list.
+        values = _json_value(report[field])
+        if not isinstance(values, list):
+            raise ValueError(f"invalid outcome {field}")
+        for value in values:
+            model.model_validate(value)
+    repositories = _json_value(report["canonical_repositories"])
+    if not isinstance(repositories, list) or any(not isinstance(repo, str) for repo in repositories):
+        raise ValueError("invalid canonical repositories")
+    json.dumps(outcome)
+    return outcome
+
+
+async def archive_task(pool, *, external_key: str, source_type: str | None = None, manual: bool = False):
+    """Archive exactly one identity; strict retries preserve report/history/timestamps."""
+    async with pool.acquire() as conn, conn.transaction():
+        if source_type is None:
+            matches = await conn.fetch(
+                "SELECT * FROM tasks WHERE external_key = $1 ORDER BY id FOR UPDATE", external_key
+            )
+            if len(matches) > 1:
+                raise TaskArchiveError(
+                    "Ambiguous task key; specify source_type.", external_key=external_key, source_type=None
+                )
+            task = matches[0] if matches else None
+        else:
+            task = await conn.fetchrow(
+                "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
+                external_key,
+                source_type,
+            )
+        if not task:
+            raise TaskArchiveError(
+                f"Task {external_key} not found", external_key=external_key, source_type=source_type, status_code=404
+            )
+        outcome = None
+        if not manual:
+            if task["outcome_report_id"] is None:
+                raise TaskArchiveError(
+                    "Task requires task_outcome_report before archival.",
+                    external_key=external_key,
+                    source_type=task["source_type"],
+                )
+            report = await conn.fetchrow(
+                "SELECT * FROM task_outcome_reports WHERE id = $1 AND task_id = $2",
+                task["outcome_report_id"],
+                task["id"],
+            )
+            try:
+                outcome = _validated_archive_outcome(report, task)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise TaskArchiveError(
+                    "Task has an invalid staged outcome report; replace it with fresh evidence.",
+                    external_key=external_key,
+                    source_type=task["source_type"],
+                ) from exc
+            if task["status"] == "archived":
+                return task, outcome, False
+        clear_pointer = "outcome_report_id = NULL, " if manual else ""
+        row = await conn.fetchrow(
+            f"UPDATE tasks SET status = 'archived'::task_status, {clear_pointer}"
+            "archived_at = CASE WHEN status = 'archived'::task_status THEN COALESCE(archived_at, NOW()) ELSE NOW() END "
+            "WHERE id = $1 RETURNING *",
+            task["id"],
+        )
+    return row, outcome, True
 
 
 def _json_value(value):

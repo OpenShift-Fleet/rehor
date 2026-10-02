@@ -7,7 +7,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Add dashboard/tests to path so we can import fixtures
 sys.path.insert(0, str(Path(__file__).parent / "dashboard" / "tests"))
@@ -400,13 +400,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
-        parts = urlparse(self.path).path.strip("/").split("/")
+        parsed = urlparse(self.path)
+        parts = parsed.path.strip("/").split("/")
+        qs = parse_qs(parsed.query)
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
-            key = parts[2]
-            if key in TASKS:
-                TASKS[key]["status"] = "archived"
-                print(f"  Archived {key}")
+            key = unquote(parts[2])
+            if key not in TASKS:
+                return self.send_json({"error": f"Task {key} not found"}, 404)
+            if qs.get("manual", [""])[0] != "true":
+                return self.send_json(
+                    {
+                        "error": "Archive failed; ignore DONE. Call task_outcome_report for same task "
+                        "(artifacts,evidence,notes), then task_remove. Do not rerun skill; other steps may have completed.",
+                        "recoverable": True,
+                    },
+                    409,
+                )
+            TASKS[key]["status"] = "archived"
+            if "outcome_report_id" in TASKS[key]:
+                TASKS[key]["outcome_report_id"] = None
+            print(f"  Archived {key}")
             return self.send_json({"archived": True})
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "memories":
@@ -446,7 +460,7 @@ if __name__ == "__main__":
     print("  POST /api/tasks/:key/unpause - Unpause a task")
     print("  POST /api/tasks/:key/unarchive - Unarchive a task")
     print("  POST /api/bot-status        - Update bot status")
-    print("  DELETE /api/tasks/:key      - Archive a task")
+    print("  DELETE /api/tasks/:key?manual=true - Manually archive a task (unreported)")
     print("  DELETE /api/memories/:id    - Delete a memory")
     print("\nMock Data:")
     print(f"  Tasks: {len(TASKS)} ({', '.join(TASKS.keys())})")

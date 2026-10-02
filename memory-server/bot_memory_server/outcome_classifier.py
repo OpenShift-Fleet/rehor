@@ -11,16 +11,20 @@ def _artifact_ref(artifact: dict) -> str:
 
 
 def _superseded_refs(artifacts: list[dict]) -> set[str]:
-    aliases = {}
+    aliases: dict[str, set[str]] = {}
     for artifact in artifacts:
-        reference = _artifact_ref(artifact)
-        if reference:
-            aliases[str(artifact.get("id", reference))] = reference
-    superseded = set()
-    for artifact in artifacts:
-        for reference in artifact.get("supersedes", []):
-            superseded.add(reference)
-            superseded.add(aliases.get(reference, reference))
+        references = {value for key in ("id", "url") if (value := artifact.get(key))}
+        for reference in references:
+            aliases.setdefault(reference, set()).update(references)
+
+    superseded: set[str] = set()
+    pending = [reference for artifact in artifacts for reference in artifact.get("supersedes", [])]
+    while pending:
+        reference = pending.pop()
+        if reference in superseded:
+            continue
+        superseded.add(reference)
+        pending.extend(aliases.get(reference, ()))
     return superseded
 
 

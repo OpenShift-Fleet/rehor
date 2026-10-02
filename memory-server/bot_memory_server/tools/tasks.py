@@ -9,15 +9,11 @@ from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
 from ..events import Event, bus
 from ..models import OutcomeArtifact, OutcomeEvidence, Task
-from ..task_outcomes import _outcome_from_row, record_task_outcome
+from ..task_outcomes import ARCHIVE_EVIDENCE_GUIDANCE, ARCHIVE_RECOVERY, archive_task, record_task_outcome
 
 ACTIVE_STATUSES = ("in_progress", "pr_open", "pr_changes")
 MAX_ACTIVE = 10
-_OUTCOME_ARCHIVE_GUIDANCE = (
-    "Call task_outcome_report first for the same task with artifacts, evidence items "
-    "(source, reference, resolution: accepted|rejected|unknown, disposition, reason), and notes; "
-    "then retry task_remove. Do not provide a final task decision."
-)
+_OUTCOME_ARCHIVE_GUIDANCE = f"{ARCHIVE_RECOVERY} {ARCHIVE_EVIDENCE_GUIDANCE}"
 
 
 def _row_to_task(row) -> dict:
@@ -197,8 +193,8 @@ def register_task_tools(mcp: FastMCP):
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
         if status == "archived":
             raise ValueError(
-                "Cannot create a task as archived. Create it with a non-archived status first; "
-                f"{_OUTCOME_ARCHIVE_GUIDANCE}"
+                f"{ARCHIVE_RECOVERY} Cannot create a task as archived. "
+                f"Create it with a non-archived status first; {ARCHIVE_EVIDENCE_GUIDANCE}"
             )
         pool = get_pool()
 
@@ -280,7 +276,9 @@ def register_task_tools(mcp: FastMCP):
         For related work items, use metadata.related_items:
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
         if status == "archived":
-            raise ValueError(f"Cannot set status='archived' directly. {_OUTCOME_ARCHIVE_GUIDANCE}")
+            raise ValueError(
+                f"{_OUTCOME_ARCHIVE_GUIDANCE} Cannot set status='archived' directly; do not retry task_update."
+            )
         pool = get_pool()
 
         sets = []
@@ -293,8 +291,11 @@ def register_task_tools(mcp: FastMCP):
             params.append(status)
             if last_addressed is None:
                 sets.append("last_addressed = NOW()")
+            # SET expressions read the previous status; a reopened completion needs fresh evidence.
             sets.append(
-                "outcome_report_id = CASE WHEN status = 'archived'::task_status THEN NULL ELSE outcome_report_id END"
+                "outcome_report_id = CASE WHEN status = 'archived'::task_status "
+                f"OR (status = 'done'::task_status AND ${idx}::task_status != 'done'::task_status) "
+                "THEN NULL ELSE outcome_report_id END"
             )
             sets.append("archived_at = CASE WHEN status = 'archived'::task_status THEN NULL ELSE archived_at END")
         if last_addressed is not None:
@@ -419,49 +420,25 @@ def register_task_tools(mcp: FastMCP):
     @mcp.tool()
     async def task_remove(external_key: str, source_type: str = "jira") -> dict:
         """Archive a task only after task_outcome_report has staged its required outcome.
-        Repeated archive attempts fail; set correction=true on task_outcome_report to correct.
+        Repeated archive attempts preserve the selected valid report and lifecycle timestamps.
+        Set correction=true on task_outcome_report to correct an archived report.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
         pool = get_pool()
-        async with pool.acquire() as conn, conn.transaction():
-            task = await conn.fetchrow(
-                "SELECT id, status, outcome_report_id FROM tasks "
-                "WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
-                external_key,
-                source_type,
-            )
-            if not task:
-                raise ValueError(f"Task {external_key} not found")
-            if task["status"] == "archived":
-                raise ValueError(f"Task {external_key} is already archived")
-            if task["outcome_report_id"] is None:
-                raise ValueError(
-                    f"Task {external_key} requires task_outcome_report before archival. {_OUTCOME_ARCHIVE_GUIDANCE}"
-                )
-
-            report = await conn.fetchrow(
-                "SELECT * FROM task_outcome_reports WHERE id = $1 AND task_id = $2",
-                task["outcome_report_id"],
-                task["id"],
-            )
-            if not report:
-                raise ValueError(f"Task {external_key} has an invalid staged outcome report")
-            row = await conn.fetchrow(
-                "UPDATE tasks SET status = 'archived'::task_status, archived_at = NOW() WHERE id = $1 RETURNING *",
-                task["id"],
-            )
-
+        row, outcome, changed = await archive_task(pool, external_key=external_key, source_type=source_type)
+        assert outcome is not None  # Strict archives always return a validated report.
         result = _row_to_task(row)
-        result["outcome"] = _outcome_from_row(report)
-        await bus.publish(
-            Event(
-                "task_archived",
-                {
-                    "external_key": external_key,
-                    "decision": report["decision"],
-                    "confidence": report["confidence"],
-                },
+        result["outcome"] = outcome
+        if changed:
+            await bus.publish(
+                Event(
+                    "task_archived",
+                    {
+                        "external_key": external_key,
+                        "decision": outcome["decision"],
+                        "confidence": outcome["confidence"],
+                    },
+                )
             )
-        )
         return result
 
     @mcp.tool()

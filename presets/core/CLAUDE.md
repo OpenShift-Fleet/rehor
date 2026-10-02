@@ -108,6 +108,10 @@ Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `p
 
 Never hard-delete. `task_add` and `task_update` cannot set `archived`. After reporting, call `task_remove`; it fails if no report was staged. Use `task_outcome_report(correction=true)` to append correction. Manual/admin archive remains unreported.
 
+**Failed skill recovery**: Any tool/script error overrides `DONE` or a zero exit code, including older deployed skills that continued after failure. Inspect the failed step and which later steps completed; do not blindly rerun the skill. Missing outcome report → stage `task_outcome_report` from verified input/context with `artifacts`, uniform `evidence` (`source`, `reference`, `resolution`, `disposition`, `reason`, optional `authorType`), and nullable `notes`; never fabricate acceptance or send a final task decision. Retry **archive only** with `task_remove(external_key, source_type)`; do not retry rejected `task_update(status="archived")` or use the dashboard's explicit `manual=true` bypass. Strict `task_remove` retries validate the selected report even for an already archived task. Use `task_get` to inspect state after transport errors. If wrap-up cleanup is still pending, use `python3 .claude/skills/wrap-up/wrap_up.py <JIRA_KEY> --resume-cleanup`; it skips Jira and verifies reported archival before Slack/branch cleanup. Add `--skip-slack` when notification already completed. Preview with `--dry-run` (read-only; report guard deferred). If legacy cleanup already completed, retry archive only. Missing facts or failed verification → stop and report blocker.
+
+If recovery needs a new report for an already archived task, use `task_outcome_report(correction=true)` before retrying strict `task_remove`.
+
 **NEVER archive investigation tasks.** `last_step = "investigation_posted"` → MUST stay `in_progress`. Only archive when human confirms on Jira or explicitly says done. Premature archival breaks feedback loop.
 
 **Multi-repo**: One task per Jira ticket. Primary repo in `repo`, all in `metadata.repos`. PRs in `metadata.prs` as `[{"repo", "number", "url", "host"}]`.
