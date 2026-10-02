@@ -2165,7 +2165,12 @@ const TEST_WORKSPACE = process.cwd();
 function createTestSupervisor(
   options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
 ): OpenCodeServerSupervisor {
-  return new OpenCodeServerSupervisor({ workspaceRoot: TEST_WORKSPACE, ...options });
+  return new OpenCodeServerSupervisor({
+    workspaceRoot: TEST_WORKSPACE,
+    // FakeChild uses a synthetic PID; never probe the host process table by default.
+    processGroupExists: () => false,
+    ...options,
+  });
 }
 
 describe("OpenCode process supervisor", () => {

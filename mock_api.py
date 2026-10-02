@@ -24,6 +24,8 @@ from fixtures.api_payloads import (
     MEMORIES,
     TAGS,
     TASK_CYCLE_GROUPS,
+    TASK_OUTCOME_SUMMARY,
+    TASK_OUTCOME_TASKS,
     TASKS,
 )
 
@@ -92,6 +94,39 @@ class Handler(BaseHTTPRequestHandler):
             total = len(tasks)
             tasks = tasks[offset : offset + limit]
             self.send_json({"items": tasks, "total": total, "limit": limit, "offset": offset})
+
+        elif path == "/api/task-outcomes/summary":
+            self.send_json(TASK_OUTCOME_SUMMARY)
+
+        elif path == "/api/task-outcomes/tasks":
+            items = TASK_OUTCOME_TASKS[:]
+            repo_filter = qs.get("repo", [None])[0]
+            decision_filter = qs.get("decision", [None])[0]
+            source_filter = qs.get("source", [None])[0]
+            if repo_filter:
+                items = [item for item in items if repo_filter in item["canonicalRepositories"]]
+            if decision_filter:
+                items = [item for item in items if item["state"] == decision_filter]
+            if source_filter:
+                items = [
+                    item
+                    for item in items
+                    if any(entry["source"].lower() == source_filter.lower() for entry in item["evidence"])
+                ]
+            total = len(items)
+            limit = int(qs.get("limit", ["50"])[0])
+            offset = int(qs.get("offset", ["0"])[0])
+            self.send_json({"items": items[offset : offset + limit], "total": total, "limit": limit, "offset": offset})
+
+        elif path.startswith("/api/task-outcomes/tasks/"):
+            try:
+                task_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self.send_json({"error": "Task not found"}, 404)
+            item = next((item for item in TASK_OUTCOME_TASKS if item["taskId"] == task_id), None)
+            if item is None:
+                return self.send_json({"error": "Task not found"}, 404)
+            self.send_json({**item, "outcomeHistory": [item["outcome"]], "taskCycles": []})
 
         elif path == "/api/stats":
             task_counts: dict = {}
@@ -403,6 +438,9 @@ if __name__ == "__main__":
     print("  GET  /api/cycle-runs        - Cycle run history")
     print("  GET  /api/cycle-runs/by-task - Cycle runs grouped by task")
     print("  GET  /api/cycle-runs/:id/transcript - Cycle run transcript")
+    print("  GET  /api/task-outcomes/summary - Task outcome rollup")
+    print("  GET  /api/task-outcomes/tasks - Task outcome list")
+    print("  GET  /api/task-outcomes/tasks/:task_id - Task outcome detail")
     print("  GET  /api/analytics         - Analytics summary")
     print("  POST /api/tasks/:key/pause  - Pause a task")
     print("  POST /api/tasks/:key/unpause - Unpause a task")
