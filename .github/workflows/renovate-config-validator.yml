@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # The same action MintMaker runs on its own repository. It checks syntax
       # and schema only: a rule that matches no file or package still passes.
-      - uses: konflux-ci/renovate-config-validator-action@772ce0f2d37cd13ad80408a4902c7a17f3191e3a # main
+      - uses: konflux-ci/renovate-config-validator-action@84178696a3dc01882f701fcbf0fa63d0bafb0a4b # main
         with:
           config_file: renovate.jsonc
           strict: true
