@@ -43,14 +43,131 @@ paths:
                         items:
                           $ref: '#/components/schemas/TaskItem'
 
+  /api/task-outcomes/summary:
+    get:
+      operationId: getTaskOutcomeSummary
+      summary: Get task outcome and repository rollups
+      parameters:
+        - name: from
+          in: query
+          description: Inclusive UTC YYYY-MM-DD filter on the latest outcome/report or lifecycle activity timestamp.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive UTC YYYY-MM-DD filter on the latest outcome/report or lifecycle activity timestamp.
+          schema: { type: string, format: date }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          description: Evidence provider, matched case-insensitively.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Holistic and per-repository outcome summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeSummary' }
+        '400':
+          description: Invalid filter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/task-outcomes/tasks:
+    get:
+      operationId: listTaskOutcomes
+      summary: List task outcomes with filters and stable offset pagination
+      parameters:
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Filtered task outcomes, newest activity first with task ID tie-break.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomePage' }
+        '400':
+          description: Invalid filter or pagination value.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/task-outcomes/tasks/{task_id}:
+    get:
+      operationId: getTaskOutcomeDetail
+      summary: Get full outcome report history and evidence for one task
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Task lifecycle, current report, full append-only outcome history, artifacts, and evidence.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeTask' }
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   /api/tasks/{key}:
     delete:
       operationId: archiveTask
       summary: Archive (soft-delete) a task
+      description: Requires a valid staged outcome report by default. Reported retries preserve the selected report and timestamps. Use manual=true only for explicit manual/dashboard archival, which clears the selected report pointer and remains unreported; report history is preserved.
       parameters:
         - name: key
           in: path
           required: true
+          schema: { type: string }
+        - name: manual
+          in: query
+          required: false
+          description: Explicit manual/dashboard archive without an outcome report.
+          schema: { type: boolean, default: false }
+        - name: source_type
+          in: query
+          required: false
+          description: Task source identity. Omit only when the external key identifies exactly one task; ambiguous keys are rejected.
           schema: { type: string }
       responses:
         '200':
@@ -64,6 +181,29 @@ paths:
                   archived: { type: boolean }
                   external_key: { type: string }
                   task: { $ref: '#/components/schemas/TaskItem' }
+        '400':
+          description: Invalid manual or source_type query parameter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Missing or invalid outcome report, or ambiguous task key. Error leads with recovery instructions visible in the first 200 response characters; detail, evidence schema guidance, external_key and source_type follow. Task remains unchanged.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      detail: { type: string }
+                      evidence: { type: string }
+                      external_key: { type: string }
+                      source_type: { type: string, nullable: true }
 
   /api/tasks/{key}/pause:
     post:
@@ -619,6 +759,185 @@ components:
         total: { type: integer, minimum: 0 }
         limit: { type: integer, minimum: 1 }
         offset: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    TaskOutcomeReport:
+      type: object
+      required: [id, decision, confidence, reason, reportedBy, reportedAt, verifiedAt, artifacts, evidence, canonicalRepositories, notes, runId, reportingCycleId, attempt, workflow, instanceId]
+      properties:
+        id: { type: integer }
+        decision: { type: string, enum: [accepted, rejected, obsolete, inconclusive] }
+        confidence: { type: string, enum: [conclusive, inconclusive] }
+        reason: { type: string }
+        reportedBy: { type: string }
+        reportedAt: { type: string, format: date-time }
+        verifiedAt: { type: string, format: date-time, nullable: true }
+        artifacts: { type: array, items: { $ref: '#/components/schemas/OutcomeArtifact' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/OutcomeEvidence' } }
+        canonicalRepositories: { type: array, items: { type: string } }
+        notes: { type: string, nullable: true }
+        runId: { type: string, nullable: true }
+        reportingCycleId: { type: integer, nullable: true }
+        attempt: { type: integer, nullable: true }
+        workflow: { type: string, nullable: true }
+        instanceId: { type: string, nullable: true }
+      additionalProperties: false
+
+    OutcomeArtifact:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string }
+        id: { type: string, nullable: true }
+        url: { type: string, nullable: true }
+        supersedes: { type: array, items: { type: string } }
+      additionalProperties: true
+
+    OutcomeEvidence:
+      type: object
+      required: [source, reference, resolution, disposition, reason]
+      properties:
+        source: { type: string }
+        reference: { type: string }
+        resolution: { type: string, enum: [accepted, rejected, unknown] }
+        disposition: { type: string }
+        reason: { type: string }
+        kind:
+          type: string
+          enum: [state, comment]
+          default: state
+          description: >-
+            Evidence category: state for provider/workflow facts, comment for authored commentary.
+            Omitted kind defaults to state for compatibility; callers must set comment for comments.
+        authorType:
+          type: string
+          enum: [human, workflow, agent, automation]
+          nullable: true
+          description: >-
+            Author category, used only for comment evidence: agent/automation comments are ignored;
+            human/workflow comments are authoritative. Missing authorType remains authoritative for compatibility.
+            State evidence is valid regardless of authorType.
+      additionalProperties: false
+
+    TaskOutcomeTask:
+      type: object
+      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
+      properties:
+        taskId: { type: integer }
+        externalKey: { type: string }
+        sourceType: { type: string }
+        sourceUrl: { type: string, nullable: true }
+        lifecycle:
+          type: object
+          required: [status, createdAt, lastAddressed, archivedAt]
+          properties:
+            status: { type: string }
+            createdAt: { type: string, format: date-time }
+            lastAddressed: { type: string, format: date-time }
+            archivedAt: { type: string, format: date-time, nullable: true }
+          additionalProperties: false
+        state: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        repo: { type: string, nullable: true }
+        canonicalRepositories: { type: array, items: { type: string } }
+        title: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        outcome:
+          allOf:
+            - $ref: '#/components/schemas/TaskOutcomeReport'
+          nullable: true
+        artifacts: { type: array, items: { $ref: '#/components/schemas/OutcomeArtifact' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/OutcomeEvidence' } }
+        timestamps:
+          type: object
+          required: [createdAt, lastAddressed, archivedAt, reportedAt, verifiedAt]
+          properties:
+            createdAt: { type: string, format: date-time }
+            lastAddressed: { type: string, format: date-time }
+            archivedAt: { type: string, format: date-time, nullable: true }
+            reportedAt: { type: string, format: date-time, nullable: true }
+            verifiedAt: { type: string, format: date-time, nullable: true }
+          additionalProperties: false
+        outcomeHistory: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeReport' } }
+        taskCycles: { type: array, items: { $ref: '#/components/schemas/TaskCycleReference' } }
+      additionalProperties: false
+
+    TaskCycleReference:
+      type: object
+      required: [id, cycleType, instanceId, startedAt, finishedAt]
+      properties:
+        id: { type: integer }
+        cycleType: { type: string }
+        instanceId: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+      additionalProperties: false
+
+    TaskOutcomePage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeTask' } }
+        total: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    TaskOutcomeRepositorySummary:
+      type: object
+      required: [repo, acceptanceRate, taskCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
+      properties:
+        repo: { type: string }
+        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        taskCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+        reasons: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+        providers: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+      additionalProperties: false
+
+    TaskOutcomeSummary:
+      type: object
+      required: [period, summary, repositories, freshness, backfill]
+      properties:
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date, nullable: true }
+            to: { type: string, format: date, nullable: true }
+          additionalProperties: false
+        summary:
+          type: object
+          required: [acceptanceRate, taskCount, repositoryCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+          properties:
+            acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+            taskCount: { type: integer, minimum: 0 }
+            repositoryCount: { type: integer, minimum: 0 }
+            acceptedCount: { type: integer, minimum: 0 }
+            rejectedCount: { type: integer, minimum: 0 }
+            obsoleteCount: { type: integer, minimum: 0 }
+            inconclusiveCount: { type: integer, minimum: 0 }
+            unreportedCount: { type: integer, minimum: 0 }
+            wipCount: { type: integer, minimum: 0 }
+          additionalProperties: false
+        repositories: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeRepositorySummary' } }
+        freshness:
+          type: object
+          required: [generatedAt]
+          properties:
+            generatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        backfill:
+          type: object
+          required: [state, unknownCount]
+          properties:
+            state: { type: string, enum: [not_started, in_progress, complete, failed] }
+            unknownCount: { type: integer, minimum: 0 }
+          additionalProperties: false
       additionalProperties: false
 
     TaskItem:

@@ -363,29 +363,33 @@ async def run_cycle(
 
 
 def _extract_context(block, ctx: CycleContext) -> None:
-    """Extract jira_key, repo, and work_type from MCP tool calls."""
+    """Extract external task identity, repo, and work_type from tool calls."""
     name = getattr(block, "name", "")
     inp = getattr(block, "input", {}) or {}
 
-    # bot_status_update carries jira_key and repo
-    if name == "mcp__bot-memory__bot_status_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
+    if name in {
+        "mcp__bot-memory__bot_status_update",
+        "mcp__bot-memory__task_add",
+        "mcp__bot-memory__task_update",
+        "mcp__bot-memory__task_outcome_report",
+        "mcp__bot-memory__task_remove",
+    }:
+        external_key = inp.get("external_key") or inp.get("jira_key")
+        if external_key:
+            if external_key != ctx.jira_key:
+                ctx.task_id = None
+            ctx.jira_key = external_key
         if inp.get("repo"):
             ctx.repo = inp["repo"]
+        if inp.get("summary"):
+            ctx.summary = inp["summary"][:200]
 
     # task_add tells us it's a new ticket
-    elif name == "mcp__bot-memory__task_add":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
-        if inp.get("repo"):
-            ctx.repo = inp["repo"]
+    if name == "mcp__bot-memory__task_add":
         ctx.work_type = ctx.work_type or "new_ticket"
 
     # task_update with status changes tells us what kind of work
     elif name == "mcp__bot-memory__task_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
         status = inp.get("status")
         if status == "pr_open":
             ctx.work_type = "new_ticket"
@@ -393,9 +397,6 @@ def _extract_context(block, ctx: CycleContext) -> None:
             ctx.work_type = "pr_review"
         elif status == "done":
             ctx.work_type = ctx.work_type or "pr_review"
-        summary = inp.get("summary")
-        if summary:
-            ctx.summary = summary[:200]
 
     # PR/MR commands hint at review work
     elif name == "Bash":
@@ -413,13 +414,15 @@ def _extract_context(block, ctx: CycleContext) -> None:
     elif name == "mcp__bot-memory__memory_delete":
         ctx.work_type = ctx.work_type or "memory_housekeeping"
 
-    # progress_store carries jira_key in progress dict
+    # Saved progress fills missing context without replacing selected work.
     elif name == "mcp__bot-memory__progress_store":
         progress = inp.get("progress") or {}
         if isinstance(progress, dict):
-            if progress.get("jira_key"):
-                ctx.jira_key = ctx.jira_key or progress["jira_key"]
-            if progress.get("repo"):
+            external_key = progress.get("external_key") or progress.get("jira_key")
+            if external_key and not ctx.jira_key:
+                ctx.task_id = None
+                ctx.jira_key = ctx.jira_key or external_key
+            if progress.get("repo") and (not external_key or external_key == ctx.jira_key):
                 ctx.repo = ctx.repo or progress["repo"]
 
     if ctx.jira_key:
@@ -441,6 +444,9 @@ def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> N
             return
         data = json.loads(text)
         if not isinstance(data, dict):
+            return
+        external_key = data.get("external_key") or data.get("jira_key")
+        if ctx.jira_key and external_key and external_key != ctx.jira_key:
             return
         # Task objects: {id: int, external_key: ...}
         if isinstance(data.get("id"), int) and ("external_key" in data or "jira_key" in data):

@@ -891,11 +891,11 @@ describe("OpenCode runtime", () => {
               state: {
                 status: "completed",
                 input: {
-                  jira_key: "REHOR-143",
+                  external_key: "REHOR-143",
                   repo: "rehor",
                   summary: "Fix OpenCode parity",
                 },
-                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                output: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
                 title: "task created",
                 metadata: {},
                 time: { start: 10, end: 30 },
@@ -916,11 +916,11 @@ describe("OpenCode runtime", () => {
               state: {
                 status: "completed",
                 input: {
-                  jira_key: "REHOR-143",
+                  external_key: "REHOR-143",
                   repo: "rehor",
                   summary: "Fix OpenCode parity",
                 },
-                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                output: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
                 title: "task created",
                 metadata: {},
                 time: { start: 10, end: 30 },
@@ -974,7 +974,7 @@ describe("OpenCode runtime", () => {
       name: "mcp__bot-memory__task_add",
       toolName: "mcp__bot-memory__task_add",
       toolUseId: "call-1",
-      content: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+      content: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
       durationMs: 20,
     });
     expect(tool?.payload).not.toHaveProperty("tool");
@@ -2165,7 +2165,12 @@ const TEST_WORKSPACE = process.cwd();
 function createTestSupervisor(
   options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
 ): OpenCodeServerSupervisor {
-  return new OpenCodeServerSupervisor({ workspaceRoot: TEST_WORKSPACE, ...options });
+  return new OpenCodeServerSupervisor({
+    workspaceRoot: TEST_WORKSPACE,
+    // FakeChild uses a synthetic PID; never probe the host process table by default.
+    processGroupExists: () => false,
+    ...options,
+  });
 }
 
 describe("OpenCode process supervisor", () => {
