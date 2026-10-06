@@ -26,6 +26,20 @@ ARCHIVE_EVIDENCE_GUIDANCE = (
 )
 
 
+def normalize_reason(reason: str) -> str:
+    """Map a free-text outcome reason to a normalized category bucket."""
+    lower = reason.lower()
+    if "closed" in lower or "unmerged" in lower:
+        return "closed_unmerged"
+    if "merged" in lower:
+        return "merged"
+    if "duplicate" in lower:
+        return "duplicate"
+    if reason.startswith("Historical backfill:"):
+        return "historical_backfill"
+    return "other"
+
+
 class TaskArchiveError(ValueError):
     """Archive failure with a recovery prefix safe for truncated legacy script output."""
 
@@ -618,7 +632,9 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
 
     reasons_by_repo: dict[str, dict[str, int]] = {}
     for row in reason_rows:
-        reasons_by_repo.setdefault(row["repo"], {})[row["reason"]] = row["task_count"]
+        key = normalize_reason(row["reason"])
+        bucket = reasons_by_repo.setdefault(row["repo"], {})
+        bucket[key] = bucket.get(key, 0) + row["task_count"]
     providers_by_repo: dict[str, dict[str, int]] = {}
     for row in provider_rows:
         providers_by_repo.setdefault(row["repo"], {})[row["source"]] = row["task_count"]

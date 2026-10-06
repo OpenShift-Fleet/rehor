@@ -17,6 +17,7 @@ from bot_memory_server.task_outcomes import (
     api_task_outcomes,
     api_task_outcomes_summary,
     canonical_repositories,
+    normalize_reason,
 )
 from bot_memory_server.tools.tasks import register_task_tools
 from conftest import SCHEMA_PATH
@@ -1511,3 +1512,138 @@ async def test_archive_report_flows_through_real_database_and_reporting_api(db):
     assert manual_detail["status"] == "archived"
     assert manual_detail["archived_at"] is not None
     assert await db.fetchval("SELECT COUNT(*) FROM task_outcome_reports WHERE task_id = $1", manual_task_id) == 0
+
+
+# -- normalize_reason --
+
+
+class TestNormalizeReason:
+    """Unit tests for normalize_reason()."""
+
+    def test_merged_keyword(self):
+        assert normalize_reason("PR merged by maintainer") == "merged"
+
+    def test_merged_case_insensitive(self):
+        assert normalize_reason("MERGED by bot") == "merged"
+        assert normalize_reason("Auto-Merged after CI") == "merged"
+
+    def test_closed_keyword(self):
+        assert normalize_reason("PR closed without merge") == "closed_unmerged"
+
+    def test_closed_case_insensitive(self):
+        assert normalize_reason("CLOSED by author") == "closed_unmerged"
+
+    def test_unmerged_keyword(self):
+        assert normalize_reason("left unmerged") == "closed_unmerged"
+
+    def test_unmerged_case_insensitive(self):
+        assert normalize_reason("PR was UNMERGED") == "closed_unmerged"
+
+    def test_duplicate_keyword(self):
+        assert normalize_reason("duplicate") == "duplicate"
+
+    def test_duplicate_case_insensitive(self):
+        assert normalize_reason("Duplicate PR") == "duplicate"
+        assert normalize_reason("DUPLICATE submission") == "duplicate"
+
+    def test_historical_backfill_prefix(self):
+        reason = "Historical backfill: PR #3448 merged at 2026-09-28T10:18:56Z into project-kessel/insights-rbac."
+        assert normalize_reason(reason) == "merged"  # "merged" takes priority
+
+    def test_historical_backfill_without_merged(self):
+        reason = "Historical backfill: task created at 2026-05-01"
+        assert normalize_reason(reason) == "historical_backfill"
+
+    def test_historical_backfill_with_closed(self):
+        reason = "Historical backfill: PR closed at 2026-06-01"
+        assert normalize_reason(reason) == "closed_unmerged"  # "closed" takes priority
+
+    def test_historical_backfill_case_sensitive_prefix(self):
+        """lowercase 'historical backfill:' does not match the prefix rule."""
+        assert normalize_reason("historical backfill: something") == "other"
+
+    def test_other_fallback(self):
+        assert normalize_reason("some unknown reason") == "other"
+
+    def test_other_empty_string(self):
+        assert normalize_reason("") == "other"
+
+    def test_priority_closed_over_merged(self):
+        """'closed'/'unmerged' check comes before 'merged'."""
+        assert normalize_reason("closed then merged") == "closed_unmerged"
+
+    def test_priority_closed_over_duplicate(self):
+        assert normalize_reason("duplicate was closed") == "closed_unmerged"
+
+    def test_priority_merged_over_duplicate(self):
+        assert normalize_reason("duplicate was merged") == "merged"
+
+    @pytest.mark.parametrize(
+        "reason, expected",
+        [
+            ("PR merged", "merged"),
+            ("Superseded and closed", "closed_unmerged"),
+            ("Marked as duplicate by reviewer", "duplicate"),
+            ("Historical backfill: investigation completed", "historical_backfill"),
+            ("Agent timed out", "other"),
+            ("No response from reviewer", "other"),
+        ],
+    )
+    def test_parametrized_buckets(self, reason, expected):
+        assert normalize_reason(reason) == expected
+
+
+@pytest.mark.anyio
+async def test_summary_returns_normalized_reason_keys(db):
+    """Integration: /api/task-outcomes/summary returns normalized reason buckets."""
+    await db.execute(SCHEMA_PATH.read_text())
+    # insert two archived tasks with different free-text reasons that map to the same bucket
+    for reason_text in ("PR merged by maintainer", "Historical backfill: PR #1 merged at 2026-01-01"):
+        task_id = await db.fetchval(
+            """INSERT INTO tasks (external_key, source_type, status, repo, branch, title, summary)
+            VALUES ($1, 'jira', 'archived', 'org/repo', 'bot/test', 'Test', 'Test')
+            RETURNING id""",
+            f"NORM-{reason_text[:10]}",
+        )
+        report_id = await db.fetchval(
+            """INSERT INTO task_outcome_reports (
+                task_id, decision, confidence, reason, reported_by,
+                artifacts, evidence, canonical_repositories
+            ) VALUES ($1, 'accepted', 'conclusive', $2, 'agent',
+                '[]'::jsonb, '[]'::jsonb, '["org/repo"]'::jsonb)
+            RETURNING id""",
+            task_id,
+            reason_text,
+        )
+        await db.execute("UPDATE tasks SET outcome_report_id = $1 WHERE id = $2", report_id, task_id)
+
+    # insert a third task with a "closed" reason
+    task_id = await db.fetchval(
+        """INSERT INTO tasks (external_key, source_type, status, repo, branch, title, summary)
+        VALUES ('NORM-closed', 'jira', 'archived', 'org/repo', 'bot/test', 'Test', 'Test')
+        RETURNING id"""
+    )
+    report_id = await db.fetchval(
+        """INSERT INTO task_outcome_reports (
+            task_id, decision, confidence, reason, reported_by,
+            artifacts, evidence, canonical_repositories
+        ) VALUES ($1, 'rejected', 'conclusive', 'PR closed without merge', 'agent',
+            '[]'::jsonb, '[]'::jsonb, '["org/repo"]'::jsonb)
+        RETURNING id""",
+        task_id,
+    )
+    await db.execute("UPDATE tasks SET outcome_report_id = $1 WHERE id = $2", report_id, task_id)
+
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=db):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/task-outcomes/summary")
+
+    data = resp.json()
+    repo_entry = data["repositories"][0]
+    reasons = repo_entry["reasons"]
+    # both "PR merged by maintainer" and "Historical backfill: ...merged..." → "merged"
+    assert reasons["merged"] == 2
+    assert reasons["closed_unmerged"] == 1
+    # no raw free-text keys should survive
+    assert "PR merged by maintainer" not in reasons
+    assert "PR closed without merge" not in reasons
