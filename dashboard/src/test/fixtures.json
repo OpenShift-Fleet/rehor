@@ -19,6 +19,7 @@
         }
       ],
       "status": "in_progress",
+      "category": "delivery",
       "repo": "frontend",
       "branch": "main",
       "title": "Fix login bug",
@@ -56,6 +57,7 @@
         }
       ],
       "status": "pr_open",
+      "category": "delivery",
       "repo": "ui-lib",
       "branch": "main",
       "title": "Add dark mode",
@@ -89,6 +91,7 @@
         }
       ],
       "status": "paused",
+      "category": "delivery",
       "repo": "backend",
       "branch": "main",
       "title": "Refactor auth middleware",
@@ -122,6 +125,7 @@
         }
       ],
       "status": "in_progress",
+      "category": "delivery",
       "repo": "frontend",
       "branch": "main",
       "title": "Update dependencies",
@@ -159,6 +163,7 @@
         }
       ],
       "status": "done",
+      "category": "delivery",
       "repo": "backend",
       "branch": "main",
       "title": "Optimize database queries",
@@ -192,6 +197,7 @@
         }
       ],
       "status": "archived",
+      "category": "delivery",
       "repo": "worker",
       "branch": "main",
       "title": "Fix memory leak",

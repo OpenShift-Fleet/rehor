@@ -1325,6 +1325,7 @@ def _task(row, slack_notif=None) -> dict:
         "source_url": row.get("source_url"),
         "artifacts": artifacts,
         "status": row["status"],
+        "category": row.get("category", "delivery"),
         "repo": row["repo"],
         "branch": row["branch"],
         "title": row.get("title"),

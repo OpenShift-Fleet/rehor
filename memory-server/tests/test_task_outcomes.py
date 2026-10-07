@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
+import jsonschema
 import pytest
 from bot_memory_server.api import api_task_delete
 from bot_memory_server.models import OutcomeArtifact, OutcomeEvidence
@@ -25,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.routing import Route
+from test_api_schemas import _validate
 
 app = Starlette(
     routes=[
@@ -45,6 +47,7 @@ def _task_row(**overrides):
         "source_type": "jira",
         "source_url": "https://redhat.atlassian.net/browse/REHOR-156",
         "task_status": "archived",
+        "category": "delivery",
         "repo": "org/repo",
         "title": "Outcome API",
         "summary": "Add task outcome reporting",
@@ -116,14 +119,26 @@ class FakePool:
         return self.rows
 
 
+def _grooming_counts(**states):
+    counts = {
+        f"grooming_{state}_count": states.get(state, 0)
+        for state in ("accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip")
+    }
+    return {"grooming_count": sum(counts.values()), **counts}
+
+
 @pytest.mark.asyncio
-async def test_summary_separates_outcome_states_and_excludes_unknowns_from_rate():
+async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_coverage():
     pool = FakePool(
         row={
-            "task_count": 5,
+            "task_count": 17,
+            "delivery_task_count": 6,
+            "monitoring_count": 1,
+            **_grooming_counts(accepted=2, rejected=3, obsolete=1, inconclusive=1, unreported=2, wip=1),
             "accepted_count": 1,
+            "accepted_no_op_count": 1,
             "rejected_count": 1,
-            "obsolete_count": 0,
+            "obsolete_count": 1,
             "inconclusive_count": 1,
             "unreported_count": 1,
             "wip_count": 1,
@@ -133,8 +148,12 @@ async def test_summary_separates_outcome_states_and_excludes_unknowns_from_rate(
             [
                 {
                     "repo": "org/repo",
-                    "task_count": 2,
+                    "task_count": 7,
+                    "delivery_task_count": 2,
+                    "monitoring_count": 1,
+                    **_grooming_counts(accepted=1, rejected=1, unreported=1, wip=1),
                     "accepted_count": 1,
+                    "accepted_no_op_count": 0,
                     "rejected_count": 1,
                     "obsolete_count": 0,
                     "inconclusive_count": 0,
@@ -144,7 +163,11 @@ async def test_summary_separates_outcome_states_and_excludes_unknowns_from_rate(
                 {
                     "repo": "org/other",
                     "task_count": 1,
+                    "delivery_task_count": 1,
+                    "monitoring_count": 0,
+                    **_grooming_counts(),
                     "accepted_count": 0,
+                    "accepted_no_op_count": 0,
                     "rejected_count": 0,
                     "obsolete_count": 0,
                     "inconclusive_count": 1,
@@ -168,34 +191,157 @@ async def test_summary_separates_outcome_states_and_excludes_unknowns_from_rate(
 
     assert response.status_code == 200
     body = response.json()
+    _validate(body, "TaskOutcomeSummary")
+    for field in ("groomingCount", "groomingOutcomes"):
+        with pytest.raises(jsonschema.ValidationError, match="required property"):
+            _validate(
+                {**body, "summary": {key: value for key, value in body["summary"].items() if key != field}},
+                "TaskOutcomeSummary",
+            )
+        with pytest.raises(jsonschema.ValidationError, match="required property"):
+            _validate(
+                {
+                    **body,
+                    "repositories": [{key: value for key, value in body["repositories"][0].items() if key != field}],
+                },
+                "TaskOutcomeSummary",
+            )
+    for field in body["summary"]["groomingOutcomes"]:
+        with pytest.raises(jsonschema.ValidationError, match="required property"):
+            _validate(
+                {
+                    **body,
+                    "summary": {
+                        **body["summary"],
+                        "groomingOutcomes": {
+                            key: value for key, value in body["summary"]["groomingOutcomes"].items() if key != field
+                        },
+                    },
+                },
+                "TaskOutcomeSummary",
+            )
     assert body["summary"] == {
-        "acceptanceRate": 0.5,
-        "taskCount": 5,
+        "acceptanceRate": 1 / 3,
+        "outcomeCoverage": 0.8,
+        "taskCount": 17,
+        "deliveryTaskCount": 6,
+        "monitoringCount": 1,
+        "groomingCount": 10,
+        "groomingOutcomes": {
+            "acceptedCount": 2,
+            "rejectedCount": 3,
+            "obsoleteCount": 1,
+            "inconclusiveCount": 1,
+            "unreportedCount": 2,
+            "wipCount": 1,
+        },
         "repositoryCount": 4,
         "acceptedCount": 1,
+        "acceptedNoOpCount": 1,
         "rejectedCount": 1,
-        "obsoleteCount": 0,
+        "obsoleteCount": 1,
         "inconclusiveCount": 1,
         "unreportedCount": 1,
         "wipCount": 1,
     }
+    assert body["metricDefinitions"] == {
+        "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+        "outcomeCoverage": "reported delivery outcomes / (delivery tasks - delivery WIP); monitoring and grooming excluded",
+        "monitoring": "Watch-duty tasks; counted separately and excluded from delivery outcome metrics.",
+        "grooming": (
+            "Ticket assessment/preparation (labels/repository mappings, points, sprint); outcomes reported "
+            "separately and excluded from delivery metrics. Task existence, done status, or a no-new-ticket "
+            "check does not prove acceptance; repeated checks require separate no-op adjudication."
+        ),
+    }
+    assert body["repositories"][0]["acceptanceRate"] == 0.5
+    assert body["repositories"][0]["outcomeCoverage"] == 1.0
+    assert body["repositories"][0]["acceptedNoOpCount"] == 0
+    assert body["repositories"][0]["groomingCount"] == 4
+    assert body["repositories"][0]["groomingOutcomes"] == {
+        "acceptedCount": 1,
+        "rejectedCount": 1,
+        "obsoleteCount": 0,
+        "inconclusiveCount": 0,
+        "unreportedCount": 1,
+        "wipCount": 1,
+    }
+    assert body["repositories"][1]["groomingCount"] == 0
+    assert set(body["repositories"][1]["groomingOutcomes"].values()) == {0}
+    for rollup in [body["summary"], *body["repositories"]]:
+        assert rollup["taskCount"] == sum(
+            rollup[field] for field in ("deliveryTaskCount", "monitoringCount", "groomingCount")
+        )
+        assert sum(rollup["groomingOutcomes"].values()) == rollup["groomingCount"]
+    assert body["repositories"][1]["acceptanceRate"] is None
+    assert body["repositories"][1]["outcomeCoverage"] == 1.0
     assert body["repositories"][0]["providers"] == {"github": 2}
     assert body["backfill"] == {"state": "not_started", "unknownCount": 1}
     assert body["period"] == {"from": "2026-10-01", "to": "2026-10-01"}
     assert len(pool.calls) == 5
     assert all("WITH task_outcomes AS" in query for _, query, _ in pool.calls)
+    assert all("category = 'delivery'" in query for _, query, _ in pool.calls if "accepted_count" in query)
+    for _, query, _ in pool.calls:
+        if "grooming_count" in query:
+            for state in ("accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip"):
+                assert re.search(rf"category = 'grooming' AND (?:f\.)?state = '{state}'", query)
+        if "GROUP BY repositories.repo, f." in query:
+            assert "f.category = 'delivery'" in query
 
 
 @pytest.mark.asyncio
-async def test_task_list_paginates_stably_and_applies_provider_filters():
-    pool = FakePool(scalar=3, rows=[_task_row()])
+@pytest.mark.parametrize("grooming_count", [0, 2])
+async def test_grooming_only_summary_has_separate_outcomes_and_null_delivery_metrics(grooming_count):
+    counts = {
+        "task_count": grooming_count,
+        "delivery_task_count": 0,
+        "monitoring_count": 0,
+        **_grooming_counts(accepted=grooming_count),
+        **{
+            f"{state}_count": 0
+            for state in ("accepted", "accepted_no_op", "rejected", "obsolete", "inconclusive", "unreported", "wip")
+        },
+    }
+    pool = FakePool(
+        row=counts,
+        scalar=int(bool(grooming_count)),
+        fetch_rows=[[{"repo": "org/repo", **counts}] if grooming_count else [], [], []],
+    )
     with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.get("/api/task-outcomes/tasks?decision=accepted&source=GITHUB&limit=1&offset=1")
+            response = await client.get("/api/task-outcomes/summary?category=grooming")
+    assert response.status_code == 200
+    body = response.json()
+    _validate(body, "TaskOutcomeSummary")
+    for summary in [body["summary"], *body["repositories"]]:
+        assert summary["groomingCount"] == grooming_count
+        assert summary["taskCount"] == sum(
+            summary[field] for field in ("deliveryTaskCount", "monitoringCount", "groomingCount")
+        )
+        assert sum(summary["groomingOutcomes"].values()) == summary["groomingCount"]
+        assert summary["groomingOutcomes"]["acceptedCount"] == grooming_count
+        assert summary["acceptedCount"] == summary["acceptedNoOpCount"] == 0
+        assert summary["acceptanceRate"] is None
+        assert summary["outcomeCoverage"] is None
+    assert all(args == ("grooming",) for _, _, args in pool.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["delivery", "monitoring", "grooming"])
+async def test_task_list_paginates_stably_and_applies_provider_filters(category):
+    pool = FakePool(scalar=3, rows=[_task_row(category=category)])
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/task-outcomes/tasks?decision=accepted&source=GITHUB&category={category}&limit=1&offset=1"
+            )
             invalid = await client.get("/api/task-outcomes/tasks?limit=101")
+            invalid_category = await client.get("/api/task-outcomes/tasks?category=unknown")
 
     assert response.status_code == 200
     body = response.json()
+    _validate(body, "TaskOutcomePage")
+    assert body["items"][0]["category"] == category
     assert body["total"] == 3
     assert body["items"][0]["taskId"] == 7
     assert body["items"][0]["evidence"][0]["resolution"] == "accepted"
@@ -204,6 +350,8 @@ async def test_task_list_paginates_stably_and_applies_provider_filters():
     assert "ORDER BY event_at DESC, task_id DESC" in query
     assert "lower(evidence_item.value->>'source')" in query
     assert invalid.status_code == 400
+    assert invalid_category.status_code == 400
+    assert category in pool.calls[0][2]
 
 
 @pytest.mark.asyncio
@@ -355,6 +503,64 @@ class FakeConnectionPool:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("evidence", "decision"),
+    [
+        ([], "inconclusive"),
+        (
+            [
+                {
+                    "source": "grooming-review",
+                    "reference": "ARCHIVE-1",
+                    "resolution": "unknown",
+                    "disposition": "No new tickets",
+                    "reason": "Repeated check awaits separate no-op adjudication",
+                }
+            ],
+            "inconclusive",
+        ),
+        (
+            [
+                {
+                    "source": "grooming-review",
+                    "reference": "ARCHIVE-1",
+                    "resolution": "accepted",
+                    "disposition": "No-op adjudicated",
+                    "reason": "Reviewer verified no eligible tickets need preparation",
+                    "kind": "comment",
+                    "authorType": "human",
+                }
+            ],
+            "accepted",
+        ),
+    ],
+)
+async def test_grooming_done_or_no_new_tickets_does_not_invent_acceptance(evidence, decision):
+    conn = FakeConnection()
+    conn.existing.update(status="done", category="grooming")
+    mcp = FastMCP(name="grooming-evidence")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=FakeConnectionPool(conn)),
+        patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+    ):
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "task_outcome_report",
+                {
+                    "external_key": "ARCHIVE-1",
+                    "artifacts": [],
+                    "evidence": evidence,
+                    "notes": None,
+                },
+            )
+    assert not result.is_error
+    assert conn.report_row["decision"] == decision
+    assert conn.existing["status"] == "done"
+    assert conn.existing["category"] == "grooming"
+
+
+@pytest.mark.asyncio
 async def test_mcp_archive_requires_staged_report_and_appends_run_context():
     mcp = FastMCP(name="task-outcome-tests")
     register_task_tools(mcp)
@@ -453,6 +659,57 @@ async def test_task_add_and_update_cannot_bypass_outcome_required_archive():
         )
     with pytest.raises(ValueError, match="task_remove"):
         await tools["task_update"](external_key="ARCHIVE-GUARD-1", status="archived")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["delivery", "monitoring", "grooming"])
+async def test_task_category_can_be_set_on_add_and_updated_without_changing_lifecycle(category):
+    row = {
+        "id": 1,
+        "external_key": "WATCH-1",
+        "source_type": "manual",
+        "source_url": None,
+        "artifacts": "[]",
+        "status": "in_progress",
+        "category": category,
+        "repo": "org/service",
+        "branch": "bot/watch",
+        "title": "Watch service health",
+        "summary": "Monitor external service health",
+        "created_at": NOW,
+        "last_addressed": NOW,
+        "paused_reason": None,
+        "instance_id": "bot-1",
+        "metadata": "{}",
+        "outcome_report_id": 42,
+    }
+    pool = FakePool(row=row, scalar=0)
+    mcp = FastMCP(name="task-category-tests")
+    register_task_tools(mcp)
+    tools = {tool.name: tool.fn for tool in await mcp.list_tools()}
+
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+    ):
+        added = await tools["task_add"](
+            external_key="WATCH-1",
+            source_type="manual",
+            repo="org/service",
+            branch="bot/watch",
+            **({"category": category} if category != "delivery" else {}),
+        )
+        assert added["category"] == category
+        assert pool.calls[-1][2][5] == category
+
+        row["category"] = "delivery"
+        updated = await tools["task_update"](external_key="WATCH-1", source_type="manual", category="delivery")
+
+    assert updated["category"] == "delivery"
+    assert updated["status"] == "in_progress"
+    assert "category = $2" in pool.calls[-1][1]
+    assert "outcome_report_id" not in pool.calls[-1][1]
+    assert pool.calls[-1][2] == ("WATCH-1", "delivery", "manual")
 
 
 def _report_arguments(source_type="jira", **overrides):
@@ -801,6 +1058,55 @@ class SQLiteArchivePool(SQLiteTaskPool):
     async def fetch(self, query, *args):
         row = await self.fetchrow(query, *args)
         return [row] if row else []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["in_progress", "done", "archived"])
+async def test_grooming_category_only_update_executes_sql_and_preserves_report_history_and_lifecycle(status):
+    pool = SQLiteTaskPool(
+        {
+            **FakeConnection().existing,
+            "category": "delivery",
+            "status": status,
+            "outcome_report_id": 101,
+            "archived_at": NOW if status == "archived" else None,
+        }
+    )
+    mcp = FastMCP(name="grooming-recategorization")
+    register_task_tools(mcp)
+    try:
+        before = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+        other = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 43)
+        history = pool.conn.execute("SELECT * FROM task_outcome_reports").fetchall()
+        with (
+            patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+            patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+        ):
+            async with Client(mcp) as client:
+                for _ in range(2):
+                    result = await client.call_tool(
+                        "task_update",
+                        {
+                            "external_key": "ARCHIVE-1",
+                            "category": "grooming",
+                        },
+                    )
+                    assert not result.is_error
+                    updated = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 42)
+                    assert updated == {**before, "category": "grooming"}
+                invalid = await client.call_tool(
+                    "task_update",
+                    {
+                        "external_key": "ARCHIVE-1",
+                        "category": "unknown",
+                    },
+                    raise_on_error=False,
+                )
+                assert invalid.is_error
+        assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", 43) == other
+        assert pool.conn.execute("SELECT * FROM task_outcome_reports").fetchall() == history
+    finally:
+        pool.conn.close()
 
 
 @pytest.mark.asyncio
