@@ -13,7 +13,7 @@ run_checks() {
     cd "$root"
 
     echo "=== Installing base deps (mirrors Dockerfile.runner) ==="
-    dnf install -y --nodocs python3.12 python3.12-pip python3.12-devel git gcc make sqlite-devel
+    dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs python3.12 python3.12-pip python3.12-devel git gcc make sqlite-devel
     ln -sf /usr/bin/python3.12 /usr/bin/python3
     ln -sf /usr/bin/python3.12 /usr/bin/python
     pip3.12 install uv
