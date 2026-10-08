@@ -12,6 +12,7 @@ def task(
     day: str = "01",
     repo: str = "test-repo",
     branch: str = "main",
+    category: str = "delivery",
 ) -> dict[str, Any]:
     """Generate task payload."""
     return {
@@ -25,6 +26,7 @@ def task(
             {"name": "Branch", "url": f"https://github.com/example/{repo}/tree/{branch}", "type": "branch"},
         ],
         "status": status,
+        "category": category,
         "repo": repo,
         "branch": branch,
         "title": summary,
@@ -168,6 +170,7 @@ TASK_OUTCOME_TASKS = [
             "archivedAt": "2026-07-07T15:30:00Z",
         },
         "state": "accepted",
+        "category": "delivery",
         "repo": "frontend",
         "canonicalRepositories": ["frontend"],
         "title": "Fix login bug",
@@ -236,9 +239,22 @@ TASK_OUTCOME_SUMMARY = {
     "period": {"from": None, "to": None},
     "summary": {
         "acceptanceRate": 1.0,
+        "outcomeCoverage": 1.0,
         "taskCount": 1,
+        "deliveryTaskCount": 1,
+        "monitoringCount": 0,
+        "groomingCount": 0,
+        "groomingOutcomes": {
+            "acceptedCount": 0,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+        },
         "repositoryCount": 1,
         "acceptedCount": 1,
+        "acceptedNoOpCount": 0,
         "rejectedCount": 0,
         "obsoleteCount": 0,
         "inconclusiveCount": 0,
@@ -249,8 +265,21 @@ TASK_OUTCOME_SUMMARY = {
         {
             "repo": "frontend",
             "acceptanceRate": 1.0,
+            "outcomeCoverage": 1.0,
             "taskCount": 1,
+            "deliveryTaskCount": 1,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "groomingOutcomes": {
+                "acceptedCount": 0,
+                "rejectedCount": 0,
+                "obsoleteCount": 0,
+                "inconclusiveCount": 0,
+                "unreportedCount": 0,
+                "wipCount": 0,
+            },
             "acceptedCount": 1,
+            "acceptedNoOpCount": 0,
             "rejectedCount": 0,
             "obsoleteCount": 0,
             "inconclusiveCount": 0,
@@ -260,6 +289,16 @@ TASK_OUTCOME_SUMMARY = {
             "providers": {"github": 1},
         }
     ],
+    "metricDefinitions": {
+        "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+        "outcomeCoverage": "reported delivery outcomes / (delivery tasks - delivery WIP); monitoring and grooming excluded",
+        "monitoring": "Watch-duty tasks; counted separately and excluded from delivery outcome metrics.",
+        "grooming": (
+            "Ticket assessment/preparation (labels/repository mappings, points, sprint); outcomes reported "
+            "separately and excluded from delivery metrics. Task existence, done status, or a no-new-ticket "
+            "check does not prove acceptance; repeated checks require separate no-op adjudication."
+        ),
+    },
     "freshness": {"generatedAt": "2026-07-07T15:30:00Z"},
     "backfill": {"state": "not_started", "unknownCount": 0},
 }

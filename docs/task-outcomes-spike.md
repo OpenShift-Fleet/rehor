@@ -2,6 +2,8 @@
 
 Status: proposal
 
+For Fleet / Org Pulse implementation guidance, see the [task outcomes dashboard adoption guide](task-outcomes-dashboard-adoption.md). It documents the current API contract, category-aware counts, filters, compatibility, and rollout sequence.
+
 ## Goal
 
 Report trustworthy Rehor success rates by canonical target repository. Task lifecycle (`archived`, `done`) is not an outcome: it does not prove work succeeded.
@@ -61,6 +63,24 @@ Reducer is small and order-independent: any `rejected` evidence → `rejected`; 
 
 WIP and unreported are lifecycle-derived: active task → WIP; terminal task without selected report → unreported. A closed-unmerged PR/MR alone does not prove task rejection.
 
+## Task Category
+
+Task category is separate from lifecycle and outcome:
+
+- `delivery` is the default and represents outcome-measured delivery work.
+- `monitoring` represents watch-duty tasks whose purpose is observing or following up on external work.
+- `grooming` represents ticket assessment and preparation: assessing requirements/actionability, correcting labels and repository mappings, assigning story points, and placing qualified work in the appropriate sprint.
+
+Monitoring and grooming retain actual repository attribution and existing outcome history. Both count toward total tasks, but are excluded from delivery acceptance rate and outcome coverage. They are work categories, not fabricated repositories or terminal outcomes.
+
+New tasks can set `category: "monitoring"` or `category: "grooming"` with `task_add`; existing tasks can be recategorized with `task_update(category="grooming")` or `task_update(category="monitoring")`. Schema rollout defaults existing rows to `delivery`; historical non-delivery tasks therefore need a category-only backfill after qualification. This changes no lifecycle status, timestamps, evidence, outcome report pointer, or append-only history, and can be safely repeated. Task-outcome APIs return category and accept `category=delivery|monitoring|grooming` filters.
+
+### Grooming evidence and repeated checks
+
+Grooming acceptance requires verified evidence of assessment and applicable preparation results: labels/repository mappings, points, and sprint placement. Record what was reviewed, what changed, and why an applicable field needed no change. Task existence, `done`/`archived` status, or a no-op summary alone never proves acceptance. Terminal grooming without a selected report stays `unreported`; missing/unknown evidence produces `inconclusive`; active grooming remains `wip` even with a staged report.
+
+Repeated no-new-ticket checks need a separate no-op adjudication before accepted reporting. Verify the eligible-ticket search and current preparation state, retain the review reference and rationale, then label accepted evidence only if the human/workflow review supports that no-op. Until adjudicated, keep missing evidence unreported or report unknown evidence as inconclusive. The category does not automatically accept no-ops; the shared reducer still consumes explicit evidence resolutions.
+
 ## Provider Evidence
 
 | Source | Evidence to retain | Accepted signal |
@@ -106,7 +126,7 @@ If cleanup is pending after archive succeeds, sprint/kanban wrap-up scripts prov
 
 ## Review Decisions
 
-- `accepted`, `rejected`, `obsolete`, and `inconclusive` are effective outcome states derived from the report selected by the task's outcome pointer. `unreported` means terminal (`done` or `archived`) without a selected report; `wip` means lifecycle status is `in_progress`, `pr_open`, `pr_changes`, or `paused`. Lifecycle status stays independent from outcome.
+- `accepted`, `rejected`, `obsolete`, and `inconclusive` are effective outcome states derived from the report selected by the task's outcome pointer. `unreported` means terminal (`done` or `archived`) without a selected report; `wip` means lifecycle status is `in_progress`, `pr_open`, `pr_changes`, or `paused`. Lifecycle status and task category stay independent from outcome.
 - MCP workflow completion archives require a report, including nullable `notes`. Manual/admin archive changes lifecycle only and remains unreported; it must not invent a decision.
 - Agent does not provide final task decision. LLM labels each evidence record with `resolution: accepted|rejected|unknown`; reducer applies fixed priority `rejected > unknown > accepted/no-op`. Its reason comes from winning evidence and remains beside source facts.
 - `source` is display/provenance metadata only; new/custom sources work without reducer changes. Source-specific status text stays raw in `disposition`, separate from evidence `resolution`.
@@ -134,15 +154,16 @@ The hook may inspect provider state, Jira comments, artifacts, and custom workfl
 ## Metrics
 
 ```text
-success rate = conclusive accepted /
-               (conclusive accepted + conclusive rejected)
+ acceptance rate = delivery accepted /
+                   (delivery accepted + delivery rejected + delivery obsolete)
 ```
 
-Exclude obsolete, inconclusive, unreported, and WIP outcomes from the acceptance-rate denominator while showing each count separately. Show total tasks, accepted, rejected, obsolete, inconclusive, unreported, WIP, reason breakdown, and provider coverage.
+Exclude monitoring- and grooming-category tasks, inconclusive, unreported, and WIP from the acceptance-rate denominator. Monitoring and grooming are counted separately; delivery obsolete stays in the denominator but is not acceptance. Outcome coverage uses reported delivery outcomes divided by non-WIP delivery tasks. Show total tasks, delivery tasks, monitoring tasks, grooming tasks, delivery outcomes, reason breakdown, and provider coverage. `groomingOutcomes` separately exposes grooming-only accepted, rejected, obsolete, inconclusive, unreported, and WIP counts at both global and repository levels. Reason/provider breakdowns remain delivery-only. Dashboard explanations distinguish watch-duty monitoring, ticket-preparation grooming, and delivery.
 
 ## Migration
 
 1. Add append-only report storage, current-report pointer, API schema, and outcome APIs.
+   - Task category defaults to `delivery` on fresh and existing schemas. Installation replaces the deployed `tasks_category_check` constraint to allow `delivery`, `monitoring`, and `grooming`; `ADD COLUMN IF NOT EXISTS` alone cannot widen an existing two-value CHECK. Replacement is atomic and safe to rerun, including after grooming rows exist. It does not recategorize rows or rewrite reports.
 2. Add `task_outcome_report`; gate `task_remove` on a staged report.
 3. Add cleanup hooks for workflow-specific evaluation.
 4. After defining the checkpoint, retry, and concurrent-change rules above, run historical migration after schema deployment:
@@ -160,7 +181,7 @@ The backfill is one versioned operation, but execution can resume across process
 Compact rollup for Org Pulse:
 
 ```text
-GET /api/task-outcomes/summary?from=&to=&repo=
+GET /api/task-outcomes/summary?from=&to=&repo=&category=
 ```
 
 The response must include both holistic computation and repository breakdown:
@@ -170,21 +191,47 @@ The response must include both holistic computation and repository breakdown:
   "period": { "from": "2026-09-01", "to": "2026-09-30" },
   "summary": {
     "acceptanceRate": 0.82,
-    "taskCount": 929,
+    "outcomeCoverage": 0.99,
+    "taskCount": 939,
+    "deliveryTaskCount": 900,
+    "monitoringCount": 29,
+    "groomingCount": 10,
+    "groomingOutcomes": {
+      "acceptedCount": 3,
+      "rejectedCount": 1,
+      "obsoleteCount": 1,
+      "inconclusiveCount": 2,
+      "unreportedCount": 2,
+      "wipCount": 1
+    },
     "repositoryCount": 132,
-    "acceptedCount": 700,
-    "rejectedCount": 150,
+    "acceptedCount": 675,
+    "acceptedNoOpCount": 0,
+    "rejectedCount": 145,
     "obsoleteCount": 3,
     "inconclusiveCount": 12,
-    "unreportedCount": 9,
+    "unreportedCount": 10,
     "wipCount": 55
   },
   "repositories": [
     {
       "repo": "project-kessel/insights-rbac",
-      "acceptanceRate": 0.86,
-      "taskCount": 32,
+      "acceptanceRate": 0.83,
+      "outcomeCoverage": 0.97,
+      "taskCount": 38,
+      "deliveryTaskCount": 32,
+      "monitoringCount": 2,
+      "groomingCount": 4,
+      "groomingOutcomes": {
+        "acceptedCount": 1,
+        "rejectedCount": 0,
+        "obsoleteCount": 0,
+        "inconclusiveCount": 1,
+        "unreportedCount": 1,
+        "wipCount": 1
+      },
       "acceptedCount": 24,
+      "acceptedNoOpCount": 0,
       "rejectedCount": 4,
       "obsoleteCount": 1,
       "inconclusiveCount": 1,
@@ -194,17 +241,23 @@ The response must include both holistic computation and repository breakdown:
       "providers": { "github": 27, "jira": 24 }
     }
   ],
+  "metricDefinitions": {
+    "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+    "outcomeCoverage": "reported delivery outcomes / (delivery tasks - delivery WIP); monitoring and grooming excluded",
+    "monitoring": "Watch-duty tasks; counted separately and excluded from delivery outcome metrics.",
+    "grooming": "Ticket assessment/preparation (labels/repository mappings, points, sprint); outcomes reported separately and excluded from delivery metrics. Task existence, done status, or a no-new-ticket check does not prove acceptance; repeated checks require separate no-op adjudication."
+  },
   "freshness": { "generatedAt": "2026-09-23T10:00:00Z" },
   "backfill": { "state": "complete", "unknownCount": 9 }
 }
 ```
 
-`acceptanceRate` uses conclusive accepted and rejected outcomes only. Obsolete, inconclusive, unreported, and WIP counts remain visible but do not silently inflate the rate.
+`acceptanceRate` is delivery `accepted / (accepted + rejected + obsolete)`. Obsolete covers work superseded or handed off, so it must not count as acceptance. Monitoring and grooming are not delivery attempts: count them in `monitoringCount` and `groomingCount`, retain them in `taskCount`, and exclude them from acceptance rate and outcome coverage. `groomingOutcomes` contains grooming-category states only; its six counts sum to `groomingCount`. All top-level outcome counters, `acceptedNoOpCount`, reasons, and providers remain delivery-only. Multi-repository tasks count once globally and once per canonical repository. Inconclusive evidence remains outside the acceptance-rate denominator; unreported and WIP remain visible separately. `acceptedNoOpCount` counts accepted delivery reports with any evidence item whose disposition is `Won't Do`; it does not imply no other work or code change occurred. See the [dashboard adoption guide](task-outcomes-dashboard-adoption.md#what-the-no-op-counter-actually-measures) for its exact evidence matching rules. `outcomeCoverage` is `(delivery accepted + rejected + obsolete + inconclusive) / (deliveryTaskCount - delivery wipCount)` and shows how much non-WIP delivery work has any outcome report. The API's required `metricDefinitions.grooming` supplies the ticket-preparation explanation and no-op adjudication rule for dashboard notes. Category filters narrow rows before every rollup; a grooming-only summary has null delivery rates and zero delivery counters.
 
 Filtered, paginated task details:
 
 ```text
-GET /api/task-outcomes/tasks?repo=&decision=&confidence=&reason=&source=&from=&to=&limit=50&offset=0
+GET /api/task-outcomes/tasks?repo=&category=&decision=&confidence=&reason=&source=&from=&to=&limit=50&offset=0
 ```
 
 Return task lifecycle, outcome, artifacts, uniform evidence fields, canonical repositories, and report/verification timestamps. Provider-specific status lives in evidence.disposition. Use stable ordering and unchanged filters across pages.
@@ -215,7 +268,7 @@ Full history for one stable internal task identifier:
 GET /api/task-outcomes/tasks/{task_id}
 ```
 
-The detail response includes every immutable outcome report in insertion order and all `cycle_runs` linked to the task. `reportingCycleId` identifies only the cycle that submitted each report. `acceptanceRate` is `null` when no conclusive accepted/rejected outcomes exist. Date filters include both UTC date bounds and use the latest report timestamp, archive timestamp for unreported archives, or last-addressed timestamp for active work.
+The detail response includes every immutable outcome report in insertion order and all `cycle_runs` linked to the task. `reportingCycleId` identifies only the cycle that submitted each report. `acceptanceRate` is `null` when no accepted, rejected, or obsolete outcomes exist; `outcomeCoverage` is `null` when no non-WIP tasks exist. Date filters include both UTC date bounds and use the latest report timestamp, archive timestamp for unreported archives, or last-addressed timestamp for active work.
 
 ## Acceptance Criteria
 

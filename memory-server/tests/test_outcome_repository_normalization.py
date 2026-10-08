@@ -17,7 +17,7 @@ from bot_memory_server.task_outcomes import (
 )
 from bot_memory_server.tools.tasks import register_task_tools
 from conftest import DB_CONFIG, SCHEMA_PATH
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -435,6 +435,227 @@ async def test_reporting_preserves_repository_rollups_real_database(
                 assert await snapshot("wip") == before
             await tools["task_remove"](external_key="NORMALIZE-1", source_type="manual")
             assert await snapshot("accepted") == before
+
+
+@pytest.mark.asyncio
+async def test_monitoring_category_is_counted_separately_and_excluded_from_metrics(repository_db):
+    pool = repository_db
+    for key, category in (("DELIVERY-1", "delivery"), ("WATCH-1", "monitoring")):
+        task_id = await pool.fetchval(
+            "INSERT INTO tasks (external_key, source_type, status, category, repo) "
+            "VALUES ($1, 'manual', 'done', $2, 'org/service') RETURNING id",
+            key,
+            category,
+        )
+        report_id = await pool.fetchval(
+            "INSERT INTO task_outcome_reports (task_id, decision, confidence, reason) "
+            "VALUES ($1, 'accepted', 'conclusive', 'verified') RETURNING id",
+            task_id,
+        )
+        await pool.execute("UPDATE tasks SET outcome_report_id = $1 WHERE id = $2", report_id, task_id)
+
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/summary")
+            monitoring_only = await client.get("/summary?category=monitoring")
+
+    summary = response.json()["summary"]
+    assert summary["taskCount"] == 2
+    assert summary["deliveryTaskCount"] == 1
+    assert summary["monitoringCount"] == 1
+    assert summary["acceptedCount"] == 1
+    assert summary["acceptanceRate"] == 1.0
+    assert summary["outcomeCoverage"] == 1.0
+    assert response.json()["repositories"][0]["repo"] == "org/service"
+    assert response.json()["repositories"][0]["monitoringCount"] == 1
+    assert monitoring_only.json()["summary"]["taskCount"] == 1
+    assert monitoring_only.json()["summary"]["monitoringCount"] == 1
+    assert monitoring_only.json()["summary"]["acceptedCount"] == 0
+    assert monitoring_only.json()["summary"]["acceptanceRate"] is None
+
+
+@pytest.mark.asyncio
+async def test_grooming_rollups_exclude_other_categories_and_preserve_delivery_metrics_real_database(repository_db):
+    pool = repository_db
+    grooming_counts = {
+        "accepted": 2,
+        "rejected": 3,
+        "obsolete": 1,
+        "inconclusive": 1,
+        "unreported": 2,
+        "wip": 1,
+    }
+    for category in ("delivery", "monitoring", "grooming"):
+        for state, count in grooming_counts.items():
+            for index in range(count if category == "grooming" else 1):
+                key = f"{category}-{state}-{index}"
+                artifacts = (
+                    []
+                    if category != "grooming"
+                    else [
+                        {"type": "review", "targetRepo": "org/service"},
+                        {"type": "review", "targetRepo": "org/grooming-only"},
+                        {"type": "review", "targetRepo": "org/service"},
+                    ]
+                )
+                task_id = await pool.fetchval(
+                    "INSERT INTO tasks (external_key, source_type, status, category, repo, artifacts) "
+                    "VALUES ($1, 'manual', $2::task_status, $3, 'org/service', $4::jsonb) RETURNING id",
+                    key,
+                    "in_progress" if state == "wip" else "done",
+                    category,
+                    json.dumps(artifacts),
+                )
+                if state == "unreported":
+                    continue  # Done alone must not become accepted.
+                decision = "accepted" if state == "wip" else state
+                report_id = await pool.fetchval(
+                    "INSERT INTO task_outcome_reports (task_id, decision, confidence, reason, evidence) "
+                    "VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id",
+                    task_id,
+                    decision,
+                    "inconclusive" if decision == "inconclusive" else "conclusive",
+                    f"{category}-{decision}",
+                    json.dumps(
+                        [
+                            {
+                                "source": category,
+                                "reference": key,
+                                "resolution": (
+                                    "unknown"
+                                    if decision == "inconclusive"
+                                    else "rejected"
+                                    if decision == "rejected"
+                                    else "accepted"
+                                ),
+                                "disposition": "Won't Do" if decision == "accepted" else decision,
+                                "reason": "Explicitly adjudicated source evidence",
+                            }
+                        ]
+                    ),
+                )
+                await pool.execute("UPDATE tasks SET outcome_report_id = $1 WHERE id = $2", report_id, task_id)
+
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            body = (await client.get("/summary")).json()
+            summary = body["summary"]
+            assert summary["taskCount"] == 22
+            assert summary["deliveryTaskCount"] == summary["monitoringCount"] == 6
+            assert summary["repositoryCount"] == 2
+            for rollup in [summary, *body["repositories"]]:
+                assert rollup["groomingCount"] == 10
+                assert rollup["taskCount"] == sum(
+                    rollup[field] for field in ("deliveryTaskCount", "monitoringCount", "groomingCount")
+                )
+                assert sum(rollup["groomingOutcomes"].values()) == rollup["groomingCount"]
+                assert rollup["groomingOutcomes"] == {
+                    f"{state}Count": count for state, count in grooming_counts.items()
+                }
+                delivery_repo = rollup.get("repo") != "org/grooming-only"
+                assert rollup["acceptanceRate"] == (1 / 3 if delivery_repo else None)
+                assert rollup["outcomeCoverage"] == (0.8 if delivery_repo else None)
+                for state in grooming_counts:
+                    assert rollup[f"{state}Count"] == int(delivery_repo)
+                assert rollup["acceptedNoOpCount"] == int(delivery_repo)
+            repositories = {row["repo"]: row for row in body["repositories"]}
+            assert repositories["org/service"]["providers"] == {"delivery": 4}
+            assert repositories["org/service"]["reasons"] == {
+                f"delivery-{state}": 1 for state in ("accepted", "rejected", "obsolete", "inconclusive")
+            }
+            assert repositories["org/grooming-only"]["providers"] == {}
+            assert repositories["org/grooming-only"]["reasons"] == {}
+            for category, count in (("delivery", 6), ("monitoring", 6), ("grooming", 10)):
+                filtered = (await client.get("/summary", params={"category": category})).json()["summary"]
+                assert filtered["taskCount"] == count
+                assert filtered["groomingCount"] == (10 if category == "grooming" else 0)
+                assert filtered["acceptanceRate"] == (1 / 3 if category == "delivery" else None)
+                assert filtered["outcomeCoverage"] == (0.8 if category == "delivery" else None)
+            for state, count in grooming_counts.items():
+                params = {"category": "grooming", "decision": state, "repo": "org/grooming-only"}
+                listing = (await client.get("/tasks", params=params)).json()
+                assert listing["total"] == len(listing["items"]) == count
+                assert all(item["category"] == "grooming" and item["state"] == state for item in listing["items"])
+                assert all(item["outcome"] is None for item in listing["items"] if state in {"unreported", "wip"})
+                filtered = (await client.get("/summary", params=params)).json()["summary"]
+                assert filtered["groomingCount"] == filtered["groomingOutcomes"][f"{state}Count"] == count
+                assert sum(filtered["groomingOutcomes"].values()) == count
+                assert filtered["acceptedCount"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_check", [False, True], ids=["fresh-schema", "two-value-upgrade"])
+async def test_grooming_schema_upgrades_two_value_check_idempotently_real_database(repository_db, legacy_check):
+    pool = repository_db
+    if legacy_check:
+        await pool.execute(
+            "ALTER TABLE tasks DROP CONSTRAINT tasks_category_check; "
+            "ALTER TABLE tasks ADD CONSTRAINT tasks_category_check CHECK (category IN ('delivery', 'monitoring'))"
+        )
+    task_id = await pool.fetchval(
+        "INSERT INTO tasks (external_key, source_type, status, repo, archived_at) "
+        "VALUES ('UPGRADE-1', 'manual', 'archived', 'org/service', NOW()) RETURNING id"
+    )
+    await pool.execute(
+        "INSERT INTO tasks (external_key, source_type, category) VALUES ('UPGRADE-WATCH', 'manual', 'monitoring')"
+    )
+    report_id = await pool.fetchval(
+        "INSERT INTO task_outcome_reports (task_id, decision, confidence, reason) "
+        "VALUES ($1, 'inconclusive', 'inconclusive', 'Awaiting qualification') RETURNING id",
+        task_id,
+    )
+    await pool.execute("UPDATE tasks SET outcome_report_id = $1 WHERE id = $2", report_id, task_id)
+    before = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", task_id)
+    history = await pool.fetch("SELECT * FROM task_outcome_reports ORDER BY id")
+    mcp = FastMCP(name="grooming-schema-upgrade")
+    register_task_tools(mcp)
+    with (
+        patch("bot_memory_server.tools.tasks.get_pool", return_value=pool),
+        patch("bot_memory_server.tools.tasks.bus.publish", new_callable=AsyncMock),
+    ):
+        for _ in range(2):
+            await pool.execute(SCHEMA_PATH.read_text())
+            assert await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", task_id) == before
+        async with Client(mcp) as client:
+            for _ in range(2):
+                await client.call_tool(
+                    "task_update",
+                    {
+                        "external_key": "UPGRADE-1",
+                        "source_type": "manual",
+                        "category": "grooming",
+                    },
+                )
+                assert dict(await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", task_id)) == {
+                    **dict(before),
+                    "category": "grooming",
+                }
+            # Reinstallation also succeeds with grooming rows already present.
+            await pool.execute(SCHEMA_PATH.read_text())
+            added = await client.call_tool(
+                "task_add",
+                {
+                    "external_key": "GROOM-NEW",
+                    "source_type": "manual",
+                    "repo": "org/service",
+                    "branch": "",
+                    "category": "grooming",
+                },
+            )
+            assert not added.is_error
+    assert await pool.fetch("SELECT * FROM task_outcome_reports ORDER BY id") == history
+    assert await pool.fetchval("SELECT category FROM tasks WHERE external_key = 'UPGRADE-WATCH'") == "monitoring"
+    assert (
+        await pool.fetchval(
+            "INSERT INTO tasks (external_key, source_type) VALUES ('DEFAULT-1', 'manual') RETURNING category"
+        )
+        == "delivery"
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
+        async with pool.conn.transaction():
+            await pool.execute(
+                "INSERT INTO tasks (external_key, source_type, category) VALUES ('INVALID-1', 'manual', 'unknown')"
+            )
 
 
 @pytest.mark.asyncio

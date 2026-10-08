@@ -13,6 +13,7 @@ from .models import OutcomeArtifact, OutcomeEvidence
 from .outcome_classifier import classify_task_outcome
 
 _DECISION_FILTERS = {"accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip"}
+_CATEGORY_FILTERS = {"delivery", "monitoring", "grooming"}
 _CONFIDENCE_FILTERS = {"conclusive", "inconclusive"}
 _MAX_LIMIT = 100
 ARCHIVE_RECOVERY = (
@@ -365,6 +366,7 @@ WITH task_outcomes AS (
         t.source_type,
         t.source_url,
         t.status::text AS task_status,
+        t.category,
         t.repo,
         t.title,
         t.summary,
@@ -425,6 +427,12 @@ def _filtered_cte(request: Request) -> tuple[str, list]:
     repo = request.query_params.get("repo")
     if repo:
         add(repo, "canonical_repositories ? ${index}")
+
+    category = request.query_params.get("category")
+    if category:
+        if category not in _CATEGORY_FILTERS:
+            raise ValueError("category must be delivery, monitoring, or grooming")
+        add(category, "category = ${index}")
 
     state = request.query_params.get("decision")
     if state:
@@ -531,6 +539,7 @@ def _serialize_task(
             "archivedAt": _timestamp(row["archived_at"]),
         },
         "state": row["state"],
+        "category": row.get("category", "delivery"),
         "repo": row["repo"],
         "canonicalRepositories": repositories,
         "title": row["title"],
@@ -563,12 +572,28 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
     counts = await pool.fetchrow(
         f"""{cte}
         SELECT COUNT(*) AS task_count,
-            COUNT(*) FILTER (WHERE state = 'accepted') AS accepted_count,
-            COUNT(*) FILTER (WHERE state = 'rejected') AS rejected_count,
-            COUNT(*) FILTER (WHERE state = 'obsolete') AS obsolete_count,
-            COUNT(*) FILTER (WHERE state = 'inconclusive') AS inconclusive_count,
-            COUNT(*) FILTER (WHERE state = 'unreported') AS unreported_count,
-            COUNT(*) FILTER (WHERE state = 'wip') AS wip_count
+            COUNT(*) FILTER (WHERE category = 'delivery') AS delivery_task_count,
+            COUNT(*) FILTER (WHERE category = 'monitoring') AS monitoring_count,
+            COUNT(*) FILTER (WHERE category = 'grooming') AS grooming_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'accepted') AS grooming_accepted_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'rejected') AS grooming_rejected_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'obsolete') AS grooming_obsolete_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'inconclusive') AS grooming_inconclusive_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'unreported') AS grooming_unreported_count,
+            COUNT(*) FILTER (WHERE category = 'grooming' AND state = 'wip') AS grooming_wip_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'accepted') AS accepted_count,
+            COUNT(*) FILTER (
+                WHERE category = 'delivery' AND state = 'accepted' AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(COALESCE(evidence, '[]'::jsonb)) AS evidence_item(value)
+                    WHERE LOWER(evidence_item.value->>'disposition') = 'won''t do'
+                )
+            ) AS accepted_no_op_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'rejected') AS rejected_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'obsolete') AS obsolete_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'inconclusive') AS inconclusive_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'unreported') AS unreported_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'wip') AS wip_count
         FROM filtered""",
         *params,
     )
@@ -583,12 +608,33 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
         f"""{cte}
         SELECT repositories.repo,
             COUNT(DISTINCT f.task_id) AS task_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'accepted') AS accepted_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'rejected') AS rejected_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'obsolete') AS obsolete_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'inconclusive') AS inconclusive_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'unreported') AS unreported_count,
-            COUNT(DISTINCT f.task_id) FILTER (WHERE f.state = 'wip') AS wip_count
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery') AS delivery_task_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'monitoring') AS monitoring_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming') AS grooming_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'accepted')
+                AS grooming_accepted_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'rejected')
+                AS grooming_rejected_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'obsolete')
+                AS grooming_obsolete_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'inconclusive')
+                AS grooming_inconclusive_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'unreported')
+                AS grooming_unreported_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'grooming' AND f.state = 'wip') AS grooming_wip_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'accepted') AS accepted_count,
+            COUNT(DISTINCT f.task_id) FILTER (
+                WHERE f.category = 'delivery' AND f.state = 'accepted' AND EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(COALESCE(f.evidence, '[]'::jsonb)) AS evidence_item(value)
+                    WHERE LOWER(evidence_item.value->>'disposition') = 'won''t do'
+                )
+            ) AS accepted_no_op_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'rejected') AS rejected_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'obsolete') AS obsolete_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'inconclusive') AS inconclusive_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'unreported') AS unreported_count,
+            COUNT(DISTINCT f.task_id) FILTER (WHERE f.category = 'delivery' AND f.state = 'wip') AS wip_count
         FROM filtered f
         CROSS JOIN LATERAL jsonb_array_elements_text(f.canonical_repositories) AS repositories(repo)
         GROUP BY repositories.repo
@@ -600,7 +646,8 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
         SELECT repositories.repo, f.reason, COUNT(DISTINCT f.task_id) AS task_count
         FROM filtered f
         CROSS JOIN LATERAL jsonb_array_elements_text(f.canonical_repositories) AS repositories(repo)
-        WHERE f.reason IS NOT NULL AND f.state IN ('accepted', 'rejected', 'obsolete', 'inconclusive')
+        WHERE f.category = 'delivery' AND f.reason IS NOT NULL
+            AND f.state IN ('accepted', 'rejected', 'obsolete', 'inconclusive')
         GROUP BY repositories.repo, f.reason""",
         *params,
     )
@@ -611,7 +658,7 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
         FROM filtered f
         CROSS JOIN LATERAL jsonb_array_elements_text(f.canonical_repositories) AS repositories(repo)
         CROSS JOIN LATERAL jsonb_array_elements(COALESCE(f.evidence, '[]'::jsonb)) AS evidence_item(value)
-        WHERE evidence_item.value->>'source' IS NOT NULL
+        WHERE f.category = 'delivery' AND evidence_item.value->>'source' IS NOT NULL
         GROUP BY repositories.repo, lower(evidence_item.value->>'source')""",
         *params,
     )
@@ -623,25 +670,49 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
     for row in provider_rows:
         providers_by_repo.setdefault(row["repo"], {})[row["source"]] = row["task_count"]
 
-    def acceptance_rate(accepted: int, rejected: int) -> float | None:
-        denominator = accepted + rejected
+    def acceptance_rate(accepted: int, rejected: int, obsolete: int) -> float | None:
+        denominator = accepted + rejected + obsolete
         return accepted / denominator if denominator else None
+
+    def outcome_coverage(
+        delivery_task_count: int, wip: int, accepted: int, rejected: int, obsolete: int, inconclusive: int
+    ) -> float | None:
+        denominator = delivery_task_count - wip
+        reported = accepted + rejected + obsolete + inconclusive
+        return reported / denominator if denominator else None
+
+    def grooming_outcomes(row) -> dict[str, int]:
+        return {
+            f"{state}Count": row[f"grooming_{state}_count"]
+            for state in ("accepted", "rejected", "obsolete", "inconclusive", "unreported", "wip")
+        }
 
     repositories = []
     for row in repository_rows:
         accepted = row["accepted_count"]
         rejected = row["rejected_count"]
+        obsolete = row["obsolete_count"]
+        inconclusive = row["inconclusive_count"]
+        wip = row["wip_count"]
         repositories.append(
             {
                 "repo": row["repo"],
-                "acceptanceRate": acceptance_rate(accepted, rejected),
+                "acceptanceRate": acceptance_rate(accepted, rejected, obsolete),
+                "outcomeCoverage": outcome_coverage(
+                    row["delivery_task_count"], wip, accepted, rejected, obsolete, inconclusive
+                ),
                 "taskCount": row["task_count"],
+                "deliveryTaskCount": row["delivery_task_count"],
+                "monitoringCount": row["monitoring_count"],
+                "groomingCount": row["grooming_count"],
+                "groomingOutcomes": grooming_outcomes(row),
                 "acceptedCount": accepted,
+                "acceptedNoOpCount": row["accepted_no_op_count"],
                 "rejectedCount": rejected,
-                "obsoleteCount": row["obsolete_count"],
-                "inconclusiveCount": row["inconclusive_count"],
+                "obsoleteCount": obsolete,
+                "inconclusiveCount": inconclusive,
                 "unreportedCount": row["unreported_count"],
-                "wipCount": row["wip_count"],
+                "wipCount": wip,
                 "reasons": reasons_by_repo.get(row["repo"], {}),
                 "providers": providers_by_repo.get(row["repo"], {}),
             }
@@ -649,23 +720,48 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
 
     accepted = counts["accepted_count"]
     rejected = counts["rejected_count"]
+    obsolete = counts["obsolete_count"]
+    inconclusive = counts["inconclusive_count"]
+    wip = counts["wip_count"]
     from_value = request.query_params.get("from")
     to_value = request.query_params.get("to")
     return JSONResponse(
         {
             "period": {"from": from_value, "to": to_value},
             "summary": {
-                "acceptanceRate": acceptance_rate(accepted, rejected),
+                "acceptanceRate": acceptance_rate(accepted, rejected, obsolete),
+                "outcomeCoverage": outcome_coverage(
+                    counts["delivery_task_count"], wip, accepted, rejected, obsolete, inconclusive
+                ),
                 "taskCount": counts["task_count"],
+                "deliveryTaskCount": counts["delivery_task_count"],
+                "monitoringCount": counts["monitoring_count"],
+                "groomingCount": counts["grooming_count"],
+                "groomingOutcomes": grooming_outcomes(counts),
                 "repositoryCount": repository_count,
                 "acceptedCount": accepted,
+                "acceptedNoOpCount": counts["accepted_no_op_count"],
                 "rejectedCount": rejected,
-                "obsoleteCount": counts["obsolete_count"],
-                "inconclusiveCount": counts["inconclusive_count"],
+                "obsoleteCount": obsolete,
+                "inconclusiveCount": inconclusive,
                 "unreportedCount": counts["unreported_count"],
-                "wipCount": counts["wip_count"],
+                "wipCount": wip,
             },
             "repositories": repositories,
+            "metricDefinitions": {
+                "acceptanceRate": (
+                    "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded"
+                ),
+                "outcomeCoverage": (
+                    "reported delivery outcomes / (delivery tasks - delivery WIP); monitoring and grooming excluded"
+                ),
+                "monitoring": "Watch-duty tasks; counted separately and excluded from delivery outcome metrics.",
+                "grooming": (
+                    "Ticket assessment/preparation (labels/repository mappings, points, sprint); outcomes reported "
+                    "separately and excluded from delivery metrics. Task existence, done status, or a no-new-ticket "
+                    "check does not prove acceptance; repeated checks require separate no-op adjudication."
+                ),
+            },
             "freshness": {"generatedAt": datetime.now(UTC).isoformat()},
             "backfill": {"state": "not_started", "unknownCount": counts["unreported_count"]},
         }

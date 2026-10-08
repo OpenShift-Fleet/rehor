@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_url      TEXT,
     artifacts       JSONB DEFAULT '[]',
     status          task_status NOT NULL DEFAULT 'in_progress',
+    category        TEXT NOT NULL DEFAULT 'delivery' CHECK (category IN ('delivery', 'monitoring', 'grooming')),
     repo            TEXT,
     branch          TEXT,
     title           TEXT,
@@ -175,6 +176,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS outcome_report_id BIGINT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'delivery'
+    CHECK (category IN ('delivery', 'monitoring', 'grooming'));
+-- ADD COLUMN IF NOT EXISTS cannot widen the CHECK on deployed two-category schemas.
+-- Replace the original named constraint atomically; repeated installations are safe.
+DO $$ BEGIN
+    ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_category_check;
+    ALTER TABLE tasks ADD CONSTRAINT tasks_category_check
+        CHECK (category IN ('delivery', 'monitoring', 'grooming'));
+END $$;
+COMMENT ON COLUMN tasks.category IS
+    'Reporting category: delivery contributes to delivery metrics; monitoring watch-duty and grooming ticket preparation are reported separately.';
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 UPDATE tasks
