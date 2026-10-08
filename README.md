@@ -222,7 +222,7 @@ For creating **new bot instances** with custom personas and config, the repo inc
 
 Runner repos add dev-bot as a submodule and build from `Dockerfile.runner`, which provides two extension points:
 
-- **`setup.sh`** (required) — custom build steps (install packages, write config, etc.)
+- **`setup.sh`** (required) — custom build steps; runs as root after preset installs. Every custom DNF install must explicitly use `--disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'`; Dockerfile repo flags do not carry into this script.
 - **`instance/`** (optional) — extra files COPYed to `/home/botuser/app/instance/`
 
 ### Setting up a runner repo
@@ -240,7 +240,9 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 set -e
 echo "my-bot-instance" > /home/botuser/app/.instance-id
-# Add custom build steps here (dnf install, config, etc.)
+# Custom DNF installs must use UBI-only repos:
+# dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs <package>
+# Add other custom build steps here (config, etc.)
 EOF
 
 # 4. Create instance/ directory (optional)
