@@ -160,3 +160,13 @@ export async function executeSelectedRun(
   const runtime = await registry.create(selection, run, preparedConfig);
   return executeRun(runtime, run, coordinatorOptions);
 }
+
+/** Run the adapter selected on the normalized per-instance run. */
+export async function executeConfiguredRun(
+  registry: RuntimeFactoryRegistry,
+  input: RehorRun,
+  options: RuntimeExecutionOptions = {},
+): Promise<CoordinatorResult> {
+  const run = parseRehorRun(input);
+  return executeSelectedRun(registry, resolveRuntimeSelection(run.runtimeId), run, options);
+}

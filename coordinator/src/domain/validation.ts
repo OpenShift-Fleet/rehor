@@ -51,6 +51,9 @@ export function parseRehorRun(value: unknown): RehorRun {
     instructionHash: parseHash(object.instructionHash, "run.instructionHash"),
     configHash: parseHash(object.configHash, "run.configHash"),
     policyHash: parseHash(object.policyHash, "run.policyHash"),
+    ...(object.runtimeId === undefined
+      ? {}
+      : { runtimeId: requiredString(object, "runtimeId", "run") }),
     provider: {
       id: requiredString(provider, "id", "run.provider"),
       requestedModel: requiredString(provider, "requestedModel", "run.provider"),

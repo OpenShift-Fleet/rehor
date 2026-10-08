@@ -54,6 +54,14 @@ export class CycleScheduler {
     return this.consecutiveErrors;
   }
 
+  /** Update deployment-owned delays after Python has prepared a cycle. */
+  updateIntervals(config: Pick<CycleSchedulerConfig, "intervalMs" | "idleIntervalMs">): void {
+    assertNonNegative(config.intervalMs, "intervalMs");
+    assertNonNegative(config.idleIntervalMs, "idleIntervalMs");
+    this.config.intervalMs = config.intervalMs;
+    this.config.idleIntervalMs = config.idleIntervalMs;
+  }
+
   planForPreflight(preflight: PreflightResult | null): CyclePlan {
     if (preflight?.action === PreflightAction.Error) {
       this.consecutiveErrors += 1;
