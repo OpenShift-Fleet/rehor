@@ -4,7 +4,8 @@
 # Konflux with dockerfile: dev-bot/Dockerfile.runner and context: .
 #
 # Extension points:
-#   setup.sh   — (required) custom build steps (dnf install, config, etc.)
+#   setup.sh   — (required) root-run custom build steps (dnf install, config, etc.)
+#                DNF installs must use: --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'
 #   instance/  — (optional) extra files, COPYed to /home/botuser/app/instance/
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
@@ -17,7 +18,7 @@ RUN go mod download \
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
 # Core system deps + Python 3.12 (env-specific deps installed via presets)
-RUN dnf install -y --nodocs --allowerasing \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
     python3.12 python3.12-pip python3.12-devel \
     git \
     curl \
@@ -39,7 +40,7 @@ RUN ln /usr/local/bin/executor-client /usr/local/bin/gh \
     && ln /usr/local/bin/executor-client /usr/local/bin/gpg
 
 # bubblewrap (sandbox runtime for Claude Code)
-RUN dnf install -y --nodocs libcap-devel \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs libcap-devel \
     && pip3.12 install meson ninja \
     && git clone --depth 1 --branch v0.11.1 https://github.com/containers/bubblewrap.git /tmp/bwrap \
     && cd /tmp/bwrap \
@@ -99,7 +100,8 @@ ENV HOME=/home/botuser
 USER botuser
 
 # === INSTANCE CUSTOMIZATION ===
-# Runner repos extend the base image here via setup.sh and instance/ files.
+# Runner repos extend base image here via setup.sh and instance/ files. setup.sh runs as root
+# after preset installs; each custom DNF install must explicitly use the UBI-only repo flags above.
 USER 0
 
 # Run instance-specific build steps

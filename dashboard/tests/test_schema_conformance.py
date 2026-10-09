@@ -15,6 +15,8 @@ from fixtures.api_payloads import (
     CYCLE_RUNS,
     DAILY_COSTS,
     MEMORIES,
+    TASK_OUTCOME_SUMMARY,
+    TASK_OUTCOME_TASKS,
     TASKS,
     cycle_entry,
     cycle_run,
@@ -158,6 +160,21 @@ class TestPaginatedEnvelopeConformance:
             "offset": 0,
         }
         _validate(envelope, "PaginatedResponse")
+
+
+class TestTaskOutcomeFixtureConformance:
+    def test_summary_fixture(self):
+        _validate(TASK_OUTCOME_SUMMARY, "TaskOutcomeSummary")
+
+    def test_list_fixture(self):
+        _validate(
+            {"items": TASK_OUTCOME_TASKS, "total": len(TASK_OUTCOME_TASKS), "limit": 50, "offset": 0},
+            "TaskOutcomePage",
+        )
+
+    def test_detail_fixture(self):
+        task = TASK_OUTCOME_TASKS[0]
+        _validate({**task, "outcomeHistory": [task["outcome"]], "taskCycles": []}, "TaskOutcomeTask")
 
 
 class TestCostsResponseConformance:

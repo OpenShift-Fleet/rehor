@@ -14,7 +14,7 @@ RUN go mod download \
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
 # System deps + Python 3.12 + Chromium runtime libraries
-RUN dnf install -y --nodocs --allowerasing \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
     python3.12 python3.12-pip python3.12-devel \
     git \
     curl \
@@ -89,7 +89,7 @@ RUN ln /usr/local/bin/executor-client /usr/local/bin/gh \
     && ln /usr/local/bin/executor-client /usr/local/bin/gpg
 
 # bubblewrap (sandbox runtime for Claude Code)
-RUN dnf install -y --nodocs libcap-devel \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs libcap-devel \
     && pip3.12 install meson ninja \
     && git clone --depth 1 --branch v0.11.1 https://github.com/containers/bubblewrap.git /tmp/bwrap \
     && cd /tmp/bwrap \
@@ -101,7 +101,7 @@ RUN dnf install -y --nodocs libcap-devel \
     && dnf clean all
 
 # Buildah (rootless container image builder — no daemon, works in OpenShift)
-RUN dnf install -y --nodocs buildah fuse-overlayfs \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs \
     && dnf clean all
 
 # tini — proper init process that reaps zombie children

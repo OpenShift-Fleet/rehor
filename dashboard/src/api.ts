@@ -28,8 +28,10 @@ export async function fetchTasks(params: {
   return (await fetch("/api/tasks?" + qs)).json();
 }
 
-export async function deleteTask(key: string) {
-  return fetch("/api/tasks/" + encodeURIComponent(key), { method: "DELETE" });
+export async function deleteTask(key: string, sourceType?: string) {
+  const qs = new URLSearchParams({ manual: "true" });
+  if (sourceType) qs.set("source_type", sourceType);
+  return fetch("/api/tasks/" + encodeURIComponent(key) + "?" + qs, { method: "DELETE" });
 }
 
 export async function unarchiveTask(key: string) {

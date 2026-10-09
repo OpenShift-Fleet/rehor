@@ -1,15 +1,42 @@
 import json
-from datetime import datetime
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastmcp import FastMCP
 
 from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
 from ..events import Event, bus
-from ..models import Task
+from ..models import OutcomeArtifact, OutcomeEvidence, Task
+from ..task_outcomes import ARCHIVE_EVIDENCE_GUIDANCE, ARCHIVE_RECOVERY, archive_task, record_task_outcome
 
 ACTIVE_STATUSES = ("in_progress", "pr_open", "pr_changes")
 MAX_ACTIVE = 10
+_OUTCOME_ARCHIVE_GUIDANCE = f"{ARCHIVE_RECOVERY} {ARCHIVE_EVIDENCE_GUIDANCE}"
+# Only these metadata keys describe scheduling/progress bookkeeping, not evidence.
+# Every other key is conservatively evidence-relevant, including prs, related_items,
+# repos, commits, files_changed, workflow, evidence, review and CI results. Compare
+# actual values after the shallow merge; identical writes never stale a report.
+_OUTCOME_BOOKKEEPING_KEYS = frozenset({"last_step", "next_step", "status_before_pause"})
+
+
+def _json_values_equal(left, right) -> bool:
+    """JSONB value equality: numeric representations match, booleans are not numbers."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return type(left) is type(right) and left == right
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(_json_values_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(_json_values_equal(a, b) for a, b in zip(left, right, strict=True))
+    return left == right
+
+
+def _metadata_changes_evidence(current: dict, updates: dict) -> bool:
+    return any(
+        key not in _OUTCOME_BOOKKEEPING_KEYS and (key not in current or not _json_values_equal(current[key], value))
+        for key, value in updates.items()
+    )
 
 
 def _row_to_task(row) -> dict:
@@ -28,6 +55,7 @@ def _row_to_task(row) -> dict:
         source_url=row.get("source_url"),
         artifacts=artifacts,
         status=row["status"],
+        category=row.get("category", "delivery"),
         repo=row["repo"],
         branch=row["branch"],
         title=row.get("title"),
@@ -39,6 +67,82 @@ def _row_to_task(row) -> dict:
         metadata=json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {}),
     )
     return task.model_dump(mode="json")
+
+
+def _merge_task_artifacts(reported: list[dict], stored) -> list[dict]:
+    if isinstance(stored, str):
+        stored = json.loads(stored)
+    combined = list(reported)
+    seen_urls = {item.get("url") for item in combined if item.get("url")}
+    for item in stored or []:
+        if item.get("url") and item["url"] not in seen_urls:
+            combined.append(item)
+            seen_urls.add(item["url"])
+    return combined
+
+
+async def _report_task_outcome(
+    *,
+    external_key: str,
+    source_type: str,
+    artifacts: Sequence[OutcomeArtifact],
+    evidence: Sequence[OutcomeEvidence],
+    notes: str | None,
+    verified_at: datetime | None,
+    run_id: str | None,
+    reporting_cycle_id: int | None,
+    attempt: int | None,
+    workflow: str | None,
+    reported_by: str,
+    correction: bool,
+) -> tuple[dict, dict]:
+    pool = get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        existing = await conn.fetchrow(
+            "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
+            external_key,
+            source_type,
+        )
+        if not existing:
+            raise ValueError(f"Task {external_key} not found")
+
+        is_archived = existing["status"] == "archived"
+        if correction and not is_archived:
+            raise ValueError(f"Task {external_key} is not archived; correction requires an archived task")
+        if not correction and is_archived and reported_by != "migration":
+            raise ValueError(f"Task {external_key} is archived; set correction=true to append a correction")
+
+        artifact_records = [
+            OutcomeArtifact.model_validate(item).model_dump(by_alias=True, exclude_none=True) for item in artifacts
+        ]
+        evidence_records = [
+            OutcomeEvidence.model_validate(item).model_dump(by_alias=True, exclude_none=True) for item in evidence
+        ]
+        combined_artifacts = _merge_task_artifacts(artifact_records, existing.get("artifacts"))
+        outcome = await record_task_outcome(
+            conn,
+            task_id=existing["id"],
+            task_reference=external_key,
+            task_repo=existing.get("repo"),
+            artifacts=combined_artifacts,
+            evidence=evidence_records,
+            notes=notes,
+            verified_at=verified_at,
+            run_id=run_id,
+            reporting_cycle_id=reporting_cycle_id,
+            attempt=attempt,
+            workflow=workflow,
+            instance_id=existing.get("instance_id"),
+            reported_by=reported_by,
+        )
+        task_row = await conn.fetchrow(
+            "UPDATE tasks SET outcome_report_id = $1 WHERE id = $2 RETURNING *",
+            outcome["id"],
+            existing["id"],
+        )
+    result = _row_to_task(task_row)
+    result["outcome"] = outcome
+    return result, outcome
 
 
 def register_task_tools(mcp: FastMCP):
@@ -95,6 +199,7 @@ def register_task_tools(mcp: FastMCP):
         repo: str,
         branch: str,
         status: str = "in_progress",
+        category: Literal["delivery", "monitoring", "grooming"] = "delivery",
         source_type: str = "jira",
         title: str | None = None,
         summary: str | None = None,
@@ -104,6 +209,8 @@ def register_task_tools(mcp: FastMCP):
         """Add a new task. Fails if >= 10 active tasks exist for this instance.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345', GitHub issue URL, etc.).
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
+        category: 'delivery' work contributes to delivery outcome metrics; 'monitoring' watch-duty and
+            'grooming' ticket assessment/preparation are counted separately and excluded.
         title: Ticket title. summary: short description of what the bot is doing/did.
         metadata: structured progress data (e.g. last_step, files_changed).
         instance_id: Bot instance name — used for multi-instance isolation.
@@ -111,6 +218,11 @@ def register_task_tools(mcp: FastMCP):
         {"repos": ["repo1", "repo2"], "prs": [{"repo": "repo1", "number": 42, "url": "...", "host": "github"}]}
         For related work items, include related_items:
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
+        if status == "archived":
+            raise ValueError(
+                f"{ARCHIVE_RECOVERY} Cannot create a task as archived. "
+                f"Create it with a non-archived status first; {ARCHIVE_EVIDENCE_GUIDANCE}"
+            )
         pool = get_pool()
 
         if isinstance(metadata, str):
@@ -140,8 +252,8 @@ def register_task_tools(mcp: FastMCP):
         row = await pool.fetchrow(
             """
             INSERT INTO tasks (external_key, source_type, source_url, artifacts,
-                               status, repo, branch, title, summary, instance_id, metadata)
-            VALUES ($1, $2, $3, $4, $5::task_status, $6, $7, $8, $9, $10, $11)
+                               status, category, repo, branch, title, summary, instance_id, metadata)
+            VALUES ($1, $2, $3, $4, $5::task_status, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             """,
             external_key,
@@ -149,6 +261,7 @@ def register_task_tools(mcp: FastMCP):
             source_url,
             json.dumps(artifacts),
             status,
+            category,
             repo,
             branch,
             title,
@@ -164,6 +277,7 @@ def register_task_tools(mcp: FastMCP):
                     "external_key": external_key,
                     "title": title,
                     "status": status,
+                    "category": category,
                     "instance_id": instance_id,
                 },
             )
@@ -180,16 +294,25 @@ def register_task_tools(mcp: FastMCP):
         title: str | None = None,
         summary: str | None = None,
         metadata: dict | None = None,
+        category: Literal["delivery", "monitoring", "grooming"] | None = None,
     ) -> dict:
         """Update fields on an existing task. Lookup by external_key + source_type.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         summary: human-readable description of current state/what was done.
+        category: 'delivery', 'monitoring', or 'grooming'. Monitoring and grooming are excluded from
+            delivery outcome metrics. Category-only updates preserve reports and lifecycle.
         metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs).
             Merged with existing metadata.
+            Changed values invalidate staged outcomes except last_step, next_step and status_before_pause.
+            Status changes invalidate outcomes except completion to done and identical status writes.
         For multi-repo tickets, use metadata.prs to track all PRs/MRs:
         {"prs": [{"repo": "repo1", "number": 42, "url": "...", "host": "github"}]}
         For related work items, use metadata.related_items:
         {"related_items": [{"name": "Related item", "url": "https://example.test/item/1", "type": "related"}]}"""
+        if status == "archived":
+            raise ValueError(
+                f"{_OUTCOME_ARCHIVE_GUIDANCE} Cannot set status='archived' directly; do not retry task_update."
+            )
         pool = get_pool()
 
         sets = []
@@ -200,6 +323,17 @@ def register_task_tools(mcp: FastMCP):
             idx += 1
             sets.append(f"status = ${idx}::task_status")
             params.append(status)
+            if last_addressed is None:
+                sets.append("last_addressed = NOW()")
+            # SET expressions read the previous status. Completion preserves the
+            # report staged immediately beforehand; every other real transition
+            # (including pause/resume and active review changes) needs fresh evidence.
+            sets.append(
+                "outcome_report_id = CASE WHEN status = 'archived'::task_status "
+                f"OR (status != ${idx}::task_status AND ${idx}::task_status != 'done'::task_status) "
+                "THEN NULL ELSE outcome_report_id END"
+            )
+            sets.append("archived_at = CASE WHEN status = 'archived'::task_status THEN NULL ELSE archived_at END")
         if last_addressed is not None:
             idx += 1
             sets.append(f"last_addressed = ${idx}")
@@ -216,36 +350,57 @@ def register_task_tools(mcp: FastMCP):
             idx += 1
             sets.append(f"summary = ${idx}")
             params.append(summary)
+        if category is not None:
+            idx += 1
+            sets.append(f"category = ${idx}")
+            params.append(category)
+        if not sets and metadata is None:
+            raise ValueError("No fields to update")
+
         if metadata is not None:
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
-            idx += 1
-            sets.append(f"metadata = metadata || ${idx}::jsonb")
-            params.append(json.dumps(metadata))
-
-        if metadata is not None and any(key in metadata for key in ("prs", "related_items")):
-            current = await pool.fetchrow(
-                "SELECT metadata FROM tasks WHERE external_key = $1 AND source_type = $2",
-                external_key,
-                source_type,
-            )
-            if current:
+            if not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+            # Serialize with report staging and archival on the same task row.
+            # Never rebuild artifacts from an unlocked snapshot or lose concurrent
+            # metadata updates while deciding whether the selected report is stale.
+            async with pool.acquire() as conn, conn.transaction():
+                current = await conn.fetchrow(
+                    "SELECT * FROM tasks WHERE external_key = $1 AND source_type = $2 FOR UPDATE",
+                    external_key,
+                    source_type,
+                )
+                if not current:
+                    raise ValueError(f"Task {external_key} not found")
                 cur_meta = current["metadata"]
                 if isinstance(cur_meta, str):
                     cur_meta = json.loads(cur_meta)
                 cur_meta = cur_meta or {}
-                if metadata is not None:
-                    cur_meta.update(metadata)
-                new_artifacts = build_artifacts(cur_meta)
+                if _metadata_changes_evidence(cur_meta, metadata):
+                    sets = [item for item in sets if not item.startswith("outcome_report_id =")]
+                    sets.append("outcome_report_id = NULL")
+                merged = {**cur_meta, **metadata}
                 idx += 1
-                sets.append(f"artifacts = ${idx}")
-                params.append(json.dumps(new_artifacts))
-
-        if not sets:
-            raise ValueError("No fields to update")
-
-        query = f"UPDATE tasks SET {', '.join(sets)} WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
-        row = await pool.fetchrow(query, external_key, *params, source_type)
+                sets.append(f"metadata = ${idx}::jsonb")
+                params.append(json.dumps(merged))
+                if any(
+                    key in metadata and (key not in cur_meta or not _json_values_equal(cur_meta[key], metadata[key]))
+                    for key in ("prs", "related_items")
+                ):
+                    idx += 1
+                    sets.append(f"artifacts = ${idx}")
+                    params.append(json.dumps(build_artifacts(merged)))
+                query = (
+                    f"UPDATE tasks SET {', '.join(sets)} "
+                    f"WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
+                )
+                row = await conn.fetchrow(query, external_key, *params, source_type)
+        else:
+            query = (
+                f"UPDATE tasks SET {', '.join(sets)} WHERE external_key = $1 AND source_type = ${idx + 1} RETURNING *"
+            )
+            row = await pool.fetchrow(query, external_key, *params, source_type)
         if not row:
             raise ValueError(f"Task {external_key} not found")
         result = _row_to_task(row)
@@ -255,6 +410,7 @@ def register_task_tools(mcp: FastMCP):
                 {
                     "external_key": external_key,
                     "status": result["status"],
+                    "category": result["category"],
                     "summary": result.get("summary"),
                 },
             )
@@ -262,23 +418,90 @@ def register_task_tools(mcp: FastMCP):
         return result
 
     @mcp.tool()
-    async def task_remove(
+    async def task_outcome_report(
         external_key: str,
+        artifacts: list[OutcomeArtifact],
+        evidence: list[OutcomeEvidence],
+        notes: str | None,
         source_type: str = "jira",
+        verified_at: str | None = None,
+        run_id: str | None = None,
+        reporting_cycle_id: int | None = None,
+        attempt: int | None = None,
+        workflow: str | None = None,
+        reported_by: Literal["agent", "workflow", "migration"] = "agent",
+        correction: bool = False,
     ) -> dict:
-        """Archive a completed task (preserves full history). Lookup by external_key + source_type.
+        """Record evidence before archival; reports are append-only.
+        Set correction=true to append a corrected report to an already archived task.
+        Each evidence item uses the same fields: source, reference, resolution
+        (accepted/rejected/unknown), disposition, reason, optional authorType and kind (state/comment;
+        default state). LLM fills resolution/reason
+        from source evidence; do not send a final task decision. Human/workflow comments are authoritative;
+        agent/automation comments (kind=comment) are ignored. State evidence remains authoritative
+        regardless of authorType.
+        A staged report does not archive the task; call task_remove afterward. Manual dashboard archive
+        remains unreported.
+        Grooming acceptance needs evidence of assessment, labels/repository mappings, points, and sprint
+        preparation as applicable. Task existence or done status does not prove acceptance. Repeated
+        no-new-ticket checks need separate no-op adjudication before accepted evidence is reported.
+        external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
+        try:
+            parsed_verified_at = datetime.fromisoformat(verified_at.replace("Z", "+00:00")) if verified_at else None
+        except ValueError as exc:
+            raise ValueError("verified_at must be an ISO 8601 timestamp") from exc
+        if parsed_verified_at and parsed_verified_at.tzinfo is None:
+            parsed_verified_at = parsed_verified_at.replace(tzinfo=UTC)
+
+        result, outcome = await _report_task_outcome(
+            external_key=external_key,
+            source_type=source_type,
+            artifacts=artifacts,
+            evidence=evidence,
+            notes=notes,
+            verified_at=parsed_verified_at,
+            run_id=run_id,
+            reporting_cycle_id=reporting_cycle_id,
+            attempt=attempt,
+            workflow=workflow,
+            reported_by=reported_by,
+            correction=correction,
+        )
+        event_type = "task_outcome_corrected" if correction else "task_outcome_reported"
+        await bus.publish(
+            Event(
+                event_type,
+                {
+                    "external_key": external_key,
+                    "report_id": outcome["id"],
+                    "state": outcome["decision"],
+                },
+            )
+        )
+        return result
+
+    @mcp.tool()
+    async def task_remove(external_key: str, source_type: str = "jira") -> dict:
+        """Archive a task only after task_outcome_report has staged its required outcome.
+        Repeated archive attempts preserve the selected valid report and lifecycle timestamps.
+        Set correction=true on task_outcome_report to correct an archived report.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
         pool = get_pool()
-        row = await pool.fetchrow(
-            "UPDATE tasks SET status = 'archived'::task_status "
-            "WHERE external_key = $1 AND source_type = $2 RETURNING *",
-            external_key,
-            source_type,
-        )
-        if not row:
-            raise ValueError(f"Task {external_key} not found")
+        row, outcome, changed = await archive_task(pool, external_key=external_key, source_type=source_type)
+        assert outcome is not None  # Strict archives always return a validated report.
         result = _row_to_task(row)
-        await bus.publish(Event("task_archived", {"external_key": external_key}))
+        result["outcome"] = outcome
+        if changed:
+            await bus.publish(
+                Event(
+                    "task_archived",
+                    {
+                        "external_key": external_key,
+                        "decision": outcome["decision"],
+                        "confidence": outcome["confidence"],
+                    },
+                )
+            )
         return result
 
     @mcp.tool()

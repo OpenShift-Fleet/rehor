@@ -74,14 +74,18 @@ test.describe("Tasks page — dialog flows", () => {
   });
 
   test("archive: opens danger dialog and calls deleteTask", async ({ mount, page }) => {
-    const task = makeTask({ external_key: "RHCLOUD-300", title: "Archive me" });
+    const task = makeTask({
+      external_key: "RHCLOUD-300",
+      source_type: "github",
+      title: "Archive me",
+    });
 
     await page.route("**/api/tasks?*", (route) => {
       route.fulfill({ json: { items: [task], total: 1 } });
     });
 
     let deleteCalled = false;
-    await page.route("**/api/tasks/RHCLOUD-300", (route) => {
+    await page.route("**/api/tasks/RHCLOUD-300?manual=true&source_type=github", (route) => {
       if (route.request().method() === "DELETE") {
         deleteCalled = true;
         route.fulfill({ json: { ok: true } });
@@ -93,6 +97,11 @@ test.describe("Tasks page — dialog flows", () => {
     await mount("Tasks/Default");
     await page.getByText("Archive me").click();
     await page.getByRole("button", { name: "Archive Task" }).click();
+    await expect(
+      page.getByText(
+        "Manually archive RHCLOUD-300? The bot will stop tracking it; its outcome remains unreported.",
+      ),
+    ).toBeVisible();
     const archiveBtn = page.getByRole("button", { name: "Archive" });
     await expect(archiveBtn).toHaveClass(/pf-m-danger/);
     await archiveBtn.click();

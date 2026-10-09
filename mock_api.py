@@ -7,7 +7,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Add dashboard/tests to path so we can import fixtures
 sys.path.insert(0, str(Path(__file__).parent / "dashboard" / "tests"))
@@ -24,6 +24,8 @@ from fixtures.api_payloads import (
     MEMORIES,
     TAGS,
     TASK_CYCLE_GROUPS,
+    TASK_OUTCOME_SUMMARY,
+    TASK_OUTCOME_TASKS,
     TASKS,
 )
 
@@ -92,6 +94,39 @@ class Handler(BaseHTTPRequestHandler):
             total = len(tasks)
             tasks = tasks[offset : offset + limit]
             self.send_json({"items": tasks, "total": total, "limit": limit, "offset": offset})
+
+        elif path == "/api/task-outcomes/summary":
+            self.send_json(TASK_OUTCOME_SUMMARY)
+
+        elif path == "/api/task-outcomes/tasks":
+            items = TASK_OUTCOME_TASKS[:]
+            repo_filter = qs.get("repo", [None])[0]
+            decision_filter = qs.get("decision", [None])[0]
+            source_filter = qs.get("source", [None])[0]
+            if repo_filter:
+                items = [item for item in items if repo_filter in item["canonicalRepositories"]]
+            if decision_filter:
+                items = [item for item in items if item["state"] == decision_filter]
+            if source_filter:
+                items = [
+                    item
+                    for item in items
+                    if any(entry["source"].lower() == source_filter.lower() for entry in item["evidence"])
+                ]
+            total = len(items)
+            limit = int(qs.get("limit", ["50"])[0])
+            offset = int(qs.get("offset", ["0"])[0])
+            self.send_json({"items": items[offset : offset + limit], "total": total, "limit": limit, "offset": offset})
+
+        elif path.startswith("/api/task-outcomes/tasks/"):
+            try:
+                task_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self.send_json({"error": "Task not found"}, 404)
+            item = next((item for item in TASK_OUTCOME_TASKS if item["taskId"] == task_id), None)
+            if item is None:
+                return self.send_json({"error": "Task not found"}, 404)
+            self.send_json({**item, "outcomeHistory": [item["outcome"]], "taskCycles": []})
 
         elif path == "/api/stats":
             task_counts: dict = {}
@@ -365,13 +400,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
-        parts = urlparse(self.path).path.strip("/").split("/")
+        parsed = urlparse(self.path)
+        parts = parsed.path.strip("/").split("/")
+        qs = parse_qs(parsed.query)
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
-            key = parts[2]
-            if key in TASKS:
-                TASKS[key]["status"] = "archived"
-                print(f"  Archived {key}")
+            key = unquote(parts[2])
+            if key not in TASKS:
+                return self.send_json({"error": f"Task {key} not found"}, 404)
+            if qs.get("manual", [""])[0] != "true":
+                return self.send_json(
+                    {
+                        "error": "Archive failed; ignore DONE. Call task_outcome_report for same task "
+                        "(artifacts,evidence,notes), then task_remove. Do not rerun skill; other steps may have completed.",
+                        "recoverable": True,
+                    },
+                    409,
+                )
+            TASKS[key]["status"] = "archived"
+            if "outcome_report_id" in TASKS[key]:
+                TASKS[key]["outcome_report_id"] = None
+            print(f"  Archived {key}")
             return self.send_json({"archived": True})
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "memories":
@@ -403,12 +452,15 @@ if __name__ == "__main__":
     print("  GET  /api/cycle-runs        - Cycle run history")
     print("  GET  /api/cycle-runs/by-task - Cycle runs grouped by task")
     print("  GET  /api/cycle-runs/:id/transcript - Cycle run transcript")
+    print("  GET  /api/task-outcomes/summary - Task outcome rollup")
+    print("  GET  /api/task-outcomes/tasks - Task outcome list")
+    print("  GET  /api/task-outcomes/tasks/:task_id - Task outcome detail")
     print("  GET  /api/analytics         - Analytics summary")
     print("  POST /api/tasks/:key/pause  - Pause a task")
     print("  POST /api/tasks/:key/unpause - Unpause a task")
     print("  POST /api/tasks/:key/unarchive - Unarchive a task")
     print("  POST /api/bot-status        - Update bot status")
-    print("  DELETE /api/tasks/:key      - Archive a task")
+    print("  DELETE /api/tasks/:key?manual=true - Manually archive a task (unreported)")
     print("  DELETE /api/memories/:id    - Delete a memory")
     print("\nMock Data:")
     print(f"  Tasks: {len(TASKS)} ({', '.join(TASKS.keys())})")
