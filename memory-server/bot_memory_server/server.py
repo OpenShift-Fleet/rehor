@@ -171,7 +171,6 @@ if __name__ == "__main__":
     setup_logging()
 
     try:
-        from .auth import BearerAuthMiddleware
         from .readonly_server import readonly_mcp
 
         app, metrics_app = build_app()
@@ -186,7 +185,6 @@ if __name__ == "__main__":
 
         readonly_app = Starlette(
             lifespan=readonly_lifespan,
-            middleware=[Middleware(BearerAuthMiddleware)],
             routes=[Mount("/", app=readonly_mcp_app)],
         )
 

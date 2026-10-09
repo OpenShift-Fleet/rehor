@@ -34,9 +34,6 @@ parameters:
 - name: DASHBOARD_URL
   description: public hostname for the memory server dashboard
   required: true
-- name: TEAM_MEMORY_URL
-  description: public hostname for the read-only team-memory MCP Route
-  required: true
 objects:
 
 # ============================================================================
@@ -59,7 +56,6 @@ objects:
 #      jira-email            — Jira username/email (unless JIRA_SECRET_NAME overrides)
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
 #      upload-memory-password — (temporary) shared secret for bulk memory upload
-#      team-memory-api-key    — Bearer token for the public read-only MCP (:8081)
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
 #      glitchtip-url         — GlitchTip instance URL (e.g. https://glitchtip.devshift.net)
 #      glitchtip-token       — GlitchTip API token for error tracking
@@ -214,12 +210,6 @@ objects:
                 name: devbot-secrets
                 key: upload-memory-password
                 optional: true
-          - name: MEMORY_API_KEY
-            valueFrom:
-              secretKeyRef:
-                name: devbot-secrets
-                key: team-memory-api-key
-                optional: true
           - name: KUBEARCHIVE_TOKEN
             valueFrom:
               secretKeyRef:
@@ -295,26 +285,6 @@ objects:
       name: devbot-memory-server
     port:
       targetPort: dashboard
-    tls:
-      termination: edge
-      insecureEdgeTerminationPolicy: Redirect
-
-# --- Team Memory Route (read-only MCP, Bearer auth on :8081) ---
-- apiVersion: route.openshift.io/v1
-  kind: Route
-  metadata:
-    name: devbot-team-memory
-    labels:
-      app.kubernetes.io/name: memory-server
-      app.kubernetes.io/part-of: devbot
-      app.kubernetes.io/component: team-memory
-  spec:
-    host: ${TEAM_MEMORY_URL}
-    to:
-      kind: Service
-      name: devbot-memory-server
-    port:
-      targetPort: readonly
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
@@ -602,8 +572,6 @@ objects:
             network.openshift.io/policy-group: ingress
       ports:
       - port: 8443
-        protocol: TCP
-      - port: 8081
         protocol: TCP
     - from:
       - namespaceSelector:

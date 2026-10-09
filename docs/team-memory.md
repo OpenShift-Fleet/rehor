@@ -6,25 +6,6 @@ The public endpoint exposes **only** `memory_search` and `memory_list`. Write to
 
 ## Connect an MCP client
 
-Add to your project's `.mcp.json` (or your client's MCP settings):
-
-```json
-{
-  "mcpServers": {
-    "team-memory": {
-      "type": "http",
-      "url": "https://<TEAM_MEMORY_URL>/mcp",
-      "headers": {
-        "Authorization": "Bearer <MEMORY_API_KEY>"
-      }
-    }
-  }
-}
-```
-
-| Placeholder | Source |
-|-------------|--------|
-| `MEMORY_API_KEY` | Bearer token stored in Vault under the deployment's secrets (field `team-memory-api-key`); the exact Vault path varies by deployment. Local compose default: `local-dev-memory-key` |
 
 **Local compose** (after `make memory-server`):
 
@@ -33,10 +14,7 @@ Add to your project's `.mcp.json` (or your client's MCP settings):
   "mcpServers": {
     "team-memory": {
       "type": "http",
-      "url": "http://localhost:8081/mcp",
-      "headers": {
-        "Authorization": "Bearer local-dev-memory-key"
-      }
+      "url": "http://localhost:8081/mcp"
     }
   }
 }
@@ -117,7 +95,4 @@ Examples:
 
 ## Operators
 
-- **Full bot MCP** (`:8080`): ClusterIP only; NetworkPolicy allows bot pods. No Bearer auth (trusted network).
-- **Read-only team MCP** (`:8081`): OpenShift Route `devbot-team-memory`; requires `MEMORY_API_KEY`.
-- Vault: add `team-memory-api-key` to `devbot-secrets` before deploying.
-- Template parameter: `TEAM_MEMORY_URL` (Route hostname).
+- **Full bot MCP** (`:8080`): ClusterIP only; NetworkPolicy allows bot pods. No auth (trusted network).
