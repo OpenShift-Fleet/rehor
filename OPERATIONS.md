@@ -316,6 +316,10 @@ Check the bot logs for which server failed:
 - `mcp-atlassian` — are Jira credentials set in `.env`?
 - `chrome-devtools` — is Chromium running? (only in Docker; on host, run `./start-chromium.sh`)
 
+For the **team-memory** read-only MCP (`:8081`):
+- Local: `curl -s http://localhost:8081/health` should return `{"status":"ok"}`
+- See [docs/team-memory.md](docs/team-memory.md)
+
 ### Bot is stuck on a ticket
 
 Check the task record in the dashboard. Look at `metadata.last_step` and `metadata.notes`. If truly stuck:

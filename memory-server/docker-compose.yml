@@ -20,6 +20,7 @@ services:
       dockerfile: memory-server/Dockerfile
     ports:
       - "8080:8080"
+      - "127.0.0.1:8081:8081"
     environment:
       DATABASE_URL: postgresql://bot:bot@postgres:5432/bot_memory
       JIRA_URL: https://redhat.atlassian.net
