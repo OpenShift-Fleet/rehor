@@ -28,6 +28,7 @@ import {
 } from "./environment";
 import {
   OPENCODE_VERSION,
+  OpenCodeProcessLeakError,
   type OpenCodeServerController,
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
@@ -198,6 +199,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     const startedAt = Date.now();
     let outcome: RuntimeOutcome | undefined;
     let failure: unknown;
+    let cleanupFailure: Error | undefined;
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
@@ -212,6 +214,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     );
 
     try {
+      // Emit before any setup can fail so every attempt, including one that
+      // never reaches a session, has a started record.
+      yield factory("run", { state: "started" });
       if (renderedConfig === undefined || effectiveModel === undefined) {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
@@ -279,7 +284,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         usageSnapshots: new Map(),
       };
 
-      yield factory("run", { state: "started" }, { runtimeSessionRef: sessionId });
       promptAttempted = true;
       unwrapSdkResponse(
         await boundedOperation(
@@ -372,7 +376,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       clearTimeout(timeout);
       detachAbort();
       detachCrash();
-      const cleanupFailure = await this.cleanup(active);
+      cleanupFailure = await this.cleanup(active);
       if (!failure && cleanupFailure) failure = cleanupFailure;
       if (this.active === active) this.active = undefined;
     }
@@ -411,7 +415,22 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       );
     }
 
-    if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
+    if (outcome.state === "completed") {
+      // The session's work finished; a cleanup failure does not undo it. Report
+      // it as a diagnostic so the event stream never pairs an `error` event
+      // with a completed terminal.
+      if (cleanupFailure) {
+        yield factory(
+          "cleanup",
+          {
+            state: "failed",
+            message: errorMessage(cleanupFailure) ?? "OpenCode cleanup failed",
+            ...(isResourceLeak(cleanupFailure) ? { resourceLeak: true } : {}),
+          },
+          { runtimeSessionRef: active.sessionId },
+        );
+      }
+    } else if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
       yield factory(
         "error",
         { message: errorMessage(failure) ?? "OpenCode runtime failed" },
@@ -428,6 +447,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         noWork: isNoWork(resultText),
         turns,
         durationMs: Date.now() - startedAt,
+        ...(isResourceLeak(failure) || isResourceLeak(cleanupFailure)
+          ? { resourceLeak: true }
+          : {}),
         ...(Object.keys(workContext).length > 0 ? { context: workContext } : {}),
       },
       { runtimeSessionRef: active.sessionId },
@@ -1155,7 +1177,13 @@ function classifyAbort(
   const kind = abortKind(reason);
   if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
   if (kind === "cancel" || kind === "cancelled") return "cancelled";
-  if (kind === "shutdown" || kind === "interrupt" || kind === "interrupted") {
+  if (
+    kind === "shutdown" ||
+    kind === "SIGTERM" ||
+    kind === "SIGINT" ||
+    kind === "interrupt" ||
+    kind === "interrupted"
+  ) {
     return "interrupted";
   }
   if (crash || streamLost) return "interrupted";
@@ -1204,6 +1232,16 @@ function errorMessage(value: unknown): string | undefined {
   if (value instanceof Error) return redactSensitiveText(value.message);
   if (typeof value === "string") return redactSensitiveText(value);
   return undefined;
+}
+
+function isResourceLeak(value: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = value; current instanceof Error && !seen.has(current); ) {
+    if (current instanceof OpenCodeProcessLeakError) return true;
+    seen.add(current);
+    current = current.cause;
+  }
+  return false;
 }
 
 function toError(value: unknown): Error {
