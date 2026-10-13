@@ -316,6 +316,7 @@ describe("OpenCode environment", () => {
       base: {
         PATH: "/bin",
         HOME: "/home/bot",
+        GIT_CONFIG_GLOBAL: "/home/bot/.gitconfig",
         HTTP_PROXY: "http://proxy:3128",
         HTTPS_PROXY: "http://proxy:3128",
         NO_PROXY: "memory-server,proxy",
@@ -323,11 +324,13 @@ describe("OpenCode environment", () => {
         OPENCODE_CONFIG_CONTENT: "ambient-config-must-not-leak",
         NODE_OPTIONS: "--require=/tmp/preload.cjs",
         NPM_CONFIG_REGISTRY: "https://registry.example.invalid",
+        REHOR_MODEL_PROXY_URL: "http://proxy:8450/v1",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
         AWS_SECRET_ACCESS_KEY: "must-not-leak",
         DATABASE_URL: "must-not-leak",
       },
       passthrough: [
+        "REHOR_MODEL_PROXY_URL",
         "REHOR_MODEL_PROXY_TOKEN",
         "OPENCODE_CONFIG_CONTENT",
         "NPM_CONFIG_REGISTRY",
@@ -340,10 +343,12 @@ describe("OpenCode environment", () => {
     expect(environment).toMatchObject({
       PATH: "/bin",
       HOME: "/home/bot",
+      GIT_CONFIG_GLOBAL: "/home/bot/.gitconfig",
       HTTP_PROXY: "http://proxy:3128",
       http_proxy: "http://proxy:3128",
       HTTPS_PROXY: "http://proxy:3128",
       https_proxy: "http://proxy:3128",
+      REHOR_MODEL_PROXY_URL: "http://proxy:8450/v1",
       REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
     });
     expect(environment.NO_PROXY).toContain("127.0.0.1");

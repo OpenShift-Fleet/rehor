@@ -26,10 +26,14 @@ export const OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES = [
 ] as const;
 
 /** Additional provider/plugin variables permitted to pass through when referenced. */
-export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = ["REHOR_MODEL_PROXY_TOKEN"] as const;
+export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = [
+  "REHOR_MODEL_PROXY_TOKEN",
+  "REHOR_MODEL_PROXY_URL",
+] as const;
 
 export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "HOME",
+  "GIT_CONFIG_GLOBAL",
   OPENCODE_MCP_URL_ENVIRONMENT,
   "LANG",
   "LC_ALL",
