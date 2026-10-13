@@ -5,7 +5,7 @@ import json
 from bot.config import load_config
 
 
-def _write_config(tmp_path, polling_extra=None, claude_extra=None):
+def _write_config(tmp_path, polling_extra=None, claude_extra=None, opencode_extra=None):
     polling = {
         "intervalSeconds": 300,
         "idleIntervalSeconds": 3600,
@@ -20,6 +20,7 @@ def _write_config(tmp_path, polling_extra=None, claude_extra=None):
             {
                 "jira": {"boardKey": "TEST"},
                 "claude": claude,
+                "opencode": opencode_extra or {},
                 "polling": polling,
             }
         )
@@ -43,6 +44,18 @@ def test_load_config_model_tiers_default(tmp_path):
     _write_config(tmp_path)
     cfg = load_config(tmp_path)
     assert cfg.model_tiers == {}
+
+
+def test_load_config_open_code_model_default(tmp_path):
+    _write_config(tmp_path)
+    cfg = load_config(tmp_path)
+    assert cfg.opencode_model == "gpt-6-luna"
+
+
+def test_load_config_open_code_model_override(tmp_path):
+    _write_config(tmp_path, opencode_extra={"model": "gpt-6-sol"})
+    cfg = load_config(tmp_path)
+    assert cfg.opencode_model == "gpt-6-sol"
 
 
 def test_load_config_model_tiers_valid(tmp_path):

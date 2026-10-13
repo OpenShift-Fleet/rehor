@@ -16,6 +16,19 @@ from .constants import _DEFAULT_COOLDOWN_SECONDS
 
 OPEN_CODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL"
 
+DEFAULT_RUNTIME_ID = "claude"
+DEFAULT_PROVIDER_ID = "vertex"
+DEFAULT_OPENCODE_PROVIDER_ID = "rehor-openai"
+DEFAULT_OPENCODE_MODEL = "gpt-6-luna"
+SUPPORTED_RUNTIME_IDS = frozenset({DEFAULT_RUNTIME_ID, "opencode-v1"})
+SUPPORTED_PROVIDER_IDS = frozenset({DEFAULT_PROVIDER_ID, "rehor-openai", "rehor-openai-chat"})
+
+
+def default_provider_for_runtime(runtime: str) -> str:
+    if runtime == "opencode-v1":
+        return DEFAULT_OPENCODE_PROVIDER_ID
+    return DEFAULT_PROVIDER_ID
+
 
 @dataclass
 class Config:
@@ -26,6 +39,7 @@ class Config:
     cycle_timeout: int
     board_key: str
     idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
+    opencode_model: str = DEFAULT_OPENCODE_MODEL
     model_tiers: dict[str, str] = field(default_factory=dict)
 
 
@@ -65,6 +79,8 @@ class InstanceConfig:
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
     model: str | None = None
+    runtime: str = DEFAULT_RUNTIME_ID
+    provider: str = DEFAULT_PROVIDER_ID
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -72,6 +88,14 @@ class InstanceConfig:
             data = yaml.safe_load(f) or {}
         claude_md = data.get("claude_md")
         strategy = claude_md.get("strategy", "ignore") if isinstance(claude_md, dict) else "ignore"
+        runtime = (
+            _nonempty_model(data.get("runtime")) or _nonempty_model(os.environ.get("BOT_RUNTIME")) or DEFAULT_RUNTIME_ID
+        )
+        provider = (
+            _nonempty_model(data.get("provider"))
+            or _nonempty_model(os.environ.get("BOT_PROVIDER"))
+            or default_provider_for_runtime(runtime)
+        )
         return cls(
             workflow=data.get("workflow", "jira-sprint"),
             source=data.get("source", "jira"),
@@ -79,6 +103,8 @@ class InstanceConfig:
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
             model=_nonempty_model(data.get("model")),
+            runtime=runtime,
+            provider=provider,
         )
 
     @classmethod
@@ -89,7 +115,9 @@ class InstanceConfig:
         if envs_str is not None:
             envs = [e.strip() for e in envs_str.split(",") if e.strip()]
         model = _nonempty_model(os.environ.get("BOT_MODEL"))
-        return cls(workflow=workflow, envs=envs, model=model)
+        runtime = _nonempty_model(os.environ.get("BOT_RUNTIME")) or DEFAULT_RUNTIME_ID
+        provider = _nonempty_model(os.environ.get("BOT_PROVIDER")) or default_provider_for_runtime(runtime)
+        return cls(workflow=workflow, envs=envs, model=model, runtime=runtime, provider=provider)
 
 
 def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
@@ -102,19 +130,23 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
             if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
                 ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, model=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
+                ic.runtime,
+                ic.provider,
                 ic.model,
             )
             return ic
 
     ic = InstanceConfig.from_env()
     logger.info(
-        "No instance.yaml — env/defaults: workflow=%s, envs=%s, model=%s",
+        "No instance.yaml — env/defaults: workflow=%s, envs=%s, runtime=%s, provider=%s, model=%s",
         ic.workflow,
         ic.envs,
+        ic.runtime,
+        ic.provider,
         ic.model,
     )
     return ic
@@ -143,13 +175,44 @@ def resolve_active_envs(script_dir: Path, instance_config: InstanceConfig) -> li
     return sorted(d.name for d in envs_dir.iterdir() if d.is_dir() and d.name != ".gitkeep")
 
 
+def validate_runtime_provider_selection(runtime: str, provider: str) -> list[str]:
+    """Return configuration errors for a runtime/provider pair.
+
+    The selection is deliberately validated at the Python/coordinator boundary
+    so a canary cannot silently fall back to an unrelated provider. The
+    TypeScript Claude adapter currently supports Vertex; OpenCode supports the
+    Vertex route, native OpenAI Responses, and OpenAI-compatible Chat Completions.
+    """
+    errors: list[str] = []
+    if runtime not in SUPPORTED_RUNTIME_IDS:
+        errors.append(
+            f"Unsupported runtime '{runtime}'. Supported runtimes: {', '.join(sorted(SUPPORTED_RUNTIME_IDS))}"
+        )
+    if provider not in SUPPORTED_PROVIDER_IDS:
+        errors.append(
+            f"Unsupported provider '{provider}'. Supported providers: {', '.join(sorted(SUPPORTED_PROVIDER_IDS))}"
+        )
+    if runtime == DEFAULT_RUNTIME_ID and provider != DEFAULT_PROVIDER_ID:
+        errors.append(
+            f"Runtime '{DEFAULT_RUNTIME_ID}' supports provider '{DEFAULT_PROVIDER_ID}' only; got '{provider}'"
+        )
+    return errors
+
+
 def validate_instance_config(
     script_dir: Path,
     instance_config: InstanceConfig,
     remote_agent_dir: Path | None = None,
 ) -> None:
-    """Validate instance config references exist. FATAL on missing workflow, WARNING on missing env."""
+    """Validate instance config references exist. FATAL on invalid selection/workflow, WARNING on missing env."""
     logger = logging.getLogger(__name__)
+
+    selection_errors = validate_runtime_provider_selection(instance_config.runtime, instance_config.provider)
+    if selection_errors:
+        for error in selection_errors:
+            logger.error("FATAL: %s", error)
+        logger.error("Runtime/provider selection validation failed. Check instance.yaml or deployment env.")
+        sys.exit(1)
 
     wf_dir = resolve_workflow_dir(script_dir, instance_config.workflow, remote_agent_dir)
     if not wf_dir.is_dir():
@@ -183,8 +246,11 @@ def load_config(script_dir: Path) -> Config:
     with open(script_dir / "config.json") as f:
         raw = json.load(f)
     claude_cfg = raw.get("claude", {})
+    opencode_cfg = raw.get("opencode", {})
+    opencode_model = _nonempty_model(opencode_cfg.get("model")) if isinstance(opencode_cfg, dict) else None
     return Config(
         model=claude_cfg["model"],
+        opencode_model=opencode_model or DEFAULT_OPENCODE_MODEL,
         max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
@@ -320,12 +386,12 @@ def resolve_cycle_model(
     global_config: Config,
     remote_agent_dir: Path | None = None,
 ) -> str:
-    """Resolve which model to use for the agent cycle following 4-tier precedence:
+    """Resolve the cycle model following override, workflow-tier, and runtime-default precedence:
 
     1. instance.yaml `model` (explicit pin)
     2. BOT_MODEL environment variable (deploy overlay, applied in load_instance_config)
-    3. workflow manifest.yaml `model_tier`, mapped through config.json `claude.modelTiers`
-    4. global config.json `claude.model` (fallback)
+    3. workflow manifest.yaml `model_tier` for Claude/Vertex; OpenCode/OpenAI routes reject it until separately mapped
+    4. provider-specific global model (`claude.model` or `opencode.model`)
 
     Presets name a tier, not a model ID, so shared workflows stay provider-neutral;
     only deployment-owned config (instance.yaml, BOT_MODEL, config.json) carries IDs.
@@ -336,6 +402,12 @@ def resolve_cycle_model(
         return pinned
     manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir) or {}
     if tier := _nonempty_model(manifest.get("model_tier")):
+        if instance_config.runtime == "opencode-v1" and instance_config.provider != "vertex":
+            raise ValueError(
+                f"Workflow '{instance_config.workflow}' requests model tier '{tier}', but OpenCode provider "
+                f"'{instance_config.provider}' has no model-tier mapping; set an explicit model in instance.yaml "
+                "or BOT_MODEL"
+            )
         if pinned := global_config.model_tiers.get(tier):
             logger.info("Resolved cycle model: %s (source=workflow:%s tier=%s)", pinned, instance_config.workflow, tier)
             return pinned
@@ -344,7 +416,14 @@ def resolve_cycle_model(
             instance_config.workflow,
             tier,
         )
-    logger.info("Resolved cycle model: %s (source=config.json)", global_config.model)
+    if instance_config.runtime == "opencode-v1" and instance_config.provider == "rehor-openai-chat":
+        raise ValueError(
+            "OpenCode provider 'rehor-openai-chat' requires an explicit model; set model in instance.yaml or BOT_MODEL"
+        )
+    if instance_config.runtime == "opencode-v1" and instance_config.provider == "rehor-openai":
+        logger.info("Resolved cycle model: %s (source=config.json opencode.model)", global_config.opencode_model)
+        return global_config.opencode_model
+    logger.info("Resolved cycle model: %s (source=config.json claude.model)", global_config.model)
     return global_config.model
 
 
@@ -419,6 +498,7 @@ SECRET_ENV_VARS = [
     "GPG_SIGNING_KEY",
     "SSO_USERNAME",
     "SSO_PASSWORD",
+    "REHOR_MODEL_PROXY_TOKEN",
 ]
 
 
