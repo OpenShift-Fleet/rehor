@@ -14,9 +14,12 @@ export default defineConfig({
     ssr: true,
     target: "node22",
     lib: {
-      entry: "src/index.ts",
+      entry: {
+        index: "src/index.ts",
+        cli: "src/cli.ts",
+      },
       formats: ["es"],
-      fileName: "index",
+      fileName: (_format, entryName) => entryName,
     },
     rollupOptions: { external },
   },
