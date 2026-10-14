@@ -541,56 +541,20 @@ describe("RehorEvent contract", () => {
         payload: { ...usage.payload, attemptId: run.attemptId, provider: run.provider.id },
       }),
     ).toThrow("event does not match schema");
-  });
-
-  it("rejects non-finite usage and terminal numbers without conditional-schema noise", () => {
-    const usage = event({
-      kind: "usage",
-      payload: {
-        requestedModel: run.provider.requestedModel,
-        tokenCounts: { input: 1 },
-        partial: false,
-        final: true,
-        estimated: false,
-        incomplete: false,
-        cost: { amount: 0, currency: "USD", source: "provider" },
-      },
-    });
-    const terminal = event({ kind: "terminal", payload: { state: "completed", turns: 1 } });
-    const nonFinite = [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY];
-    const expectRejectedWithoutConditionalNoise = (input: RehorEvent): void => {
-      let thrown: unknown;
-      try {
-        parseRehorEvent(input);
-      } catch (error) {
-        thrown = error;
-      }
-      expect(thrown).toBeInstanceOf(RuntimeContractError);
-      if (thrown instanceof RuntimeContractError) {
-        expect(thrown.message).not.toContain('must match "then" schema');
-      }
-    };
-
-    for (const amount of nonFinite) {
-      expectRejectedWithoutConditionalNoise({
-        ...usage,
-        payload: {
-          ...usage.payload,
-          cost: { amount, currency: "USD", source: "provider" },
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      for (const input of [
+        {
+          ...usage,
+          payload: {
+            ...usage.payload,
+            cost: { amount: value, currency: "USD", source: "provider" },
+          },
         },
-      });
-    }
-    for (const count of nonFinite) {
-      expectRejectedWithoutConditionalNoise({
-        ...usage,
-        payload: { ...usage.payload, tokenCounts: { input: count } },
-      });
-    }
-    for (const turns of nonFinite) {
-      expectRejectedWithoutConditionalNoise({
-        ...terminal,
-        payload: { ...terminal.payload, turns },
-      });
+        { ...usage, payload: { ...usage.payload, tokenCounts: { input: value } } },
+        event({ kind: "terminal", payload: { state: "completed", turns: value } }),
+      ]) {
+        expect(() => parseRehorEvent(input)).toThrow(/^event does not match schema: (?!.*"then")/);
+      }
     }
   });
 
