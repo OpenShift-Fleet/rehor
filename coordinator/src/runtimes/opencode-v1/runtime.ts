@@ -388,6 +388,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         !this.supervisor.crashError &&
         !active.controller.signal.aborted
       ) {
+        streamLost = true;
         const reconciled = await reconcileSession(
           active,
           factory,

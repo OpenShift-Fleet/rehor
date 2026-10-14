@@ -1326,6 +1326,20 @@ describe("OpenCode runtime", () => {
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
   });
 
+  it("interrupts when a prompt rejection has no reconciled outcome", async () => {
+    const { runtime } = fakeRuntime({
+      events: [],
+      promptError: new Error("prompt response lost"),
+      sessionStatus: {},
+      messages: [],
+    });
+
+    const result = await executeRun(runtime, runtimeRun);
+
+    expect(result.terminal.payload.state).toBe("interrupted");
+    expect(result.terminal.payload.reason).toBe("opencode_crash");
+  });
+
   it("aborts the OpenCode prompt on coordinator timeout while session deletion stays live", async () => {
     const promptGate = new Promise<void>(() => undefined);
     const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
