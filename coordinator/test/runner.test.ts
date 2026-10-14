@@ -274,63 +274,15 @@ describe("production runner boundary", () => {
     );
   });
 
-  it.each(["max_turns", "error_max_turns"])(
-    "returns expected turn-limit terminal %s without throwing from the cycle runner",
-    async (reason) => {
-      const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
-      const expected = {
-        terminal: { payload: { state: "failed", reason } },
-      } as CoordinatorResult;
-      const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue(expected);
-      const bridge = {
-        prepareConfig: async () => ({
-          ...prepared.config,
-          model: "claude-opus-4-6",
-          runtimeId: "claude",
-          providerId: "vertex",
-          claudeMdPath: join(directory, "CLAUDE.md"),
-          claudeMdStrategy: InstructionStrategy.Ignore,
-        }),
-        preflight: async () => ({
-          action: PreflightAction.Start,
-          prompt: "work found",
-          transcript: "work found",
-          scripts: [],
-        }),
-        cleanupBetweenCycles: async () => undefined,
-      };
-
-      try {
-        const result = await runCoordinator({
-          scriptDir: resolve(process.cwd(), ".."),
-          label: "hcc-ai-framework",
-          instanceId: "instance-1",
-          dataDirectory: directory,
-          lockPath: join(directory, ".lock"),
-          sleepSignalPath: join(directory, "cycle-sleep.json"),
-          bridge,
-          writers: {},
-          once: true,
-          initialIntervalSeconds: 0,
-          initialIdleIntervalSeconds: 0,
-        });
-
-        expect(result).toMatchObject({
-          stopReason: "max_cycles",
-          failures: 0,
-          results: [expected],
-        });
-      } finally {
-        execute.mockRestore();
-      }
-    },
-  );
-
-  it("counts a failed CoordinatorResult as a run failure", async () => {
+  it.each([
+    [{ state: "completed" }, new Error("projection failed"), 1],
+    [{ state: "failed", reason: "max_turns" }, undefined, 0],
+    [{ state: "failed", reason: "error_max_turns" }, undefined, 0],
+  ])("counts terminal %o with error %o as %i run failures", async (payload, error, failures) => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({
-      error: new Error("projection failed"),
-      terminal: { payload: { state: "completed" } },
+      error,
+      terminal: { payload },
     } as CoordinatorResult);
     const bridge = {
       prepareConfig: async () => ({
@@ -365,7 +317,11 @@ describe("production runner boundary", () => {
         initialIdleIntervalSeconds: 0,
       });
 
-      expect(result).toMatchObject({ stopReason: "max_cycles", failures: 1, results: [] });
+      expect(result).toMatchObject({
+        stopReason: "max_cycles",
+        failures,
+        results: failures ? [] : [{ terminal: { payload } }],
+      });
     } finally {
       execute.mockRestore();
     }

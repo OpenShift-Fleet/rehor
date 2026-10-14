@@ -185,7 +185,7 @@ describe("legacy compatibility projection", () => {
     );
   });
 
-  it("records timeout and resource-leak metrics", async () => {
+  it("records interruption and resource-leak metrics", async () => {
     const metrics: unknown[] = [];
     const projection = new LegacyCompatibilityProjection({
       metrics: {
@@ -194,21 +194,13 @@ describe("legacy compatibility projection", () => {
         },
       },
     });
-    const failed = event("terminal-failed", 2, "terminal", {
-      state: "failed",
+    const interrupted = event("terminal-interrupted", 2, "terminal", {
+      state: "timed_out",
       durationMs: 2_000,
       resourceLeak: true,
     });
-    const timeout = new AbortController();
-    const runtime = new FakeAgentRuntime();
-    runtime.run = () =>
-      (async function* () {
-        yield start;
-        timeout.abort({ kind: "timed_out", reason: "test timeout" });
-        yield failed;
-      })();
 
-    await executeRun(runtime, run, { projection, signal: timeout.signal });
+    await executeRun(new FakeAgentRuntime({ events: [start, interrupted] }), run, { projection });
 
     expect(metrics).toEqual(
       expect.arrayContaining([

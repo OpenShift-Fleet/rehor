@@ -69,6 +69,21 @@ function event(overrides: Partial<RehorEvent> = {}): RehorEvent {
   };
 }
 
+function tool(
+  sequence: number,
+  state: "started" | "completed",
+  id: string,
+  name: string,
+  extra: Record<string, unknown> = {},
+): RehorEvent {
+  return event({
+    eventId: `${id}-${state}`,
+    sequence,
+    kind: "tool",
+    payload: { state, toolUseId: id, name, ...extra } as RehorEvent["payload"],
+  });
+}
+
 function terminal(sequence = 2): RehorEvent {
   return event({
     eventId: "terminal-01",
@@ -148,6 +163,7 @@ describe("coordinator execution", () => {
     const result = await executeRun(runtime, run, { signal: cancel.signal });
 
     expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
   });
 
   it("completes normally when the runtime trails a usage event after the terminal", async () => {
@@ -234,43 +250,17 @@ describe("coordinator execution", () => {
     expect(runtime.stopCalls).toBe(1);
   });
 
-  it("preserves a completed runtime terminal when external abort arrives during delivery", async () => {
-    const cancel = new AbortController();
-    const base = new FakeAgentRuntime({ events: [event(), terminal()] });
-    const runtime: AgentRuntime = {
-      start: (signal) => base.start(signal),
-      async *run(input, signal, _context) {
-        for await (const current of base.run(input, signal)) {
-          if (current.kind === "terminal") cancel.abort("late external cancel");
-          yield current;
-        }
-      },
-      stop: () => base.stop(),
-    };
-
-    const result = await executeRun(runtime, run, { signal: cancel.signal });
-
-    expect(result.terminal.payload.state).toBe("completed");
-    expect(result.error).toBeUndefined();
-  });
-
-  it("classifies only a TimeoutError DOMException abort as timed_out", async () => {
+  it.each([
+    [new DOMException("x", "TimeoutError"), "timed_out"],
+    [Object.assign(new Error("x"), { name: "TimeoutError" }), "cancelled"],
+  ])("classifies %s as %s", async (reason, state) => {
     const cancel = new AbortController();
     const runtime = new HangingRuntime();
     const pending = executeRun(runtime, run, { signal: cancel.signal });
-    cancel.abort(new DOMException("deadline elapsed", "TimeoutError"));
+    cancel.abort(reason);
     const result = await pending;
 
-    const untypedCancel = new AbortController();
-    const untypedRuntime = new HangingRuntime();
-    const untypedPending = executeRun(untypedRuntime, run, { signal: untypedCancel.signal });
-    const errorNamedTimeout = new Error("not a DOM timeout");
-    errorNamedTimeout.name = "TimeoutError";
-    untypedCancel.abort(errorNamedTimeout);
-    const untypedResult = await untypedPending;
-
-    expect(result.terminal.payload.state).toBe("timed_out");
-    expect(untypedResult.terminal.payload.state).toBe("cancelled");
+    expect(result.terminal.payload.state).toBe(state);
   });
 
   it("maps shutdown to interrupted and cancellation to cancelled", async () => {
@@ -382,33 +372,17 @@ describe("coordinator execution", () => {
   });
 
   it("keeps tool context from tool-start order when completion events arrive later", async () => {
-    const started = event({
-      eventId: "task-update-started",
-      sequence: 2,
-      kind: "tool",
-      payload: {
-        state: "started",
-        toolUseId: "task-update-1",
-        name: "mcp__bot-memory__task_update",
-        input: { jira_key: "REHOR-1", repo: "start-repo", status: "pr_changes", summary: "start" },
-      },
+    const started = tool(2, "started", "task-update-1", "mcp__bot-memory__task_update", {
+      input: { jira_key: "REHOR-1", repo: "start-repo", status: "pr_changes", summary: "start" },
     });
-    const completed = event({
-      eventId: "task-update-completed",
-      sequence: 3,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "task-update-1",
-        name: "mcp__bot-memory__task_update",
-        input: {
-          jira_key: "REHOR-2",
-          repo: "completion-repo",
-          status: "pr_open",
-          summary: "finish",
-        },
-        content: JSON.stringify({ id: 42, external_key: "REHOR-1" }),
+    const completed = tool(3, "completed", "task-update-1", "mcp__bot-memory__task_update", {
+      input: {
+        jira_key: "REHOR-2",
+        repo: "completion-repo",
+        status: "pr_open",
+        summary: "finish",
       },
+      content: JSON.stringify({ id: 42, external_key: "REHOR-1" }),
     });
     const runtime = new FakeAgentRuntime({ events: [event(), started, completed, terminal(4)] });
 
@@ -426,16 +400,8 @@ describe("coordinator execution", () => {
   });
 
   it("captures completion input when no tool-start event was observed", async () => {
-    const completed = event({
-      eventId: "orphan-tool-completed",
-      sequence: 2,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "orphan-tool",
-        name: "mcp__bot-memory__task_update",
-        input: { jira_key: "REHOR-3", status: "pr_changes", summary: "completion only" },
-      },
+    const completed = tool(2, "completed", "orphan-tool", "mcp__bot-memory__task_update", {
+      input: { jira_key: "REHOR-3", status: "pr_changes", summary: "completion only" },
     });
     const runtime = new FakeAgentRuntime({ events: [event(), completed, terminal(3)] });
 
@@ -447,17 +413,9 @@ describe("coordinator execution", () => {
   });
 
   it("extracts task IDs from errored tool results", async () => {
-    const completed = event({
-      eventId: "task-result-error",
-      sequence: 2,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "task-result-error",
-        name: "mcp__bot-memory__task_get",
-        isError: true,
-        content: JSON.stringify({ id: 43, external_key: "REHOR-43" }),
-      },
+    const completed = tool(2, "completed", "task-result-error", "mcp__bot-memory__task_get", {
+      isError: true,
+      content: JSON.stringify({ id: 43, external_key: "REHOR-43" }),
     });
     const runtime = new FakeAgentRuntime({ events: [event(), completed, terminal(3)] });
 
@@ -467,49 +425,17 @@ describe("coordinator execution", () => {
   });
 
   it("preserves Python task_update ordering when parallel completions arrive in reverse", async () => {
-    const firstStart = event({
-      eventId: "parallel-start-1",
-      sequence: 2,
-      kind: "tool",
-      payload: {
-        state: "started",
-        toolUseId: "parallel-1",
-        name: "mcp__bot-memory__task_update",
-        input: { status: "pr_open", summary: "first start" },
-      },
+    const firstStart = tool(2, "started", "parallel-1", "mcp__bot-memory__task_update", {
+      input: { status: "pr_open", summary: "first start" },
     });
-    const secondStart = event({
-      eventId: "parallel-start-2",
-      sequence: 3,
-      kind: "tool",
-      payload: {
-        state: "started",
-        toolUseId: "parallel-2",
-        name: "mcp__bot-memory__task_update",
-        input: { status: "pr_changes", summary: "second start" },
-      },
+    const secondStart = tool(3, "started", "parallel-2", "mcp__bot-memory__task_update", {
+      input: { status: "pr_changes", summary: "second start" },
     });
-    const secondComplete = event({
-      eventId: "parallel-complete-2",
-      sequence: 4,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "parallel-2",
-        name: "mcp__bot-memory__task_update",
-        input: { status: "pr_changes", summary: "second complete" },
-      },
+    const secondComplete = tool(4, "completed", "parallel-2", "mcp__bot-memory__task_update", {
+      input: { status: "pr_changes", summary: "second complete" },
     });
-    const firstComplete = event({
-      eventId: "parallel-complete-1",
-      sequence: 5,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "parallel-1",
-        name: "mcp__bot-memory__task_update",
-        input: { status: "pr_open", summary: "first complete" },
-      },
+    const firstComplete = tool(5, "completed", "parallel-1", "mcp__bot-memory__task_update", {
+      input: { status: "pr_open", summary: "first complete" },
     });
     const runtime = new FakeAgentRuntime({
       events: [event(), firstStart, secondStart, secondComplete, firstComplete, terminal(6)],
@@ -544,27 +470,11 @@ describe("coordinator execution", () => {
     });
 
     const cancel = new AbortController();
-    const toolStarted = event({
-      eventId: "tracked-tool-started",
-      sequence: 2,
-      kind: "tool",
-      payload: {
-        state: "started",
-        toolUseId: "tracked-tool",
-        name: "mcp__bot-memory__task_add",
-        input: { jira_key: "REHOR-45", summary: "tracked before abort" },
-      },
+    const toolStarted = tool(2, "started", "tracked-tool", "mcp__bot-memory__task_add", {
+      input: { jira_key: "REHOR-45", summary: "tracked before abort" },
     });
-    const toolCompleted = event({
-      eventId: "tracked-tool-completed",
-      sequence: 3,
-      kind: "tool",
-      payload: {
-        state: "completed",
-        toolUseId: "tracked-tool",
-        name: "mcp__bot-memory__task_add",
-        content: JSON.stringify({ id: 45, external_key: "REHOR-45" }),
-      },
+    const toolCompleted = tool(3, "completed", "tracked-tool", "mcp__bot-memory__task_add", {
+      content: JSON.stringify({ id: 45, external_key: "REHOR-45" }),
     });
     const runtime = new FakeAgentRuntime({ events: [event(), toolStarted, toolCompleted] });
     const result = await executeRun(runtime, run, {

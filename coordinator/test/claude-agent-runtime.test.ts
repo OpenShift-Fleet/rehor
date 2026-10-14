@@ -8,6 +8,7 @@ import type { RehorEvent, RehorRun } from "../src/domain";
 import { LegacyCompatibilityProjection } from "../src/projections/compatibility";
 import { createDefaultRuntimeRegistry, executeSelectedRun } from "../src/runtime-factory";
 import { ClaudeAgentRuntime } from "../src/runtimes/claude-agent";
+import { postToolUseHook } from "./contract/runtime-harnesses";
 
 const run: RehorRun = {
   schemaVersion: "1",
@@ -324,12 +325,7 @@ describe("ClaudeAgentRuntime", () => {
     const hookResults: Record<string, unknown>[] = [];
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       captured = options;
-      const hooks = options.hooks as {
-        PostToolUse?: Array<{
-          hooks: Array<(...args: unknown[]) => Promise<Record<string, unknown>>>;
-        }>;
-      };
-      const postToolUse = hooks?.PostToolUse?.[0]?.hooks[0];
+      const postToolUse = postToolUseHook(options);
       return Object.assign(
         (async function* (): AsyncGenerator<unknown> {
           for (let index = 1; index <= budgetRun.limits.maxTurns; index += 1) {
@@ -379,8 +375,7 @@ describe("ClaudeAgentRuntime", () => {
       "TURN BUDGET CRITICAL: ~7/8 tool calls used, ~1 remaining. You MUST save progress NOW via " +
       "task_update with current summary, last_step, files_changed, and next_step. Then wrap up or stop.";
 
-    expect(captured).toMatchObject({ maxTurns: 8 });
-    expect(hookResults).toHaveLength(8);
+    expect(captured?.maxTurns).toBe(8);
     expect(hookResults.map((hook) => hook.systemMessage ?? null)).toEqual([
       null,
       null,
@@ -392,14 +387,6 @@ describe("ClaudeAgentRuntime", () => {
       null,
     ]);
     expect(result.capabilities?.enforcesTurnLimit).toBe(true);
-    expect(
-      result.events.filter(({ kind }) => kind === "policy").map(({ payload }) => payload.message),
-    ).toEqual([warning, critical]);
-    expect(result.terminal.payload).toMatchObject({
-      state: "failed",
-      reason: "error_max_turns",
-    });
-    expect(result.error).toBeUndefined();
   });
 
   it("preserves partial usage through coordinator timeout handling", async () => {

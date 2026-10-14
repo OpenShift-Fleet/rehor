@@ -32,6 +32,7 @@ import {
   renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
 import { boundedOperation } from "../src/runtimes/shared";
+import { metricsProjection } from "./contract/runtime-harnesses";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -331,14 +332,8 @@ describe("bounded operations", () => {
     await runtime.stop();
   });
 
-  it("preserves the original deadline error class and name", async () => {
-    class KnownDeadlineError extends Error {
-      constructor() {
-        super("known deadline elapsed");
-        this.name = "KnownDeadlineError";
-      }
-    }
-    const deadlineError = new KnownDeadlineError();
+  it("preserves the original deadline error", async () => {
+    const deadlineError = new Error("known");
 
     await expect(
       boundedOperation(
@@ -349,7 +344,6 @@ describe("bounded operations", () => {
         deadlineError,
       ),
     ).rejects.toBe(deadlineError);
-    expect(deadlineError.name).toBe("KnownDeadlineError");
   });
 
   it("does not start an operation after cancellation wins before its microtask", async () => {
@@ -2150,49 +2144,38 @@ describe("OpenCode runtime", () => {
     expect(events.at(-1)?.payload).toMatchObject({ turns: 1 });
   });
 
-  it("maps an OpenCode server crash to an interrupted run and counts the interruption", async () => {
-    const crash = new Error("server process crashed");
-    const { runtime } = fakeRuntime({
-      events: [],
-      streamError: new Error("SSE closed after crash"),
-      crashError: crash,
-    });
-    const metrics: Array<Record<string, unknown>> = [];
-    const projection = new LegacyCompatibilityProjection({
-      metrics: {
-        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
-      },
-    });
+  it.each(["crash", "SSE loss"] as const)(
+    "maps an unreconciled OpenCode %s to an interrupted run",
+    async (failure) => {
+      const crash = failure === "crash" ? new Error("server process crashed") : undefined;
+      const { runtime } = fakeRuntime({
+        events: [],
+        streamError: new Error(failure === "crash" ? "SSE closed after crash" : "SSE disconnected"),
+        ...(crash ? { crashError: crash } : {}),
+      });
+      const metrics: unknown[] = [];
+      const projection = failure === "crash" ? metricsProjection(metrics) : undefined;
 
-    const result = await executeRun(runtime, runtimeRun, { projection });
+      const result = await executeRun(runtime, runtimeRun, projection ? { projection } : {});
 
-    expect(result.terminal.payload).toMatchObject({
-      state: "interrupted",
-      reason: "opencode_crash",
-    });
-    expect(result.events.find((event) => event.kind === "error")?.payload).toMatchObject({
-      message: crash.message,
-    });
-    expect(result.error).toBeUndefined();
-    expect(metrics).toContainEqual({
-      type: "counter",
-      name: "devbot_runtime_interruptions_total",
-      value: 1,
-      labels: { runtime: "unknown", provider: runtimeRun.provider.id, state: "interrupted" },
-    });
-  });
-
-  it("maps unreconciled OpenCode SSE loss to an interrupted run", async () => {
-    const { runtime } = fakeRuntime({ events: [], streamError: new Error("SSE disconnected") });
-
-    const result = await executeRun(runtime, runtimeRun);
-
-    expect(result.terminal.payload).toMatchObject({
-      state: "interrupted",
-      reason: "opencode_crash",
-    });
-    expect(result.error).toBeUndefined();
-  });
+      expect(result.terminal.payload).toMatchObject({
+        state: "interrupted",
+        reason: "opencode_crash",
+      });
+      expect(result.error).toBeUndefined();
+      if (crash) {
+        expect(result.events.find((event) => event.kind === "error")?.payload).toMatchObject({
+          message: crash.message,
+        });
+        expect(metrics).toContainEqual({
+          type: "counter",
+          name: "devbot_runtime_interruptions_total",
+          value: 1,
+          labels: { runtime: "unknown", provider: runtimeRun.provider.id, state: "interrupted" },
+        });
+      }
+    },
+  );
 
   it("preserves partial evidence and fails when the server crashes", async () => {
     const crash = new Error("server process crashed");

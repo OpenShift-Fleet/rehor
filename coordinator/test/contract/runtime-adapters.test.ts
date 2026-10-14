@@ -4,10 +4,10 @@ import { executeRun } from "../../src/coordinator";
 import type { RehorEvent } from "../../src/domain";
 import { createLoopSignals } from "../../src/loop";
 import type { AgentRuntime } from "../../src/ports/agent-runtime";
-import { LegacyCompatibilityProjection } from "../../src/projections/compatibility";
 import {
   claudeHarness,
   fakeHarness,
+  metricsProjection,
   openCodeHarness,
   type RuntimeContractHarness,
 } from "./runtime-harnesses";
@@ -37,6 +37,16 @@ async function collect(events: AsyncIterable<RehorEvent>): Promise<RehorEvent[]>
 }
 
 describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
+  const abortAfterStart = async (reason: unknown): Promise<RehorEvent[]> => {
+    const { runtime, waiting } = harness.blocksUntilAborted();
+    const cancel = new AbortController();
+    await runtime.start(new AbortController().signal);
+    const pending = collect(runtime.run(harness.run, cancel.signal));
+    await waiting;
+    cancel.abort(reason);
+    return pending;
+  };
+
   it("streams a started event, then exactly one completed terminal and no error", async () => {
     const result = await executeRun(harness.completed(), harness.run);
 
@@ -47,13 +57,7 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
   });
 
   it("reports an aborted provider run as failed; coordinator owns abort states", async () => {
-    const { runtime, waiting } = harness.blocksUntilAborted();
-    const cancel = new AbortController();
-    await runtime.start(new AbortController().signal);
-    const pending = collect(runtime.run(harness.run, cancel.signal));
-    await waiting;
-    cancel.abort({ kind: "timed_out", reason: "contract timeout" });
-    const events = await pending;
+    const events = await abortAfterStart({ kind: "timed_out", reason: "contract timeout" });
 
     expectLifecycle(events);
     expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
@@ -130,11 +134,7 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
   it("enforces max turns from successful normalized tool events", async () => {
     const maxTurns = 8;
     const metrics: Array<Record<string, unknown>> = [];
-    const projection = new LegacyCompatibilityProjection({
-      metrics: {
-        observe: (point) => void metrics.push(point as unknown as Record<string, unknown>),
-      },
-    });
+    const projection = metricsProjection(metrics);
     const result = await executeRun(
       harness.toolCalls(maxTurns),
       { ...harness.run, limits: { ...harness.run.limits, maxTurns } },
@@ -152,18 +152,14 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     const sequences = result.events.map(({ sequence }) => sequence);
     expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
     expect(new Set(sequences).size).toBe(sequences.length);
-    expect(metrics).toContainEqual({
-      type: "counter",
-      name: "devbot_turn_budget_event_total",
-      value: 1,
-      labels: { label: harness.run.label, level: "warning" },
-    });
-    expect(metrics).toContainEqual({
-      type: "counter",
-      name: "devbot_turn_budget_event_total",
-      value: 1,
-      labels: { label: harness.run.label, level: "critical" },
-    });
+    for (const level of ["warning", "critical"] as const) {
+      expect(metrics).toContainEqual({
+        type: "counter",
+        name: "devbot_turn_budget_event_total",
+        value: 1,
+        labels: { label: harness.run.label, level },
+      });
+    }
   });
 
   it("tracks task context from normalized tool events", async () => {
@@ -198,14 +194,17 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     expect(result.terminal.payload.state).toBe("timed_out");
   });
 
-  it.runIf(harness.name !== "fake")(
-    "reports an in-flight run as failed when the runtime is stopped",
-    async () => {
+  it.each(["cancel", "stop"] as const)(
+    "reports an in-flight run as failed when the runtime is %s",
+    async (trigger) => {
+      if (trigger === "stop" && harness.name === "fake") return;
       const { runtime, waiting } = harness.blocksUntilAborted();
+      const cancel = new AbortController();
       await runtime.start(new AbortController().signal);
-      const pending = collect(runtime.run(harness.run, new AbortController().signal));
+      const pending = collect(runtime.run(harness.run, cancel.signal));
       await waiting;
-      await runtime.stop();
+      if (trigger === "cancel") cancel.abort("cancelled");
+      else await runtime.stop();
       const events = await pending;
 
       expectLifecycle(events);
