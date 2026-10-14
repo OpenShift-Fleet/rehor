@@ -416,7 +416,12 @@ WITH task_outcomes AS (
 """
 
 
-def _filtered_cte(request: Request) -> tuple[str, list]:
+def _filtered_cte(
+    request: Request,
+    *,
+    default_from_date: date | None = None,
+    default_to_date: date | None = None,
+) -> tuple[str, list]:
     params = []
     conditions = []
 
@@ -458,8 +463,10 @@ def _filtered_cte(request: Request) -> tuple[str, list]:
             "WHERE lower(evidence_item.value->>'source') = ${index})",
         )
 
-    from_date = _parse_date(request.query_params.get("from"), "from")
-    to_date = _parse_date(request.query_params.get("to"), "to")
+    from_date = (
+        default_from_date if default_from_date is not None else _parse_date(request.query_params.get("from"), "from")
+    )
+    to_date = default_to_date if default_to_date is not None else _parse_date(request.query_params.get("to"), "to")
     if from_date and to_date and from_date > to_date:
         raise ValueError("from must be on or before to")
     if from_date:
@@ -478,6 +485,35 @@ def _parse_date(value: str | None, name: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{name} must use YYYY-MM-DD format") from exc
+
+
+def _month_start(value: date) -> date:
+    """return the first day of the month containing a date."""
+    return value.replace(day=1)
+
+
+def _next_month(value: date) -> date:
+    """return the first day of the month after a date."""
+    if value.month == 12:
+        return date(value.year + 1, 1, 1)
+    return date(value.year, value.month + 1, 1)
+
+
+def _month_keys(from_date: date, to_date: date) -> list[str]:
+    """return chronological YYYY-MM keys covering an inclusive date range."""
+    current = _month_start(from_date)
+    end = _month_start(to_date)
+    keys = []
+    while current <= end:
+        keys.append(current.strftime("%Y-%m"))
+        current = _next_month(current)
+    return keys
+
+
+def _outcome_rate(accepted: int, rejected: int, obsolete: int) -> float | None:
+    """calculate the server-defined delivery acceptance rate."""
+    denominator = accepted + rejected + obsolete
+    return accepted / denominator if denominator else None
 
 
 def _parse_pagination(request: Request) -> tuple[int, int]:
@@ -764,6 +800,103 @@ async def api_task_outcomes_summary(request: Request) -> JSONResponse:
             },
             "freshness": {"generatedAt": datetime.now(UTC).isoformat()},
             "backfill": {"state": "not_started", "unknownCount": counts["unreported_count"]},
+        }
+    )
+
+
+async def api_task_outcomes_trends(request: Request) -> JSONResponse:
+    """return category and outcome counts grouped by UTC calendar month."""
+    try:
+        from_date = _parse_date(request.query_params.get("from"), "from")
+        to_date = _parse_date(request.query_params.get("to"), "to")
+        if from_date and to_date and from_date > to_date:
+            raise ValueError("from must be on or before to")
+        if from_date is None:
+            today = datetime.now(UTC).date()
+            from_date = _month_start(today)
+        if to_date is None:
+            to_date = datetime.now(UTC).date()
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    try:
+        cte, params = _filtered_cte(
+            request,
+            default_from_date=from_date,
+            default_to_date=to_date,
+        )
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    pool = get_pool()
+    rows = await pool.fetch(
+        f"""{cte}
+        SELECT to_char(date_trunc('month', event_at AT TIME ZONE 'UTC'), 'YYYY-MM') AS month,
+            COUNT(*) AS task_count,
+            COUNT(*) FILTER (WHERE category = 'delivery') AS delivery_count,
+            COUNT(*) FILTER (WHERE category = 'monitoring') AS monitoring_count,
+            COUNT(*) FILTER (WHERE category = 'grooming') AS grooming_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'accepted') AS accepted_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'rejected') AS rejected_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'obsolete') AS obsolete_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'inconclusive') AS inconclusive_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'unreported') AS unreported_count,
+            COUNT(*) FILTER (WHERE category = 'delivery' AND state = 'wip') AS wip_count
+        FROM filtered
+        GROUP BY date_trunc('month', event_at AT TIME ZONE 'UTC')
+        ORDER BY month""",
+        *params,
+    )
+
+    by_month = {
+        row["month"]: {
+            "month": row["month"],
+            "taskCount": row["task_count"],
+            "deliveryCount": row["delivery_count"],
+            "monitoringCount": row["monitoring_count"],
+            "groomingCount": row["grooming_count"],
+            "acceptedCount": row["accepted_count"],
+            "rejectedCount": row["rejected_count"],
+            "obsoleteCount": row["obsolete_count"],
+            "inconclusiveCount": row["inconclusive_count"],
+            "unreportedCount": row["unreported_count"],
+            "wipCount": row["wip_count"],
+            "acceptanceRate": _outcome_rate(row["accepted_count"], row["rejected_count"], row["obsolete_count"]),
+        }
+        for row in rows
+    }
+    months = [
+        by_month.get(
+            key,
+            {
+                "month": key,
+                "taskCount": 0,
+                "deliveryCount": 0,
+                "monitoringCount": 0,
+                "groomingCount": 0,
+                "acceptedCount": 0,
+                "rejectedCount": 0,
+                "obsoleteCount": 0,
+                "inconclusiveCount": 0,
+                "unreportedCount": 0,
+                "wipCount": 0,
+                "acceptanceRate": None,
+            },
+        )
+        for key in _month_keys(from_date, to_date)
+    ]
+    return JSONResponse(
+        {
+            "period": {"from": from_date.isoformat(), "to": to_date.isoformat()},
+            "months": months,
+            "freshness": {"generatedAt": datetime.now(UTC).isoformat()},
+            "metricDefinitions": {
+                "acceptanceRate": (
+                    "accepted / (accepted + rejected + obsolete) for delivery-category tasks; "
+                    "monitoring and grooming excluded"
+                ),
+                "month": "UTC calendar month derived from the task event timestamp",
+            },
         }
     )
 

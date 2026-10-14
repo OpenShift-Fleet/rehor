@@ -26,6 +26,7 @@ from fixtures.api_payloads import (
     TASK_CYCLE_GROUPS,
     TASK_OUTCOME_SUMMARY,
     TASK_OUTCOME_TASKS,
+    TASK_OUTCOME_TRENDS,
     TASKS,
 )
 
@@ -97,6 +98,9 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/task-outcomes/summary":
             self.send_json(TASK_OUTCOME_SUMMARY)
+
+        elif path == "/api/task-outcomes/trends":
+            self.send_json(TASK_OUTCOME_TRENDS)
 
         elif path == "/api/task-outcomes/tasks":
             items = TASK_OUTCOME_TASKS[:]
@@ -453,6 +457,7 @@ if __name__ == "__main__":
     print("  GET  /api/cycle-runs/by-task - Cycle runs grouped by task")
     print("  GET  /api/cycle-runs/:id/transcript - Cycle run transcript")
     print("  GET  /api/task-outcomes/summary - Task outcome rollup")
+    print("  GET  /api/task-outcomes/trends - Monthly task outcome trends")
     print("  GET  /api/task-outcomes/tasks - Task outcome list")
     print("  GET  /api/task-outcomes/tasks/:task_id - Task outcome detail")
     print("  GET  /api/analytics         - Analytics summary")

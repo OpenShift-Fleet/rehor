@@ -102,10 +102,16 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_task_unpause,
         api_tasks,
     )
-    from .task_outcomes import api_task_outcome_detail, api_task_outcomes, api_task_outcomes_summary
+    from .task_outcomes import (
+        api_task_outcome_detail,
+        api_task_outcomes,
+        api_task_outcomes_summary,
+        api_task_outcomes_trends,
+    )
 
     mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
     mcp.custom_route("/api/task-outcomes/summary", methods=["GET"])(api_task_outcomes_summary)
+    mcp.custom_route("/api/task-outcomes/trends", methods=["GET"])(api_task_outcomes_trends)
     mcp.custom_route("/api/task-outcomes/tasks", methods=["GET"])(api_task_outcomes)
     mcp.custom_route("/api/task-outcomes/tasks/{task_id}", methods=["GET"])(api_task_outcome_detail)
     mcp.custom_route("/api/tasks/{key:path}", methods=["DELETE"])(api_task_delete)

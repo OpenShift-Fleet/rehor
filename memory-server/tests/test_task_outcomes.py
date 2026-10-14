@@ -17,6 +17,7 @@ from bot_memory_server.task_outcomes import (
     api_task_outcome_detail,
     api_task_outcomes,
     api_task_outcomes_summary,
+    api_task_outcomes_trends,
     canonical_repositories,
 )
 from bot_memory_server.tools.tasks import register_task_tools
@@ -31,6 +32,7 @@ from test_api_schemas import _validate
 app = Starlette(
     routes=[
         Route("/api/task-outcomes/summary", api_task_outcomes_summary, methods=["GET"]),
+        Route("/api/task-outcomes/trends", api_task_outcomes_trends, methods=["GET"]),
         Route("/api/task-outcomes/tasks", api_task_outcomes, methods=["GET"]),
         Route("/api/task-outcomes/tasks/{task_id}", api_task_outcome_detail, methods=["GET"]),
     ]
@@ -287,6 +289,64 @@ async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_covera
                 assert re.search(rf"category = 'grooming' AND (?:f\.)?state = '{state}'", query)
         if "GROUP BY repositories.repo, f." in query:
             assert "f.category = 'delivery'" in query
+
+
+@pytest.mark.asyncio
+async def test_trends_fills_missing_months_and_calculates_acceptance_rate():
+    pool = FakePool(
+        fetch_rows=[
+            [
+                {
+                    "month": "2026-08",
+                    "task_count": 4,
+                    "delivery_count": 3,
+                    "monitoring_count": 1,
+                    "grooming_count": 0,
+                    "accepted_count": 1,
+                    "rejected_count": 1,
+                    "obsolete_count": 1,
+                    "inconclusive_count": 0,
+                    "unreported_count": 0,
+                    "wip_count": 0,
+                },
+                {
+                    "month": "2026-10",
+                    "task_count": 2,
+                    "delivery_count": 0,
+                    "monitoring_count": 0,
+                    "grooming_count": 2,
+                    "accepted_count": 0,
+                    "rejected_count": 0,
+                    "obsolete_count": 0,
+                    "inconclusive_count": 0,
+                    "unreported_count": 1,
+                    "wip_count": 1,
+                },
+            ]
+        ]
+    )
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/task-outcomes/trends?from=2026-08-01&to=2026-10-13")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [month["month"] for month in body["months"]] == ["2026-08", "2026-09", "2026-10"]
+    assert body["months"][0]["acceptanceRate"] == pytest.approx(1 / 3)
+    assert body["months"][1]["taskCount"] == 0
+    assert body["months"][1]["acceptanceRate"] is None
+    assert body["months"][2]["groomingCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_trends_rejects_invalid_date_range():
+    with patch("bot_memory_server.task_outcomes.get_pool") as get_pool:
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            response = await client.get("/api/task-outcomes/trends?from=2026-10-02&to=2026-10-01")
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "from must be on or before to"
+    get_pool.assert_not_called()
 
 
 @pytest.mark.asyncio
