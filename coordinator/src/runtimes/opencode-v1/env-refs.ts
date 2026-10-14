@@ -103,7 +103,11 @@ export function isCoordinatorControlledEnvironment(name: string): boolean {
   return OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix));
 }
 
-export function assertProviderEnvironment(name: string, path: string): void {
+export function assertProviderEnvironment(
+  name: string,
+  path: string,
+  enforceAllowlist = true,
+): void {
   if (isCoordinatorControlledEnvironment(name)) {
     throw new OpenCodeConfigValidationError([
       `${path} cannot reference a coordinator-controlled environment variable`,
@@ -114,7 +118,7 @@ export function assertProviderEnvironment(name: string, path: string): void {
       `${path} cannot reference a blocked OpenCode environment variable '${name}'`,
     ]);
   }
-  if (!PROVIDER_ENVIRONMENT_ALLOWLIST.has(name)) {
+  if (enforceAllowlist && !PROVIDER_ENVIRONMENT_ALLOWLIST.has(name)) {
     throw new OpenCodeConfigValidationError([
       `${path} cannot reference an unapproved OpenCode environment variable '${name}'`,
     ]);
