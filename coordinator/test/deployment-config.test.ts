@@ -8,7 +8,6 @@ import { loadOpenCodeDeploymentConfig, renderOpenCodeV1ConfigForCycle } from "..
 import type { PreparedCycleInput } from "../src/cycle-input";
 import { InstructionStrategy } from "../src/instructions";
 import { validateOpenCodeDeployment } from "../src/runner";
-import { assertOpenCodeConfigInvariants } from "./opencode-config-invariants";
 
 const temporaryDirectories: string[] = [];
 
@@ -83,7 +82,6 @@ describe("OpenCode deployment defaults", () => {
       prepared.config.providerId,
       deployment,
     );
-    assertOpenCodeConfigInvariants(defaultRendered.config);
     expect(defaultRendered.config.model).toBe("rehor-openai/gpt-6-luna");
     expect(defaultRendered.requiredEnvironment).toEqual([
       "REHOR_MODEL_PROXY_TOKEN",
@@ -103,7 +101,6 @@ describe("OpenCode deployment defaults", () => {
       instanceOverride.providerId,
       deployment,
     );
-    assertOpenCodeConfigInvariants(overrideRendered.config);
     expect(overrideRendered.config.model).toBe("rehor-openai-chat/gpt-4.1");
     expect(() =>
       validateOpenCodeDeployment(

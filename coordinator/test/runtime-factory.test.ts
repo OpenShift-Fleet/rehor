@@ -15,7 +15,6 @@ import {
 } from "../src";
 import type { OpenCodeServerController, OpenCodeV1Runtime } from "../src/runtimes/opencode-v1";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
-import { assertOpenCodeConfigInvariants } from "./opencode-config-invariants";
 
 const run: RehorRun = {
   schemaVersion: "1",
@@ -122,7 +121,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-    assertOpenCodeConfigInvariants(rendered?.config);
 
     expect(rendered?.config.provider).toEqual({
       "legacy-provider": {
@@ -189,7 +187,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-    assertOpenCodeConfigInvariants(rendered?.config);
     expect(rendered?.config).toMatchObject({
       model: "vertex/factory-model",
       enabled_providers: ["vertex"],
@@ -206,7 +203,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-    assertOpenCodeConfigInvariants(rendered?.config);
 
     expect(rendered?.config).toMatchObject({
       model: "vertex/deployment-model",

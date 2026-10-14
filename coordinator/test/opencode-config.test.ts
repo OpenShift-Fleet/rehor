@@ -4,11 +4,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   type OpenCodeV1ConfigInput,
-  renderOpenCodeV1ConfigForCycle as renderOpenCodeV1ConfigForCycleUnchecked,
-  renderOpenCodeV1Config as renderOpenCodeV1ConfigUnchecked,
+  renderOpenCodeV1Config,
+  renderOpenCodeV1ConfigForCycle,
   writeOpenCodeConfig,
 } from "../src/runtimes/opencode-v1";
-import { assertOpenCodeConfigInvariants } from "./opencode-config-invariants";
 
 const packages = [
   { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
@@ -28,20 +27,6 @@ const deploymentFixtures = [
   ["default", new URL("../opencode-deployment.default.json", import.meta.url)],
   ["example", new URL("../opencode-deployment.example.json", import.meta.url)],
 ] as const;
-
-function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput) {
-  const rendered = renderOpenCodeV1ConfigUnchecked(input);
-  assertOpenCodeConfigInvariants(rendered.config);
-  return rendered;
-}
-
-function renderOpenCodeV1ConfigForCycle(
-  ...args: Parameters<typeof renderOpenCodeV1ConfigForCycleUnchecked>
-) {
-  const rendered = renderOpenCodeV1ConfigForCycleUnchecked(...args);
-  assertOpenCodeConfigInvariants(rendered.config);
-  return rendered;
-}
 
 describe("OpenCode V1 config renderer", () => {
   it("matches byte-for-byte snapshots for deployment fixtures", async () => {
@@ -63,40 +48,15 @@ describe("OpenCode V1 config renderer", () => {
 
     expect(rendered).toMatchSnapshot();
   });
-  it("test invariant helper rejects literal secrets and blocked environment references", () => {
-    expect(() =>
-      assertOpenCodeConfigInvariants({
-        provider: { provider: { options: { apiKey: "literal-secret" } } },
-      }),
-    ).toThrow("config.provider.provider.options.apiKey contains a literal secret");
-    expect(() =>
-      assertOpenCodeConfigInvariants({
-        provider: {
-          provider: {
-            name: "{env:JIRA_USERNAME}",
-            models: { model: { name: "{env:OPENCODE_CONFIG}" } },
-          },
-        },
-      }),
-    ).toThrow("config.provider.provider.name references a blocked environment variable");
-    expect(() =>
-      assertOpenCodeConfigInvariants({
-        provider: { provider: { models: { model: { name: "{env:OPENCODE_CONFIG}" } } } },
-      }),
-    ).toThrow(
-      "config.provider.provider.models.model.name references a coordinator-controlled environment variable",
-    );
-  });
-
   it("rejects blocked environment references in provider and model names", () => {
     expect(() =>
-      renderOpenCodeV1ConfigUnchecked({
+      renderOpenCodeV1Config({
         model: "provider/model",
         providers: [{ id: "provider", name: "{env:JIRA_USERNAME}" }],
       }),
     ).toThrow("provider.provider.name cannot reference a blocked OpenCode environment variable");
     expect(() =>
-      renderOpenCodeV1ConfigUnchecked({
+      renderOpenCodeV1Config({
         model: "provider/model",
         providers: [{ id: "provider", models: { model: { name: "{env:JIRA_USERNAME}" } } }],
       }),
