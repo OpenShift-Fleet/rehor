@@ -891,11 +891,11 @@ describe("OpenCode runtime", () => {
               state: {
                 status: "completed",
                 input: {
-                  jira_key: "REHOR-143",
+                  external_key: "REHOR-143",
                   repo: "rehor",
                   summary: "Fix OpenCode parity",
                 },
-                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                output: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
                 title: "task created",
                 metadata: {},
                 time: { start: 10, end: 30 },
@@ -916,11 +916,11 @@ describe("OpenCode runtime", () => {
               state: {
                 status: "completed",
                 input: {
-                  jira_key: "REHOR-143",
+                  external_key: "REHOR-143",
                   repo: "rehor",
                   summary: "Fix OpenCode parity",
                 },
-                output: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+                output: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
                 title: "task created",
                 metadata: {},
                 time: { start: 10, end: 30 },
@@ -974,7 +974,7 @@ describe("OpenCode runtime", () => {
       name: "mcp__bot-memory__task_add",
       toolName: "mcp__bot-memory__task_add",
       toolUseId: "call-1",
-      content: JSON.stringify({ id: 143, jira_key: "REHOR-143" }),
+      content: JSON.stringify({ id: 143, external_key: "REHOR-143" }),
       durationMs: 20,
     });
     expect(tool?.payload).not.toHaveProperty("tool");
@@ -1009,7 +1009,7 @@ describe("OpenCode runtime", () => {
     });
   });
 
-  it("fails the run when completed-session cleanup reports an SDK error", async () => {
+  it("keeps a completed session completed and reports a cleanup failure as a diagnostic", async () => {
     const { runtime } = fakeRuntime({
       deleteError: new Error("delete rejected"),
       events: [
@@ -1023,9 +1023,12 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.find((event) => event.kind === "error")?.payload).toMatchObject({
+    expect(events.map((event) => event.kind)).toEqual(["run", "run", "cleanup", "terminal"]);
+    expect(events.find((event) => event.kind === "cleanup")?.payload).toEqual({
+      state: "failed",
       message: "delete rejected",
     });
+    expect(events.some((event) => event.kind === "error")).toBe(false);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
   });
 
@@ -1123,6 +1126,18 @@ describe("OpenCode runtime", () => {
               sessionID: "session-opencode",
               type: "text",
               text: "answer",
+            },
+          },
+        }),
+        asOpenCodeEvent({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "step-finish",
+              messageID: "assistant-message",
+              sessionID: "session-opencode",
+              type: "step-finish",
+              reason: "stop",
             },
           },
         }),
@@ -2165,7 +2180,12 @@ const TEST_WORKSPACE = process.cwd();
 function createTestSupervisor(
   options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
 ): OpenCodeServerSupervisor {
-  return new OpenCodeServerSupervisor({ workspaceRoot: TEST_WORKSPACE, ...options });
+  return new OpenCodeServerSupervisor({
+    workspaceRoot: TEST_WORKSPACE,
+    // FakeChild uses a synthetic PID; never probe the host process table by default.
+    processGroupExists: () => false,
+    ...options,
+  });
 }
 
 describe("OpenCode process supervisor", () => {

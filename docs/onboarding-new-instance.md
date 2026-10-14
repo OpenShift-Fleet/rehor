@@ -31,7 +31,7 @@ Create the required files:
 
 ### `setup.sh`
 
-Runs as root during the Docker build. Install instance-specific packages here.
+Runs as root during the Docker build, after preset installs. Install instance-specific packages here. Each custom DNF install must explicitly select UBI repos; Dockerfile repo flags do not carry into `setup.sh`.
 
 ```bash
 #!/bin/bash
@@ -40,7 +40,7 @@ set -e
 echo "my-bot-instance" > /home/botuser/app/.instance-id
 
 # Instance-specific packages go here:
-# dnf install -y --nodocs <package>
+# dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs <package>
 # pip3.12 install <package>
 # npm install -g <package>
 

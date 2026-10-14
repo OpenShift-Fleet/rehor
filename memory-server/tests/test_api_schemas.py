@@ -15,6 +15,7 @@ import jsonschema
 import pytest
 import yaml
 from bot_memory_server.api import _cycle, _cycle_run, _memory, _task
+from bot_memory_server.task_outcomes import ARCHIVE_RECOVERY, TaskArchiveError, _serialize_task
 
 OPENAPI_PATH = Path(__file__).resolve().parent.parent.parent / "shared" / "openapi.yaml"
 
@@ -52,6 +53,23 @@ def _resolve_refs(schema: dict, all_schemas: dict) -> dict:
     if isinstance(schema, list):
         return [_resolve_refs(item, all_schemas) for item in schema]
     return schema
+
+
+def test_archive_openapi_contract_covers_strict_recovery_and_explicit_manual_mode():
+    spec = yaml.safe_load(OPENAPI_PATH.read_text())
+    operation = spec["paths"]["/api/tasks/{key}"]["delete"]
+    params = {param["name"]: param for param in operation["parameters"]}
+    assert params["manual"]["in"] == "query"
+    assert params["manual"]["schema"] == {"type": "boolean", "default": False}
+    assert params["manual"]["required"] is False
+    assert params["source_type"]["required"] is False
+    schema = operation["responses"]["409"]["content"]["application/json"]["schema"]
+    for source_type in (None, "jira"):
+        error = TaskArchiveError("Missing report", external_key="ARCHIVE-1", source_type=source_type)
+        jsonschema.validate(error.payload, _resolve_refs(schema, _SCHEMAS))
+        assert next(iter(error.payload)) == "error"
+        assert error.payload["error"] == ARCHIVE_RECOVERY
+        assert ARCHIVE_RECOVERY in json.dumps(error.payload)[:200]
 
 
 # --------------- fake row builders ---------------
@@ -145,6 +163,54 @@ def _fake_cycle_row(**overrides):
     return row
 
 
+def _fake_task_outcome_row(**overrides):
+    now = datetime.now(UTC)
+    row = {
+        "task_id": 7,
+        "external_key": "TEST-OUTCOME-001",
+        "source_type": "jira",
+        "source_url": "https://issues.redhat.com/browse/TEST-OUTCOME-001",
+        "task_status": "archived",
+        "repo": "org/repo",
+        "title": "Outcome task",
+        "summary": "Merged change",
+        "created_at": now,
+        "last_addressed": now,
+        "archived_at": now,
+        "task_artifacts": "[]",
+        "outcome_id": 11,
+        "decision": "accepted",
+        "confidence": "conclusive",
+        "reason": "merged",
+        "reported_by": "agent",
+        "reported_at": now,
+        "verified_at": None,
+        "outcome_artifacts": json.dumps([{"type": "github_pr", "url": "https://github.com/org/repo/pull/1"}]),
+        "evidence": json.dumps(
+            [
+                {
+                    "source": "github",
+                    "reference": "https://github.com/org/repo/pull/1",
+                    "resolution": "accepted",
+                    "disposition": "MERGED",
+                    "reason": "Merged PR",
+                }
+            ]
+        ),
+        "canonical_repositories": json.dumps(["org/repo"]),
+        "notes": None,
+        "run_id": "run-1",
+        "reporting_cycle_id": 4,
+        "attempt": 1,
+        "workflow": "jira-sprint",
+        "instance_id": "bot-1",
+        "state": "accepted",
+        "event_at": now,
+    }
+    row.update(overrides)
+    return row
+
+
 # --------------- item schema tests ---------------
 
 
@@ -199,6 +265,47 @@ class TestTaskItemSchema:
         result["unexpected_field"] = "boom"
         with pytest.raises(jsonschema.ValidationError, match="Additional properties"):
             _validate(result, "TaskItem")
+
+
+class TestTaskOutcomeSchema:
+    def test_outcome_detail_matches_openapi(self):
+        result = _serialize_task(_fake_task_outcome_row())
+        result["outcomeHistory"] = [result["outcome"]]
+        result["taskCycles"] = [
+            {
+                "id": 21,
+                "cycleType": "task_work",
+                "instanceId": "test-instance",
+                "startedAt": datetime.now(UTC).isoformat(),
+                "finishedAt": datetime.now(UTC).isoformat(),
+            }
+        ]
+        result["outcome"]["reportingCycleId"] = 21
+        _validate(result, "TaskOutcomeTask")
+
+    def test_unreported_task_matches_openapi(self):
+        result = _serialize_task(
+            _fake_task_outcome_row(
+                task_status="archived",
+                outcome_id=None,
+                decision=None,
+                confidence=None,
+                reason=None,
+                reported_by=None,
+                reported_at=None,
+                verified_at=None,
+                outcome_artifacts=None,
+                evidence=None,
+                canonical_repositories=json.dumps(["org/repo"]),
+                notes=None,
+                run_id=None,
+                reporting_cycle_id=None,
+                attempt=None,
+                workflow=None,
+                state="unreported",
+            )
+        )
+        _validate(result, "TaskOutcomeTask")
 
 
 class TestMemoryItemSchema:

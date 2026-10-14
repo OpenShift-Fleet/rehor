@@ -8,7 +8,7 @@ curl -fsSL "https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.
     | tar -xz -C /usr/local/bin grype
 
 # Buildah (rootless container builder)
-dnf install -y --nodocs buildah fuse-overlayfs && dnf clean all
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs && dnf clean all
 
 # BUILDAH_ISOLATION for all shells
 cat > /etc/profile.d/buildah.sh << 'PROFILE'

@@ -28,7 +28,7 @@ const LIMIT = 20;
 type DialogState =
   | { action: "pause"; key: string }
   | { action: "unpause"; key: string }
-  | { action: "archive"; key: string }
+  | { action: "archive"; key: string; sourceType: string }
   | null;
 
 export default function Tasks({ instanceId }: { instanceId?: string }) {
@@ -98,7 +98,7 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
         ok = await runAction(() => unpauseTask(dialog.key));
         break;
       case "archive":
-        ok = await runAction(() => deleteTask(dialog.key));
+        ok = await runAction(() => deleteTask(dialog.key, dialog.sourceType));
         break;
     }
     setDialog(null);
@@ -128,7 +128,7 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
       case "archive":
         return {
           title: "Archive task",
-          message: `Archive ${dialog.key}? The bot will stop tracking it.`,
+          message: `Manually archive ${dialog.key}? The bot will stop tracking it; its outcome remains unreported.`,
           confirmLabel: "Archive",
           variant: "danger" as const,
         };
@@ -188,7 +188,9 @@ export default function Tasks({ instanceId }: { instanceId?: string }) {
             type="task"
             task={selected}
             onClose={() => setSelected(null)}
-            onDelete={(key) => setDialog({ action: "archive", key })}
+            onDelete={(key) =>
+              setDialog({ action: "archive", key, sourceType: selected.source_type })
+            }
             onPause={(key) => setDialog({ action: "pause", key })}
             onUnpause={(key) => setDialog({ action: "unpause", key })}
           />
