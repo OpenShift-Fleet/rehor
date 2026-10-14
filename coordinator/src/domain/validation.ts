@@ -4,21 +4,27 @@ import addFormats from "ajv-formats";
 import eventSchema from "../../schema/rehor-event.v1.json" with { type: "json" };
 import runSchema from "../../schema/rehor-run.v1.json" with { type: "json" };
 import { type RehorEvent, RuntimeContractError } from "./event";
-import type { RehorRun } from "./run";
+import type { ContentHash, RehorRun } from "./run";
 
 const ajv = new Ajv2020({ allErrors: true, strict: true });
 addFormats(ajv);
-const validateRunSchema = ajv.compile(runSchema);
-const validateEventSchema = ajv.compile(eventSchema);
+const validateRunSchema = ajv.compile<RehorRun>(runSchema);
+const validateEventSchema = ajv.compile<RehorEvent>(eventSchema);
 
 declare const validatedRehorRun: unique symbol;
 export type ValidatedRehorRun = RehorRun & { readonly [validatedRehorRun]: true };
 
-export function parseRehorRun(value: unknown): ValidatedRehorRun {
-  const cloned = cloneInput(value, "run");
-  assertSchema(validateRunSchema, cloned, "run");
+const lowerHash = (hash: ContentHash): ContentHash => ({
+  algorithm: hash.algorithm,
+  value: hash.value.toLowerCase(),
+});
 
-  const run = cloned as RehorRun;
+const optional = <T>(key: string, value: T | undefined) =>
+  value === undefined ? {} : { [key]: value };
+
+export function parseRehorRun(value: unknown): ValidatedRehorRun {
+  const run = cloneInput(value, "run");
+  assertSchema(validateRunSchema, run, "run");
   return {
     schemaVersion: run.schemaVersion,
     runId: run.runId,
@@ -27,10 +33,7 @@ export function parseRehorRun(value: unknown): ValidatedRehorRun {
     label: run.label,
     workflowId: run.workflowId,
     prompt: run.prompt,
-    task:
-      run.task === null
-        ? null
-        : { id: run.task.id, ...(run.task.key === undefined ? {} : { key: run.task.key }) },
+    task: run.task === null ? null : { id: run.task.id, ...optional("key", run.task.key) },
     worktree: {
       path: run.worktree.path,
       repository: run.worktree.repository,
@@ -40,42 +43,27 @@ export function parseRehorRun(value: unknown): ValidatedRehorRun {
         dirty: run.worktree.snapshot.dirty,
       },
     },
-    instructionHash: {
-      algorithm: run.instructionHash.algorithm,
-      value: run.instructionHash.value.toLowerCase(),
-    },
-    configHash: {
-      algorithm: run.configHash.algorithm,
-      value: run.configHash.value.toLowerCase(),
-    },
-    policyHash: {
-      algorithm: run.policyHash.algorithm,
-      value: run.policyHash.value.toLowerCase(),
-    },
-    ...(run.runtimeId === undefined ? {} : { runtimeId: run.runtimeId }),
+    instructionHash: lowerHash(run.instructionHash),
+    configHash: lowerHash(run.configHash),
+    policyHash: lowerHash(run.policyHash),
+    ...optional("runtimeId", run.runtimeId),
     provider: {
       id: run.provider.id,
       requestedModel: run.provider.requestedModel,
-      ...(run.provider.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: run.provider.reasoningEffort }),
+      ...optional("reasoningEffort", run.provider.reasoningEffort),
     },
     limits: {
       timeoutMs: run.limits.timeoutMs,
       maxTurns: run.limits.maxTurns,
-      ...(run.limits.maxOutputTokens === undefined
-        ? {}
-        : { maxOutputTokens: run.limits.maxOutputTokens }),
+      ...optional("maxOutputTokens", run.limits.maxOutputTokens),
     },
     preflightPayloadRef: run.preflightPayloadRef,
   } as ValidatedRehorRun;
 }
 
 export function parseRehorEvent(value: unknown): RehorEvent {
-  const cloned = cloneInput(value, "event");
-  assertSchema(validateEventSchema, cloned, "event");
-
-  const event = cloned as RehorEvent;
+  const event = cloneInput(value, "event");
+  assertSchema(validateEventSchema, event, "event");
   return {
     schemaVersion: event.schemaVersion,
     eventId: event.eventId,
@@ -84,10 +72,8 @@ export function parseRehorEvent(value: unknown): RehorEvent {
     sequence: event.sequence,
     occurredAt: event.occurredAt,
     kind: event.kind,
-    ...(event.runtimeSessionRef === undefined
-      ? {}
-      : { runtimeSessionRef: event.runtimeSessionRef }),
-    ...(event.parentEventId === undefined ? {} : { parentEventId: event.parentEventId }),
+    ...optional("runtimeSessionRef", event.runtimeSessionRef),
+    ...optional("parentEventId", event.parentEventId),
     workspace: {
       worktreePath: event.workspace.worktreePath,
       repository: event.workspace.repository,
@@ -96,15 +82,10 @@ export function parseRehorEvent(value: unknown): RehorEvent {
     provider: event.provider,
     model: event.model,
     policyVersion: event.policyVersion,
-    payload: clonePayload(event.payload as Record<string, unknown>),
+    payload: deepFreeze(event.payload),
     ...(event.rawEventRef === undefined
       ? {}
-      : {
-          rawEventRef: {
-            reference: event.rawEventRef.reference,
-            redacted: true,
-          },
-        }),
+      : { rawEventRef: { reference: event.rawEventRef.reference, redacted: true } }),
   };
 }
 
@@ -113,22 +94,12 @@ export function parseRehorEvent(value: unknown): RehorEvent {
  * buffer between events; a retained reference would corrupt ledger state and
  * break idempotent redelivery.
  */
-function cloneInput<T>(value: T, path: string): T {
+function cloneInput(value: unknown, path: string): unknown {
   try {
     return structuredClone(value);
   } catch {
     throw new RuntimeContractError(`${path} must be structured-cloneable`);
   }
-}
-
-function clonePayload(payload: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  let copy: Record<string, unknown>;
-  try {
-    copy = structuredClone(payload);
-  } catch {
-    throw new RuntimeContractError("event.payload must be structured-cloneable");
-  }
-  return deepFreeze(copy);
 }
 
 function deepFreeze<T>(value: T): T {
@@ -137,7 +108,11 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
-function assertSchema(validate: ValidateFunction, value: unknown, path: string): void {
+function assertSchema<T>(
+  validate: ValidateFunction<T>,
+  value: unknown,
+  path: string,
+): asserts value is T {
   if (validate(value)) return;
   const errors = (validate.errors ?? [])
     .filter(({ keyword }) => keyword !== "if")

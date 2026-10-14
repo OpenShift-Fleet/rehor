@@ -29,7 +29,3 @@ export interface TerminalEventPayload extends Readonly<Record<string, unknown>> 
   resourceLeak?: boolean;
   context?: TerminalWorkContext;
 }
-
-export function isTerminalState(value: unknown): value is TerminalState {
-  return typeof value === "string" && TERMINAL_STATES.includes(value as TerminalState);
-}

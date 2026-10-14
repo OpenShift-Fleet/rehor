@@ -55,10 +55,7 @@ export interface RehorTerminalEvent extends RehorEvent {
   payload: TerminalEventPayload;
 }
 
-/**
- * Terminal payload shape is guaranteed by parseRehorEvent's Ajv schema check.
- * This guard narrows the event kind after that validation.
- */
+/** Narrows kind only; payload shape is enforced by parseRehorEvent's schema. */
 export function assertTerminalEvent(event: RehorEvent): asserts event is RehorTerminalEvent {
   if (event.kind !== "terminal") throw new RuntimeContractError("event.kind must be terminal");
 }
