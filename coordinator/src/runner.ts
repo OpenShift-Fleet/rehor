@@ -394,16 +394,13 @@ export async function runCoordinator(
           );
           terminalLogged = true;
           if (result.error !== undefined) throw result.error;
-          const expectedTurnLimitFailure =
-            result.terminal.payload.state === "failed" &&
-            (result.terminal.payload.reason === "max_turns" ||
-              result.terminal.payload.reason === "error_max_turns");
+          const { state, reason } = result.terminal.payload;
           if (
-            (result.terminal.payload.state === "failed" && !expectedTurnLimitFailure) ||
-            result.terminal.payload.state === "timed_out"
+            state === "timed_out" ||
+            (state === "failed" && reason !== "max_turns" && reason !== "error_max_turns")
           ) {
             throw new Error(
-              `runtime returned a ${result.terminal.payload.state} terminal state: ${providerDiagnostic(result.terminal.payload.reason)}`,
+              `runtime returned a ${state} terminal state: ${providerDiagnostic(reason)}`,
             );
           }
           return result;

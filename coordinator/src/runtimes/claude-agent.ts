@@ -12,7 +12,7 @@ import {
 } from "../domain";
 import type { AgentRuntime, AgentRuntimeRunContext, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
-import { abortCauseReason, abortReasonText, abortError as makeAbortError } from "./shared";
+import { abortError, abortReasonText } from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
@@ -170,11 +170,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       let turns = 0;
       let terminalEmitted = false;
 
-      const onAbort = (): void => {
-        if (!controller.signal.aborted) {
-          controller.abort(abortCauseFrom(signal.reason, "cancelled"));
-        }
-      };
+      const onAbort = (): void => controller.abort(abortCauseFrom(signal.reason, "cancelled"));
       signal.addEventListener("abort", onAbort, { once: true });
 
       const refFor = (message: unknown): string | undefined => {
@@ -253,7 +249,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         yield createEvent("run", { state: "started" });
 
         if (signal.aborted) {
-          yield terminal("failed", undefined, abortReason(signal.reason));
+          yield terminal("failed", undefined, abortReasonText(signal.reason));
           return;
         }
 
@@ -320,7 +316,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             "failed",
             undefined,
             wasAborted
-              ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+              ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
               : "agent runtime ended without a result",
           );
         }
@@ -330,7 +326,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           const errorReason = errorMessage(error);
           const wasAborted = signal.aborted || controller.signal.aborted || isAbortError(error);
           const reason = wasAborted
-            ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+            ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
             : errorReason;
           yield terminal("failed", undefined, reason);
         }
@@ -624,14 +620,6 @@ function isResultMessage(message: unknown): boolean {
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
-}
-
-function abortReason(reason: unknown): string {
-  return abortReasonText(abortCauseReason(reason));
-}
-
-function abortError(reason: unknown): Error {
-  return makeAbortError(abortCauseReason(reason));
 }
 
 function errorMessage(value: unknown): string {

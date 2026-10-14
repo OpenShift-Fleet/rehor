@@ -106,10 +106,6 @@ export function abortReasonText(reason: unknown, fallback = "runtime aborted"): 
   return [kind, detail].filter(Boolean).join(": ") || fallback;
 }
 
-export function abortCauseReason(reason: unknown): unknown {
-  return isAbortCause(reason) ? reason.reason : reason;
-}
-
 export function abortReason(signal: AbortSignal, fallback = "runtime aborted"): Error {
   return signal.reason instanceof Error
     ? signal.reason

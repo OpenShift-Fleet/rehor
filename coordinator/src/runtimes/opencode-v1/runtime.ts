@@ -212,7 +212,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
-    let streamLost = false;
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     try {
@@ -223,10 +222,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
-      detachCrash = linkAbort(
-        this.supervisor.crashSignal,
-        active.controller,
-        () => context?.onAbortCause?.(OPENCODE_CRASH),
+      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller, () =>
+        context?.onAbortCause?.(OPENCODE_CRASH),
       );
       const directory = server.directory;
       const client = this.clientFactory(server, directory, this.clientEnvironment);
@@ -320,22 +317,14 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           active.controller.signal,
           undefined,
           "OpenCode event stream",
-        ).catch((error: unknown) => {
-          streamLost = true;
-          throw error;
-        });
-        if (next.done) {
-          streamLost = true;
-          break;
-        }
+        );
+        if (next.done) break;
         if (!isSessionEvent(next.value, normalization)) continue;
         if (beginsNewTurn(next.value, normalization)) {
           yield factory(
             "run",
             { state: "turn_started" },
-            {
-              runtimeSessionRef: eventSessionId(next.value) ?? normalization.rootSessionId,
-            },
+            { runtimeSessionRef: normalization.rootSessionId },
           );
           if (signal.aborted) throw abortReason(signal);
         }
@@ -388,7 +377,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         !this.supervisor.crashError &&
         !active.controller.signal.aborted
       ) {
-        streamLost = true;
         const reconciled = await reconcileSession(
           active,
           factory,
@@ -402,7 +390,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (reconciled.outcome) {
           outcome = { state: reconciled.outcome, reason: reconciled.reason };
           failure = undefined;
-        } else if (streamLost) context?.onAbortCause?.(OPENCODE_CRASH);
+        } else context?.onAbortCause?.(OPENCODE_CRASH);
       }
     } finally {
       detachAbort();
@@ -1122,6 +1110,23 @@ function isSessionEvent(event: OpenCodeEvent, context: NormalizationContext): bo
   return sessionId !== undefined && context.sessionIds.has(sessionId);
 }
 
+function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boolean {
+  if (event.type === "message.updated") {
+    const info = record(event.properties.info);
+    return (
+      eventSessionId(event) === context.rootSessionId &&
+      info.role === "assistant" &&
+      typeof info.id === "string" &&
+      !context.seenMessages.has(info.id)
+    );
+  }
+  if (event.type === "message.part.updated") {
+    const part = record(event.properties.part);
+    return part.sessionID === context.rootSessionId && part.type === "step-start";
+  }
+  return false;
+}
+
 function eventSessionId(event: OpenCodeEvent): string | undefined {
   const properties = event.properties as Record<string, unknown>;
   if (typeof properties.sessionID === "string") return properties.sessionID;
@@ -1138,23 +1143,6 @@ function eventSessionId(event: OpenCodeEvent): string | undefined {
     return typeof sessionId === "string" ? sessionId : undefined;
   }
   return undefined;
-}
-
-function beginsNewTurn(event: OpenCodeEvent, context: NormalizationContext): boolean {
-  if (event.type === "message.updated") {
-    const info = record(event.properties.info);
-    return (
-      eventSessionId(event) === context.rootSessionId &&
-      info.role === "assistant" &&
-      typeof info.id === "string" &&
-      !context.seenMessages.has(info.id)
-    );
-  }
-  if (event.type === "message.part.updated") {
-    const part = record(event.properties.part);
-    return part.sessionID === context.rootSessionId && part.type === "step-start";
-  }
-  return false;
 }
 
 function partKey(part: JsonRecord): string {

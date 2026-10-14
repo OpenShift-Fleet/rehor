@@ -20,7 +20,3 @@ export function isAbortCause(value: unknown): value is AbortCause {
 export function abortCauseFrom(reason: unknown, kind: AbortCauseKind): AbortCause {
   return isAbortCause(reason) ? reason : { kind, reason };
 }
-
-export function abortCauseKind(reason: unknown): AbortCauseKind | undefined {
-  return isAbortCause(reason) ? reason.kind : undefined;
-}

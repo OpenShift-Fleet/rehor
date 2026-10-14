@@ -24,16 +24,14 @@ export function abortError(reason: unknown, fallbackMessage: string): Error {
   return error;
 }
 
-/** Typed abort reason for SIGTERM/SIGINT. */
-export type ShutdownAbortReason = AbortCause & { kind: "shutdown" };
-
-export function shutdownAbortReason(reason?: unknown): ShutdownAbortReason {
+export function shutdownAbortReason(reason?: unknown): AbortCause {
   return { kind: "shutdown", reason };
 }
 
 export interface CombinedAbortSignals {
   readonly signal: AbortSignal;
   readonly cause: AbortCause | undefined;
+  readonly aborted: Promise<AbortCause>;
   abort(cause: AbortCause): void;
   dispose(): void;
 }
@@ -44,37 +42,41 @@ export function combineAbortSignals(
 ): CombinedAbortSignals {
   const controller = new AbortController();
   let causeValue: AbortCause | undefined;
+  let resolveAborted!: (cause: AbortCause) => void;
+  const aborted = new Promise<AbortCause>((resolve) => {
+    resolveAborted = resolve;
+  });
   const listeners: Array<() => void> = [];
 
   const abort = (cause: AbortCause): void => {
     if (controller.signal.aborted) return;
     causeValue = cause;
     controller.abort(cause);
+    resolveAborted(cause);
   };
-  const watch = (signal: AbortSignal | undefined, kind: "shutdown" | "cancelled"): void => {
+  const watch = (
+    signal: AbortSignal | undefined,
+    toCause: (reason: unknown) => AbortCause,
+  ): void => {
     if (!signal) return;
-    const onAbort = (): void => {
-      if (kind === "shutdown") {
-        const existing = isAbortCause(signal.reason) ? signal.reason : undefined;
-        abort(existing?.kind === "shutdown" ? existing : shutdownAbortReason(signal.reason));
-        return;
-      }
-      if (signal.reason instanceof DOMException && signal.reason.name === "TimeoutError") {
-        abort({ kind: "timed_out", reason: signal.reason });
-        return;
-      }
-      abort(abortCauseFrom(signal.reason, "cancelled"));
-    };
+    const onAbort = (): void => abort(toCause(signal.reason));
     signal.addEventListener("abort", onAbort, { once: true });
     listeners.push(() => signal.removeEventListener("abort", onAbort));
     if (signal.aborted) onAbort();
   };
 
-  watch(options.shutdownSignal, "shutdown");
-  watch(options.signal, "cancelled");
+  watch(options.shutdownSignal, (reason) =>
+    isAbortCause(reason) && reason.kind === "shutdown" ? reason : shutdownAbortReason(reason),
+  );
+  watch(options.signal, (reason) =>
+    reason instanceof DOMException && reason.name === "TimeoutError"
+      ? { kind: "timed_out", reason }
+      : abortCauseFrom(reason, "cancelled"),
+  );
 
   return {
     signal: controller.signal,
+    aborted,
     get cause() {
       return causeValue;
     },

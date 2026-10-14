@@ -1,4 +1,5 @@
 import {
+  type AbortCause,
   createEventFactory,
   EventLedger,
   parseRehorRun,
@@ -9,7 +10,6 @@ import {
   type TerminalEventPayload,
   WorkContextTracker,
 } from "./domain";
-import { type AbortCause, abortCauseFrom } from "./domain/abort-cause";
 import type { AgentRuntime, AgentRuntimeRunContext } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
 import { type CombinedAbortSignals, combineAbortSignals, isRecord } from "./utils";
@@ -59,44 +59,6 @@ class CoordinatorAbort extends Error {
   }
 }
 
-class AbortState {
-  readonly abortPromise: Promise<AbortCause>;
-
-  private readonly combined: CombinedAbortSignals;
-  private removeAbortListener: () => void = () => undefined;
-
-  constructor(signal: AbortSignal | undefined, shutdownSignal: AbortSignal | undefined) {
-    this.combined = combineAbortSignals({ signal, shutdownSignal });
-    this.abortPromise = new Promise<AbortCause>((resolve) => {
-      const onAbort = (): void => {
-        resolve(this.cause ?? abortCauseFrom(this.signal.reason, "cancelled"));
-      };
-      if (this.signal.aborted) onAbort();
-      else {
-        this.signal.addEventListener("abort", onAbort, { once: true });
-        this.removeAbortListener = () => this.signal.removeEventListener("abort", onAbort);
-      }
-    });
-  }
-
-  get signal(): AbortSignal {
-    return this.combined.signal;
-  }
-
-  get cause(): AbortCause | undefined {
-    return this.combined.cause;
-  }
-
-  trigger(cause: AbortCause): void {
-    this.combined.abort(cause);
-  }
-
-  dispose(): void {
-    this.removeAbortListener();
-    this.combined.dispose();
-  }
-}
-
 interface TurnPolicyEvent extends Record<string, unknown> {
   state: "warning" | "critical";
   label: string;
@@ -105,31 +67,17 @@ interface TurnPolicyEvent extends Record<string, unknown> {
   message: string;
 }
 
-interface TurnPolicyUpdate {
-  events: TurnPolicyEvent[];
-  exhausted: boolean;
-}
-
 class TurnBudgetPolicy {
   private readonly countedToolCalls = new Set<string>();
   private usedTurns = 0;
   private warned = false;
   private critical = false;
-  private exhausted = false;
+  limitReached = false;
 
   constructor(private readonly run: RehorRun) {}
 
-  observe(event: RehorEvent): TurnPolicyUpdate | undefined {
-    if (event.kind !== "tool") return undefined;
-    if (event.payload.state !== "completed" || event.payload.isError === true) return undefined;
-
-    const id =
-      typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
-    return this.complete(id);
-  }
-
-  complete(toolUseId: string): TurnPolicyUpdate | undefined {
-    if (this.exhausted || this.countedToolCalls.has(toolUseId)) return undefined;
+  complete(toolUseId: string): TurnPolicyEvent | undefined {
+    if (this.limitReached || this.countedToolCalls.has(toolUseId)) return undefined;
     this.countedToolCalls.add(toolUseId);
     this.usedTurns += 1;
 
@@ -137,41 +85,36 @@ class TurnBudgetPolicy {
     const warningAt = Math.floor(maxTurns * 0.75);
     const criticalAt = Math.floor(maxTurns * 0.9);
     const remaining = Math.max(0, maxTurns - this.usedTurns);
-    const events: TurnPolicyEvent[] = [];
+    const at = (state: TurnPolicyEvent["state"], message: string): TurnPolicyEvent => ({
+      state,
+      label: this.run.label,
+      usedTurns: this.usedTurns,
+      maxTurns,
+      message,
+    });
+    let event: TurnPolicyEvent | undefined;
     if (this.usedTurns >= criticalAt && !this.critical) {
       this.critical = true;
-      events.push({
-        state: "critical",
-        label: this.run.label,
-        usedTurns: this.usedTurns,
-        maxTurns,
-        message:
-          `TURN BUDGET CRITICAL: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
+      event = at(
+        "critical",
+        `TURN BUDGET CRITICAL: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
           `~${remaining} remaining. You MUST save progress NOW via ` +
           "task_update with current summary, last_step, files_changed, and next_step. " +
           "Then wrap up or stop.",
-      });
+      );
     } else if (this.usedTurns >= warningAt && !this.warned) {
       this.warned = true;
-      events.push({
-        state: "warning",
-        label: this.run.label,
-        usedTurns: this.usedTurns,
-        maxTurns,
-        message:
-          `TURN BUDGET WARNING: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
+      event = at(
+        "warning",
+        `TURN BUDGET WARNING: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
           `~${remaining} remaining. Save progress via task_update soon ` +
           "(summary + metadata with last_step, files_changed, next_step). " +
           "Prioritize completing current step and saving state.",
-      });
+      );
     }
 
-    this.exhausted = this.usedTurns >= maxTurns;
-    return { events, exhausted: this.exhausted };
-  }
-
-  get limitReached(): boolean {
-    return this.exhausted;
+    this.limitReached = this.usedTurns >= maxTurns;
+    return event;
   }
 }
 
@@ -193,10 +136,10 @@ export async function executeRun(
   const wallClockNow = options.now ?? Date.now;
   const elapsedNow = options.monotonicNow ?? options.now ?? monotonicClock;
   const startedAt = elapsedNow();
-  const abortState = new AbortState(options.signal, options.shutdownSignal);
+  const abortState = combineAbortSignals(options);
   const timeout = setTimeout(
     () =>
-      abortState.trigger({
+      abortState.abort({
         kind: CoordinatorAbortKind.TimedOut,
         reason: `run timed out after ${run.limits.timeoutMs}ms`,
       }),
@@ -215,9 +158,8 @@ export async function executeRun(
 
   try {
     if (abortState.signal.aborted) {
-      failure = new CoordinatorAbort(
-        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
-      );
+      const cause = abortState.cause;
+      if (cause) failure = new CoordinatorAbort(cause);
     } else {
       try {
         capabilities = await raceWithAbort(() => runtime.start(abortState.signal), abortState);
@@ -225,13 +167,8 @@ export async function executeRun(
         failure = error;
       }
 
-      if (!failure && abortState.signal.aborted) {
-        failure = new CoordinatorAbort(
-          abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
-        );
-      }
-
-      if (!failure && capabilities) {
+      const cause = abortState.cause;
+      if (!failure && capabilities && !cause) {
         const consumePromise = consumeEvents(
           runtime,
           run,
@@ -260,16 +197,12 @@ export async function executeRun(
       }
     }
 
-    if (!failure && abortState.signal.aborted) {
-      failure = new CoordinatorAbort(
-        abortState.cause ?? { kind: CoordinatorAbortKind.Cancelled, reason: undefined },
-      );
-    }
-
-    if (!ledger.terminalEvent && !failure) {
+    const cause = abortState.cause;
+    if (!failure && cause) failure = new CoordinatorAbort(cause);
+    if (!failure && !ledger.terminalEvent) {
       const missingTerminalError = new CoordinatorError("runtime ended without terminal event");
       failure = missingTerminalError;
-      abortState.trigger({
+      abortState.abort({
         kind: CoordinatorAbortKind.Failed,
         reason: missingTerminalError.message,
       });
@@ -277,7 +210,7 @@ export async function executeRun(
   } finally {
     acceptingEvents = false;
     if (failure && !abortState.signal.aborted) {
-      abortState.trigger({
+      abortState.abort({
         kind: CoordinatorAbortKind.Failed,
         reason: describeError(failure),
       });
@@ -299,7 +232,7 @@ export async function executeRun(
       createTerminalEvent(
         run,
         nextSequence(ledger.events),
-        terminalState(abortState.cause, failure),
+        terminalState(abortState.cause),
         terminalReason(abortState.cause, failure),
         Math.max(0, Math.floor(elapsedNow() - startedAt)),
         wallClockNow,
@@ -330,7 +263,7 @@ export async function executeRun(
 async function consumeEvents(
   runtime: AgentRuntime,
   run: RehorRun,
-  abortState: AbortState,
+  abortState: CombinedAbortSignals,
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
   workContext: WorkContextTracker,
@@ -338,56 +271,50 @@ async function consumeEvents(
   isAccepting: () => boolean,
 ): Promise<void> {
   const turnBudget = new TurnBudgetPolicy(run);
-  const pendingPolicyUpdates = new Map<string, TurnPolicyUpdate>();
+  const pendingPolicyUpdates = new Map<string, TurnPolicyEvent>();
   const toolStarts = new Map<string, RehorEvent>();
   const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
-  const emitPolicyUpdate = async (
-    toolUseId: string,
-    update: TurnPolicyUpdate,
-    sourceEvent?: RehorEvent,
-  ): Promise<void> => {
-    if (update.events.length === 0) return;
-    const parent = sourceEvent ?? toolStarts.get(toolUseId);
+  const accept = (event: RehorEvent): RehorEvent | undefined => {
+    const before = ledger.events.length;
+    if (!ledger.ingest(event).accepted) return undefined;
+    const retained = ledger.events[before];
+    if (!retained) throw new RuntimeContractError("accepted event was not retained by ledger");
+    acceptedSequences.add(retained.sequence);
+    return retained;
+  };
+
+  const emitPolicy = async (policy: TurnPolicyEvent, parent?: RehorEvent): Promise<void> => {
     const createEvent = createEventFactory(run, run.policyHash.value, {
       startSequence: nextSequence(ledger.events) - 1,
     });
-    for (const payload of update.events) {
-      const policyEvent = createEvent("policy", payload, {
-        ...(parent?.runtimeSessionRef ? { runtimeSessionRef: parent.runtimeSessionRef } : {}),
-        ...(parent ? { parentEventId: parent.eventId } : {}),
-      });
-      const policyBefore = ledger.events.length;
-      const policyResult = ledger.ingest(policyEvent);
-      if (!policyResult.accepted) continue;
-      coordinatorEventOffset += 1;
-      const acceptedPolicyEvent = ledger.events[policyBefore];
-      if (!acceptedPolicyEvent) {
-        throw new RuntimeContractError("accepted policy event was not retained by ledger");
-      }
-      acceptedSequences.add(acceptedPolicyEvent.sequence);
-      await projectEvent(acceptedPolicyEvent, run, projection);
-    }
+    const policyEvent = createEvent("policy", policy, {
+      runtimeSessionRef: parent?.runtimeSessionRef,
+      parentEventId: parent?.eventId,
+    });
+    const acceptedPolicyEvent = accept(policyEvent);
+    if (!acceptedPolicyEvent) return;
+    coordinatorEventOffset += 1;
+    await projectEvent(acceptedPolicyEvent, run, projection);
   };
 
   const flushPendingPolicyUpdates = async (): Promise<void> => {
-    for (const [toolUseId, update] of pendingPolicyUpdates) {
-      await emitPolicyUpdate(toolUseId, update);
+    for (const [toolUseId, policy] of pendingPolicyUpdates) {
+      await emitPolicy(policy, toolStarts.get(toolUseId));
       pendingPolicyUpdates.delete(toolUseId);
     }
   };
 
   const context: AgentRuntimeRunContext = {
     onAbortCause(cause) {
-      abortState.trigger(cause);
+      abortState.abort(cause);
     },
     onSuccessfulToolCall(toolUseId, notices) {
-      const update = turnBudget.complete(toolUseId);
-      if (!update) return;
-      if (update.events.length > 0) pendingPolicyUpdates.set(toolUseId, update);
-      const notice = update.events[0]?.message;
-      if (notice) notices.deliverNotice(notice);
+      const policy = turnBudget.complete(toolUseId);
+      if (!policy) return;
+      pendingPolicyUpdates.set(toolUseId, policy);
+      notices.deliverNotice(policy.message);
     },
   };
   const iterator = runtime.run(run, abortState.signal, context)[Symbol.asyncIterator]();
@@ -405,7 +332,6 @@ async function consumeEvents(
       if (!isAccepting()) return;
       if (next.value.kind === "terminal") await flushPendingPolicyUpdates();
 
-      const before = ledger.events.length;
       const normalizedEvent = workContext.enrichTerminal(
         mapRuntimeTerminal(next.value, abortState.cause),
       );
@@ -414,12 +340,8 @@ async function consumeEvents(
         coordinatorEventOffset,
         acceptedSequences,
       );
-      const result = ledger.ingest(sequencedEvent);
-      if (!result.accepted) continue;
-
-      const event = ledger.events[before];
-      if (!event) throw new RuntimeContractError("accepted event was not retained by ledger");
-      acceptedSequences.add(event.sequence);
+      const event = accept(sequencedEvent);
+      if (!event) continue;
       workContext.observe(event);
       await projectEvent(event, run, projection);
 
@@ -428,10 +350,11 @@ async function consumeEvents(
           typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
         if (event.payload.state === "started") toolStarts.set(toolUseId, event);
         if (event.payload.state === "completed") {
-          const callbackUpdate = pendingPolicyUpdates.get(toolUseId);
-          const turnUpdate = callbackUpdate ?? turnBudget.observe(event);
-          if (callbackUpdate) pendingPolicyUpdates.delete(toolUseId);
-          if (turnUpdate) await emitPolicyUpdate(toolUseId, turnUpdate, event);
+          const policy =
+            pendingPolicyUpdates.get(toolUseId) ??
+            (event.payload.isError === true ? undefined : turnBudget.complete(toolUseId));
+          pendingPolicyUpdates.delete(toolUseId);
+          if (policy) await emitPolicy(policy, event);
         }
       }
 
@@ -441,7 +364,7 @@ async function consumeEvents(
         event.payload.state === "turn_started" &&
         turnBudget.limitReached
       ) {
-        abortState.trigger({ kind: CoordinatorAbortKind.Failed, reason: "max_turns" });
+        abortState.abort({ kind: CoordinatorAbortKind.Failed, reason: "max_turns" });
       }
     }
   } finally {
@@ -453,14 +376,14 @@ function mapRuntimeTerminal(event: RehorEvent, cause: AbortCause | undefined): R
   if (event.kind !== "terminal") return event;
   const payload = event.payload as TerminalEventPayload;
   if (payload.state !== "failed" || !cause) return event;
-  const state = terminalState(cause, undefined);
+  const state = terminalState(cause);
   const reason = terminalReason(cause, undefined);
   return {
     ...event,
     payload: {
       ...payload,
       state,
-      ...(reason === undefined ? {} : { reason }),
+      reason,
     },
   };
 }
@@ -489,7 +412,7 @@ async function projectEvent(
 
 async function raceWithAbort<T>(
   operation: () => Promise<T> | T,
-  abortState: AbortState,
+  abortState: CombinedAbortSignals,
   cleanup?: () => Promise<void>,
 ): Promise<T> {
   const operationResult = Promise.resolve()
@@ -500,7 +423,7 @@ async function raceWithAbort<T>(
     );
   const result = await Promise.race([
     operationResult,
-    abortState.abortPromise.then((cause) => ({ kind: "abort" as const, cause })),
+    abortState.aborted.then((cause) => ({ kind: "abort" as const, cause })),
   ]);
 
   if (result.kind === "abort") {
@@ -539,27 +462,21 @@ function createTerminalEvent(
   };
 }
 
-function terminalState(
-  cause: AbortCause | undefined,
-  failure: unknown,
-): TerminalEventPayload["state"] {
-  if (cause?.kind === CoordinatorAbortKind.TimedOut) return "timed_out";
-  if (cause?.kind === CoordinatorAbortKind.Shutdown) return "interrupted";
-  if (cause?.kind === CoordinatorAbortKind.Cancelled) return "cancelled";
-  if (cause?.kind === CoordinatorAbortKind.Failed) return "failed";
-  if (failure) return "failed";
-  return "failed";
+const STATE_BY_CAUSE = {
+  timed_out: "timed_out",
+  shutdown: "interrupted",
+  cancelled: "cancelled",
+  failed: "failed",
+} as const;
+
+function terminalState(cause: AbortCause | undefined): TerminalEventPayload["state"] {
+  return cause ? STATE_BY_CAUSE[cause.kind] : "failed";
 }
 
 function terminalReason(cause: AbortCause | undefined, failure: unknown): string {
-  if (cause?.kind === CoordinatorAbortKind.TimedOut)
-    return causeText(cause.reason, "run timed out");
-  if (cause?.kind === CoordinatorAbortKind.Shutdown)
-    return causeText(cause.reason, "shutdown requested");
-  if (cause?.kind === CoordinatorAbortKind.Cancelled)
-    return causeText(cause.reason, "run cancelled");
-  if (cause?.kind === CoordinatorAbortKind.Failed) return causeText(cause.reason, "run failed");
-  return describeError(failure ?? new CoordinatorError("runtime ended without terminal event"));
+  return cause
+    ? abortMessage(cause)
+    : describeError(failure ?? new CoordinatorError("runtime ended without terminal event"));
 }
 
 /** Human-readable abort reason; structured `{ kind, reason }` values unwrap to their detail. */

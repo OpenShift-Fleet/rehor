@@ -69,7 +69,7 @@ export class WorkContextTracker {
       const summary = lastMeaningfulLine(resultText);
       if (summary) this.context.summary = summary;
     }
-    const context = previousContext ? { ...previousContext, ...this.context } : this.context;
+    const context = { ...previousContext, ...this.context };
     const noWork = payload.noWork === true || containsNoWork(resultText);
     const hasContext = Object.keys(context).length > 0;
 
