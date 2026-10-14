@@ -231,11 +231,7 @@ function renderProviders(
     }
     if (provider.name !== undefined) {
       const path = `provider.${provider.id}.name`;
-      entry.name = normalizeProviderString(
-        requireNonEmpty(provider.name, path),
-        path,
-        requiredEnvironment,
-      );
+      entry.name = normalizeProviderString(requireNonEmpty(provider.name, path), path);
     }
     if (provider.options !== undefined) {
       entry.options = normalizeJsonObject(
@@ -271,11 +267,7 @@ function renderModelConfig(
   const output: Record<string, JsonValue> = {};
   if (model.name !== undefined) {
     const namePath = `${path}.name`;
-    output.name = normalizeProviderString(
-      requireNonEmpty(model.name, namePath),
-      namePath,
-      requiredEnvironment,
-    );
+    output.name = normalizeProviderString(requireNonEmpty(model.name, namePath), namePath);
   }
   if (model.reasoning !== undefined) {
     if (typeof model.reasoning !== "boolean") {
@@ -468,17 +460,12 @@ function requireNonEmpty(value: string, path: string): string {
   return value;
 }
 
-function normalizeProviderString(
-  value: string,
-  path: string,
-  requiredEnvironment: Set<string>,
-): string {
+function normalizeProviderString(value: string, path: string): string {
   const normalized = normalizeEnvironmentReference(value, path);
   for (const environment of parseEnvironmentReferences(normalized, path)) {
-    assertProviderEnvironment(environment, path);
-    requiredEnvironment.add(environment);
+    assertProviderEnvironment(environment, path, false);
   }
-  return normalized;
+  return value;
 }
 
 function positiveInteger(value: number, path: string): number {

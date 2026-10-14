@@ -105,6 +105,24 @@ describe("OpenCode V1 config renderer", () => {
     );
   });
 
+  it("keeps non-blocked environment references literal in provider and model names", () => {
+    const rendered = renderOpenCodeV1Config({
+      model: "provider/model",
+      providers: [
+        {
+          id: "provider",
+          name: "{env:FOO}",
+          models: { model: { name: "$" + "{FOO}" } },
+        },
+      ],
+    });
+
+    expect(rendered.config).toMatchObject({
+      provider: { provider: { name: "{env:FOO}", models: { model: { name: "$" + "{FOO}" } } } },
+    });
+    expect(rendered.requiredEnvironment).toEqual([]);
+  });
+
   it("renders validated provider, MCP, permissions, and pinned package configuration", () => {
     const rendered = renderOpenCodeV1Config({
       model: "rehor-openai-chat/gpt-4.1",
