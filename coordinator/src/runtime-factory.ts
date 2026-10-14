@@ -169,12 +169,8 @@ export async function executeConfiguredRun(
   options: RuntimeExecutionOptions = {},
 ): Promise<CoordinatorResult> {
   const run = parseRehorRun(input);
-  return executeValidatedSelectedRun(
-    registry,
-    resolveRuntimeSelection(run.runtimeId),
-    run,
-    options,
-  );
+  const selection = resolveRuntimeSelection(run.runtimeId);
+  return executeValidatedSelectedRun(registry, selection, run, options);
 }
 
 async function executeValidatedSelectedRun(
