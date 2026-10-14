@@ -225,13 +225,11 @@ describe("runtime selection", () => {
   });
 
   it("runs a selected adapter through the coordinator lifecycle", async () => {
-    let createdFor: string | undefined;
     let createdRun: RehorRun | undefined;
     const registry = new RuntimeFactoryRegistry([
       {
         runtimeId: "claude",
         create(context) {
-          createdFor = context.run.runId;
           createdRun = context.run;
           return new FakeAgentRuntime({ events: [event(1), event(2, true)] });
         },
@@ -240,7 +238,7 @@ describe("runtime selection", () => {
 
     const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
 
-    expect(createdFor).toBe("run-factory");
+    expect(createdRun?.runId).toBe("run-factory");
     expect(result.run).toBe(createdRun);
     expect(result.terminal.payload.state).toBe("completed");
   });

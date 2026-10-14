@@ -5,8 +5,6 @@ import {
   type CoordinatorProjection,
   createLoopSignals,
   executeRun,
-  executeRunWithValidatedInput,
-  parseRehorRun,
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
@@ -36,11 +34,9 @@ const run: RehorRun = {
   preflightPayloadRef: null,
 };
 
-const validatedRunType: Parameters<typeof executeRunWithValidatedInput>[1] = parseRehorRun(run);
 // @ts-expect-error unvalidated runs must not enter the validated execution path
-const unvalidatedRunType: Parameters<typeof executeRunWithValidatedInput>[1] = run;
-void validatedRunType;
-void unvalidatedRunType;
+const unvalidated: ValidatedRehorRun = run;
+void unvalidated;
 
 const capabilities: RuntimeCapabilities = {
   runtimeId: "test-runtime",
@@ -135,16 +131,6 @@ class HangingRuntime implements AgentRuntime {
 }
 
 describe("coordinator execution", () => {
-  it("requires a parser-branded run for validated execution", async () => {
-    const validated: ValidatedRehorRun = parseRehorRun(run);
-    const result = await executeRunWithValidatedInput(
-      new FakeAgentRuntime({ events: [event(), terminal()] }),
-      validated,
-    );
-
-    expect(result.terminal.payload.state).toBe("completed");
-  });
-
   it("starts, projects, and stops a successful runtime", async () => {
     const projection: CoordinatorProjection & { events: RehorEvent[]; terminals: RehorEvent[] } = {
       events: [],
