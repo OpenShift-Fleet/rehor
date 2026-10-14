@@ -100,22 +100,13 @@ export function pinPackageReference(
 function parsePackageReference(rawSpec: string): { name: string; version?: string } | undefined {
   const spec = rawSpec.startsWith("npm:") ? rawSpec.slice("npm:".length) : rawSpec;
   if (spec.startsWith("file:") || spec.startsWith(".") || spec.startsWith("/")) return undefined;
-  if (spec.startsWith("@")) {
-    const separator = spec.indexOf("@", 1);
-    if (separator < 0) return { name: spec };
-    return { name: spec.slice(0, separator), version: spec.slice(separator + 1) };
-  }
-  const separator = spec.indexOf("@");
+  const separator = spec.indexOf("@", spec.startsWith("@") ? 1 : 0);
   if (separator < 0) return { name: spec };
   return { name: spec.slice(0, separator), version: spec.slice(separator + 1) };
 }
 
 function isPackageName(value: string): boolean {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    (value.startsWith("@")
-      ? /^@[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(value)
-      : /^[a-zA-Z0-9._-]+$/.test(value))
-  );
+  return value.startsWith("@")
+    ? /^@[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(value)
+    : /^[a-zA-Z0-9._-]+$/.test(value);
 }

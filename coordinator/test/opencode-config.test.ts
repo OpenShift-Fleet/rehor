@@ -8,6 +8,7 @@ import {
   renderOpenCodeV1ConfigForCycle,
   writeOpenCodeConfig,
 } from "../src/runtimes/opencode-v1";
+import { stableJson } from "../src/runtimes/shared";
 
 const packages = [
   { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
@@ -31,22 +32,24 @@ const deploymentFixtures = [
 describe("OpenCode V1 config renderer", () => {
   it("matches byte-for-byte snapshots for deployment fixtures", async () => {
     const rendered = await Promise.all(
-      deploymentFixtures.map(async ([name, path]) => {
+      deploymentFixtures.map(async ([, path]) => {
         const deployment = JSON.parse(await readFile(path, "utf8")) as OpenCodeV1ConfigInput;
-        const result = renderOpenCodeV1Config({
+        return renderOpenCodeV1Config({
           ...deployment,
           model: "rehor-openai/gpt-6-luna",
           mcpServers: { snapshot: { type: "http", url: "https://mcp.example/mcp" } },
           allowedTools: ["Read", "mcp__snapshot__search"],
         });
-        return [
-          name,
-          { config: result.config, packageLock: result.packageLock, json: result.json },
-        ];
       }),
     );
 
-    expect(rendered).toMatchSnapshot();
+    const [defaultRendered, exampleRendered] = rendered;
+    expect({
+      config: defaultRendered.config,
+      packageLock: defaultRendered.packageLock,
+    }).toMatchSnapshot();
+    expect(defaultRendered.json).toBe(`${stableJson(defaultRendered.config)}\n`);
+    expect(exampleRendered).toEqual(defaultRendered);
   });
   it("rejects blocked environment references in provider and model names", () => {
     expect(() =>
@@ -326,22 +329,22 @@ describe("OpenCode V1 config renderer", () => {
     }
   });
 
-  it("rejects malformed environment variable names", () => {
+  it.each([
+    {
+      options: { apiKey: "{env:INVALID-NAME}" } as Readonly<Record<string, string>>,
+      name: "INVALID-NAME",
+    },
+    {
+      options: { baseURL: "https://x/{env:bad-name}" } as Readonly<Record<string, string>>,
+      name: "bad-name",
+    },
+  ])("rejects malformed environment variable names", ({ options, name }) => {
     expect(() =>
       renderOpenCodeV1Config({
         model: "provider/model",
-        providers: [{ id: "provider", options: { apiKey: "{env:INVALID-NAME}" } }],
+        providers: [{ id: "provider", options }],
       }),
-    ).toThrow("contains invalid environment variable name 'INVALID-NAME'");
-  });
-
-  it("rejects malformed environment references in non-secret provider fields", () => {
-    expect(() =>
-      renderOpenCodeV1Config({
-        model: "provider/model",
-        providers: [{ id: "provider", options: { baseURL: "https://x/{env:bad-name}" } }],
-      }),
-    ).toThrow("contains invalid environment variable name 'bad-name'");
+    ).toThrow(`contains invalid environment variable name '${name}'`);
   });
 
   it("rejects provider and plugin references outside the explicit environment allowlist", () => {
@@ -488,7 +491,6 @@ describe("OpenCode V1 config renderer", () => {
     const rendered = renderOpenCodeV1ConfigForCycle(
       {
         model: "gpt-5.4",
-        mcpServers: { jira: { type: "http", url: "http://wrong.example" } },
         openCodeMcpServers: { jira: { type: "http", url: "$" + "{JIRA_MCP_URL}" } },
         allowedTools: ["Read", "mcp__jira__search", "mcp__optional-persona-mcp__*"],
         optionalMcpServers: ["optional-persona-mcp"],
@@ -508,7 +510,6 @@ describe("OpenCode V1 config renderer", () => {
     const rendered = renderOpenCodeV1ConfigForCycle(
       {
         model: "model",
-        mcpServers: {},
         openCodeMcpServers: {},
         allowedTools: [],
         optionalMcpServers: [],

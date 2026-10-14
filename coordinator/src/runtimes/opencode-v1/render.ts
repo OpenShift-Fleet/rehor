@@ -4,14 +4,13 @@ import { join } from "node:path";
 
 import type { ConfigPreparationResult } from "../../ports/python-bridge";
 import type { McpServerConfig } from "../../ports/runtime-config";
-import { stableJson } from "../shared";
+import { asObject, sortedEntries, stableJson } from "../shared";
 import {
   assertHttpUrlTemplate,
   assertMcpUrlEnvironment,
   assertProviderEnvironment,
-  normalizeEnvironmentReference,
+  normalizeEnvString,
   normalizeJsonObject,
-  parseEnvironmentReferences,
   rejectMcpEnvironmentReference,
 } from "./env-refs";
 import { normalizePackageLock, pinPackageReference } from "./packages";
@@ -30,7 +29,7 @@ import {
 } from "./types";
 
 export function normalizeDeploymentConfig(
-  deployment: OpenCodeV1DeploymentConfig = {},
+  deployment: OpenCodeV1DeploymentConfig,
 ): Omit<OpenCodeV1DeploymentConfig, "provider" | "packageLock"> {
   const { provider, packageLock, ...canonicalDeployment } = deployment;
   return {
@@ -44,10 +43,10 @@ export function normalizeDeploymentConfig(
 }
 
 export function renderOpenCodeV1ConfigForCycle(
-  preparation: Pick<
-    ConfigPreparationResult,
-    "model" | "mcpServers" | "openCodeMcpServers" | "allowedTools" | "optionalMcpServers"
-  >,
+  preparation: Pick<ConfigPreparationResult, "model"> &
+    Partial<
+      Pick<ConfigPreparationResult, "openCodeMcpServers" | "allowedTools" | "optionalMcpServers">
+    >,
   providerId: string,
   deployment: OpenCodeV1DeploymentConfig = {},
 ): RenderedOpenCodeV1Config {
@@ -127,11 +126,11 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
     permission,
   };
 
-  const json = `${stableJson(config)}\n`;
+  const stable = stableJson(config);
   return {
     config: deepFreeze(config),
-    json,
-    hash: createHash("sha256").update(stableJson(config), "utf8").digest("hex"),
+    json: `${stable}\n`,
+    hash: createHash("sha256").update(stable, "utf8").digest("hex"),
     packageLock: deepFreeze(packageLock),
     effectiveModel: Object.freeze({
       providerID: model.providerId,
@@ -140,6 +139,10 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
     }),
     requiredEnvironment: Object.freeze([...requiredEnvironment].sort()),
   };
+}
+
+export function hashOpenCodeConfig(config: Readonly<Record<string, unknown>>): string {
+  return createHash("sha256").update(stableJson(config)).digest("hex");
 }
 
 /** Write the generated opencode.json and build-consumable package lock. */
@@ -221,13 +224,12 @@ function renderProviders(
   for (const provider of providers) {
     const entry: Record<string, JsonValue> = {};
     if (provider.npm !== undefined) {
-      const packageSpec = pinPackageReference(
+      entry.npm = pinPackageReference(
         provider.npm,
         packageLock,
         `provider.${provider.id}.npm`,
         true,
       );
-      entry.npm = packageSpec;
     }
     if (provider.name !== undefined) {
       const path = `provider.${provider.id}.name`;
@@ -241,9 +243,7 @@ function renderProviders(
       );
     }
     const models: Record<string, JsonValue> = {};
-    for (const [modelId, modelConfig] of Object.entries(provider.models ?? {}).sort(
-      ([left], [right]) => left.localeCompare(right),
-    )) {
+    for (const [modelId, modelConfig] of sortedEntries(provider.models ?? {})) {
       models[requireNonEmpty(modelId, `provider.${provider.id}.models`)] = renderModelConfig(
         modelConfig,
         `provider.${provider.id}.models.${modelId}`,
@@ -291,10 +291,13 @@ function renderMcpServers(
   servers: Readonly<Record<string, McpServerConfig>>,
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
-  for (const [name, server] of Object.entries(servers).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    const enabled = server.alwaysLoad !== false;
+  for (const [name, server] of sortedEntries(servers)) {
+    const options = {
+      enabled: server.alwaysLoad !== false,
+      ...(server.timeout === undefined
+        ? {}
+        : { timeout: positiveInteger(server.timeout, `mcp.${name}.timeout`) }),
+    };
     if ("command" in server) {
       if (server.type !== undefined && server.type !== "stdio") {
         throw new OpenCodeConfigValidationError([
@@ -320,10 +323,7 @@ function renderMcpServers(
                 rejectMcpEnvironmentReference,
               ),
             }),
-        enabled,
-        ...(server.timeout === undefined
-          ? {}
-          : { timeout: positiveInteger(server.timeout, `mcp.${name}.timeout`) }),
+        ...options,
       };
       continue;
     }
@@ -333,13 +333,11 @@ function renderMcpServers(
         `mcp.${name}.type must be http or sse when url is provided`,
       ]);
     }
-    const url = normalizeEnvironmentReference(
+    const url = normalizeEnvString(
       requireNonEmpty(server.url, `mcp.${name}.url`),
       `mcp.${name}.url`,
+      assertMcpUrlEnvironment,
     );
-    for (const environment of parseEnvironmentReferences(url, `mcp.${name}.url`)) {
-      assertMcpUrlEnvironment(environment, `mcp.${name}.url`);
-    }
     assertHttpUrlTemplate(url, `mcp.${name}.url`);
     output[name] = {
       type: "remote",
@@ -354,10 +352,7 @@ function renderMcpServers(
               rejectMcpEnvironmentReference,
             ),
           }),
-      enabled,
-      ...(server.timeout === undefined
-        ? {}
-        : { timeout: positiveInteger(server.timeout, `mcp.${name}.timeout`) }),
+      ...options,
     };
   }
   return output;
@@ -404,7 +399,9 @@ function renderPermissions(
       if (!pattern)
         throw new OpenCodeConfigValidationError(["Bash permission pattern cannot be empty"]);
       const existing = permissions.bash;
-      const rules = asRecord(existing) ?? { "*": "deny" };
+      const rules = (asObject(existing) as Record<string, JsonValue> | undefined) ?? {
+        "*": "deny",
+      };
       rules[pattern] = "allow";
       permissions.bash = rules;
       continue;
@@ -428,12 +425,7 @@ function renderPermissions(
 function parseClaudeMcpTool(tool: string): { server: string; tool: string } | undefined {
   const match = /^mcp__(.+)__(.+)$/.exec(tool);
   if (!match) return undefined;
-  const server = match[1];
-  const name = match[2];
-  if (!server || !name) {
-    throw new OpenCodeConfigValidationError([`MCP tool '${tool}' has an invalid server/tool name`]);
-  }
-  return { server, tool: name === "*" ? "*" : name };
+  return { server: match[1], tool: match[2] };
 }
 
 function renderPlugins(
@@ -461,10 +453,9 @@ function requireNonEmpty(value: string, path: string): string {
 }
 
 function normalizeProviderString(value: string, path: string): string {
-  const normalized = normalizeEnvironmentReference(value, path);
-  for (const environment of parseEnvironmentReferences(normalized, path)) {
-    assertProviderEnvironment(environment, path, false);
-  }
+  normalizeEnvString(value, path, (environment, referencePath) =>
+    assertProviderEnvironment(environment, referencePath, false),
+  );
   return value;
 }
 
@@ -473,10 +464,4 @@ function positiveInteger(value: number, path: string): number {
     throw new OpenCodeConfigValidationError([`${path} must be a positive safe integer`]);
   }
   return value;
-}
-
-function asRecord(value: unknown): Record<string, JsonValue> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, JsonValue>)
-    : undefined;
 }

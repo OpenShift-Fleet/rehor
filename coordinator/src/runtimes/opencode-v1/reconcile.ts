@@ -1,19 +1,15 @@
 import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
 import type { createEventFactory, RehorEvent, RuntimeTerminalState } from "../../domain";
-import { boundedOperation, stringValue } from "../shared";
+import { asObject, boundedOperation, record, stringValue } from "../shared";
 import {
   foldOpenCodeEvent,
   type NormalizationContext,
   type NormalizedEvents,
   normalizeOpenCodeEvent,
   partKey,
-} from "./normalizer";
-import {
-  isTerminalAssistantMessageEntry,
-  record,
-  recordOrUndefined,
+  resultText,
   unwrapSdkResponse,
-} from "./sdk-helpers";
+} from "./normalizer";
 
 interface ReconcileActiveRun {
   controller: AbortController;
@@ -23,24 +19,33 @@ interface ReconcileActiveRun {
 }
 
 export async function reconcileSession(
-  active: ReconcileActiveRun,
+  { controller: activeController, client, sessionId, directory }: ReconcileActiveRun,
   factory: ReturnType<typeof createEventFactory>,
   normalization: NormalizationContext,
   timeoutMs: number,
   messageLimit: number,
 ): Promise<NormalizedEvents> {
-  if (!active.client || !active.sessionId || !active.directory) {
+  if (!client || !sessionId || !directory) {
     return { events: [], turns: 0 };
   }
-  const sessionId = active.sessionId;
-  const directory = active.directory;
-  const client = active.client;
 
   const controller = new AbortController();
-  const signal = AbortSignal.any([active.controller.signal, controller.signal]);
+  const signal = AbortSignal.any([activeController.signal, controller.signal]);
   const timer = setTimeout(() => controller.abort("reconciliation timeout"), timeoutMs);
   const events: RehorEvent[] = [];
   let turns = 0;
+  let outcome: RuntimeTerminalState | undefined;
+  let reason: string | undefined;
+
+  const result = (): NormalizedEvents => {
+    const text = resultText(normalization);
+    return {
+      events,
+      ...(outcome ? { outcome, reason } : {}),
+      ...(text === undefined ? {} : { resultText: text }),
+      turns,
+    };
+  };
 
   try {
     const reconciliationDeadline = Date.now() + timeoutMs;
@@ -58,25 +63,14 @@ export async function reconcileSession(
       "session messages reconciliation",
     );
     const data: unknown = unwrapSdkResponse(response, "OpenCode session messages");
-    if (!Array.isArray(data)) {
-      return {
-        events,
-        ...(normalization.resultTextParts.size > 0
-          ? { resultText: [...normalization.resultTextParts.values()].join("") }
-          : {}),
-        turns,
-      };
-    }
-
-    let outcome: RuntimeTerminalState | undefined;
-    let reason: string | undefined;
+    if (!Array.isArray(data)) return result();
 
     for (const entry of data) {
       const message = record(entry);
       const info = record(message.info);
       const messageId = typeof info.id === "string" ? info.id : undefined;
       const isAssistant = info.role === "assistant";
-      const completed = Boolean(recordOrUndefined(info.time)?.completed);
+      const completed = Boolean(asObject(info.time)?.completed);
       if (messageId && typeof info.role === "string") {
         normalization.messageRoles.set(messageId, info.role);
       }
@@ -156,23 +150,17 @@ export async function reconcileSession(
       }
     }
 
-    return {
-      events,
-      ...(outcome ? { outcome, reason } : {}),
-      ...(normalization.resultTextParts.size > 0
-        ? { resultText: [...normalization.resultTextParts.values()].join("") }
-        : {}),
-      turns,
-    };
+    return result();
   } catch {
-    return {
-      events,
-      ...(normalization.resultTextParts.size > 0
-        ? { resultText: [...normalization.resultTextParts.values()].join("") }
-        : {}),
-      turns,
-    };
+    return result();
   } finally {
     clearTimeout(timer);
   }
+}
+
+function isTerminalAssistantMessageEntry(value: unknown, sessionId: string): boolean {
+  const info = record(record(value).info);
+  if (info.sessionID !== sessionId || info.role !== "assistant") return false;
+  if (!asObject(info.time)?.completed || typeof info.finish !== "string") return false;
+  return info.finish !== "tool-calls" && info.finish !== "unknown";
 }

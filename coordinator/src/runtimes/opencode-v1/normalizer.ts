@@ -1,8 +1,20 @@
 import type { Event as OpenCodeEvent } from "@opencode-ai/sdk";
 
-import type { createEventFactory, RehorEvent, RuntimeTerminalState } from "../../domain";
-import { type JsonRecord, numberValue, stringValue, usagePayload } from "../shared";
-import { providerErrorMessage, record, recordOrUndefined } from "./sdk-helpers";
+import {
+  type createEventFactory,
+  type RehorEvent,
+  type RuntimeTerminalState,
+  TOKEN_CLASSES,
+  type TokenCounts,
+} from "../../domain";
+import {
+  asObject,
+  type JsonRecord,
+  numberValue,
+  record,
+  redactSensitiveText,
+  stringValue,
+} from "../shared";
 
 export interface NormalizedEvents {
   events: RehorEvent[];
@@ -19,13 +31,7 @@ interface NormalizeOptions {
 interface UsageSnapshot {
   requestedModel: string;
   bucketModel: string;
-  tokenCounts: {
-    input: number;
-    output: number;
-    reasoning: number;
-    cacheRead: number;
-    cacheWrite: number;
-  };
+  tokenCounts: Required<TokenCounts>;
   completed: boolean;
   returnedModel?: string;
   cost?: number;
@@ -88,7 +94,7 @@ export function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationCo
     if (!messageId) return;
     context.seenMessages.add(messageId);
     if (typeof info.role === "string") context.messageRoles.set(messageId, info.role);
-    if (recordOrUndefined(info.time)?.completed) context.completedMessages.add(messageId);
+    if (asObject(info.time)?.completed) context.completedMessages.add(messageId);
     if (eventSessionId(event) === context.rootSessionId && info.role === "assistant") {
       context.rootAssistantError = info.error ? providerErrorMessage(info.error) : undefined;
     }
@@ -132,14 +138,7 @@ export function normalizeOpenCodeEvent(
       const isRoot = properties.sessionID === context.rootSessionId;
       return {
         events: [factory("run", { state: status }, withSession)],
-        ...(isRoot && status.type === "idle"
-          ? (context.rootSessionError ?? context.rootAssistantError)
-            ? {
-                outcome: "failed" as const,
-                reason: context.rootSessionError ?? context.rootAssistantError,
-              }
-            : { outcome: "completed" as const }
-          : {}),
+        ...(isRoot && status.type === "idle" ? rootIdleOutcome(context) : {}),
         turns: 0,
       };
     }
@@ -147,14 +146,7 @@ export function normalizeOpenCodeEvent(
       const isRoot = properties.sessionID === context.rootSessionId;
       return {
         events: [factory("run", { state: "idle" }, withSession)],
-        ...(isRoot
-          ? (context.rootSessionError ?? context.rootAssistantError)
-            ? {
-                outcome: "failed" as const,
-                reason: context.rootSessionError ?? context.rootAssistantError,
-              }
-            : { outcome: "completed" as const }
-          : {}),
+        ...(isRoot ? rootIdleOutcome(context) : {}),
         turns: 0,
       };
     }
@@ -188,7 +180,7 @@ export function normalizeOpenCodeEvent(
           context.modelEventIds.set(messageId, modelEvent.eventId);
         }
       }
-      const completed = Boolean(recordOrUndefined(info.time)?.completed);
+      const completed = Boolean(asObject(info.time)?.completed);
       const turns =
         eventSessionId(event) === context.rootSessionId &&
         completed &&
@@ -253,10 +245,10 @@ export function normalizeOpenCodeEvent(
       if (part.type === "tool") {
         const state = record(part.state);
         const name = stringValue(part.tool, "unknown");
-        const input = recordOrUndefined(state.input);
+        const input = asObject(state.input);
         const finished = state.status === "completed" || state.status === "error";
-        const start = numberValue(recordOrUndefined(state.time)?.start);
-        const end = numberValue(recordOrUndefined(state.time)?.end);
+        const start = numberValue(asObject(state.time)?.start);
+        const end = numberValue(asObject(state.time)?.end);
         const phase = finished ? "completed" : "started";
         const key = partKey(part);
         if (context.toolPhases.get(key) === phase) return { events: [], turns: 0 };
@@ -325,9 +317,9 @@ function assistantUsage(
   },
   context: NormalizationContext,
 ): RehorEvent | undefined {
-  const tokens = recordOrUndefined(info.tokens);
+  const tokens = asObject(info.tokens);
   if (!tokens) return undefined;
-  const cache = recordOrUndefined(tokens.cache);
+  const cache = asObject(tokens.cache);
   const messageId = stringValue(info.id, "unknown-message");
   const returnedModel = typeof info.modelID === "string" ? info.modelID : undefined;
   const bucketModel = returnedModel ?? context.requestedModel;
@@ -345,13 +337,13 @@ function assistantUsage(
       cacheRead: nonNegativeInteger(cache?.read),
       cacheWrite: nonNegativeInteger(cache?.write),
     },
-    completed: Boolean(recordOrUndefined(info.time)?.completed),
+    completed: Boolean(asObject(info.time)?.completed),
     ...(returnedModel ? { returnedModel } : {}),
     ...(typeof info.cost === "number" && Number.isFinite(info.cost) ? { cost: info.cost } : {}),
   };
   context.usageSnapshots.set(`${overrides.runtimeSessionRef}:${messageId}`, snapshot);
 
-  const tokenCounts = {
+  const tokenCounts: Required<TokenCounts> = {
     input: 0,
     output: 0,
     reasoning: 0,
@@ -363,11 +355,7 @@ function assistantUsage(
   let final = true;
   for (const current of context.usageSnapshots.values()) {
     if (current.bucketModel !== snapshot.bucketModel) continue;
-    tokenCounts.input += current.tokenCounts.input;
-    tokenCounts.output += current.tokenCounts.output;
-    tokenCounts.reasoning += current.tokenCounts.reasoning;
-    tokenCounts.cacheRead += current.tokenCounts.cacheRead;
-    tokenCounts.cacheWrite += current.tokenCounts.cacheWrite;
+    for (const key of TOKEN_CLASSES) tokenCounts[key] += current.tokenCounts[key];
     final &&= current.completed;
     if (current.cost !== undefined) {
       cost += current.cost;
@@ -377,16 +365,46 @@ function assistantUsage(
 
   return factory(
     "usage",
-    usagePayload(requestedModel, tokenCounts, {
+    {
+      requestedModel,
       ...(snapshot.returnedModel ? { returnedModel: snapshot.returnedModel } : {}),
+      tokenCounts,
       partial: !final,
       final,
       estimated: false,
       incomplete: !final,
       ...(hasCost ? { cost: { amount: cost, currency: "USD", source: "provider" } } : {}),
-    }),
+    },
     { ...overrides, ...(snapshot.returnedModel ? { model: snapshot.returnedModel } : {}) },
   );
+}
+
+export function resultText(context: NormalizationContext): string | undefined {
+  return context.resultTextParts.size > 0
+    ? [...context.resultTextParts.values()].join("")
+    : undefined;
+}
+
+export function unwrapSdkResponse(value: unknown, operation: string): unknown {
+  const response = asObject(value);
+  if (response?.error !== undefined) {
+    throw new Error(`${operation} failed: ${providerErrorMessage(response.error)}`);
+  }
+  return response && "data" in response ? response.data : value;
+}
+
+export function providerErrorMessage(value: unknown): string {
+  if (typeof value === "string") return redactSensitiveText(value);
+  const error = record(value);
+  const data = record(error.data);
+  return redactSensitiveText(stringValue(data.message ?? error.message, "OpenCode session error"));
+}
+
+function rootIdleOutcome(
+  context: NormalizationContext,
+): { outcome: "failed"; reason: string } | { outcome: "completed" } {
+  const reason = context.rootSessionError ?? context.rootAssistantError;
+  return reason ? { outcome: "failed", reason } : { outcome: "completed" };
 }
 
 function qualifiedModel(info: Record<string, unknown>): string | undefined {

@@ -19,7 +19,6 @@ import {
   errorMessage,
   numberValue,
   stringValue,
-  usagePayload,
 } from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
@@ -210,8 +209,10 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         partial: boolean,
         incomplete: boolean,
       ): RehorEvent => {
-        const payload = usagePayload(input.provider.requestedModel, snapshot.counts, {
+        const payload = {
+          requestedModel: input.provider.requestedModel,
           ...(snapshot.model ? { returnedModel: snapshot.model } : {}),
+          tokenCounts: snapshot.counts,
           partial,
           final: !partial,
           estimated: true,
@@ -225,7 +226,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
                   source: "estimated",
                 },
               }),
-        });
+        };
         return makeSdkEvent(
           "usage",
           payload,

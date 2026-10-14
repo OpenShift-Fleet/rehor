@@ -8,10 +8,6 @@ export interface OpenCodeHealth {
   capabilities?: readonly string[];
 }
 
-export interface OpenCodeReadiness {
-  check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth>;
-}
-
 export class OpenCodeReadinessError extends Error {
   constructor(
     message: string,
@@ -22,7 +18,7 @@ export class OpenCodeReadinessError extends Error {
   }
 }
 
-export class HttpOpenCodeReadiness implements OpenCodeReadiness {
+export class HttpOpenCodeReadiness {
   private readonly fetchImpl: OpenCodeFetch;
 
   constructor(fetchImpl?: OpenCodeFetch) {
