@@ -2,7 +2,7 @@
 
 This guide is for the Fleet / Org Pulse dashboard developer integrating the Memory Server task-outcome APIs. Use the server's category-aware rollups for delivery metrics and show monitoring and grooming separately. A task's category, lifecycle, effective state, and selected outcome report answer different questions.
 
-The implementation contract is [task_outcomes.py](../memory-server/bot_memory_server/task_outcomes.py), with response shapes in [shared/openapi.yaml](../shared/openapi.yaml). The [task outcomes spike](task-outcomes-spike.md) covers evidence reduction, archival, and design history. This document describes adoption of the current implementation rather than asserting that it is already deployed.
+The implementation contract is [`task_outcomes.py`](https://github.com/OpenShift-Fleet/rehor/blob/master/memory-server/bot_memory_server/task_outcomes.py), with response shapes in [`shared/openapi.yaml`](https://github.com/OpenShift-Fleet/rehor/blob/master/shared/openapi.yaml). The [task outcomes spike](task-outcomes-spike.md) covers evidence reduction, archival, and design history. This document describes adoption of the current implementation rather than asserting that it is already deployed.
 
 ## Ownership and integration surface
 
