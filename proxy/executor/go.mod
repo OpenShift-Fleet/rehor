@@ -2,6 +2,8 @@ module github.com/RedHatInsights/platform-frontend-ai-dev/proxy/executor
 
 go 1.26.7
 
+toolchain go1.26.9
+
 require (
 	github.com/prometheus/client_golang v1.24.1
 	golang.org/x/oauth2 v0.37.0
@@ -18,7 +20,7 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.71.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260918162117-cecb64721679 // indirect
