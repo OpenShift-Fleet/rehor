@@ -2156,6 +2156,9 @@ describe("OpenCode runtime", () => {
       state: "interrupted",
       reason: "opencode_crash",
     });
+    expect(result.events.find((event) => event.kind === "error")?.payload).toMatchObject({
+      message: crash.message,
+    });
     expect(result.error).toBeUndefined();
     expect(metrics).toContainEqual({
       type: "counter",

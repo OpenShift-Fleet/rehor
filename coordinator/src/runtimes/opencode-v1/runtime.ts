@@ -5,9 +5,6 @@ import {
 } from "@opencode-ai/sdk";
 import { providerDiagnostic, runtimeErrorDetails } from "../../diagnostics";
 import {
-  type AbortCauseKind,
-  abortCauseFrom,
-  abortCauseKind,
   createEventFactory,
   type RehorEvent,
   type RehorRun,
@@ -226,7 +223,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
-      detachCrash = linkCrash(this.supervisor.crashSignal, active.controller, context);
+      detachCrash = linkAbort(
+        this.supervisor.crashSignal,
+        active.controller,
+        () => context?.onAbortCause?.(OPENCODE_CRASH),
+      );
       const directory = server.directory;
       const client = this.clientFactory(server, directory, this.clientEnvironment);
       active.client = client;
@@ -385,7 +386,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         promptAttempted &&
         !signal.aborted &&
         !this.supervisor.crashError &&
-        shouldReconcile(active.controller.signal)
+        !active.controller.signal.aborted
       ) {
         const reconciled = await reconcileSession(
           active,
@@ -400,10 +401,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (reconciled.outcome) {
           outcome = { state: reconciled.outcome, reason: reconciled.reason };
           failure = undefined;
-        } else if (streamLost) {
-          const cause = { kind: "shutdown", reason: "opencode_crash" } as const;
-          context?.onAbortCause?.(cause);
-        }
+        } else if (streamLost) context?.onAbortCause?.(OPENCODE_CRASH);
       }
     } finally {
       detachAbort();
@@ -488,11 +486,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     const deadline = Date.now() + this.cleanupTimeoutMs;
     const deadlineController = new AbortController();
     const deadlineTimer = setTimeout(
-      () =>
-        deadlineController.abort({
-          kind: "timed_out",
-          reason: new Error("OpenCode cleanup deadline exceeded"),
-        }),
+      () => deadlineController.abort(new Error("OpenCode cleanup deadline exceeded")),
       this.cleanupTimeoutMs,
     );
     const cleanupSignal = deadlineController.signal;
@@ -605,10 +599,7 @@ async function reconcileSession(
 
   const controller = new AbortController();
   const signal = AbortSignal.any([active.controller.signal, controller.signal]);
-  const timer = setTimeout(
-    () => controller.abort({ kind: "timed_out", reason: "reconciliation timeout" }),
-    timeoutMs,
-  );
+  const timer = setTimeout(() => controller.abort("reconciliation timeout"), timeoutMs);
   const events: RehorEvent[] = [];
   let turns = 0;
 
@@ -745,10 +736,6 @@ async function reconcileSession(
   } finally {
     clearTimeout(timer);
   }
-}
-
-function shouldReconcile(signal: AbortSignal): boolean {
-  return abortCauseKind(signal.reason) === undefined;
 }
 
 function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationContext): void {
@@ -1173,27 +1160,13 @@ function partKey(part: JsonRecord): string {
   return `${stringValue(part.sessionID, "unknown-session")}:${stringValue(part.id, "unknown-part")}`;
 }
 
-function linkCrash(
-  source: AbortSignal,
-  target: AbortController,
-  context: AgentRuntimeRunContext | undefined,
-): () => void {
-  const onAbort = (): void => {
-    const cause = { kind: "shutdown", reason: "opencode_crash" } as const;
-    context?.onAbortCause?.(cause);
-    if (!target.signal.aborted) target.abort(source.reason);
-  };
-  if (source.aborted) onAbort();
-  else source.addEventListener("abort", onAbort, { once: true });
-  return () => source.removeEventListener("abort", onAbort);
-}
+const OPENCODE_CRASH = { kind: "shutdown", reason: "opencode_crash" } as const;
 
-function linkAbort(
-  source: AbortSignal,
-  target: AbortController,
-  fallbackKind: AbortCauseKind = "cancelled",
-): () => void {
-  const onAbort = (): void => target.abort(abortCauseFrom(source.reason, fallbackKind));
+function linkAbort(source: AbortSignal, target: AbortController, before?: () => void): () => void {
+  const onAbort = (): void => {
+    target.abort(source.reason);
+    before?.();
+  };
   if (source.aborted) onAbort();
   else source.addEventListener("abort", onAbort, { once: true });
   return () => source.removeEventListener("abort", onAbort);

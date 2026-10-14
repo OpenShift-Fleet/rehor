@@ -407,7 +407,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
               : `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signal ?? "none"})`,
           );
           this._crashError = this.withStartupOutput(error);
-          this.crashController.abort({ kind: "failed", reason: this._crashError });
+          this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
         resolve();
@@ -417,7 +417,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         const safeError = redactError(error);
         if (!this.stopping) {
           this._crashError = this.withStartupOutput(safeError);
-          this.crashController.abort({ kind: "failed", reason: this._crashError });
+          this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
         reject(this._crashError ?? safeError);
