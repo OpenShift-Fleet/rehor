@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 
 import { OpenCodeReadinessError } from "./readiness";
 
@@ -56,10 +56,9 @@ export async function resolveApprovedWorkspace(
 
   const relativeDirectory = relative(canonicalRoot, canonicalDirectory);
   if (
-    relativeDirectory !== "" &&
-    (relativeDirectory === ".." ||
-      relativeDirectory.startsWith(`..${pathSeparator()}`) ||
-      isAbsolute(relativeDirectory))
+    relativeDirectory === ".." ||
+    relativeDirectory.startsWith(`..${sep}`) ||
+    isAbsolute(relativeDirectory)
   ) {
     throw new OpenCodeReadinessError(
       `OpenCode worktree path ${canonicalDirectory} is outside approved workspace root ${canonicalRoot}`,
@@ -94,8 +93,4 @@ export async function resolveApprovedWorkspace(
 
 function currentUserUid(): number | undefined {
   return typeof process.getuid === "function" ? process.getuid() : undefined;
-}
-
-function pathSeparator(): string {
-  return process.platform === "win32" ? "\\" : "/";
 }

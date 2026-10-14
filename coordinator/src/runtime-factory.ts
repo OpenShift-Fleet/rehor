@@ -11,11 +11,10 @@ import {
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
 import {
-  normalizeDeploymentConfig,
   type OpenCodeV1DeploymentConfig,
   OpenCodeV1Runtime,
   type OpenCodeV1RuntimeOptions,
-  renderOpenCodeV1Config,
+  type RenderedOpenCodeV1Config,
   renderOpenCodeV1ConfigForCycle,
 } from "./runtimes/opencode-v1";
 
@@ -112,7 +111,7 @@ export function createOpenCodeV1RuntimeFactory(
     runtimeId: "opencode-v1",
     create(context) {
       const configured = options.config ?? {};
-      let renderedConfig: ReturnType<typeof renderOpenCodeV1Config> | undefined;
+      let renderedConfig: RenderedOpenCodeV1Config | undefined;
       let renderError: unknown;
       try {
         renderedConfig = context.preparedConfig
@@ -121,11 +120,11 @@ export function createOpenCodeV1RuntimeFactory(
               context.run.provider.id,
               configured,
             )
-          : renderOpenCodeV1Config({
-              ...normalizeDeploymentConfig(configured),
-              model: configured.model ?? context.run.provider.requestedModel,
-              providerId: configured.providerId ?? context.run.provider.id,
-            });
+          : renderOpenCodeV1ConfigForCycle(
+              { model: context.run.provider.requestedModel },
+              context.run.provider.id,
+              configured,
+            );
       } catch (error) {
         renderError = error;
       }

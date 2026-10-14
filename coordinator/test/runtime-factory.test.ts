@@ -121,7 +121,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-
     expect(rendered?.config.provider).toEqual({
       "legacy-provider": {
         npm: "x-pkg@1.0.0",
@@ -203,7 +202,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-
     expect(rendered?.config).toMatchObject({
       model: "vertex/deployment-model",
       mcp: {

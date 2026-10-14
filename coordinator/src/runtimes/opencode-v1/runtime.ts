@@ -19,10 +19,10 @@ import {
   boundedOperation,
   buildTerminalPayload,
   errorMessage,
+  record,
   redactSensitiveText,
   stringValue,
 } from "../shared";
-import type { EffectiveOpenCodeModel, RenderedOpenCodeV1Config } from "./config";
 import {
   buildOpenCodeEnvironment,
   createOpenCodeFetch,
@@ -32,10 +32,10 @@ import {
 import {
   beginsNewTurn,
   createNormalizationContext,
-  eventSessionId,
   isSessionEvent,
   type NormalizationContext,
   normalizeOpenCodeEvent,
+  unwrapSdkResponse,
 } from "./normalizer";
 import {
   OPENCODE_VERSION,
@@ -46,7 +46,7 @@ import {
   type OpenCodeSupervisorOptions,
 } from "./process-supervisor";
 import { reconcileSession } from "./reconcile";
-import { record, toError, unwrapSdkResponse } from "./sdk-helpers";
+import type { EffectiveOpenCodeModel, RenderedOpenCodeV1Config } from "./types";
 
 export type OpenCodeV1ServerOptions = Omit<OpenCodeSupervisorOptions, "renderedConfig">;
 export type OpenCodeSupervisorFactory = (
@@ -553,3 +553,9 @@ function isResourceLeak(value: unknown): boolean {
 }
 
 export type { ProxyEnvironment };
+
+function toError(value: unknown): Error {
+  return value instanceof Error
+    ? value
+    : new Error(errorMessage(value) ?? "OpenCode cleanup failed");
+}

@@ -53,51 +53,52 @@ class FakeChild extends EventEmitter {
 
 interface FakeOpenCodeServerOptions {
   version?: string;
-  healthy?: boolean;
   directory?: (requested: string) => string;
   advertiseDelayMs?: number;
-  blockHealth?: boolean;
-  onHealthRequest?: () => void;
-  onRequestAbort?: () => void;
+  block?: boolean;
+  onHealth?: () => void;
+}
+
+function stubReadinessFetch(options: FakeOpenCodeServerOptions = {}): AbortSignal[] {
+  const signals: AbortSignal[] = [];
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    if (signal) signals.push(signal);
+    if (url.pathname === "/global/health") {
+      options.onHealth?.();
+      if (options.block) {
+        return new Promise<Response>((_, reject) => {
+          const abort = (): void => reject(signal?.reason ?? new Error("readiness aborted"));
+          if (signal?.aborted) abort();
+          else signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return new Response(
+        JSON.stringify({ healthy: true, version: options.version ?? "1.18.29" }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    const directory =
+      options.directory?.(url.searchParams.get("directory") ?? "") ??
+      url.searchParams.get("directory");
+    return new Response(JSON.stringify({ directory }), {
+      headers: { "content-type": "application/json" },
+    });
+  });
+  return signals;
 }
 
 function spawnFakeOpenCodeServer(
   child: FakeChild,
   options: FakeOpenCodeServerOptions = {},
 ): ReturnType<OpenCodeSpawn> {
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
-    request.once("aborted", () => options.onRequestAbort?.());
-    if (url.pathname === "/global/health") {
-      options.onHealthRequest?.();
-      if (options.blockHealth) return;
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({ healthy: options.healthy ?? true, version: options.version ?? "1.18.29" }),
-      );
-      return;
-    }
-    if (url.pathname === "/path") {
-      const requested = url.searchParams.get("directory") ?? "";
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ directory: options.directory?.(requested) ?? requested }));
-      return;
-    }
-    response.writeHead(404).end();
-  });
-  child.onKill = () => {
-    server.closeAllConnections();
-    server.close();
+  stubReadinessFetch(options);
+  const announce = (): void => {
+    child.stdout.write("server listening on http://127.0.0.1:41236\n");
   };
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    if (!address || typeof address === "string") return;
-    const announce = (): void => {
-      child.stdout.write(`server listening on http://127.0.0.1:${address.port}\n`);
-    };
-    if (options.advertiseDelayMs) setTimeout(announce, options.advertiseDelayMs);
-    else announce();
-  });
+  if (options.advertiseDelayMs) setTimeout(announce, options.advertiseDelayMs);
+  else queueMicrotask(announce);
   return child as never;
 }
 
@@ -2325,32 +2326,40 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function stubSuccessfulReadinessFetch(): void {
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
-    const url = new URL(input instanceof Request ? input.url : String(input));
-    const body =
-      url.pathname === "/global/health"
-        ? { healthy: true, version: "1.18.29" }
-        : { directory: url.searchParams.get("directory") };
-    return new Response(JSON.stringify(body), {
-      headers: { "content-type": "application/json" },
-    });
-  });
-}
-
 const TEST_WORKSPACE = process.cwd();
+const TEST_COMMAND = "/usr/local/bin/opencode-test";
 
 function createTestSupervisor(
   options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
 ): OpenCodeServerSupervisor {
-  return new OpenCodeServerSupervisor({ workspaceRoot: TEST_WORKSPACE, ...options });
+  return new OpenCodeServerSupervisor({
+    workspaceRoot: TEST_WORKSPACE,
+    command: TEST_COMMAND,
+    shutdownTimeoutMs: 20,
+    killVerificationTimeoutMs: 20,
+    ...options,
+  });
+}
+
+function nodeScriptSupervisor(
+  source: string,
+  options: ConstructorParameters<typeof OpenCodeServerSupervisor>[0] = {},
+): { supervisor: OpenCodeServerSupervisor; leader: { current?: ReturnType<typeof spawn> } } {
+  const leader: { current?: ReturnType<typeof spawn> } = {};
+  const supervisor = createTestSupervisor({
+    ...options,
+    spawnProcess: (_command, _args, spawnOptions) => {
+      leader.current = spawn(process.execPath, ["-e", source], spawnOptions);
+      return leader.current;
+    },
+  });
+  return { supervisor, leader };
 }
 
 describe("OpenCode process supervisor", () => {
   it("requires an approved workspace root before spawning a child", async () => {
     let spawned = false;
     const supervisor = new OpenCodeServerSupervisor({
-      command: "/usr/local/bin/opencode-test",
       spawnProcess: () => {
         spawned = true;
         return new FakeChild() as never;
@@ -2366,7 +2375,6 @@ describe("OpenCode process supervisor", () => {
   it("rejects a relative worktree path before spawning a child", async () => {
     let spawned = false;
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       workspaceRoot: process.cwd(),
       startupTimeoutMs: 20,
       spawnProcess: () => {
@@ -2387,7 +2395,6 @@ describe("OpenCode process supervisor", () => {
     let spawned = false;
     try {
       const supervisor = createTestSupervisor({
-        command: "/usr/local/bin/opencode-test",
         workspaceRoot: root,
         startupTimeoutMs: 20,
         spawnProcess: () => {
@@ -2413,7 +2420,6 @@ describe("OpenCode process supervisor", () => {
     let spawned = false;
     try {
       const supervisor = createTestSupervisor({
-        command: "/usr/local/bin/opencode-test",
         workspaceRoot: root,
         workspaceOwnerUid: ownerUid + 1,
         logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }).child({
@@ -2460,7 +2466,6 @@ describe("OpenCode process supervisor", () => {
     let spawnCwd: string | undefined;
     try {
       const supervisor = createTestSupervisor({
-        command: "/usr/local/bin/opencode-test",
         workspaceRoot: root,
         spawnProcess: (_command, _args, options) => {
           spawnCwd = options.cwd as string;
@@ -2484,40 +2489,10 @@ describe("OpenCode process supervisor", () => {
     expect(output).toBe(`prefix${"diagnostic output ".repeat(2_000)}`.slice(-16_384));
   });
 
-  it("starts with an ephemeral port and accepts the server-advertised URL", async () => {
-    const child = new FakeChild();
-    let spawnArgs: readonly string[] | undefined;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      startupTimeoutMs: 50,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
-      spawnProcess: (_command, args) => {
-        spawnArgs = args;
-        return spawnFakeOpenCodeServer(child);
-      },
-    });
-
-    const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
-    expect(spawnArgs).toEqual([
-      "serve",
-      "--hostname=127.0.0.1",
-      "--port=0",
-      "--print-logs",
-      "--log-level=INFO",
-    ]);
-    expect(info.baseUrl).toBe(`http://127.0.0.1:${info.port}`);
-    expect(info.port).toBeGreaterThan(0);
-    await supervisor.stop();
-  });
-
   it("redacts secrets from startup diagnostics", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 50,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
       spawnProcess: () => {
         queueMicrotask(() => child.stderr.write("Authorization: Bearer startup-secret\n"));
         return child as never;
@@ -2539,10 +2514,7 @@ describe("OpenCode process supervisor", () => {
     const captureBoundarySecretTail = "s".repeat(256);
     const diagnosticBoundarySecretTail = "t".repeat(256);
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 50,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
       spawnProcess: () => {
         queueMicrotask(() =>
           child.stderr.write(
@@ -2571,10 +2543,7 @@ describe("OpenCode process supervisor", () => {
   it("caps startup diagnostics included in startup errors", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 50,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
       spawnProcess: () => {
         queueMicrotask(() => child.stderr.write("ERROR ProviderInitError\n".repeat(1000)));
         return child as never;
@@ -2597,7 +2566,6 @@ describe("OpenCode process supervisor", () => {
   it("includes startup output when the server exits before listening", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
       spawnProcess: () => {
         queueMicrotask(() => {
@@ -2616,10 +2584,7 @@ describe("OpenCode process supervisor", () => {
   it("includes startup output when listening times out", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 20,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
       spawnProcess: () => {
         queueMicrotask(() => child.stderr.write("fatal startup timeout\n"));
         return child as never;
@@ -2635,7 +2600,6 @@ describe("OpenCode process supervisor", () => {
     const child = new FakeChild();
     const caller = new AbortController();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 1_000,
       spawnProcess: () => {
         queueMicrotask(() => caller.abort(new Error("caller cancelled startup")));
@@ -2655,12 +2619,11 @@ describe("OpenCode process supervisor", () => {
     const child = new FakeChild();
     let requests = 0;
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
       spawnProcess: () =>
         spawnFakeOpenCodeServer(child, {
           directory: () => "/other",
-          onHealthRequest: () => requests++,
+          onHealth: () => requests++,
         }),
     });
 
@@ -2670,32 +2633,39 @@ describe("OpenCode process supervisor", () => {
     expect(requests).toBe(1);
   });
 
-  it("uses one startup deadline for listening and readiness", async () => {
-    const child = new FakeChild();
-    let healthRequests = 0;
-    let requestAborted = false;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      startupTimeoutMs: 50,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
-      spawnProcess: () =>
-        spawnFakeOpenCodeServer(child, {
-          advertiseDelayMs: 20,
-          blockHealth: true,
-          onHealthRequest: () => healthRequests++,
-          onRequestAbort: () => (requestAborted = true),
-        }),
-    });
+  it.each([
+    { advertiseDelayMs: 20, startupTimeoutMs: 50, maxElapsedMs: 150 },
+    { advertiseDelayMs: 0, startupTimeoutMs: 20, maxElapsedMs: undefined },
+  ])(
+    "uses one startup deadline for listening and readiness",
+    async ({ advertiseDelayMs, startupTimeoutMs, maxElapsedMs }) => {
+      const child = new FakeChild();
+      let healthRequests = 0;
+      const readinessSignals = stubReadinessFetch({
+        block: true,
+        onHealth: () => healthRequests++,
+      });
+      const supervisor = createTestSupervisor({
+        startupTimeoutMs,
+        spawnProcess: () => {
+          const announce = (): void => {
+            child.stdout.write("server listening on http://127.0.0.1:41236\n");
+          };
+          if (advertiseDelayMs) setTimeout(announce, advertiseDelayMs);
+          else queueMicrotask(announce);
+          return child as never;
+        },
+      });
 
-    const startedAt = Date.now();
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "readiness failed",
-    );
-    expect(Date.now() - startedAt).toBeLessThan(150);
-    expect(healthRequests).toBe(1);
-    expect(requestAborted).toBe(true);
-  });
+      const startedAt = Date.now();
+      await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
+        "readiness failed",
+      );
+      if (maxElapsedMs !== undefined) expect(Date.now() - startedAt).toBeLessThan(maxElapsedMs);
+      expect(healthRequests).toBe(1);
+      expect(readinessSignals[0]?.aborted).toBe(true);
+    },
+  );
 
   it("starts one loopback server with explicit cwd and environment, then reaps it", async () => {
     const child = new FakeChild();
@@ -2724,7 +2694,6 @@ describe("OpenCode process supervisor", () => {
       return spawnFakeOpenCodeServer(child);
     };
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       base: {
         PATH: "/bin",
         HTTP_PROXY: "http://proxy:3128",
@@ -2755,7 +2724,6 @@ describe("OpenCode process supervisor", () => {
     );
 
     expect(spawnCall).toMatchObject({
-      command: "/usr/local/bin/opencode-test",
       args: ["serve", "--hostname=127.0.0.1", "--port=0", "--print-logs", "--log-level=INFO"],
       options: {
         cwd: TEST_WORKSPACE,
@@ -2786,35 +2754,10 @@ describe("OpenCode process supervisor", () => {
     expect(child.stderr.listenerCount("data")).toBe(0);
   });
 
-  it("aborts an in-flight readiness check when startup deadline expires", async () => {
-    const child = new FakeChild();
-    let healthRequests = 0;
-    let requestAborted = false;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
-      startupTimeoutMs: 20,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
-      spawnProcess: () =>
-        spawnFakeOpenCodeServer(child, {
-          blockHealth: true,
-          onHealthRequest: () => healthRequests++,
-          onRequestAbort: () => (requestAborted = true),
-        }),
-    });
-
-    await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      "readiness failed",
-    );
-    expect(healthRequests).toBe(1);
-    expect(requestAborted).toBe(true);
-  });
-
   it("waits for a complete listening line before parsing its advertised URL", async () => {
-    stubSuccessfulReadinessFetch();
+    stubReadinessFetch();
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
       spawnProcess: () => {
         queueMicrotask(() => {
@@ -2835,7 +2778,6 @@ describe("OpenCode process supervisor", () => {
   it("rejects an advertised port zero", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
@@ -2853,7 +2795,6 @@ describe("OpenCode process supervisor", () => {
   it("rejects a non-http listener announcement", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
@@ -2869,7 +2810,7 @@ describe("OpenCode process supervisor", () => {
   });
 
   it("returns after a SIGTERM descendant exits during the shutdown grace period", async () => {
-    stubSuccessfulReadinessFetch();
+    stubReadinessFetch();
     const source = `
       const { spawn } = require("node:child_process");
       const descendant = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 400); process.stdout.write("ready");';
@@ -2880,16 +2821,10 @@ describe("OpenCode process supervisor", () => {
         console.log("server listening on http://127.0.0.1:41236");
       });
     `;
-    let leader: ReturnType<typeof spawn> | undefined;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
+    const { supervisor, leader } = nodeScriptSupervisor(source, {
       startupTimeoutMs: 1_000,
       shutdownTimeoutMs: 3_000,
       killVerificationTimeoutMs: 1_000,
-      spawnProcess: (_command, _args, options) => {
-        leader = spawn(process.execPath, ["-e", source], options);
-        return leader;
-      },
     });
 
     await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
@@ -2897,7 +2832,7 @@ describe("OpenCode process supervisor", () => {
     await supervisor.stop();
 
     expect(Date.now() - startedAt).toBeLessThan(1_500);
-    expect(leader?.exitCode).toBe(0);
+    expect(leader.current?.exitCode).toBe(0);
   });
 
   it("kills a process that survives SIGTERM and verifies the group is gone", async () => {
@@ -2915,29 +2850,22 @@ describe("OpenCode process supervisor", () => {
       });
       process.on("SIGTERM", () => {});
     `;
-    let child: ReturnType<typeof spawn> | undefined;
-    const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
+    const { supervisor, leader } = nodeScriptSupervisor(source, {
       startupTimeoutMs: 1_000,
       shutdownTimeoutMs: 30,
       killVerificationTimeoutMs: 1_000,
-      spawnProcess: (_command, _args, options) => {
-        child = spawn(process.execPath, ["-e", source], options);
-        return child;
-      },
     });
 
     await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
     await supervisor.stop();
 
-    expect(child?.signalCode).toBe("SIGKILL");
+    expect(leader.current?.signalCode).toBe("SIGKILL");
     expect(supervisor.info).toBeUndefined();
   });
 
   it("aborts and terminates the child when the server crashes", async () => {
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       spawnProcess: () => spawnFakeOpenCodeServer(child),
     });
 
@@ -2998,7 +2926,7 @@ describe("OpenCode process supervisor", () => {
   it.skipIf(process.platform === "win32")(
     "kills a descendant that outlives a crashed leader and verifies the group is gone",
     async () => {
-      stubSuccessfulReadinessFetch();
+      stubReadinessFetch();
       const directory = await mkdtemp(join(tmpdir(), "opencode-descendant-"));
       const descendantPidPath = join(directory, "descendant.pid");
       const descendantSource =
@@ -3016,37 +2944,19 @@ describe("OpenCode process supervisor", () => {
           setTimeout(() => process.exit(1), 500);
         });
       `;
-      let leader: ReturnType<typeof spawn> | undefined;
-      const supervisor = createTestSupervisor({
-        command: "/usr/local/bin/opencode-test",
+      const { supervisor, leader } = nodeScriptSupervisor(source, {
         startupTimeoutMs: 1_000,
         shutdownTimeoutMs: 100,
         killVerificationTimeoutMs: 1_500,
-        spawnProcess: (_command, _args, options) => {
-          leader = spawn(process.execPath, ["-e", source], options);
-          return leader;
-        },
       });
 
       try {
         await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
         const descendantPid = Number(await readFile(descendantPidPath, "utf8"));
         const crashSignal = supervisor.crashSignal;
-        if (!crashSignal.aborted) {
-          await new Promise<void>((resolve, reject) => {
-            const onAbort = (): void => {
-              clearTimeout(timeout);
-              resolve();
-            };
-            const timeout = setTimeout(() => {
-              crashSignal.removeEventListener("abort", onAbort);
-              reject(new Error("OpenCode crash was not observed"));
-            }, 1_500);
-            crashSignal.addEventListener("abort", onAbort, { once: true });
-          });
-        }
+        await vi.waitFor(() => expect(crashSignal.aborted).toBe(true), { timeout: 1_500 });
 
-        expect(leader?.exitCode).toBe(1);
+        expect(leader.current?.exitCode).toBe(1);
         expect(() => process.kill(descendantPid, 0)).not.toThrow();
         const startedAt = Date.now();
         await supervisor.stop();
@@ -3069,14 +2979,11 @@ describe("OpenCode process supervisor", () => {
     const child = new FakeChild();
     let readinessChecks = 0;
     const supervisor = createTestSupervisor({
-      command: "/usr/local/bin/opencode-test",
       startupTimeoutMs: 100,
-      shutdownTimeoutMs: 20,
-      killVerificationTimeoutMs: 20,
       spawnProcess: () =>
         spawnFakeOpenCodeServer(child, {
           version: "1.18.28",
-          onHealthRequest: () => readinessChecks++,
+          onHealth: () => readinessChecks++,
         }),
     });
 

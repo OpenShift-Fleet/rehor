@@ -1,3 +1,4 @@
+import { asObject, sortedEntries } from "../shared";
 import {
   OPENCODE_BLOCKED_PASSTHROUGH,
   OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES,
@@ -25,9 +26,7 @@ export function normalizeJsonObject(
   validateEnvironment: EnvironmentReferenceValidator = assertProviderEnvironment,
 ): Record<string, JsonValue> {
   const output: Record<string, JsonValue> = {};
-  for (const [key, value] of Object.entries(input).sort(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
+  for (const [key, value] of sortedEntries(input)) {
     output[key] = normalizeJsonValue(
       value,
       `${path}.${key}`,
@@ -47,13 +46,8 @@ function normalizeJsonValue(
   validateEnvironment: EnvironmentReferenceValidator,
 ): JsonValue {
   if (typeof value === "string") {
-    const normalized = normalizeEnvironmentReference(value, path);
-    const environments = parseEnvironmentReferences(normalized, path);
-    for (const environment of environments) {
-      validateEnvironment(environment, path);
-      requiredEnvironment?.add(environment);
-    }
-    if (SECRET_KEY.test(key) && environments.length === 0) {
+    const normalized = normalizeEnvString(value, path, validateEnvironment, requiredEnvironment);
+    if (SECRET_KEY.test(key) && parseEnvironmentReferences(normalized, path).length === 0) {
       throw new OpenCodeConfigValidationError([
         `${path} must use an OpenCode environment reference`,
       ]);
@@ -65,18 +59,29 @@ function normalizeJsonValue(
       normalizeJsonValue(entry, `${path}[${index}]`, requiredEnvironment, key, validateEnvironment),
     );
   }
-  if (isRecord(value)) {
-    return normalizeJsonObject(value, path, requiredEnvironment, validateEnvironment);
+  const object = asObject(value);
+  if (object) {
+    return normalizeJsonObject(
+      object as Record<string, JsonValue>,
+      path,
+      requiredEnvironment,
+      validateEnvironment,
+    );
   }
   return value;
 }
 
-export function normalizeEnvironmentReference(
+export function normalizeEnvString(
   value: string,
-  path = "environment reference",
+  path: string,
+  validateEnvironment?: EnvironmentReferenceValidator,
+  requiredEnvironment?: Set<string>,
 ): string {
   const normalized = value.replace(BRACED_ENV_REFERENCE, "{env:$1}");
-  parseEnvironmentReferences(normalized, path);
+  for (const environment of parseEnvironmentReferences(normalized, path)) {
+    validateEnvironment?.(environment, path);
+    requiredEnvironment?.add(environment);
+  }
   return normalized;
 }
 
@@ -169,8 +174,4 @@ function assertHttpUrl(value: string, path: string): void {
   if (url.username || url.password) {
     throw new OpenCodeConfigValidationError([`${path} must not contain credentials`]);
   }
-}
-
-function isRecord(value: unknown): value is Record<string, JsonValue> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

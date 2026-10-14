@@ -5,7 +5,6 @@ export const OPENCODE_PACKAGE_LOCK_VERSION = 1 as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-export type JsonObject = { [key: string]: JsonValue };
 
 export interface OpenCodeModelConfig {
   name?: string;

@@ -1,4 +1,4 @@
-import type { RuntimeTerminalState, TokenCounts, Usage, UsageCost } from "../domain";
+import type { RuntimeTerminalState } from "../domain";
 import { isAbortCause } from "../domain/abort-cause";
 
 export type JsonRecord = Record<string, unknown>;
@@ -18,30 +18,6 @@ export function buildTerminalPayload(input: {
     turns: input.turns,
     durationMs: input.durationMs,
     ...(input.resourceLeak ? { resourceLeak: true } : {}),
-  };
-}
-
-export function usagePayload(
-  requestedModel: string,
-  tokenCounts: TokenCounts,
-  options: {
-    returnedModel?: string;
-    partial: boolean;
-    final: boolean;
-    estimated: boolean;
-    incomplete: boolean;
-    cost?: UsageCost;
-  },
-): Usage {
-  return {
-    requestedModel,
-    ...(options.returnedModel ? { returnedModel: options.returnedModel } : {}),
-    tokenCounts,
-    partial: options.partial,
-    final: options.final,
-    estimated: options.estimated,
-    incomplete: options.incomplete,
-    ...(options.cost === undefined ? {} : { cost: options.cost }),
   };
 }
 
@@ -165,6 +141,14 @@ export function asObject(value: unknown): JsonRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as JsonRecord)
     : undefined;
+}
+
+export function record(value: unknown): JsonRecord {
+  return asObject(value) ?? {};
+}
+
+export function sortedEntries<T>(value: Readonly<Record<string, T>>): [string, T][] {
+  return Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
 }
 
 export function stringValue(value: unknown): string | undefined;
