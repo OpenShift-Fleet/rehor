@@ -54,6 +54,8 @@ export interface CostRecord {
   repository: string | null;
   workType: string | null;
   summary: string | null;
+  runtimeId?: string;
+  providerId?: string;
 }
 
 export interface TranscriptEventRecord {
@@ -66,11 +68,15 @@ export interface TranscriptEventRecord {
   run: RehorRun;
 }
 
-export interface MetricPoint {
+interface MetricPointBase {
   name: string;
   value: number;
   labels: Readonly<Record<string, string>>;
 }
+
+export type MetricPoint =
+  | (MetricPointBase & { type: "counter" | "gauge" })
+  | (MetricPointBase & { type: "histogram"; buckets: readonly number[] });
 
 export interface CycleRunWriter {
   write(record: CycleRunRecord): CompatibilityWriteResult;

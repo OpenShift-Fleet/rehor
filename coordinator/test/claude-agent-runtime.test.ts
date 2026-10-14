@@ -379,6 +379,7 @@ describe("ClaudeAgentRuntime", () => {
       ),
     });
     expect(metrics).toContainEqual({
+      type: "counter",
       name: "devbot_turn_budget_event_total",
       value: 1,
       labels: { label: run.label, level: "warning" },

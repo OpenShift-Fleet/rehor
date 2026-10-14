@@ -21,6 +21,7 @@ const run: RehorRun = {
   instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
+  runtimeId: "opencode-v1",
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
   limits: { timeoutMs: 1_000, maxTurns: 20 },
   preflightPayloadRef: null,
@@ -167,8 +168,77 @@ describe("legacy compatibility projection", () => {
           name: "devbot_cycle_duration_seconds",
           labels: { label: run.label, work_type: "new_ticket" },
         }),
+        expect.objectContaining({
+          name: "devbot_runtime_sessions_total",
+          labels: { runtime: "opencode-v1", provider: "vertex" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_duration_seconds",
+          value: 3,
+          labels: { runtime: "opencode-v1", provider: "vertex", state: "completed" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_health_total",
+          labels: { runtime: "opencode-v1", provider: "vertex", status: "healthy" },
+        }),
       ]),
     );
+  });
+
+  it("records interruption and resource-leak metrics", async () => {
+    const metrics: unknown[] = [];
+    const projection = new LegacyCompatibilityProjection({
+      metrics: {
+        observe: (record) => {
+          metrics.push(record);
+        },
+      },
+    });
+    const interrupted = event("terminal-interrupted", 2, "terminal", {
+      state: "timed_out",
+      durationMs: 2_000,
+      resourceLeak: true,
+    });
+
+    await executeRun(new FakeAgentRuntime({ events: [start, interrupted] }), run, { projection });
+
+    expect(metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "devbot_runtime_interruptions_total",
+          labels: { runtime: "opencode-v1", provider: "vertex", state: "timed_out" },
+        }),
+        expect.objectContaining({
+          name: "devbot_runtime_resource_leaks_total",
+          labels: { runtime: "opencode-v1", provider: "vertex" },
+        }),
+        expect.objectContaining({
+          name: "devbot_cycle_timeout_total",
+          value: 1,
+          labels: { label: run.label },
+        }),
+      ]),
+    );
+    expect(metrics).not.toContainEqual(expect.objectContaining({ name: "devbot_work_type_total" }));
+  });
+
+  it("counts completed cycles by work type like the Python runner", async () => {
+    const withContext = await projectTerminal({
+      state: "completed",
+      resultText: "Implemented work.",
+      context: context("new_ticket"),
+    });
+    const contextless = await projectTerminal({ state: "completed", resultText: "Done." });
+
+    expect(metric(withContext.metrics, "devbot_work_type_total")).toMatchObject({
+      type: "counter",
+      value: 1,
+      labels: { label: run.label, work_type: "new_ticket" },
+    });
+    expect(metric(contextless.metrics, "devbot_work_type_total")?.labels).toEqual({
+      label: run.label,
+      work_type: "triage_only",
+    });
   });
 
   it("classifies a contextless no-work terminal as triage_only", async () => {
@@ -392,8 +462,12 @@ describe("legacy compatibility projection", () => {
 
     // bot/metrics.py declares this histogram as ["label", "work_type"]; any extra
     // or missing key makes the Python registry reject the observation outright.
+    expect(duration?.type).toBe("histogram");
     expect(duration?.labels).toEqual({ label: run.label, work_type: "pr_review" });
     expect(duration?.value).toBe(4);
+    expect(duration?.type === "histogram" ? duration.buckets : []).toEqual([
+      30, 60, 120, 300, 600, 900, 1200, 1800,
+    ]);
   });
 
   it("falls back to work_type unknown for a missing or blank work type", async () => {

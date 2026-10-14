@@ -1,3 +1,6 @@
+export * from "./adapters/compatibility";
+export * from "./adapters/file-admission";
+export * from "./adapters/health";
 export * from "./bridges/python";
 export * from "./coordinator";
 export * from "./cycle-input";
