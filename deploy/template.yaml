@@ -170,6 +170,9 @@ objects:
           - containerPort: 8080
             name: http
             protocol: TCP
+          - containerPort: 8081
+            name: readonly
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -254,6 +257,10 @@ objects:
       targetPort: http
       protocol: TCP
       name: http
+    - port: 8081
+      targetPort: readonly
+      protocol: TCP
+      name: readonly
     - port: 9091
       targetPort: metrics
       protocol: TCP
