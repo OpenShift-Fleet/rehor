@@ -7,6 +7,7 @@ export const TERMINAL_STATES = [
 ] as const;
 
 export type TerminalState = (typeof TERMINAL_STATES)[number];
+export type RuntimeTerminalState = Extract<TerminalState, "completed" | "failed">;
 
 /** Provider-neutral context needed by existing cost, transcript, and status projections. */
 export interface TerminalWorkContext {

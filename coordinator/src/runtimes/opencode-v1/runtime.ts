@@ -4,20 +4,19 @@ import {
   type OpencodeClient,
 } from "@opencode-ai/sdk";
 import { providerDiagnostic, runtimeErrorDetails } from "../../diagnostics";
-import { createEventFactory, type RehorEvent, type RehorRun } from "../../domain";
-import type { RuntimeCapabilities } from "../../domain/capabilities";
-import type { TerminalState, TerminalWorkContext } from "../../domain/terminal-state";
-import { type Logger, nullLogger } from "../../log";
-import type { AgentRuntime } from "../../ports";
 import {
-  abortKind,
+  createEventFactory,
+  type RehorEvent,
+  type RehorRun,
+  type RuntimeTerminalState,
+} from "../../domain";
+import type { RuntimeCapabilities } from "../../domain/capabilities";
+import { type Logger, nullLogger } from "../../log";
+import type { AgentRuntime, AgentRuntimeRunContext } from "../../ports";
+import {
   abortReason,
   assertPositiveInteger,
   boundedOperation,
-  extractTaskResult,
-  extractToolContext,
-  isNoWork,
-  lastMeaningfulLine,
   redactSensitiveText,
 } from "../shared";
 import type { RenderedOpenCodeV1Config } from "./config";
@@ -73,7 +72,7 @@ interface ActiveRun {
 }
 
 interface RuntimeOutcome {
-  state: TerminalState;
+  state: RuntimeTerminalState;
   reason?: string;
 }
 
@@ -91,6 +90,7 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "1",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: false,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -182,7 +182,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     return CAPABILITIES;
   }
 
-  async *run(input: RehorRun, signal: AbortSignal): AsyncIterable<RehorEvent> {
+  async *run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
     if (!this.started) throw new Error("runtime must be started before run");
     if (this.stopped) throw new Error("stopped runtime must not stream events");
     if (this.hasRun) throw new Error("OpenCode V1 runtime supports one run per instance");
@@ -208,16 +212,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let resultText = "";
     let turns = 0;
     let promptAttempted = false;
-    let streamLost = false;
-    let maxTurnsReached = false;
-    const workContext = initialTerminalContext(input);
     let normalization!: NormalizationContext;
     let stream: AsyncGenerator<OpenCodeEvent> | undefined;
-    const timeout = setTimeout(
-      () => active.controller.abort({ kind: "timeout", reason: "run timeout" }),
-      input.limits.timeoutMs,
-    );
-
     try {
       // Emit before any setup can fail so every attempt, including one that
       // never reaches a session, has a started record.
@@ -226,7 +222,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
       const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
-      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller);
+      detachCrash = linkAbort(this.supervisor.crashSignal, active.controller, () =>
+        context?.onAbortCause?.(OPENCODE_CRASH),
+      );
       const directory = server.directory;
       const client = this.clientFactory(server, directory, this.clientEnvironment);
       active.client = client;
@@ -276,7 +274,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       normalization = {
         rootSessionId: sessionId,
         requestedModel: effectiveModel.value,
-        workContext,
         resultTextParts: new Map(),
         messageRoles: new Map(),
         countedMessages: new Set(),
@@ -321,17 +318,15 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           undefined,
           "OpenCode event stream",
         );
-        if (next.done) {
-          streamLost = true;
-          break;
-        }
+        if (next.done) break;
         if (!isSessionEvent(next.value, normalization)) continue;
-        if (maxTurnsReached && beginsNewTurn(next.value, normalization)) {
-          active.controller.abort({
-            kind: "max_turns",
-            reason: "maximum turn limit reached",
-          });
-          throw abortReason(active.controller.signal);
+        if (beginsNewTurn(next.value, normalization)) {
+          yield factory(
+            "run",
+            { state: "turn_started" },
+            { runtimeSessionRef: normalization.rootSessionId },
+          );
+          if (signal.aborted) throw abortReason(signal);
         }
 
         const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
@@ -353,7 +348,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (normalized.turns > 0) turns += normalized.turns;
         for (const event of normalized.events) yield event;
         if (normalized.resultText !== undefined) resultText = normalized.resultText;
-        if (normalized.turns > 0) maxTurnsReached = turns >= input.limits.maxTurns;
         if (normalized.outcome) {
           outcome = {
             state: normalized.outcome,
@@ -381,9 +375,8 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         promptAttempted &&
         !signal.aborted &&
         !this.supervisor.crashError &&
-        shouldReconcile(active.controller.signal.reason)
+        !active.controller.signal.aborted
       ) {
-        streamLost = true;
         const reconciled = await reconcileSession(
           active,
           factory,
@@ -397,10 +390,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         if (reconciled.outcome) {
           outcome = { state: reconciled.outcome, reason: reconciled.reason };
           failure = undefined;
-        }
+        } else context?.onAbortCause?.(OPENCODE_CRASH);
       }
     } finally {
-      clearTimeout(timeout);
       detachAbort();
       detachCrash();
       cleanupFailure = await this.cleanup(active);
@@ -410,20 +402,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
     if (!outcome) {
       outcome = {
-        state: classifyAbort(
-          signal,
-          this.supervisor.crashError,
-          active.controller.signal.reason,
-          streamLost,
-        ),
+        state: "failed",
         reason: errorMessage(failure) ?? "OpenCode runtime failed",
       };
     }
-    if (!workContext.summary && resultText) {
-      const summary = lastMeaningfulLine(resultText);
-      if (summary) workContext.summary = summary;
-    }
-
     if (outcome.state !== "completed") {
       yield factory(
         "persistence",
@@ -457,7 +439,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           { runtimeSessionRef: active.sessionId },
         );
       }
-    } else if (failure && outcome.state !== "cancelled" && outcome.state !== "timed_out") {
+    } else if (failure && (this.supervisor.crashError || !active.controller.signal.aborted)) {
       yield factory(
         "error",
         { message: errorMessage(failure) ?? "OpenCode runtime failed" },
@@ -471,13 +453,11 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         state: outcome.state,
         ...(outcome.reason ? { reason: outcome.reason } : {}),
         ...(resultText ? { resultText } : {}),
-        noWork: isNoWork(resultText),
         turns,
         durationMs: Date.now() - startedAt,
         ...(isResourceLeak(failure) || isResourceLeak(cleanupFailure)
           ? { resourceLeak: true }
           : {}),
-        ...(Object.keys(workContext).length > 0 ? { context: workContext } : {}),
       },
       { runtimeSessionRef: active.sessionId },
     );
@@ -550,7 +530,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
 
 interface NormalizedEvents {
   events: RehorEvent[];
-  outcome?: TerminalState;
+  outcome?: RuntimeTerminalState;
   reason?: string;
   resultText?: string;
   turns: number;
@@ -578,7 +558,6 @@ interface UsageSnapshot {
 interface NormalizationContext {
   rootSessionId: string;
   requestedModel: string;
-  workContext: TerminalWorkContext;
   resultTextParts: Map<string, string>;
   messageRoles: Map<string, string>;
   countedMessages: Set<string>;
@@ -639,7 +618,7 @@ async function reconcileSession(
       };
     }
 
-    let outcome: TerminalState | undefined;
+    let outcome: RuntimeTerminalState | undefined;
     let reason: string | undefined;
 
     for (const entry of data) {
@@ -746,19 +725,6 @@ async function reconcileSession(
   } finally {
     clearTimeout(timer);
   }
-}
-
-function shouldReconcile(reason: unknown): boolean {
-  const kind = abortKind(reason);
-  return (
-    kind !== "timeout" &&
-    kind !== "shutdown" &&
-    kind !== "cancel" &&
-    kind !== "cancelled" &&
-    kind !== "interrupt" &&
-    kind !== "interrupted" &&
-    kind !== "max_turns"
-  );
 }
 
 function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationContext): void {
@@ -948,8 +914,6 @@ function normalizeOpenCodeEvent(
         const name = stringValue(part.tool, "unknown");
         const input = recordOrUndefined(state.input);
         const finished = state.status === "completed" || state.status === "error";
-        extractToolContext(name, input, context.workContext);
-        if (state.status === "completed") extractTaskResult(state.output, context.workContext);
         const start = numberValue(recordOrUndefined(state.time)?.start);
         const end = numberValue(recordOrUndefined(state.time)?.end);
         const phase = finished ? "completed" : "started";
@@ -1181,44 +1145,17 @@ function eventSessionId(event: OpenCodeEvent): string | undefined {
   return undefined;
 }
 
-function initialTerminalContext(input: RehorRun): TerminalWorkContext {
-  if (!input.task) return {};
-  const taskId = Number(input.task.id);
-  return {
-    ...(Number.isSafeInteger(taskId) && taskId > 0 ? { taskId } : {}),
-    ...(input.task.key ? { externalKey: input.task.key } : {}),
-  };
-}
-
 function partKey(part: JsonRecord): string {
   return `${stringValue(part.sessionID, "unknown-session")}:${stringValue(part.id, "unknown-part")}`;
 }
 
-function classifyAbort(
-  signal: AbortSignal,
-  crash: Error | undefined,
-  controllerReason: unknown,
-  streamLost: boolean,
-): TerminalState {
-  const reason = signal.aborted ? signal.reason : controllerReason;
-  const kind = abortKind(reason);
-  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  if (kind === "cancel" || kind === "cancelled") return "cancelled";
-  if (
-    kind === "shutdown" ||
-    kind === "SIGTERM" ||
-    kind === "SIGINT" ||
-    kind === "interrupt" ||
-    kind === "interrupted"
-  ) {
-    return "interrupted";
-  }
-  if (crash || streamLost) return "interrupted";
-  return "failed";
-}
+const OPENCODE_CRASH = { kind: "shutdown", reason: "opencode_crash" } as const;
 
-function linkAbort(source: AbortSignal, target: AbortController): () => void {
-  const onAbort = (): void => target.abort(source.reason);
+function linkAbort(source: AbortSignal, target: AbortController, before?: () => void): () => void {
+  const onAbort = (): void => {
+    target.abort(source.reason);
+    before?.();
+  };
   if (source.aborted) onAbort();
   else source.addEventListener("abort", onAbort, { once: true });
   return () => source.removeEventListener("abort", onAbort);

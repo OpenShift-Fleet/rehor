@@ -1,25 +1,18 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import {
+  abortCauseFrom,
   createEventFactory,
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
+  type RuntimeTerminalState,
   type TokenCounts,
   type Usage,
 } from "../domain";
-import type { AgentRuntime, McpServerConfig } from "../ports";
+import type { AgentRuntime, AgentRuntimeRunContext, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
-import {
-  abortCauseReason,
-  abortKind,
-  abortReasonText,
-  extractTaskResult,
-  extractToolContext,
-  isNoWork,
-  lastMeaningfulLine,
-  abortError as makeAbortError,
-} from "./shared";
+import { abortError, abortReasonText } from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
@@ -58,6 +51,7 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "claude-agent-sdk-options-v1",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: true,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -89,14 +83,6 @@ type RuntimeState = {
   controller: AbortController;
   query?: RuntimeQuery;
   stopped: boolean;
-};
-
-type WorkContext = {
-  taskId?: number;
-  externalKey?: string;
-  repository?: string;
-  workType?: string;
-  summary?: string;
 };
 
 type UsageSnapshot = {
@@ -158,7 +144,11 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     };
   }
 
-  run(input: RehorRun, signal: AbortSignal): AsyncIterable<RehorEvent> {
+  run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
     const runtime = this;
 
     return (async function* stream(): AsyncGenerator<RehorEvent> {
@@ -174,17 +164,13 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         input,
         runtime.options.policyVersion ?? "claude-agent-sdk-v1",
       );
-      const context: WorkContext = {};
       const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
-      const pendingPolicyEvents: RehorEvent[] = [];
       let sessionRef: string | undefined;
       let turns = 0;
       let terminalEmitted = false;
 
-      const onAbort = (): void => {
-        if (!controller.signal.aborted) controller.abort(signal.reason);
-      };
+      const onAbort = (): void => controller.abort(abortCauseFrom(signal.reason, "cancelled"));
       signal.addEventListener("abort", onAbort, { once: true });
 
       const refFor = (message: unknown): string | undefined => {
@@ -209,10 +195,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ? { rawEventRef: { reference: `claude-agent-sdk:${uuid}`, redacted: true } }
             : {}),
         });
-      };
-
-      const drainPolicyEvents = function* (): Generator<RehorEvent> {
-        while (pendingPolicyEvents.length > 0) yield pendingPolicyEvents.shift() as RehorEvent;
       };
 
       const emitUsage = (
@@ -247,7 +229,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       };
 
       const terminal = (
-        stateName: "completed" | "failed" | "interrupted" | "cancelled" | "timed_out",
+        stateName: RuntimeTerminalState,
         resultText?: string,
         reason?: string,
         durationMs = Date.now() - startedAt,
@@ -257,10 +239,8 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           state: stateName,
           ...(reason ? { reason } : {}),
           ...(resultText ? { resultText } : {}),
-          ...(resultText ? { noWork: isNoWork(resultText) } : {}),
           turns,
           durationMs: Math.max(0, durationMs),
-          ...(Object.keys(context).length > 0 ? { context } : {}),
         };
         return makeSdkEvent("terminal", payload, undefined);
       };
@@ -269,7 +249,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         yield createEvent("run", { state: "started" });
 
         if (signal.aborted) {
-          yield terminal(abortState(signal.reason), undefined, abortReason(signal.reason));
+          yield terminal("failed", undefined, abortReasonText(signal.reason));
           return;
         }
 
@@ -291,13 +271,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
-            hooks: createHooks(
-              input.limits.maxTurns,
-              input.label,
-              pendingPolicyEvents,
-              createEvent,
-              toolStarts,
-            ),
+            hooks: createHooks(context, toolStarts),
           },
         });
         state.query = activeQuery;
@@ -306,7 +280,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           const reference = refFor(message);
 
           if (isResultMessage(message)) {
-            for (const event of drainPolicyEvents()) yield event;
             const result = asObject(message);
             const resultUsage = collectResultUsage(result, input.provider.requestedModel);
             for (const snapshot of resultUsage.length > 0 ? resultUsage : usage.snapshots()) {
@@ -315,9 +288,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
 
             turns = numberValue(result?.num_turns) ?? turns;
             const resultText = stringValue(result?.result);
-            if (!context.summary && resultText) {
-              context.summary = lastMeaningfulLine(resultText);
-            }
             const successful = result?.subtype === "success" && result?.is_error !== true;
             yield terminal(
               successful ? "completed" : "failed",
@@ -331,45 +301,34 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           for (const event of translateMessage(message, {
             makeEvent: (kind, payload, model) => makeSdkEvent(kind, payload, message, model),
             reference,
-            context,
             toolStarts,
             usage,
             requestedModel: input.provider.requestedModel,
           })) {
             yield event;
           }
-          for (const event of drainPolicyEvents()) yield event;
         }
 
         if (!terminalEmitted) {
           const wasAborted = signal.aborted || controller.signal.aborted;
           for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
           yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
+            "failed",
             undefined,
             wasAborted
-              ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+              ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
               : "agent runtime ended without a result",
           );
         }
       } catch (error) {
-        for (const event of drainPolicyEvents()) yield event;
         for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
         if (!terminalEmitted) {
           const errorReason = errorMessage(error);
           const wasAborted = signal.aborted || controller.signal.aborted || isAbortError(error);
           const reason = wasAborted
-            ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+            ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
             : errorReason;
-          yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
-            undefined,
-            reason,
-          );
+          yield terminal("failed", undefined, reason);
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
@@ -418,68 +377,21 @@ export function createClaudeAgentRuntimeFactory(
 }
 
 function createHooks(
-  maxTurns: number,
-  label: string,
-  pendingEvents: RehorEvent[],
-  createEvent: ReturnType<typeof createEventFactory>,
+  context: AgentRuntimeRunContext | undefined,
   toolStarts: Map<string, number>,
 ): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
-  let count = 0;
-  let warned = false;
-  let critical = false;
-  const warningAt = Math.max(1, Math.floor(maxTurns * 0.75));
-  const criticalAt = Math.max(1, Math.floor(maxTurns * 0.9));
+  const postToolUse = async (...args: unknown[]): Promise<JsonObject> => {
+    const input = asObject(args[0]);
+    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
+    if (!toolUseId || !context?.onSuccessfulToolCall) return {};
 
-  const hook = async (): Promise<JsonObject> => {
-    count += 1;
-    const remaining = Math.max(0, maxTurns - count);
-    if (count >= criticalAt && !critical) {
-      critical = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "critical",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. You MUST save progress NOW via ` +
-            "task_update with current summary, last_step, files_changed, and next_step. " +
-            "Then wrap up or stop.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. You MUST save progress NOW via ` +
-          "task_update with current summary, last_step, files_changed, and next_step. " +
-          "Then wrap up or stop.",
-      };
-    }
-    if (count >= warningAt && !warned) {
-      warned = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "warning",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. Save progress via task_update soon ` +
-            "(summary + metadata with last_step, files_changed, next_step). " +
-            "Prioritize completing current step and saving state.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. Save progress via task_update soon ` +
-          "(summary + metadata with last_step, files_changed, next_step). " +
-          "Prioritize completing current step and saving state.",
-      };
-    }
-    return {};
+    let systemMessage: string | undefined;
+    context.onSuccessfulToolCall(toolUseId, {
+      deliverNotice(text) {
+        systemMessage = text;
+      },
+    });
+    return systemMessage === undefined ? {} : { systemMessage };
   };
 
   const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {
@@ -490,9 +402,7 @@ function createHooks(
   };
 
   return {
-    // Match Python: failed tool calls clean up timing state but do not consume
-    // a turn-budget count.
-    PostToolUse: [{ hooks: [hook] }],
+    PostToolUse: [{ hooks: [postToolUse] }],
     PostToolUseFailure: [{ hooks: [failedToolCleanup] }],
   };
 }
@@ -502,7 +412,6 @@ function translateMessage(
   state: {
     makeEvent: (kind: string, payload: JsonObject, model?: string) => RehorEvent;
     reference?: string;
-    context: WorkContext;
     toolStarts: Map<string, number>;
     usage: AssistantUsage;
     requestedModel: string;
@@ -563,7 +472,6 @@ function translateMessage(
         const id = stringValue(value?.id);
         const name = stringValue(value?.name) ?? blockType;
         if (id) state.toolStarts.set(id, Date.now());
-        extractToolContext(name, asObject(value?.input), state.context);
         events.push(
           state.makeEvent(
             "tool",
@@ -594,7 +502,6 @@ function translateMessage(
       const id = stringValue(value?.tool_use_id);
       const started = id ? state.toolStarts.get(id) : undefined;
       if (id) state.toolStarts.delete(id);
-      extractTaskResult(value?.content, state.context);
       events.push(
         state.makeEvent("tool", {
           state: "completed",
@@ -713,35 +620,6 @@ function isResultMessage(message: unknown): boolean {
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
-}
-
-function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
-  const kind = abortKind(reason);
-  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  // A process shutdown interrupts the attempt; it was not cancelled by the caller.
-  if (
-    kind === "shutdown" ||
-    kind === "SIGTERM" ||
-    kind === "SIGINT" ||
-    kind === "interrupt" ||
-    kind === "interrupted"
-  ) {
-    return "interrupted";
-  }
-  const text = abortReasonText(abortCauseReason(reason)).toLowerCase();
-  if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out")) {
-    return "timed_out";
-  }
-  if (text.includes("interrupt")) return "interrupted";
-  return "cancelled";
-}
-
-function abortReason(reason: unknown): string {
-  return abortReasonText(abortCauseReason(reason));
-}
-
-function abortError(reason: unknown): Error {
-  return makeAbortError(abortCauseReason(reason));
 }
 
 function errorMessage(value: unknown): string {

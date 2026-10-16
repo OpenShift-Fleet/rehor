@@ -39,6 +39,7 @@ const capabilities: RuntimeCapabilities = {
   configVersion: "test",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: false,
   childSessions: false,
   toolSupport: true,
   mcpSupport: true,
@@ -66,6 +67,21 @@ function event(overrides: Partial<RehorEvent> = {}): RehorEvent {
     payload: { state: "started" },
     ...overrides,
   };
+}
+
+function tool(
+  sequence: number,
+  state: "started" | "completed",
+  id: string,
+  name: string,
+  extra: Record<string, unknown> = {},
+): RehorEvent {
+  return event({
+    eventId: `${id}-${state}`,
+    sequence,
+    kind: "tool",
+    payload: { state, toolUseId: id, name, ...extra } as RehorEvent["payload"],
+  });
 }
 
 function terminal(sequence = 2): RehorEvent {
@@ -131,6 +147,22 @@ describe("coordinator execution", () => {
     expect(projection.terminals).toHaveLength(1);
     expect(result.capabilities?.runtimeId).toBe("fake");
     expect(runtime.stopCalls).toBe(1);
+    expect(result.error).toBeUndefined();
+  });
+
+  it("does not relabel a completed runtime terminal when abort races ingestion", async () => {
+    const cancel = new AbortController();
+    const runtime = new FakeAgentRuntime();
+    runtime.run = (input) =>
+      (async function* (): AsyncGenerator<RehorEvent> {
+        yield event({ runId: input.runId, attemptId: input.attemptId });
+        cancel.abort({ kind: "cancelled", reason: "late cancellation" });
+        yield terminal();
+      })();
+
+    const result = await executeRun(runtime, run, { signal: cancel.signal });
+
+    expect(result.terminal.payload.state).toBe("completed");
     expect(result.error).toBeUndefined();
   });
 
@@ -218,6 +250,19 @@ describe("coordinator execution", () => {
     expect(runtime.stopCalls).toBe(1);
   });
 
+  it.each([
+    [new DOMException("x", "TimeoutError"), "timed_out"],
+    [Object.assign(new Error("x"), { name: "TimeoutError" }), "cancelled"],
+  ])("classifies %s as %s", async (reason, state) => {
+    const cancel = new AbortController();
+    const runtime = new HangingRuntime();
+    const pending = executeRun(runtime, run, { signal: cancel.signal });
+    cancel.abort(reason);
+    const result = await pending;
+
+    expect(result.terminal.payload.state).toBe(state);
+  });
+
   it("maps shutdown to interrupted and cancellation to cancelled", async () => {
     const shutdown = new AbortController();
     const shutdownRuntime = new HangingRuntime();
@@ -284,5 +329,173 @@ describe("coordinator execution", () => {
     expect(result.terminal.payload.reason).toBe("runtime unavailable");
     expect(result.error).toBe(startupError);
     expect(runtime.stopCalls).toBe(1);
+  });
+
+  it("sequences coordinator policy events without colliding with out-of-order runtime events", async () => {
+    const toolEvents = ["one", "two", "three"].flatMap((id, index) => {
+      const startedSequence = 2 + index * 2;
+      return [
+        event({
+          eventId: `tool-${id}-started`,
+          sequence: startedSequence,
+          kind: "tool",
+          payload: { state: "started", toolUseId: id, name: "read" },
+        }),
+        event({
+          eventId: `tool-${id}-completed`,
+          sequence: startedSequence + 1,
+          kind: "tool",
+          payload: { state: "completed", toolUseId: id, name: "read" },
+        }),
+      ];
+    });
+    const outOfOrder = event({
+      eventId: "late-turn-marker",
+      sequence: 6,
+      kind: "run",
+      payload: { state: "turn_started" },
+    });
+    const runtime = new FakeAgentRuntime({
+      events: [event(), ...toolEvents, outOfOrder, terminal(9)],
+    });
+
+    const result = await executeRun(runtime, {
+      ...run,
+      limits: { ...run.limits, maxTurns: 4 },
+    });
+
+    const sequences = result.events.map((current) => current.sequence);
+    expect(new Set(sequences).size).toBe(sequences.length);
+    expect(result.events.filter((current) => current.kind === "policy")).toHaveLength(1);
+    expect(result.events.some((current) => current.eventId === "late-turn-marker")).toBe(true);
+    expect(result.terminal.payload.state).toBe("completed");
+  });
+
+  it("keeps tool context from tool-start order when completion events arrive later", async () => {
+    const started = tool(2, "started", "task-update-1", "mcp__bot-memory__task_update", {
+      input: { jira_key: "REHOR-1", repo: "start-repo", status: "pr_changes", summary: "start" },
+    });
+    const completed = tool(3, "completed", "task-update-1", "mcp__bot-memory__task_update", {
+      input: {
+        jira_key: "REHOR-2",
+        repo: "completion-repo",
+        status: "pr_open",
+        summary: "finish",
+      },
+      content: JSON.stringify({ id: 42, external_key: "REHOR-1" }),
+    });
+    const runtime = new FakeAgentRuntime({ events: [event(), started, completed, terminal(4)] });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload).toMatchObject({
+      context: {
+        taskId: 42,
+        externalKey: "REHOR-1",
+        repository: "start-repo",
+        workType: "pr_review",
+        summary: "start",
+      },
+    });
+  });
+
+  it("captures completion input when no tool-start event was observed", async () => {
+    const completed = tool(2, "completed", "orphan-tool", "mcp__bot-memory__task_update", {
+      input: { jira_key: "REHOR-3", status: "pr_changes", summary: "completion only" },
+    });
+    const runtime = new FakeAgentRuntime({ events: [event(), completed, terminal(3)] });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload).toMatchObject({
+      context: { externalKey: "REHOR-3", workType: "pr_review", summary: "completion only" },
+    });
+  });
+
+  it("extracts task IDs from errored tool results", async () => {
+    const completed = tool(2, "completed", "task-result-error", "mcp__bot-memory__task_get", {
+      isError: true,
+      content: JSON.stringify({ id: 43, external_key: "REHOR-43" }),
+    });
+    const runtime = new FakeAgentRuntime({ events: [event(), completed, terminal(3)] });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload).toMatchObject({ context: { taskId: 43 } });
+  });
+
+  it("preserves Python task_update ordering when parallel completions arrive in reverse", async () => {
+    const firstStart = tool(2, "started", "parallel-1", "mcp__bot-memory__task_update", {
+      input: { status: "pr_open", summary: "first start" },
+    });
+    const secondStart = tool(3, "started", "parallel-2", "mcp__bot-memory__task_update", {
+      input: { status: "pr_changes", summary: "second start" },
+    });
+    const secondComplete = tool(4, "completed", "parallel-2", "mcp__bot-memory__task_update", {
+      input: { status: "pr_changes", summary: "second complete" },
+    });
+    const firstComplete = tool(5, "completed", "parallel-1", "mcp__bot-memory__task_update", {
+      input: { status: "pr_open", summary: "first complete" },
+    });
+    const runtime = new FakeAgentRuntime({
+      events: [event(), firstStart, secondStart, secondComplete, firstComplete, terminal(6)],
+    });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload).toMatchObject({
+      context: { workType: "pr_review", summary: "second start" },
+    });
+  });
+
+  it("seeds run.task only for OpenCode and includes tracked context on coordinator terminals", async () => {
+    const taskRun = {
+      ...run,
+      task: { id: "44", key: "REHOR-44" },
+      runtimeId: "claude",
+    };
+    const claudeResult = await executeRun(
+      new FakeAgentRuntime({ events: [event(), terminal()] }),
+      taskRun,
+    );
+    const openCodeResult = await executeRun(
+      new FakeAgentRuntime({ events: [event(), terminal()] }),
+      { ...taskRun, runtimeId: "opencode-v1" },
+    );
+
+    expect(claudeResult.terminal.payload.context).not.toHaveProperty("taskId");
+    expect(claudeResult.terminal.payload.context).not.toHaveProperty("externalKey");
+    expect(openCodeResult.terminal.payload).toMatchObject({
+      context: { taskId: 44, externalKey: "REHOR-44" },
+    });
+
+    const cancel = new AbortController();
+    const toolStarted = tool(2, "started", "tracked-tool", "mcp__bot-memory__task_add", {
+      input: { jira_key: "REHOR-45", summary: "tracked before abort" },
+    });
+    const toolCompleted = tool(3, "completed", "tracked-tool", "mcp__bot-memory__task_add", {
+      content: JSON.stringify({ id: 45, external_key: "REHOR-45" }),
+    });
+    const runtime = new FakeAgentRuntime({ events: [event(), toolStarted, toolCompleted] });
+    const result = await executeRun(runtime, run, {
+      signal: cancel.signal,
+      projection: {
+        onEvent(current) {
+          if (current.eventId === toolCompleted.eventId) {
+            cancel.abort({ kind: "cancelled", reason: "after tool completion" });
+          }
+        },
+      },
+    });
+
+    expect(result.terminal.payload).toMatchObject({
+      state: "cancelled",
+      context: {
+        taskId: 45,
+        externalKey: "REHOR-45",
+        workType: "new_ticket",
+        summary: "tracked before abort",
+      },
+    });
   });
 });

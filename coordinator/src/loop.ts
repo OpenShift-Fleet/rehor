@@ -8,7 +8,7 @@ import {
   type SleepSignal,
   sleep,
 } from "./scheduler";
-import { shutdownAbortReason } from "./utils";
+import { combineAbortSignals } from "./utils";
 
 export enum LoopStopReason {
   Shutdown = "shutdown",
@@ -71,44 +71,31 @@ export interface LoopSignalController {
 export function createLoopSignals(
   options: { shutdownSignal?: AbortSignal; signal?: AbortSignal } = {},
 ): LoopSignalController {
-  const controller = new AbortController();
+  const combined = combineAbortSignals(options);
   let stopReason: LoopStopReason.Shutdown | LoopStopReason.Cancelled | undefined;
-  const listeners: Array<() => void> = [];
-
-  const trigger = (
-    kind: LoopStopReason.Shutdown | LoopStopReason.Cancelled,
-    reason?: unknown,
-  ): void => {
-    if (controller.signal.aborted) return;
-    stopReason = kind;
-    // Runtime attempts receive this combined signal, so a shutdown must stay
-    // recognisable as one: "process signal" alone would classify as cancelled.
-    controller.abort(kind === LoopStopReason.Shutdown ? shutdownAbortReason(reason) : reason);
+  const onAbort = (): void => {
+    stopReason =
+      combined.cause?.kind === "shutdown" &&
+      (options.shutdownSignal?.aborted || !options.signal?.aborted)
+        ? LoopStopReason.Shutdown
+        : LoopStopReason.Cancelled;
   };
-  const watch = (
-    signal: AbortSignal | undefined,
-    kind: LoopStopReason.Shutdown | LoopStopReason.Cancelled,
-  ): void => {
-    if (!signal) return;
-    const onAbort = (): void => trigger(kind, signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    listeners.push(() => signal.removeEventListener("abort", onAbort));
-    if (signal.aborted) onAbort();
-  };
+  if (combined.signal.aborted) onAbort();
+  else combined.signal.addEventListener("abort", onAbort, { once: true });
 
-  watch(options.shutdownSignal, LoopStopReason.Shutdown);
-  watch(options.signal, LoopStopReason.Cancelled);
+  const trigger = (kind: "shutdown" | "cancelled", reason?: unknown): void => {
+    combined.abort({ kind, reason });
+  };
 
   return {
-    signal: controller.signal,
+    signal: combined.signal,
     get stopReason() {
       return stopReason;
     },
-    requestShutdown: (reason) => trigger(LoopStopReason.Shutdown, reason),
-    requestCancel: (reason) => trigger(LoopStopReason.Cancelled, reason),
+    requestShutdown: (reason) => trigger("shutdown", reason),
+    requestCancel: (reason) => trigger("cancelled", reason),
     dispose: () => {
-      for (const remove of listeners) remove();
-      listeners.length = 0;
+      combined.dispose();
     },
   };
 }

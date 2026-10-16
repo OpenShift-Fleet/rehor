@@ -5,6 +5,7 @@ import {
   createLoopSignals,
   InstructionStrategy,
   installProcessSignalHandlers,
+  LoopStopReason,
   PreflightAction,
   type PreparedCycleInput,
   runCoordinatorLoop,
@@ -253,11 +254,27 @@ describe("coordinator loop", () => {
 });
 
 describe("loop signals", () => {
+  it("keeps typed shutdown reasons flat and treats options.signal aborts as cancellation", () => {
+    const shutdown = new AbortController();
+    const shutdownSignals = createLoopSignals({ shutdownSignal: shutdown.signal });
+    shutdown.abort({ kind: "shutdown", reason: "SIGTERM" });
+    expect(shutdownSignals.signal.reason).toEqual({ kind: "shutdown", reason: "SIGTERM" });
+    expect(shutdownSignals.stopReason).toBe(LoopStopReason.Shutdown);
+    shutdownSignals.dispose();
+
+    const cancel = new AbortController();
+    const cancelSignals = createLoopSignals({ signal: cancel.signal });
+    cancel.abort({ kind: "shutdown", reason: "caller-supplied cause" });
+    expect(cancelSignals.stopReason).toBe(LoopStopReason.Cancelled);
+    cancelSignals.dispose();
+  });
+
   it("maps cancellation and shutdown to distinct abort reasons", () => {
     const cancel = new AbortController();
     const signals = createLoopSignals({ signal: cancel.signal });
     cancel.abort("cancel");
     expect(signals.signal.aborted).toBe(true);
+    expect(signals.signal.reason).toEqual({ kind: "cancelled", reason: "cancel" });
     expect(signals.stopReason).toBe("cancelled");
     signals.dispose();
 
