@@ -1,5 +1,4 @@
-import { isTerminalState, type TerminalEventPayload } from "./terminal-state";
-import { TOKEN_CLASSES, type Usage } from "./usage";
+import type { TerminalEventPayload } from "./terminal-state";
 
 export const REHOR_EVENT_KINDS = [
   "run",
@@ -56,94 +55,9 @@ export interface RehorTerminalEvent extends RehorEvent {
   payload: TerminalEventPayload;
 }
 
-export function assertTerminalPayload(
-  payload: Readonly<Record<string, unknown>>,
-): asserts payload is TerminalEventPayload {
-  if (!isTerminalState(payload.state)) {
-    throw new RuntimeContractError("event.payload.state must be a terminal state");
-  }
-  for (const key of ["reason", "resultText"] as const) {
-    if (payload[key] !== undefined && typeof payload[key] !== "string") {
-      throw new RuntimeContractError(`event.payload.${key} must be a string`);
-    }
-  }
-  if (payload.noWork !== undefined && typeof payload.noWork !== "boolean") {
-    throw new RuntimeContractError("event.payload.noWork must be a boolean");
-  }
-  for (const key of ["turns", "durationMs"] as const) {
-    if (
-      payload[key] !== undefined &&
-      (!Number.isSafeInteger(payload[key]) || (payload[key] as number) < 0)
-    ) {
-      throw new RuntimeContractError(`event.payload.${key} must be a non-negative safe integer`);
-    }
-  }
-  if (payload.resourceLeak !== undefined && typeof payload.resourceLeak !== "boolean") {
-    throw new RuntimeContractError("event.payload.resourceLeak must be a boolean");
-  }
-  if (
-    payload.context !== undefined &&
-    (typeof payload.context !== "object" || payload.context === null)
-  ) {
-    throw new RuntimeContractError("event.payload.context must be an object");
-  }
-}
-
-export function assertUsagePayload(
-  payload: Readonly<Record<string, unknown>>,
-): asserts payload is Usage {
-  if (typeof payload.requestedModel !== "string" || payload.requestedModel.length === 0) {
-    throw new RuntimeContractError("event.payload.requestedModel must be a non-empty string");
-  }
-  for (const key of ["partial", "final", "estimated", "incomplete"] as const) {
-    if (typeof payload[key] !== "boolean") {
-      throw new RuntimeContractError(`event.payload.${key} must be a boolean`);
-    }
-  }
-  if (
-    payload.returnedModel !== undefined &&
-    (typeof payload.returnedModel !== "string" || payload.returnedModel.length === 0)
-  ) {
-    throw new RuntimeContractError("event.payload.returnedModel must be a non-empty string");
-  }
-  if (
-    typeof payload.tokenCounts !== "object" ||
-    payload.tokenCounts === null ||
-    Array.isArray(payload.tokenCounts)
-  ) {
-    throw new RuntimeContractError("event.payload.tokenCounts must be an object");
-  }
-  const tokenCounts = payload.tokenCounts as Record<string, unknown>;
-  for (const [tokenClass, count] of Object.entries(tokenCounts)) {
-    if (!(TOKEN_CLASSES as readonly string[]).includes(tokenClass)) {
-      throw new RuntimeContractError(`event.payload.tokenCounts.${tokenClass} is not supported`);
-    }
-    if (!Number.isSafeInteger(count) || (count as number) < 0) {
-      throw new RuntimeContractError(
-        `event.payload.tokenCounts.${tokenClass} must be a non-negative safe integer`,
-      );
-    }
-  }
-  if (payload.cost !== undefined) {
-    if (typeof payload.cost !== "object" || payload.cost === null || Array.isArray(payload.cost)) {
-      throw new RuntimeContractError("event.payload.cost must be an object");
-    }
-    const cost = payload.cost as Record<string, unknown>;
-    if (typeof cost.amount !== "number" || !Number.isFinite(cost.amount) || cost.amount < 0) {
-      throw new RuntimeContractError("event.payload.cost.amount must be a non-negative number");
-    }
-    if (typeof cost.currency !== "string" || cost.currency.length === 0) {
-      throw new RuntimeContractError("event.payload.cost.currency must be a non-empty string");
-    }
-    if (!(cost.source === "provider" || cost.source === "estimated" || cost.source === "unknown")) {
-      throw new RuntimeContractError("event.payload.cost.source is not supported");
-    }
-  }
-}
-
+/** Narrows kind only; payload shape is enforced by parseRehorEvent's schema. */
 export function assertTerminalEvent(event: RehorEvent): asserts event is RehorTerminalEvent {
   if (event.kind !== "terminal") throw new RuntimeContractError("event.kind must be terminal");
-  assertTerminalPayload(event.payload);
 }
 
 export class RuntimeContractError extends Error {

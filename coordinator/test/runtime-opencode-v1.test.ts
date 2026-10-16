@@ -32,6 +32,7 @@ import {
   renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
 import { boundedOperation } from "../src/runtimes/shared";
+import { metricsProjection } from "./contract/runtime-harnesses";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -329,6 +330,20 @@ describe("bounded operations", () => {
     );
     expect(JSON.stringify(records)).not.toMatch(/private-prompt|private-body/);
     await runtime.stop();
+  });
+
+  it("preserves the original deadline error", async () => {
+    const deadlineError = new Error("known");
+
+    await expect(
+      boundedOperation(
+        () => new Promise<never>(() => undefined),
+        new AbortController().signal,
+        Date.now() - 1,
+        "test operation",
+        deadlineError,
+      ),
+    ).rejects.toBe(deadlineError);
   });
 
   it("does not start an operation after cancellation wins before its microtask", async () => {
@@ -720,7 +735,14 @@ describe("OpenCode runtime", () => {
       responseStyle: "data",
       throwOnError: true,
     });
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "model", "run", "terminal"]);
+    expect(events.map((event) => event.kind)).toEqual([
+      "run",
+      "run",
+      "model",
+      "model",
+      "run",
+      "terminal",
+    ]);
     expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
     expect(calls).toMatchObject({ abort: 0, delete: 1, messages: 0, stop: 1 });
   });
@@ -1201,7 +1223,7 @@ describe("OpenCode runtime", () => {
     expect(calls.abort).toBe(0);
   });
 
-  it("interrupts a new turn after maxTurns is reached", async () => {
+  it("leaves maxTurns enforcement to the coordinator", async () => {
     const { calls, runtime } = fakeRuntime({
       events: [
         asOpenCodeEvent({
@@ -1224,9 +1246,13 @@ describe("OpenCode runtime", () => {
               sessionID: "session-opencode",
               role: "assistant",
               modelID: "gpt-5.6-luna",
-              time: { created: 3 },
+              time: { created: 3, completed: 4 },
             },
           },
+        }),
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
         }),
       ],
     });
@@ -1235,54 +1261,7 @@ describe("OpenCode runtime", () => {
     const run = { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } };
     const events = await collect(runtime.run(run, new AbortController().signal));
 
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
-    expect(events.at(-1)?.payload).toMatchObject({
-      state: "timed_out",
-      reason: "max_turns: maximum turn limit reached",
-      turns: 1,
-    });
-    expect(calls.abort).toBe(0);
-  });
-
-  it("interrupts a step-start new turn after maxTurns is reached", async () => {
-    const { calls, runtime } = fakeRuntime({
-      events: [
-        asOpenCodeEvent({
-          type: "message.updated",
-          properties: {
-            info: {
-              id: "first-message",
-              sessionID: "session-opencode",
-              role: "assistant",
-              modelID: "gpt-5.6-luna",
-              time: { created: 1, completed: 2 },
-            },
-          },
-        }),
-        asOpenCodeEvent({
-          type: "message.part.updated",
-          properties: {
-            part: {
-              id: "second-step",
-              messageID: "second-message",
-              sessionID: "session-opencode",
-              type: "step-start",
-            },
-          },
-        }),
-      ],
-    });
-
-    await runtime.start(new AbortController().signal);
-    const run = { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } };
-    const events = await collect(runtime.run(run, new AbortController().signal));
-
-    expect(events.map((event) => event.kind)).toEqual(["run", "model", "persistence", "terminal"]);
-    expect(events.at(-1)?.payload).toMatchObject({
-      state: "timed_out",
-      reason: "max_turns: maximum turn limit reached",
-      turns: 1,
-    });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed", turns: 2 });
     expect(calls.abort).toBe(0);
   });
 
@@ -1335,28 +1314,63 @@ describe("OpenCode runtime", () => {
     signalController.abort("cancelled");
     const events = await pending;
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "cancelled" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
     expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
   });
 
-  it("passes the runtime timeout to an active prompt and still stops the server", async () => {
+  it("interrupts when a prompt rejection has no reconciled outcome", async () => {
+    const { runtime } = fakeRuntime({
+      events: [],
+      promptError: new Error("prompt response lost"),
+      sessionStatus: {},
+      messages: [],
+    });
+
+    const result = await executeRun(runtime, runtimeRun);
+
+    expect(result.terminal.payload.state).toBe("interrupted");
+    expect(result.terminal.payload.reason).toBe("opencode_crash");
+  });
+
+  it("aborts the OpenCode prompt on coordinator timeout while session deletion stays live", async () => {
     const promptGate = new Promise<void>(() => undefined);
     const { calls, runtime } = fakeRuntime({ promptGate, events: [] });
+    const result = await executeRun(runtime, {
+      ...runtimeRun,
+      limits: { ...runtimeRun.limits, timeoutMs: 50 },
+    });
+
+    expect(result.terminal.payload.state).toBe("timed_out");
+    expect(result.error).toBeUndefined();
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
+    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+    expect(calls.delete).toBe(1);
+  });
+
+  it("leaves run timeout enforcement to the coordinator", async () => {
+    const promptGate = new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const { calls, runtime } = fakeRuntime({
+      promptGate,
+      events: [
+        asOpenCodeEvent({
+          type: "session.idle",
+          properties: { sessionID: "session-opencode" },
+        }),
+      ],
+    });
 
     await runtime.start(new AbortController().signal);
-    const pending = collect(
+    const events = await collect(
       runtime.run(
-        { ...runtimeRun, limits: { ...runtimeRun.limits, timeoutMs: 20 } },
+        { ...runtimeRun, limits: { ...runtimeRun.limits, timeoutMs: 1 } },
         new AbortController().signal,
       ),
     );
-    await waitForCondition(() => calls.prompt.length === 1);
-    const events = await pending;
-    expect(events.at(-1)?.payload).toMatchObject({ state: "timed_out" });
-    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(true);
-    expect((calls.deleteRequests[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
+
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed" });
+    expect((calls.prompt[0] as { signal: AbortSignal }).signal.aborted).toBe(false);
     expect(calls).toMatchObject({ abort: 0, delete: 1, stop: 1 });
   });
 
@@ -1504,6 +1518,7 @@ describe("OpenCode runtime", () => {
       throwOnError: true,
     });
     expect(events.map((event) => event.kind)).toEqual([
+      "run",
       "run",
       "model",
       "model",
@@ -1998,7 +2013,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
     expect(events.some((event) => event.kind === "persistence")).toBe(true);
     expect(calls.abort).toBe(0);
   });
@@ -2026,7 +2041,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("does not complete from a finished message while the root session remains busy", async () => {
@@ -2052,7 +2067,7 @@ describe("OpenCode runtime", () => {
     await runtime.start(new AbortController().signal);
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
-    expect(events.at(-1)?.payload).toMatchObject({ state: "interrupted" });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
   });
 
   it("tracks child sessions without letting child idle complete the root run", async () => {
@@ -2129,7 +2144,40 @@ describe("OpenCode runtime", () => {
     expect(events.at(-1)?.payload).toMatchObject({ turns: 1 });
   });
 
-  it("preserves partial evidence and interrupts when the server crashes", async () => {
+  it.each(["crash", "SSE loss"] as const)(
+    "maps an unreconciled OpenCode %s to an interrupted run",
+    async (failure) => {
+      const crash = failure === "crash" ? new Error("server process crashed") : undefined;
+      const { runtime } = fakeRuntime({
+        events: [],
+        streamError: new Error(failure === "crash" ? "SSE closed after crash" : "SSE disconnected"),
+        ...(crash ? { crashError: crash } : {}),
+      });
+      const metrics: unknown[] = [];
+      const projection = failure === "crash" ? metricsProjection(metrics) : undefined;
+
+      const result = await executeRun(runtime, runtimeRun, projection ? { projection } : {});
+
+      expect(result.terminal.payload).toMatchObject({
+        state: "interrupted",
+        reason: "opencode_crash",
+      });
+      expect(result.error).toBeUndefined();
+      if (crash) {
+        expect(result.events.find((event) => event.kind === "error")?.payload).toMatchObject({
+          message: crash.message,
+        });
+        expect(metrics).toContainEqual({
+          type: "counter",
+          name: "devbot_runtime_interruptions_total",
+          value: 1,
+          labels: { runtime: "unknown", provider: runtimeRun.provider.id, state: "interrupted" },
+        });
+      }
+    },
+  );
+
+  it("preserves partial evidence and fails when the server crashes", async () => {
     const crash = new Error("server process crashed");
     const { runtime } = fakeRuntime({
       events: [
@@ -2165,7 +2213,7 @@ describe("OpenCode runtime", () => {
     const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
 
     expect(events.at(-1)?.payload).toMatchObject({
-      state: "interrupted",
+      state: "failed",
       resultText: "partial answer",
     });
     expect(events.find((event) => event.kind === "persistence")?.payload).toMatchObject({
@@ -2177,7 +2225,7 @@ describe("OpenCode runtime", () => {
     });
   });
 
-  it("marks an unreconciled stream loss interrupted and persists partial state", async () => {
+  it("fails an unreconciled stream loss and persists partial state", async () => {
     const { calls, runtime } = fakeRuntime({
       events: [],
       streamError: new Error("SSE disconnected"),
@@ -2189,7 +2237,7 @@ describe("OpenCode runtime", () => {
 
     expect(events.map((event) => event.kind)).toEqual(["run", "persistence", "error", "terminal"]);
     expect(events.find((event) => event.kind === "terminal")?.payload).toMatchObject({
-      state: "interrupted",
+      state: "failed",
     });
     expect(events.find((event) => event.kind === "persistence")?.payload).toMatchObject({
       action: "partial-state",

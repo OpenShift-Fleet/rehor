@@ -274,11 +274,15 @@ describe("production runner boundary", () => {
     );
   });
 
-  it("counts a failed CoordinatorResult as a run failure", async () => {
+  it.each([
+    [{ state: "completed" }, new Error("projection failed"), 1],
+    [{ state: "failed", reason: "max_turns" }, undefined, 0],
+    [{ state: "failed", reason: "error_max_turns" }, undefined, 0],
+  ])("counts terminal %o with error %o as %i run failures", async (payload, error, failures) => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({
-      error: new Error("projection failed"),
-      terminal: { payload: { state: "completed" } },
+      error,
+      terminal: { payload },
     } as CoordinatorResult);
     const bridge = {
       prepareConfig: async () => ({
@@ -313,7 +317,11 @@ describe("production runner boundary", () => {
         initialIdleIntervalSeconds: 0,
       });
 
-      expect(result).toMatchObject({ stopReason: "max_cycles", failures: 1, results: [] });
+      expect(result).toMatchObject({
+        stopReason: "max_cycles",
+        failures,
+        results: failures ? [] : [{ terminal: { payload } }],
+      });
     } finally {
       execute.mockRestore();
     }
