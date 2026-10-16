@@ -230,10 +230,7 @@ describe("OpenCode V1 config renderer", () => {
         ).toThrow(`must use bare bundled package '${name}'`);
       }
       expect(() =>
-        validateOpenCodeV1Config(
-          { ...rendered.config, plugin: [name] },
-          rendered.packageLock,
-        ),
+        validateOpenCodeV1Config({ ...rendered.config, plugin: [name] }, rendered.packageLock),
       ).toThrow(`must use pinned package '${name}@${version}'`);
 
       expect(() =>
