@@ -47,6 +47,7 @@ export interface OpenCodePackage {
 
 export interface OpenCodePackageLock {
   readonly lockfileVersion: typeof OPENCODE_PACKAGE_LOCK_VERSION;
+  /** Build declarations; bundled provider versions are owned by the pinned OpenCode binary. */
   readonly packages: Readonly<Record<string, string>>;
 }
 
@@ -161,6 +162,12 @@ const SECRET_KEY =
 const ENV_REFERENCE = /\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const BRACED_ENV_REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 const EXACT_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+// OpenCode 1.18.29 matches bundled adapters by exact bare npm name. Version
+// suffixes bypass its bundled loader and trigger dynamic installation offline.
+const BUNDLED_PROVIDER_PACKAGES: ReadonlySet<string> = new Set([
+  "@ai-sdk/openai",
+  "@ai-sdk/openai-compatible",
+]);
 const BLOCKED_PASSTHROUGH_ENVIRONMENTS: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
   OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
@@ -250,7 +257,7 @@ export function validateOpenCodeV1Config(
       }
       const npm = provider.npm;
       if (npm !== undefined)
-        validatePackageReference(npm, packageLock, `provider.${providerId}.npm`, issues);
+        validatePackageReference(npm, packageLock, `provider.${providerId}.npm`, issues, true);
       validateNoLiteralSecrets(provider, `provider.${providerId}`, issues);
     }
   }
@@ -426,6 +433,7 @@ function renderProviders(
         provider.npm,
         packageLock,
         `provider.${provider.id}.npm`,
+        true,
       );
       entry.npm = packageSpec;
     }
@@ -649,6 +657,7 @@ function pinPackageReference(
   rawSpec: string,
   packageLock: OpenCodePackageLock,
   path: string,
+  useBundledProvider = false,
 ): string {
   const parsed = parsePackageReference(rawSpec);
   if (parsed === undefined) {
@@ -667,7 +676,9 @@ function pinPackageReference(
       `${path} pins '${parsed.name}@${parsed.version}' but package lock has '${pinned}'`,
     ]);
   }
-  return `${parsed.name}@${pinned}`;
+  return useBundledProvider && BUNDLED_PROVIDER_PACKAGES.has(parsed.name)
+    ? parsed.name
+    : `${parsed.name}@${pinned}`;
 }
 
 function validatePackageReference(
@@ -675,6 +686,7 @@ function validatePackageReference(
   packageLock: OpenCodePackageLock,
   path: string,
   issues: string[],
+  useBundledProvider = false,
 ): void {
   if (typeof rawSpec !== "string") {
     issues.push(`${path} must be a string`);
@@ -688,6 +700,10 @@ function validatePackageReference(
   const pinned = packageLock.packages[parsed.name];
   if (pinned === undefined) {
     issues.push(`package '${parsed.name}' referenced by ${path} is not in the package lock`);
+  } else if (useBundledProvider && BUNDLED_PROVIDER_PACKAGES.has(parsed.name)) {
+    if (rawSpec !== parsed.name) {
+      issues.push(`${path} must use bare bundled package '${parsed.name}'`);
+    }
   } else if (parsed.version !== pinned) {
     issues.push(`${path} must use pinned package '${parsed.name}@${pinned}'`);
   }

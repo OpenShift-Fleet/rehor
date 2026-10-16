@@ -301,7 +301,7 @@ Example bot-side `opencode.json`:
   "$schema": "https://opencode.ai/config.json",
   "provider": {
     "rehor-openai": {
-      "npm": "@ai-sdk/openai@4.0.73",
+      "npm": "@ai-sdk/openai",
       "name": "Rehor OpenAI Responses",
       "options": {
         "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
@@ -312,7 +312,7 @@ Example bot-side `opencode.json`:
       }
     },
     "rehor-openai-chat": {
-      "npm": "@ai-sdk/openai-compatible@3.0.54",
+      "npm": "@ai-sdk/openai-compatible",
       "name": "Rehor OpenAI Chat Completions",
       "options": {
         "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
@@ -336,12 +336,15 @@ Example bot-side `opencode.json`:
 ```
 
 GPT-6 Luna uses the native Responses route. OpenCode's `rehor-openai-chat`
-route retains Chat Completions for compatible models; pinning
-`@ai-sdk/openai-compatible@3.0.54` fixes request-parameter casing and terminal
-finish-reason handling. GPT-4o's explicit output limit prevents OpenCode from
-requesting more than its 16384-token maximum. Runtime-generated config also
-pins `@ai-sdk/openai@4.0.73` and supports both provider IDs in one offline
-package closure.
+route retains Chat Completions for compatible models. GPT-4o's explicit output
+limit prevents OpenCode from requesting more than its 16384-token maximum.
+Runtime-generated config uses bare `@ai-sdk/openai` and
+`@ai-sdk/openai-compatible` references: OpenCode 1.18.29 looks up bundled
+adapters by exact npm name, and version suffixes trigger dynamic installation
+instead. These two adapters use versions bundled in the pinned OpenCode binary.
+The `4.0.73` and `3.0.54` package declarations remain build metadata, not runtime
+overrides of bundled versions; explicit requested versions must match those
+declarations. External provider packages and all plugins remain exact-pinned.
 
 The OpenCode+`rehor-openai` default lives in `config.json` under
 `opencode.model` and is `gpt-6-luna`; OpenCode+Vertex and the Python/Claude/
@@ -373,10 +376,11 @@ fallback to resolved Claude values. The renderer:
   `JIRA_MCP_URL` endpoint, while MCP headers and local MCP environments cannot
   use environment references;
 - rejects unknown tools, malformed transports, untrusted MCP environment
-  references, literal credentials, and unpinned package references;
+  references, literal credentials, and undeclared package references; only the
+  two explicitly supported bundled provider adapters use bare npm names;
 - emits stable JSON, a content hash, and
-  `opencode-packages.lock.json` containing every exact provider/plugin package
-  version.
+  `opencode-packages.lock.json` containing exact provider/plugin build
+  declarations, without overriding the binary's bundled provider versions.
 
 The runtime factory renders one immutable snapshot for the selected run and
 validates it before constructing the supervisor. `OpenCodeV1Runtime` derives

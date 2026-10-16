@@ -72,7 +72,7 @@ describe("OpenCode V1 config renderer", () => {
       enabled_providers: ["rehor-openai-chat"],
       provider: {
         "rehor-openai-chat": {
-          npm: "@ai-sdk/openai-compatible@3.0.54",
+          npm: "@ai-sdk/openai-compatible",
           name: "Rehor OpenAI Chat Proxy",
           options: {
             apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
@@ -179,11 +179,11 @@ describe("OpenCode V1 config renderer", () => {
       model: "rehor-openai/gpt-6-luna",
       provider: {
         "rehor-openai": {
-          npm: "@ai-sdk/openai@4.0.73",
+          npm: "@ai-sdk/openai",
           models: { "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true } },
         },
         "rehor-openai-chat": {
-          npm: "@ai-sdk/openai-compatible@3.0.54",
+          npm: "@ai-sdk/openai-compatible",
           models: {
             "gpt-4o": {
               name: "GPT-4o",
@@ -202,6 +202,78 @@ describe("OpenCode V1 config renderer", () => {
       },
     });
   });
+
+  it.each([
+    ["@ai-sdk/openai", "4.0.73"],
+    ["@ai-sdk/openai-compatible", "3.0.54"],
+  ])("uses the bundled provider loader for %s while keeping plugins pinned", (name, version) => {
+    for (const npm of [name, `${name}@${version}`, `npm:${name}@${version}`]) {
+      const rendered = renderOpenCodeV1Config({
+        model: "rehor-openai/model",
+        providers: [{ id: "rehor-openai", npm }],
+        packages: [{ name, version }],
+        plugins: [{ name, version }],
+      });
+
+      expect(rendered.config.provider).toEqual({
+        "rehor-openai": { npm: name, models: { model: { name: "model" } } },
+      });
+      expect(rendered.config.plugin).toEqual([`${name}@${version}`]);
+      expect(rendered.packageLock).toEqual({ lockfileVersion: 1, packages: { [name]: version } });
+
+      for (const invalid of [`${name}@${version}`, `npm:${name}`]) {
+        expect(() =>
+          validateOpenCodeV1Config(
+            { ...rendered.config, provider: { "rehor-openai": { npm: invalid } } },
+            rendered.packageLock,
+          ),
+        ).toThrow(`must use bare bundled package '${name}'`);
+      }
+      expect(() =>
+        validateOpenCodeV1Config(
+          { ...rendered.config, plugin: [name] },
+          rendered.packageLock,
+        ),
+      ).toThrow(`must use pinned package '${name}@${version}'`);
+
+      expect(() =>
+        renderOpenCodeV1Config({
+          model: "rehor-openai/model",
+          providers: [{ id: "rehor-openai", npm: `${name}@0.0.1` }],
+          packageLock: rendered.packageLock,
+        }),
+      ).toThrow("conflicting pinned versions");
+    }
+  });
+
+  it.each(["external-provider", "@ai-sdk/not-bundled"])(
+    "keeps external provider %s exact-pinned",
+    (name) => {
+      const rendered = renderOpenCodeV1Config({
+        model: "rehor-openai/model",
+        providers: [{ id: "rehor-openai", npm: name }],
+        packages: [{ name, version: "1.2.3" }],
+      });
+
+      expect(rendered.config.provider).toMatchObject({
+        "rehor-openai": { npm: `${name}@1.2.3` },
+      });
+      for (const npm of [name, `${name}@9.9.9`]) {
+        expect(() =>
+          validateOpenCodeV1Config(
+            { ...rendered.config, provider: { "rehor-openai": { npm } } },
+            rendered.packageLock,
+          ),
+        ).toThrow(`must use pinned package '${name}@1.2.3'`);
+      }
+      expect(() =>
+        renderOpenCodeV1Config({
+          model: "rehor-openai/model",
+          providers: [{ id: "rehor-openai", npm: name }],
+        }),
+      ).toThrow(`package '${name}' is not declared with an exact version`);
+    },
+  );
 
   it("rejects provider references to blocked credential environments", () => {
     for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {

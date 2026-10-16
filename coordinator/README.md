@@ -283,6 +283,14 @@ proxy URL/token settings when selecting an OpenAI provider.
 `REHOR_OPENCODE_DEPLOYMENT_CONFIG` is optional and overrides the packaged
 provider defaults.
 
+The renderer emits bare `@ai-sdk/openai` and `@ai-sdk/openai-compatible`
+provider references so OpenCode uses its bundled adapters offline. Their runtime
+versions belong to the pinned OpenCode binary; the exact package declarations in
+`opencode-packages.lock.json` remain build metadata, not overrides of bundled
+versions. Explicit requested versions must still match those declarations.
+External provider packages and all plugins retain exact version-suffixed
+references; other `@ai-sdk/*` packages are not implicitly treated as bundled.
+
 ## Cycle scheduling and idle state
 
 `CycleScheduler` is the side-effect-free decision layer for the future loop:
