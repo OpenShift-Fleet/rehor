@@ -1,5 +1,9 @@
-import { type CoordinatorOptions, type CoordinatorResult, executeRun } from "./coordinator";
-import { parseRehorRun, type RehorRun } from "./domain";
+import {
+  type CoordinatorOptions,
+  type CoordinatorResult,
+  executeRunWithValidatedInput,
+} from "./coordinator";
+import { parseRehorRun, type RehorRun, type ValidatedRehorRun } from "./domain";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { ConfigPreparationResult } from "./ports/python-bridge";
 import {
@@ -10,7 +14,7 @@ import {
   type OpenCodeV1DeploymentConfig,
   OpenCodeV1Runtime,
   type OpenCodeV1RuntimeOptions,
-  renderOpenCodeV1Config,
+  type RenderedOpenCodeV1Config,
   renderOpenCodeV1ConfigForCycle,
 } from "./runtimes/opencode-v1";
 
@@ -107,7 +111,7 @@ export function createOpenCodeV1RuntimeFactory(
     runtimeId: "opencode-v1",
     create(context) {
       const configured = options.config ?? {};
-      let renderedConfig: ReturnType<typeof renderOpenCodeV1Config> | undefined;
+      let renderedConfig: RenderedOpenCodeV1Config | undefined;
       let renderError: unknown;
       try {
         renderedConfig = context.preparedConfig
@@ -116,11 +120,11 @@ export function createOpenCodeV1RuntimeFactory(
               context.run.provider.id,
               configured,
             )
-          : renderOpenCodeV1Config({
-              ...configured,
-              model: configured.model ?? context.run.provider.requestedModel,
-              providerId: configured.providerId ?? context.run.provider.id,
-            });
+          : renderOpenCodeV1ConfigForCycle(
+              { model: context.run.provider.requestedModel },
+              context.run.provider.id,
+              configured,
+            );
       } catch (error) {
         renderError = error;
       }
@@ -155,10 +159,7 @@ export async function executeSelectedRun(
   input: RehorRun,
   options: RuntimeExecutionOptions = {},
 ): Promise<CoordinatorResult> {
-  const run = parseRehorRun(input);
-  const { preparedConfig, ...coordinatorOptions } = options;
-  const runtime = await registry.create(selection, run, preparedConfig);
-  return executeRun(runtime, run, coordinatorOptions);
+  return executeValidatedSelectedRun(registry, selection, parseRehorRun(input), options);
 }
 
 /** Run the adapter selected on the normalized per-instance run. */
@@ -168,5 +169,17 @@ export async function executeConfiguredRun(
   options: RuntimeExecutionOptions = {},
 ): Promise<CoordinatorResult> {
   const run = parseRehorRun(input);
-  return executeSelectedRun(registry, resolveRuntimeSelection(run.runtimeId), run, options);
+  const selection = resolveRuntimeSelection(run.runtimeId);
+  return executeValidatedSelectedRun(registry, selection, run, options);
+}
+
+async function executeValidatedSelectedRun(
+  registry: RuntimeFactoryRegistry,
+  selection: RuntimeSelection,
+  run: ValidatedRehorRun,
+  options: RuntimeExecutionOptions,
+): Promise<CoordinatorResult> {
+  const { preparedConfig, ...coordinatorOptions } = options;
+  const runtime = await registry.create(selection, run, preparedConfig);
+  return executeRunWithValidatedInput(runtime, run, coordinatorOptions);
 }

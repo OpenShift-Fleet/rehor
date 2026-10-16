@@ -28,7 +28,10 @@ import type {
   OpenCodeSupervisorOptions,
   OpenCodeV1DeploymentConfig,
 } from "./runtimes/opencode-v1";
-import { renderOpenCodeV1ConfigForCycle } from "./runtimes/opencode-v1/config";
+import {
+  normalizeDeploymentConfig,
+  renderOpenCodeV1ConfigForCycle,
+} from "./runtimes/opencode-v1/render";
 import { CycleDecision, CycleScheduler, consumeSleepSignal, sleep } from "./scheduler";
 
 const execFileAsync = promisify(execFile);
@@ -152,10 +155,7 @@ export function validateOpenCodeDeployment(
       `OpenCode deployment model '${deployment.model}' does not match prepared model '${prepared.config.model}'`,
     );
   }
-  const providers = [
-    ...(deployment.provider === undefined ? [] : [deployment.provider]),
-    ...(deployment.providers ?? []),
-  ];
+  const providers = normalizeDeploymentConfig(deployment).providers ?? [];
   const selectedProvider = providers.find((provider) => provider.id === prepared.config.providerId);
   if (selectedProvider === undefined) {
     throw new Error(
@@ -394,12 +394,13 @@ export async function runCoordinator(
           );
           terminalLogged = true;
           if (result.error !== undefined) throw result.error;
+          const { state, reason } = result.terminal.payload;
           if (
-            result.terminal.payload.state === "failed" ||
-            result.terminal.payload.state === "timed_out"
+            state === "timed_out" ||
+            (state === "failed" && reason !== "max_turns" && reason !== "error_max_turns")
           ) {
             throw new Error(
-              `runtime returned a ${result.terminal.payload.state} terminal state: ${providerDiagnostic(result.terminal.payload.reason)}`,
+              `runtime returned a ${state} terminal state: ${providerDiagnostic(reason)}`,
             );
           }
           return result;

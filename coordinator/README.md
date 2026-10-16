@@ -122,12 +122,15 @@ payload shapes cannot drift from TypeScript validation.
 `executeRun()` owns one runtime attempt. It validates the run, starts the
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
-terminal event after preserving all accepted partial events. Timeout, caller
-cancellation, and shutdown signals map to `timed_out`, `cancelled`, and
-`interrupted` terminal states respectively. A shutdown keeps that meaning
-through the loop's combined signal: SIGTERM/SIGINT abort it with a
-`{ kind: "shutdown" }` reason, which both the coordinator and the runtime
-adapters classify as `interrupted` whatever the free-text reason says.
+terminal event after preserving all accepted partial events. The coordinator
+owns run timeouts, successful tool-call budgets, and terminal mapping. It emits
+turn-budget warnings at 75%, critical events at 90%, then aborts at `maxTurns`
+with `failed/max_turns`. Typed abort causes map to terminal states: shutdown to
+`interrupted`, caller cancellation to `cancelled`, timeout to `timed_out`, and
+failed policy aborts to `failed`. Runtime adapters report only `completed` or
+`failed` terminals and do not enforce turn budgets. `WorkContextTracker` derives
+terminal task context and no-work state from normalized tool and result events
+before projection.
 Projection hooks receive normalized events for the existing status, transcript,
 usage, and cost writers; they do not receive provider SDK objects.
 
@@ -213,6 +216,10 @@ fails configuration validation. MCP environment references are fail-closed:
 only the non-secret `JIRA_MCP_URL` endpoint may be used in a remote URL; MCP
 headers and local MCP environments cannot reference the OpenCode child
 environment, and MCP references are never added to the agent passthrough list.
+Malformed `{env:...}` and `${...}` references are rejected in provider/plugin
+strings and MCP headers/environment values, including non-secret fields.
+Provider and model names reject blocked/coordinator-controlled variables but
+otherwise remain literal and are not added to the agent passthrough list.
 The factory renders one immutable snapshot for the selected run. `OpenCodeV1Runtime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
 same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;

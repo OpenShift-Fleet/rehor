@@ -1,0 +1,89 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`OpenCode V1 config renderer > matches byte-for-byte snapshots for deployment fixtures 1`] = `
+{
+  "config": {
+    "$schema": "https://opencode.ai/config.json",
+    "autoupdate": false,
+    "enabled_providers": [
+      "rehor-openai",
+    ],
+    "lsp": false,
+    "mcp": {
+      "snapshot": {
+        "enabled": true,
+        "type": "remote",
+        "url": "https://mcp.example/mcp",
+      },
+    },
+    "model": "rehor-openai/gpt-6-luna",
+    "permission": {
+      "bash": "deny",
+      "doom_loop": "deny",
+      "edit": "deny",
+      "external_directory": "deny",
+      "glob": "deny",
+      "grep": "deny",
+      "list": "deny",
+      "lsp": "deny",
+      "question": "deny",
+      "read": "allow",
+      "skill": "deny",
+      "snapshot_*": "deny",
+      "snapshot_search": "allow",
+      "task": "deny",
+      "todowrite": "deny",
+      "webfetch": "deny",
+      "websearch": "deny",
+    },
+    "provider": {
+      "rehor-openai": {
+        "models": {
+          "gpt-6-luna": {
+            "name": "GPT-6 Luna",
+            "reasoning": true,
+          },
+        },
+        "name": "Rehor OpenAI Responses",
+        "npm": "@ai-sdk/openai",
+        "options": {
+          "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
+          "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        },
+      },
+      "rehor-openai-chat": {
+        "models": {
+          "gpt-4.1": {
+            "name": "GPT-4.1",
+          },
+          "gpt-4.1-mini": {
+            "name": "GPT-4.1 Mini",
+          },
+          "gpt-4o": {
+            "limit": {
+              "context": 128000,
+              "output": 16384,
+            },
+            "name": "GPT-4o",
+            "reasoning": false,
+          },
+        },
+        "name": "Rehor OpenAI Chat Completions",
+        "npm": "@ai-sdk/openai-compatible",
+        "options": {
+          "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
+          "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        },
+      },
+    },
+    "share": "disabled",
+  },
+  "packageLock": {
+    "lockfileVersion": 1,
+    "packages": {
+      "@ai-sdk/openai": "4.0.73",
+      "@ai-sdk/openai-compatible": "3.0.54",
+    },
+  },
+}
+`;

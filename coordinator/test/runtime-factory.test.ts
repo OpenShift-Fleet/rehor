@@ -107,6 +107,29 @@ describe("runtime selection", () => {
     expect(createDefaultRuntimeRegistry().runtimeIds).toEqual(["claude"]);
   });
 
+  it("normalizes legacy provider and package-lock config without prepared cycle data", async () => {
+    const registry = new RuntimeFactoryRegistry([
+      createOpenCodeV1RuntimeFactory({
+        config: {
+          model: "legacy-provider/model",
+          providerId: "legacy-provider",
+          provider: { id: "legacy-provider", npm: "x-pkg" },
+          packageLock: { lockfileVersion: 1, packages: { "x-pkg": "1.0.0" } },
+        },
+      }),
+    ]);
+
+    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
+    expect(rendered?.config.provider).toEqual({
+      "legacy-provider": {
+        npm: "x-pkg@1.0.0",
+        models: { model: { name: "model" } },
+      },
+    });
+    expect(rendered?.packageLock).toEqual({ lockfileVersion: 1, packages: { "x-pkg": "1.0.0" } });
+  });
+
   it("rejects invalid prepared OpenCode policy before starting the supervisor", async () => {
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
@@ -162,7 +185,8 @@ describe("runtime selection", () => {
     ]);
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
-    expect((runtime as OpenCodeV1Runtime).renderedConfiguration?.config).toMatchObject({
+    const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
+    expect(rendered?.config).toMatchObject({
       model: "vertex/factory-model",
       enabled_providers: ["vertex"],
     });
@@ -178,7 +202,6 @@ describe("runtime selection", () => {
 
     const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
-
     expect(rendered?.config).toMatchObject({
       model: "vertex/deployment-model",
       mcp: {
@@ -225,12 +248,12 @@ describe("runtime selection", () => {
   });
 
   it("runs a selected adapter through the coordinator lifecycle", async () => {
-    let createdFor: string | undefined;
+    let createdRun: RehorRun | undefined;
     const registry = new RuntimeFactoryRegistry([
       {
         runtimeId: "claude",
         create(context) {
-          createdFor = context.run.runId;
+          createdRun = context.run;
           return new FakeAgentRuntime({ events: [event(1), event(2, true)] });
         },
       },
@@ -238,17 +261,20 @@ describe("runtime selection", () => {
 
     const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run);
 
-    expect(createdFor).toBe("run-factory");
+    expect(createdRun?.runId).toBe("run-factory");
+    expect(result.run).toBe(createdRun);
     expect(result.terminal.payload.state).toBe("completed");
   });
 
   it("uses the runtime selected on the per-instance run", async () => {
     let selectedRuntime: string | undefined;
+    let createdRun: RehorRun | undefined;
     const registry = new RuntimeFactoryRegistry([
       {
         runtimeId: "opencode-v1",
         create(context) {
           selectedRuntime = context.selection.runtimeId;
+          createdRun = context.run;
           return new FakeAgentRuntime({ events: [event(1), event(2, true)] });
         },
       },
@@ -257,6 +283,7 @@ describe("runtime selection", () => {
     const result = await executeConfiguredRun(registry, { ...run, runtimeId: "opencode-v1" });
 
     expect(selectedRuntime).toBe("opencode-v1");
+    expect(result.run).toBe(createdRun);
     expect(result.terminal.payload.state).toBe("completed");
   });
 });

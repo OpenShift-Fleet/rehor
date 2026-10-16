@@ -7,6 +7,7 @@ export const TERMINAL_STATES = [
 ] as const;
 
 export type TerminalState = (typeof TERMINAL_STATES)[number];
+export type RuntimeTerminalState = Extract<TerminalState, "completed" | "failed">;
 
 /** Provider-neutral context needed by existing cost, transcript, and status projections. */
 export interface TerminalWorkContext {
@@ -27,8 +28,4 @@ export interface TerminalEventPayload extends Readonly<Record<string, unknown>> 
   /** True when runtime cleanup detected a child/process-group leak. */
   resourceLeak?: boolean;
   context?: TerminalWorkContext;
-}
-
-export function isTerminalState(value: unknown): value is TerminalState {
-  return typeof value === "string" && TERMINAL_STATES.includes(value as TerminalState);
 }
