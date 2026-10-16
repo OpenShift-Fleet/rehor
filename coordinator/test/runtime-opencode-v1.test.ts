@@ -2821,6 +2821,7 @@ describe("OpenCode process supervisor", () => {
       spawnProcess: () => {
         queueMicrotask(() => {
           child.stdout.write("opencode server listening on http://127.0.0.1:41");
+          child.stderr.write("diagnostic newline\n");
           queueMicrotask(() => child.stdout.write("236\n"));
         });
         return child as never;
