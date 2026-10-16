@@ -11,7 +11,9 @@ import {
 } from "@opencode-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { executeRun, LegacyCompatibilityProjection } from "../src";
+import { runtimeErrorDetails } from "../src/diagnostics";
 import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
+import { createStructuredLogger, type Logger } from "../src/log";
 import {
   appendBoundedOpenCodeOutput,
   buildOpenCodeEnvironment,
@@ -90,6 +92,7 @@ async function* streamEvents(
 }
 
 interface FakeRuntimeOptions {
+  logger?: Logger;
   events: OpenCodeEvent[];
   serverDirectory?: string;
   streamError?: Error;
@@ -240,6 +243,7 @@ function fakeRuntime(options: FakeRuntimeOptions) {
     renderError = error;
   }
   const runtime = new OpenCodeV1Runtime({
+    logger: options.logger,
     supervisor: () => supervisor,
     clientFactory,
     renderedConfig,
@@ -291,6 +295,42 @@ async function waitForCondition(condition: () => boolean): Promise<void> {
 }
 
 describe("bounded operations", () => {
+  it("logs safe causal diagnostics for SDK session errors with attempt identity", async () => {
+    const records: Record<string, unknown>[] = [];
+    const { runtime } = fakeRuntime({
+      logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }),
+      events: [
+        asOpenCodeEvent({
+          type: "session.error",
+          properties: {
+            sessionID: "session-opencode",
+            error: {
+              name: "InitError",
+              data: {
+                message: "Failed to initialize provider private-prompt",
+                cause: { message: "Cannot find package @ai-sdk/openai", body: "private-body" },
+              },
+            },
+          },
+        }),
+        asOpenCodeEvent({ type: "session.idle", properties: { sessionID: "session-opencode" } }),
+      ],
+    });
+    await runtime.start(new AbortController().signal);
+    const events = await collect(runtime.run(runtimeRun, new AbortController().signal));
+    expect(events.at(-1)?.payload).toMatchObject({ state: "failed" });
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        run_id: runtimeRun.runId,
+        attempt_id: runtimeRun.attemptId,
+        message: "OpenCode session error",
+        diagnostic: expect.stringContaining("module not found"),
+      }),
+    );
+    expect(JSON.stringify(records)).not.toMatch(/private-prompt|private-body/);
+    await runtime.stop();
+  });
+
   it("does not start an operation after cancellation wins before its microtask", async () => {
     const controller = new AbortController();
     let called = false;
@@ -2261,18 +2301,42 @@ describe("OpenCode process supervisor", () => {
   it("rejects a worktree with an unexpected owner", async () => {
     const root = await mkdtemp(join(tmpdir(), "opencode-owner-"));
     const ownerUid = typeof process.getuid === "function" ? process.getuid() : 0;
+    const records: Record<string, unknown>[] = [];
+    let spawned = false;
     try {
       const supervisor = createTestSupervisor({
         command: "/usr/local/bin/opencode-test",
         workspaceRoot: root,
         workspaceOwnerUid: ownerUid + 1,
+        logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }).child({
+          run_id: "owner-run",
+          attempt_id: "owner-attempt",
+        }),
         startupTimeoutMs: 20,
-        spawnProcess: () => new FakeChild() as never,
+        spawnProcess: () => {
+          spawned = true;
+          return new FakeChild() as never;
+        },
       });
 
-      await expect(supervisor.start(root, new AbortController().signal)).rejects.toThrow(
-        "owned by",
+      const error = await supervisor
+        .start(root, new AbortController().signal)
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(OpenCodeReadinessError);
+      expect((error as Error).message).toContain("owned by");
+      expect(runtimeErrorDetails(error)).toContain("workspace ownership mismatch");
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          message: "OpenCode workspace ownership mismatch",
+          level: "ERROR",
+          actual_uid: ownerUid,
+          expected_uid: ownerUid + 1,
+          workspace: await realpath(root),
+          run_id: "owner-run",
+          attempt_id: "owner-attempt",
+        }),
       );
+      expect(spawned).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2292,7 +2356,7 @@ describe("OpenCode process supervisor", () => {
         workspaceRoot: root,
         spawnProcess: (_command, _args, options) => {
           spawnCwd = options.cwd as string;
-          queueMicrotask(() => child.stdout.write("server listening on http://127.0.0.1:41252\\n"));
+          queueMicrotask(() => child.stdout.write("server listening on http://127.0.0.1:41252\n"));
           return child as never;
         },
         signalProcess: (_pid, signal) => child.kill(signal),
@@ -2359,7 +2423,7 @@ describe("OpenCode process supervisor", () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).not.toContain("startup-secret");
-    expect((error as Error).message).toContain("[REDACTED]");
+    expect((error as Error).message).not.toContain("Authorization");
   });
 
   it("does not expose secret tails when startup output truncates redaction context", async () => {
@@ -2378,7 +2442,7 @@ describe("OpenCode process supervisor", () => {
           child.stderr.write(
             `Authorization: Bearer ${"s".repeat(20_000)}\n` +
               `Authorization: Bearer ${"t".repeat(3_000)}\n` +
-              "public startup diagnostic\n",
+              "ERROR ProviderInitError ENOTCACHED @ai-sdk/openai\n",
           ),
         );
         return child as never;
@@ -2394,7 +2458,8 @@ describe("OpenCode process supervisor", () => {
     const message = (error as Error).message;
     expect(message).not.toContain(captureBoundarySecretTail);
     expect(message).not.toContain(diagnosticBoundarySecretTail);
-    expect(message).toContain("public startup diagnostic");
+    expect(message).toContain("provider initialization failed");
+    expect(message).toContain("offline package cache miss");
   });
 
   it("caps startup diagnostics included in startup errors", async () => {
@@ -2407,7 +2472,7 @@ describe("OpenCode process supervisor", () => {
       killVerificationTimeoutMs: 20,
       signalProcess: (_pid, signal) => child.kill(signal),
       spawnProcess: () => {
-        queueMicrotask(() => child.stderr.write("x".repeat(4_096)));
+        queueMicrotask(() => child.stderr.write("ERROR ProviderInitError\n".repeat(1000)));
         return child as never;
       },
     });
@@ -2419,7 +2484,7 @@ describe("OpenCode process supervisor", () => {
 
     expect(error).toBeInstanceOf(Error);
     const message = (error as Error).message;
-    const marker = "OpenCode startup output (tail):\n";
+    const marker = "OpenCode diagnostics (safe tail):\n";
     const markerIndex = message.indexOf(marker);
     expect(markerIndex).toBeGreaterThanOrEqual(0);
     expect(message.slice(markerIndex + marker.length)).toHaveLength(2_048);
@@ -2442,7 +2507,7 @@ describe("OpenCode process supervisor", () => {
     });
 
     await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      /fatal startup configuration/,
+      /invalid configuration/,
     );
   });
 
@@ -2462,7 +2527,7 @@ describe("OpenCode process supervisor", () => {
     });
 
     await expect(supervisor.start(TEST_WORKSPACE, new AbortController().signal)).rejects.toThrow(
-      /fatal startup timeout/,
+      /startup timeout/,
     );
   });
 
@@ -2553,8 +2618,8 @@ describe("OpenCode process supervisor", () => {
     const spawnProcess: OpenCodeSpawn = (command, args, options) => {
       spawnCall = { command, args, options };
       queueMicrotask(() => {
-        child.stdout.write("diagnostic output ".repeat(2_000));
-        child.stderr.write("diagnostic output ".repeat(2_000));
+        child.stdout.write(`${"diagnostic output ".repeat(2_000)}\n`);
+        child.stderr.write(`${"diagnostic output ".repeat(2_000)}\n`);
         child.stdout.write("opencode server listening on http://127.0.0.1:41234\n");
       });
       return child as never;
@@ -2602,7 +2667,7 @@ describe("OpenCode process supervisor", () => {
 
     expect(spawnCall).toMatchObject({
       command: "/usr/local/bin/opencode-test",
-      args: ["serve", "--hostname=127.0.0.1", "--port=41234"],
+      args: ["serve", "--hostname=127.0.0.1", "--port=41234", "--print-logs", "--log-level=INFO"],
       options: {
         cwd: TEST_WORKSPACE,
         detached: true,
@@ -2645,7 +2710,7 @@ describe("OpenCode process supervisor", () => {
       signalProcess: (_pid, signal) => child.kill(signal),
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
-          child.stdout.write("opencode server listening on http://127.0.0.1:41240\\n"),
+          child.stdout.write("opencode server listening on http://127.0.0.1:41240\n"),
         );
         return child as never;
       },
@@ -2675,7 +2740,7 @@ describe("OpenCode process supervisor", () => {
       signalProcess: (_pid, signal) => child.kill(signal),
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
-          child.stdout.write("opencode server listening on http://127.0.0.1:41242\\n"),
+          child.stdout.write("opencode server listening on http://127.0.0.1:41242\n"),
         );
         return child as never;
       },
@@ -2696,7 +2761,7 @@ describe("OpenCode process supervisor", () => {
       signalProcess: (_pid, signal) => child.kill(signal),
       spawnProcess: (_command, _args, _options) => {
         queueMicrotask(() =>
-          child.stdout.write("opencode server listening on https://127.0.0.1:41243\\n"),
+          child.stdout.write("opencode server listening on https://127.0.0.1:41243\n"),
         );
         return child as never;
       },
@@ -2766,14 +2831,65 @@ describe("OpenCode process supervisor", () => {
     });
 
     await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
-    child.stderr.write("runtime diagnostic, not startup output\n");
+    child.stdout.write(
+      "ERROR prompt=private-prompt tool_args=private-tool Authorization: Bearer private-token\n",
+    );
+    child.stderr.write("ERROR ProviderInit");
+    child.stderr.write(
+      "Error cause=ERR_MODULE_NOT_FOUND Cannot find package @ai-sdk/openai body=private-body\n",
+    );
     child.emit("exit", 1, null);
 
     expect(supervisor.crashSignal.aborted).toBe(true);
     expect(supervisor.crashError?.message).toContain("crashed after startup");
-    expect(supervisor.crashError?.message).not.toContain("OpenCode startup output (tail)");
+    expect(supervisor.crashError?.message).toContain("provider initialization failed");
+    expect(supervisor.crashError?.message).toContain("module not found");
+    expect(supervisor.crashError?.message).toContain("@ai-sdk/openai");
+    expect(supervisor.diagnostics).not.toMatch(/private-|prompt|tool_args|Authorization/);
     await supervisor.stop();
     expect(signals).toEqual([{ pid: -1234, signal: "SIGTERM" }]);
+  });
+
+  it("captures real logfmt errors and dependency warnings after readiness without payload text", async () => {
+    const child = new FakeChild();
+    const records: Record<string, unknown>[] = [];
+    const supervisor = createTestSupervisor({
+      command: "/usr/local/bin/opencode-test",
+      port: 41254,
+      logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }),
+      signalProcess: (_pid, signal) => child.kill(signal),
+      spawnProcess: () => {
+        queueMicrotask(() =>
+          child.stdout.write("opencode server listening on http://127.0.0.1:41254\n"),
+        );
+        return child as never;
+      },
+      readiness: { check: async () => ({ healthy: true, version: "1.18.29" }) },
+    });
+    try {
+      await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+      child.stderr.write(
+        'timestamp=2026-10-16T09:40:00Z level=ERROR run=run-1 message="stream error" error.error="AI_APICallError: private-canary-value"\n',
+      );
+      expect(supervisor.diagnostics).toContain("unclassified runtime error (payload suppressed)");
+      child.stdout.write(
+        'timestamp=2026-10-16T09:40:01Z level=WARN message="background dependency" error.error="NpmInstallFailedError @opencode-ai/plugin: cache mode is \'only-if-cached\' but no cached response is available private-plugin-canary"\n',
+      );
+      expect(supervisor.diagnostics).toContain("dependency install failed");
+      expect(supervisor.diagnostics).toContain("offline package cache miss");
+      expect(supervisor.diagnostics).toContain("package=@opencode-ai/plugin");
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          message: "OpenCode diagnostic",
+          diagnostic: "unclassified runtime error (payload suppressed)",
+        }),
+      );
+      expect(`${JSON.stringify(records)}${supervisor.diagnostics}`).not.toMatch(
+        /private-|AI_APICallError|stream error|background dependency/,
+      );
+    } finally {
+      await supervisor.stop();
+    }
   });
 
   it("rejects a relative binary path before spawning a child", () => {

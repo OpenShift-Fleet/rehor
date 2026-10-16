@@ -3,10 +3,11 @@ import {
   type Event as OpenCodeEvent,
   type OpencodeClient,
 } from "@opencode-ai/sdk";
-
+import { providerDiagnostic, runtimeErrorDetails } from "../../diagnostics";
 import { createEventFactory, type RehorEvent, type RehorRun } from "../../domain";
 import type { RuntimeCapabilities } from "../../domain/capabilities";
 import type { TerminalState, TerminalWorkContext } from "../../domain/terminal-state";
+import { type Logger, nullLogger } from "../../log";
 import type { AgentRuntime } from "../../ports";
 import {
   abortKind,
@@ -41,6 +42,7 @@ export type OpenCodeSupervisorFactory = (
 ) => OpenCodeServerController;
 
 export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
+  logger?: Logger;
   policyVersion?: string;
   reconciliationTimeoutMs?: number;
   reconciliationMessageLimit?: number;
@@ -101,6 +103,7 @@ const CAPABILITIES: RuntimeCapabilities = {
  * the AgentRuntime port; callers receive only Rehor-owned events.
  */
 export class OpenCodeV1Runtime implements AgentRuntime {
+  private readonly logger: Logger;
   private readonly policyVersion: string;
   private readonly supervisor: OpenCodeServerController;
   private readonly clientEnvironment: Record<string, string>;
@@ -117,6 +120,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   private active?: ActiveRun;
 
   constructor(options: OpenCodeV1RuntimeOptions = {}) {
+    this.logger = options.logger ?? nullLogger;
     this.policyVersion = options.policyVersion ?? "opencode-v1";
     this.renderedConfig = options.renderedConfig;
     this.renderError = options.renderError;
@@ -136,6 +140,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     this.supervisor =
       options.supervisor?.(options.renderedConfig) ??
       new OpenCodeServerSupervisor({
+        logger: this.logger,
         ...(options.server ?? {}),
         ...(options.base === undefined ? {} : { base: options.base }),
         ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
@@ -330,6 +335,21 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         }
 
         const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
+        if (
+          next.value.type === "session.error" ||
+          (next.value.type === "message.updated" && record(next.value.properties.info).error)
+        ) {
+          const error =
+            next.value.type === "session.error"
+              ? next.value.properties.error
+              : record(next.value.properties.info).error;
+          this.logger.log("ERROR", "OpenCode session error", {
+            run_id: input.runId,
+            attempt_id: input.attemptId,
+            diagnostic: providerDiagnostic(error),
+            server_diagnostics: this.supervisor.diagnostics,
+          });
+        }
         if (normalized.turns > 0) turns += normalized.turns;
         for (const event of normalized.events) yield event;
         if (normalized.resultText !== undefined) resultText = normalized.resultText;
@@ -349,6 +369,13 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw new Error("OpenCode event stream ended before the session became idle");
       }
     } catch (error) {
+      this.logger.log("ERROR", "OpenCode operation failed", {
+        run_id: input.runId,
+        attempt_id: input.attemptId,
+        diagnostic: providerDiagnostic(error),
+        server_diagnostics: this.supervisor.diagnostics,
+        exc_info: runtimeErrorDetails(error),
+      });
       failure = error;
       if (
         promptAttempted &&

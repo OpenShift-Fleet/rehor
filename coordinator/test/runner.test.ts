@@ -12,6 +12,7 @@ import { createCompatibilitySink } from "../src/adapters/compatibility";
 import type { CoordinatorResult } from "../src/coordinator";
 import type { PreparedCycleInput } from "../src/cycle-input";
 import { InstructionStrategy } from "../src/instructions";
+import { createStructuredLogger } from "../src/log";
 import { PreflightAction } from "../src/ports/python-bridge";
 import {
   buildRehorRun,
@@ -188,6 +189,8 @@ describe("production runner boundary", () => {
   it("forwards Git config and records legacy preflight metrics before a runtime attempt", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const metrics: unknown[] = [];
+    const records: Record<string, unknown>[] = [];
+    const logger = createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) });
     const runtimeEnvironment: NodeJS.ProcessEnv = { ...proxyEnvironment };
     const createRegistry = vi.spyOn(runtimeFactory, "createDefaultRuntimeRegistry");
     vi.spyOn(runtimeFactory, "executeConfiguredRun").mockRejectedValue(
@@ -211,6 +214,10 @@ describe("production runner boundary", () => {
     };
 
     const result = await runCoordinator({
+      logger,
+      onError: () => {
+        logger.log("ERROR", "External error hook");
+      },
       scriptDir: resolve(process.cwd(), ".."),
       label: "hcc-ai-framework",
       instanceId: "instance-1",
@@ -233,6 +240,16 @@ describe("production runner boundary", () => {
     });
 
     expect(result.failures).toBe(1);
+    const started = records.find((record) => record.message === "Run started");
+    expect(started?.run_id).toEqual(expect.any(String));
+    expect(started?.attempt_id).toEqual(expect.any(String));
+    for (const message of ["Run failed", "External error hook"]) {
+      expect(records.find((record) => record.message === message)).toMatchObject({
+        run_id: started?.run_id,
+        attempt_id: started?.attempt_id,
+      });
+    }
+    expect(records.find((record) => record.message === "Coordinator sleeping")?.run_id).toBeNull();
     expect(runtimeEnvironment.GIT_CONFIG_GLOBAL).toBeUndefined();
     expect(createRegistry).toHaveBeenCalledWith(
       expect.objectContaining({

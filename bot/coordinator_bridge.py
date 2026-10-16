@@ -9,6 +9,7 @@ stderr so stdout remains machine-readable.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from contextlib import redirect_stdout
@@ -268,6 +269,17 @@ def handle(request: dict[str, Any]) -> Any:
 
 
 def main() -> int:
+    # Bridge-only setup: legacy runner keeps its own stdout/file configuration.
+    # Do not call setup_logging(), which would corrupt the JSON stdout protocol.
+    from .log import JsonFormatter
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    logging.basicConfig(
+        level=logging.DEBUG if os.environ.get("DEBUG") == "true" else logging.INFO,
+        handlers=[handler],
+        force=True,
+    )
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
@@ -277,10 +289,10 @@ def main() -> int:
         sys.stdout.write("\n")
         return 0
     except (BridgeError, json.JSONDecodeError, OSError) as exc:
-        print(f"coordinator bridge failed: {exc}", file=sys.stderr)
+        logging.getLogger("bot.coordinator_bridge").error("coordinator bridge failed: %s", exc)
         return 2
     except Exception as exc:  # pragma: no cover - defensive process boundary
-        print(f"coordinator bridge crashed: {exc}", file=sys.stderr)
+        logging.getLogger("bot.coordinator_bridge").error("coordinator bridge crashed: %s", exc)
         return 1
 
 

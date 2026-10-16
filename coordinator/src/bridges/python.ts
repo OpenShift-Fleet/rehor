@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
-
+import { providerDiagnostic } from "../diagnostics";
 import { isInstructionStrategy } from "../instructions";
+import { type Logger, type LogLevel, nullLogger, safeText } from "../log";
 import {
   type CleanupBetweenCyclesRequest,
   type CleanupBetweenCyclesResult,
@@ -21,7 +22,22 @@ import { abortError, isRecord } from "../utils";
 
 const PROTOCOL_VERSION = 1;
 
+// These modules implement bridge preparation/maintenance, never model execution.
+// A bot.* prefix alone must not grant trust to arbitrary subprocess output.
+const BRIDGE_LOG_SOURCES = new Set([
+  "bot.coordinator_bridge",
+  "bot.config",
+  "bot.preflight",
+  "bot.merge",
+  "bot.run",
+  "bot.idle_reminder",
+  "bot.slack_digest",
+  "bot.memory_mcp",
+]);
+const BRIDGE_LOG_LEVELS = new Set<string>(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]);
+
 export interface PythonBridgeOptions {
+  logger?: Logger;
   executable?: string;
   cwd?: string;
   env?: Record<string, string>;
@@ -36,11 +52,13 @@ export class PythonBridgeError extends Error {
 
 /** Process adapter for the existing Python preflight/config implementation. */
 export class PythonCoordinatorBridge implements PythonBridge {
+  private readonly logger: Logger;
   private readonly executable: string;
   private readonly cwd: string | undefined;
   private readonly env: Record<string, string> | undefined;
 
   constructor(options: PythonBridgeOptions = {}) {
+    this.logger = options.logger ?? nullLogger;
     this.executable = options.executable ?? "python3";
     this.cwd = options.cwd;
     this.env = options.env ? mergeEnvironment(options.env) : undefined;
@@ -124,7 +142,7 @@ export class PythonCoordinatorBridge implements PythonBridge {
       child.stdin.end();
       const [stdout, stderr, exitCode] = await Promise.all([
         readStream(child.stdout),
-        readStream(child.stderr),
+        collectBridgeDiagnostics(child.stderr, this.logger, String(request.operation), this.env),
         waitForExit(child),
       ]);
 
@@ -132,17 +150,15 @@ export class PythonCoordinatorBridge implements PythonBridge {
         throw abortError(signal?.reason, "Python coordinator bridge aborted");
       }
       if (exitCode !== 0) {
-        const detail = stderr.trim() || `process exited with code ${exitCode}`;
+        const detail = stderr || `process exited with code ${exitCode}`;
         throw new PythonBridgeError(`Python coordinator bridge failed: ${detail}`);
       }
 
       let response: unknown;
       try {
         response = JSON.parse(stdout);
-      } catch (error) {
-        throw new PythonBridgeError(
-          `Python coordinator bridge returned invalid JSON: ${describe(error)}`,
-        );
+      } catch {
+        throw new PythonBridgeError("Python coordinator bridge returned invalid JSON");
       }
       return parseBridgeResponse(response);
     } finally {
@@ -385,6 +401,66 @@ function mergeEnvironment(overrides: Record<string, string>): Record<string, str
   return { ...inherited, ...overrides };
 }
 
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** Bound pending lines, retained tail, and emitted count while draining all stderr. */
+export async function collectBridgeDiagnostics(
+  stream: Readable,
+  logger: Logger,
+  operation: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  let pending = "";
+  let dropping = false;
+  let emitted = 0;
+  let suppressed = 0;
+  let tail = "";
+  const line = (text: string): void => {
+    let level: LogLevel = "WARNING";
+    let source = "python";
+    let message: string | undefined;
+    const diagnostic = providerDiagnostic(text);
+    try {
+      const record: unknown = JSON.parse(text);
+      if (
+        isRecord(record) &&
+        typeof record.logger === "string" &&
+        BRIDGE_LOG_SOURCES.has(record.logger) &&
+        typeof record.level === "string" &&
+        BRIDGE_LOG_LEVELS.has(record.level) &&
+        typeof record.message === "string"
+      ) {
+        level = record.level as LogLevel;
+        source = record.logger;
+        message = safeText(record.message, environment);
+      }
+    } catch {
+      /* Non-JSON stderr is classified, never echoed. */
+    }
+    tail = `${tail}${source}: ${message ?? diagnostic}\n`.slice(-2048);
+    if (emitted++ < 32) {
+      if (message !== undefined) {
+        // Forward only the three validated formatter fields. Never spread records,
+        // exc_info, provider requests/responses, or other structured payloads.
+        logger.log(level, message, { operation, source, logger: source });
+      } else {
+        logger.log("WARNING", "Python bridge diagnostic", { operation, source, diagnostic });
+      }
+    } else suppressed++;
+  };
+  for await (const chunk of stream) {
+    for (const fragment of String(chunk).split(/(?<=\n)/)) {
+      if (!dropping && Buffer.byteLength(pending) + Buffer.byteLength(fragment) <= 16384)
+        pending += fragment;
+      else dropping = true;
+      if (fragment.endsWith("\n")) {
+        if (!dropping) line(pending);
+        else suppressed++;
+        pending = "";
+        dropping = false;
+      }
+    }
+  }
+  if (pending && !dropping) line(pending);
+  if (suppressed)
+    logger.log("WARNING", "Python bridge diagnostics suppressed", { operation, count: suppressed });
+  return tail.trim();
 }

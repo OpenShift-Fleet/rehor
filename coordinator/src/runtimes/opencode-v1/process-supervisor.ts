@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
+import { classifyDiagnostic } from "../../diagnostics";
+import { type Logger, nullLogger, safeText } from "../../log";
 
 import {
   abortReason,
@@ -49,6 +51,7 @@ export interface OpenCodeServerInfo extends OpenCodeHealth {
 }
 
 export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
+  logger?: Logger;
   command?: string;
   hostname?: string;
   port?: number;
@@ -101,6 +104,21 @@ export class OpenCodeReadinessError extends Error {
   }
 }
 
+/** Runner-owned setup error: only validated filesystem metadata is retained. */
+export class OpenCodeWorkspaceOwnershipError extends OpenCodeReadinessError {
+  constructor(
+    readonly directory: string,
+    readonly actualUid: number,
+    readonly expectedUid: number,
+  ) {
+    super(
+      `OpenCode worktree path ${directory} is owned by UID ${actualUid}, expected ${expectedUid}`,
+      true,
+    );
+    this.name = "OpenCodeWorkspaceOwnershipError";
+  }
+}
+
 /** The OpenCode process group survived SIGKILL; its processes may leak. */
 export class OpenCodeProcessLeakError extends Error {
   constructor(message = "OpenCode process group remained alive after SIGKILL") {
@@ -110,6 +128,7 @@ export class OpenCodeProcessLeakError extends Error {
 }
 
 export interface OpenCodeServerController {
+  readonly diagnostics?: string;
   readonly info: OpenCodeServerInfo | undefined;
   readonly crashError: Error | undefined;
   readonly crashSignal: AbortSignal;
@@ -132,7 +151,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private crashController = new AbortController();
   private outputCleanup?: () => void;
   private startupOutput = "";
-  private startupOutputTruncated = false;
+  private diagnosticCount = 0;
   private stateDirectory?: string;
   private ownsStateDirectory = false;
   private readonly renderedConfig?: RenderedOpenCodeV1Config;
@@ -178,6 +197,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     return this.crashController.signal;
   }
 
+  get diagnostics(): string {
+    return this.startupDiagnostic();
+  }
+
   async start(directory: string, signal: AbortSignal): Promise<OpenCodeServerInfo> {
     if (this.child || this.server) throw new Error("OpenCode server already started");
     if (signal.aborted) throw abortReason(signal);
@@ -186,7 +209,16 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       directory,
       this.options.workspaceRoot,
       this.options.workspaceOwnerUid,
-    );
+    ).catch((error: unknown) => {
+      if (error instanceof OpenCodeWorkspaceOwnershipError) {
+        (this.options.logger ?? nullLogger).log("ERROR", "OpenCode workspace ownership mismatch", {
+          workspace: safeText(error.directory, this.options.base),
+          actual_uid: error.actualUid,
+          expected_uid: error.expectedUid,
+        });
+      }
+      throw error;
+    });
     if (signal.aborted) throw abortReason(signal);
 
     const configHash = this.renderedConfig?.hash;
@@ -218,10 +250,17 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         throw error;
       }
     }
-    const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
+    const args = [
+      "serve",
+      `--hostname=${this.options.hostname}`,
+      `--port=${port}`,
+      "--print-logs",
+      `--log-level=${(this.options.base ?? process.env).DEBUG === "true" ? "DEBUG" : "INFO"}`,
+    ];
+    (this.options.logger ?? nullLogger).log("INFO", "OpenCode server starting");
     const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
     this.startupOutput = "";
-    this.startupOutputTruncated = false;
+    this.diagnosticCount = 0;
     let child: ChildProcess;
     try {
       child = spawnProcess(this.options.command, args, {
@@ -268,6 +307,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         directory: workspaceDirectory,
         ...(configHash ? { configHash } : {}),
       };
+      (this.options.logger ?? nullLogger).log("INFO", "OpenCode server ready", {
+        version: health.version,
+      });
       return this.server;
     } catch (error) {
       const startupError = this.withStartupOutput(error);
@@ -364,7 +406,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
               ? `OpenCode server crashed after startup (code=${code ?? "null"}, signal=${signal ?? "none"})`
               : `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signal ?? "none"})`,
           );
-          this._crashError = this.server ? error : this.withStartupOutput(error);
+          this._crashError = this.withStartupOutput(error);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
@@ -374,7 +416,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         this.exited = true;
         const safeError = redactError(error);
         if (!this.stopping) {
-          this._crashError = this.server ? safeError : this.withStartupOutput(safeError);
+          this._crashError = this.withStartupOutput(safeError);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
@@ -388,21 +430,15 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private withStartupOutput(value: unknown): Error {
     const error = value instanceof Error ? value : new Error(String(value));
     const diagnostic = this.startupDiagnostic();
-    if (diagnostic && !error.message.includes("OpenCode startup output (tail)")) {
-      error.message = `${error.message}\nOpenCode startup output (tail):\n${diagnostic}`;
+    if (diagnostic && !error.message.includes("OpenCode diagnostics (safe tail)")) {
+      error.message = `${error.message}\nOpenCode diagnostics (safe tail):\n${diagnostic}`;
     }
-    error.message = redactSensitiveText(error.message);
+    error.message = safeText(error.message, this.options.base);
     return error;
   }
 
   private startupDiagnostic(): string {
-    let output = this.startupOutput;
-    if (this.startupOutputTruncated) {
-      const firstLineEnd = output.indexOf("\n");
-      if (firstLineEnd === -1) return "";
-      output = output.slice(firstLineEnd + 1);
-    }
-    return redactSensitiveText(output).slice(-STARTUP_DIAGNOSTIC_LIMIT);
+    return safeText(this.startupOutput, this.options.base).slice(-STARTUP_DIAGNOSTIC_LIMIT);
   }
 
   private waitForListening(
@@ -428,51 +464,84 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         if (error) reject(error);
         else resolve(url as string);
       };
-      const onData = (chunk: Buffer | string): void => {
-        if (settled) return;
-        const text = chunk.toString();
-        if (this.startupOutput.length + text.length > STARTUP_OUTPUT_LIMIT) {
-          this.startupOutputTruncated = true;
+      // Separate bounded line buffers prevent stdout/stderr fragments from joining.
+      // Oversized lines are discarded wholesale, not sliced into possible secret tails.
+      const collector = () => {
+        let pending = "";
+        let dropping = false;
+        return (chunk: Buffer | string): void => {
+          for (const fragment of chunk.toString().split(/(?<=\n)/)) {
+            const complete = fragment.endsWith("\n");
+            if (
+              !dropping &&
+              Buffer.byteLength(pending) + Buffer.byteLength(fragment) <= STARTUP_OUTPUT_LIMIT
+            )
+              pending += fragment;
+            else dropping = true;
+            if (complete) {
+              if (!dropping) onLine(pending);
+              pending = "";
+              dropping = false;
+            }
+          }
+          // The CLI announcement may arrive without a trailing newline.
+          if (
+            !dropping &&
+            !settled &&
+            /^(?:opencode )?server listening on https?:\/\/[^\s]+:\d+\/?$/i.test(pending)
+          )
+            onLine(pending);
+        };
+      };
+      const onLine = (line: string): void => {
+        const diagnostic = classifyDiagnostic(line);
+        if (diagnostic) {
+          const safe = safeText(diagnostic, this.options.base);
+          this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, `${safe}\n`);
+          if (this.diagnosticCount++ < 64)
+            (this.options.logger ?? nullLogger).log("WARNING", "OpenCode diagnostic", {
+              diagnostic: safe,
+            });
         }
-        this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, text);
-        for (const line of this.startupOutput.split(/\r?\n/)) {
-          const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
-          if (match) {
-            try {
-              const url = new URL(match[1]);
-              if (url.protocol !== "http:") {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved protocol ${url.protocol}`,
-                  ),
-                );
-                return;
-              }
-              if (url.hostname !== this.options.hostname) {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved host ${url.hostname}`,
-                  ),
-                );
-                return;
-              }
-              if (url.port !== String(expectedPort)) {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved port ${url.port || "default"}; expected ${expectedPort}`,
-                  ),
-                );
-                return;
-              }
-              finish(undefined, url.toString().replace(/\/$/, ""));
-              return;
-            } catch {
-              finish(new OpenCodeReadinessError("OpenCode server advertised an invalid URL"));
+        if (settled) return;
+        const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
+        if (match) {
+          try {
+            const url = new URL(match[1]);
+            if (url.protocol !== "http:") {
+              finish(
+                new OpenCodeReadinessError(
+                  `OpenCode server advertised unapproved protocol ${url.protocol}`,
+                ),
+              );
               return;
             }
+            if (url.hostname !== this.options.hostname) {
+              finish(
+                new OpenCodeReadinessError(
+                  `OpenCode server advertised unapproved host ${url.hostname}`,
+                ),
+              );
+              return;
+            }
+            if (url.port !== String(expectedPort)) {
+              finish(
+                new OpenCodeReadinessError(
+                  `OpenCode server advertised unapproved port ${url.port || "default"}; expected ${expectedPort}`,
+                ),
+              );
+              return;
+            }
+            finish(undefined, url.toString().replace(/\/$/, ""));
+            return;
+          } catch {
+            finish(new OpenCodeReadinessError("OpenCode server advertised an invalid URL"));
+            return;
           }
         }
       };
+      const onStdout = collector();
+      const onStderr = collector();
       const onExit = (code: number | null, signalName: NodeJS.Signals | null): void => {
         finish(
           this.withStartupOutput(
@@ -485,8 +554,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onError = (error: Error): void => finish(error);
       const onAbort = (): void => finish(abortReason(signal));
       const removeOutput = (): void => {
-        child.stdout?.removeListener("data", onData);
-        child.stderr?.removeListener("data", onData);
+        child.stdout?.removeListener("data", onStdout);
+        child.stderr?.removeListener("data", onStderr);
         if (this.outputCleanup === removeOutput) this.outputCleanup = undefined;
       };
       this.outputCleanup = removeOutput;
@@ -502,8 +571,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
           ),
         Math.max(0, deadline - Date.now()),
       );
-      child.stdout?.on("data", onData);
-      child.stderr?.on("data", onData);
+      child.stdout?.on("data", onStdout);
+      child.stderr?.on("data", onStderr);
       child.once("exit", onExit);
       child.once("error", onError);
       if (signal.aborted) onAbort();
@@ -689,9 +758,10 @@ async function resolveApprovedWorkspace(
 
   const expectedOwnerUid = workspaceOwnerUid ?? currentUserUid();
   if (expectedOwnerUid !== undefined && directoryStats.uid !== expectedOwnerUid) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path ${canonicalDirectory} is owned by UID ${directoryStats.uid}, expected ${expectedOwnerUid}`,
-      true,
+    throw new OpenCodeWorkspaceOwnershipError(
+      canonicalDirectory,
+      directoryStats.uid,
+      expectedOwnerUid,
     );
   }
   return canonicalDirectory;

@@ -7,8 +7,11 @@ import { createCompatibilitySink } from "./adapters/compatibility";
 import { CoordinatorHealthServer } from "./adapters/health";
 import { coordinatorExitCode } from "./cli-result";
 import { loadOpenCodeDeploymentConfig } from "./deployment-config";
+import { createFileLogger, createStructuredLogger, type Logger } from "./log";
 import { runCoordinator } from "./runner";
 import { shutdownAbortReason } from "./utils";
+
+let logger: Logger = createStructuredLogger();
 
 interface CliOptions {
   label: string;
@@ -36,6 +39,11 @@ async function main(): Promise<number> {
   if (scriptDirArgument !== undefined) await loadDotEnv(resolve(scriptDirArgument, ".env"));
   const options = parseArgs(argv, process.env);
   await loadDotEnv(resolve(options.scriptDir, ".env"));
+  logger = createFileLogger({ dataDirectory: options.dataDirectory });
+  logger.log("INFO", "Coordinator starting", {
+    instance_id: options.instanceId,
+    label: options.label,
+  });
   const deployment = await loadOpenCodeDeploymentConfig(options.deploymentConfigPath);
   const memoryApiBase = process.env.BOT_MEMORY_URL?.replace(/\/mcp\/?$/, "");
   const compatibility = createCompatibilitySink({
@@ -58,6 +66,7 @@ async function main(): Promise<number> {
   try {
     const result = await runCoordinator({
       ...options,
+      logger,
       writers: compatibility.writers,
       compatibility,
       openCodeDeployment: deployment,
@@ -67,18 +76,13 @@ async function main(): Promise<number> {
       environment: process.env,
       shutdownSignal: shutdown.signal,
       onReady: () => health.setReady(true),
-      onError: (error, phase) => {
-        console.error(`coordinator ${phase} error: ${describe(error)}`);
-      },
     });
-    console.log(
-      JSON.stringify({
-        stopReason: result.stopReason,
-        cycles: result.cycles,
-        results: result.results.length,
-        failures: result.failures,
-      }),
-    );
+    logger.log("INFO", "Coordinator stopped", {
+      stopReason: result.stopReason,
+      cycles: result.cycles,
+      results: result.results.length,
+      failures: result.failures,
+    });
     return coordinatorExitCode(result, options.once);
   } finally {
     process.removeListener("SIGINT", onSignal);
@@ -215,14 +219,10 @@ function parseOptionalInteger(value: string | undefined): number | undefined {
   return value === undefined ? undefined : parseInteger(value, "REHOR_WORKSPACE_OWNER_UID");
 }
 
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 main().then(
   (code) => (process.exitCode = code),
   (error: unknown) => {
-    console.error(`coordinator startup failed: ${describe(error)}`);
+    logger.log("ERROR", "Coordinator startup failed", {}, error);
     process.exitCode = 1;
   },
 );

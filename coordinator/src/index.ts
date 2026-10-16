@@ -8,6 +8,7 @@ export * from "./deployment-config";
 export * from "./domain";
 export * from "./idle";
 export * from "./instructions";
+export * from "./log";
 export * from "./loop";
 export * from "./ports";
 export * from "./projections/compatibility";

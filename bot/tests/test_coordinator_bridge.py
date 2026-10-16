@@ -3,6 +3,49 @@
 from bot.coordinator_bridge import handle
 
 
+def test_bridge_main_logs_info_to_stderr_without_corrupting_stdout(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow" / "preflight"
+    workflow_dir.mkdir(parents=True)
+    _write_script(workflow_dir / "01-test.py", "skip", "nothing to do")
+    result = subprocess.run(
+        [sys.executable, "-m", "bot.coordinator_bridge"],
+        input=json.dumps({"operation": "preflight", "scriptDir": str(tmp_path), "workflow": "test-workflow"}),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout)["result"]["action"] == "skip"
+    records = [json.loads(line) for line in result.stderr.splitlines()]
+    assert any(record["level"] == "INFO" and record["logger"] == "bot.preflight" for record in records)
+    messages = [record["message"] for record in records if record["logger"] == "bot.preflight"]
+    assert "Preflight 01-test.py starting" in messages
+    assert any(message.startswith("Preflight 01-test.py → skip (13 chars) in ") for message in messages)
+
+
+def test_bridge_main_logs_own_errors_as_json():
+    import json
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "bot.coordinator_bridge"],
+        input=json.dumps({"operation": "unsupported"}),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    record = json.loads(result.stderr)
+    assert record["level"] == "ERROR"
+    assert record["logger"] == "bot.coordinator_bridge"
+    assert record["message"].startswith("coordinator bridge failed: operation must be")
+
+
 def _write_script(path, status, content):
     path.write_text(f'import json; print(json.dumps({{"status": "{status}", "content": "{content}"}}))\n')
 

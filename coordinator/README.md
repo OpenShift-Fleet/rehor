@@ -11,6 +11,54 @@ The coordinator now has a production-capable entry point, but it is opt-in.
 bundle, OpenCode executable, provider package closure, and compatibility
 endpoints. Invalid runtime/provider selections fail closed.
 
+## Logging
+
+The coordinator CLI writes JSON lines to stdout and `dataDirectory/bot.log`.
+Records use the Python logging keys `timestamp`, `level`, `logger`, `message`,
+`run_id`, `task_key`, `model`, and `cost`; attempt logs also carry `attempt_id`.
+Run context is async-scoped and retained when reporting a failed attempt.
+Lifecycle logs cover configuration, preflight decisions, runtime selection,
+run terminal state, cleanup, sleep, and shutdown. Task and cost remain null
+when unavailable; model/tool events and transcripts are not copied to logs.
+
+Set `DEBUG=true` (exactly) for DEBUG verbosity. `BOT_LOG_FILE` can select a
+relative or absolute path inside the configured data directory; traversal and
+symlink escapes are rejected. Files use mode `0600`, rotate at 10 MiB, and keep
+five backups. Each string is capped at 8 KiB after environment-secret and
+credential-pattern redaction. Error stacks and causal chains are bounded and
+cycle-safe; arbitrary error properties are never serialized.
+Runtime sink writes are best effort: file failures do not prevent stdout emission,
+and file/stdout failures cannot fail a run or cleanup. A bounded, redacted JSON
+warning goes directly to stderr once per continuous sink outage; stderr failure
+is swallowed without recursion. Invalid logging configuration still fails during
+initialization.
+
+OpenCode runs with `--print-logs --log-level=INFO` (DEBUG only with `DEBUG=true`).
+Both streams remain drained after readiness. Only fixed diagnostic categories
+(provider initialization, missing package, offline cache, dependency installation, network, auth, timeout,
+and configuration failures) and known package identifiers enter the retained
+2 KiB safe tail or logs. Provider messages and causal metadata are classified,
+not echoed; exception logs retain source locations without provider messages.
+This deliberately loses unknown error wording, prompts, tool arguments, HTTP
+bodies, and headers. OpenCode emits at most 64 diagnostic records per server;
+the safe tail continues updating afterward, including on crashes.
+Runner-owned workspace ownership failures log the canonical path and numeric
+actual/expected UIDs before spawning; runtime summaries retain a recognizable
+ownership-mismatch category.
+These logging safeguards do not change persisted runtime error events, which
+retain their existing redacted provider-message behavior.
+
+Python bridge logging is configured on stderr only. Successful stderr is drained
+and surfaced with severity, operation, and source. Valid records from explicitly
+allowed Python preparation/maintenance modules retain their redacted, capped
+message and original severity/logger; extra fields (including requests, bodies,
+tool payloads, and exception dumps) are omitted. Non-JSON, unknown-source, and
+malformed records use safe diagnostic classification instead. Pending lines are bounded to 16 KiB, oversized
+lines are discarded, and each bridge request emits at most 32 diagnostics plus
+a suppression count. JSON protocol stdout remains separate. Legacy Python
+runner logging setup is unchanged. Library callers are silent by default and
+can inject `Logger` from `src/log.ts`; the CLI owns the rotating sink.
+
 ## Responsibilities
 
 The coordinator owns:

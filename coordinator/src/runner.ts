@@ -8,8 +8,10 @@ import { PythonCoordinatorBridge } from "./bridges/python";
 import type { CoordinatorResult } from "./coordinator";
 import type { PreparedCycleInput } from "./cycle-input";
 import { prepareCycleInput } from "./cycle-input";
+import { providerDiagnostic, runtimeErrorDetails } from "./diagnostics";
 import type { RehorRun, RepositorySnapshot, TaskIdentity } from "./domain/run";
 import { sha256Hash } from "./instructions";
+import { type LogFields, type Logger, nullLogger } from "./log";
 import { type CoordinatorLoopResult, LoopErrorPhase, runCoordinatorLoop } from "./loop";
 import type { CompatibilityWriters } from "./ports/compatibility";
 import type { PythonBridge } from "./ports/python-bridge";
@@ -51,6 +53,7 @@ export interface RunBuildOptions {
 }
 
 export interface RuntimeRegistryOptions {
+  logger?: Logger;
   workspaceRoot: string;
   openCodeDeployment?: OpenCodeV1DeploymentConfig;
   openCodeCommand?: string;
@@ -60,6 +63,7 @@ export interface RuntimeRegistryOptions {
 }
 
 export interface CoordinatorRunnerOptions {
+  logger?: Logger;
   scriptDir: string;
   label: string;
   instanceId: string;
@@ -248,6 +252,7 @@ export function createRuntimeRegistryForCycle(
   if (prepared.config.runtimeId !== "opencode-v1") return registry;
 
   const server: OpenCodeSupervisorOptions = {
+    logger: options.logger,
     workspaceRoot: options.workspaceRoot,
     ...(options.openCodeCommand === undefined ? {} : { command: options.openCodeCommand }),
     ...(options.openCodeExpectedVersion === undefined
@@ -262,6 +267,7 @@ export function createRuntimeRegistryForCycle(
       base: options.environment,
       config: deployment,
       server,
+      logger: options.logger,
     }),
   );
   return registry;
@@ -270,11 +276,14 @@ export function createRuntimeRegistryForCycle(
 export async function runCoordinator(
   options: CoordinatorRunnerOptions,
 ): Promise<CoordinatorLoopResult<CoordinatorResult>> {
+  const logger = options.logger ?? nullLogger;
+  const errorContexts = new WeakMap<object, LogFields>();
   const bridge =
     options.bridge ??
     new PythonCoordinatorBridge({
       executable: options.pythonExecutable,
       cwd: options.pythonCwd ?? options.scriptDir,
+      logger,
     });
   const scheduler = new CycleScheduler({
     intervalMs: secondsToMs(options.initialIntervalSeconds ?? 300, "initialIntervalSeconds"),
@@ -295,6 +304,7 @@ export async function runCoordinator(
   const workspaceRoot = options.workspaceRoot ?? options.scriptDir;
   const environment = { ...(options.environment ?? process.env) };
   const cleanupBetweenCycles = async (): Promise<void> => {
+    logger.log("DEBUG", "Cycle cleanup started");
     const cleanup = await bridge.cleanupBetweenCycles?.(
       { scriptDir: options.scriptDir },
       AbortSignal.timeout(CLEANUP_TIMEOUT_MS),
@@ -307,6 +317,7 @@ export async function runCoordinator(
         labels: {},
       });
     }
+    logger.log("INFO", "Cycle cleanup finished", { disk_free_mb: cleanup?.diskFreeMb });
   };
 
   return runCoordinatorLoop<CoordinatorResult>({
@@ -327,6 +338,12 @@ export async function runCoordinator(
       // Fail during preparation, with preflight-error backoff, rather than on
       // every run attempt when the deployment cannot serve this selection.
       validateOpenCodeDeployment(prepared, options.openCodeDeployment, environment);
+      logger.log("INFO", "Cycle configuration prepared", {
+        runtime: prepared.config.runtimeId,
+        provider: prepared.config.providerId,
+        model: prepared.config.model,
+        workspace: workspaceRoot,
+      });
       return prepared;
     },
     run: async (prepared, signal) => {
@@ -337,41 +354,87 @@ export async function runCoordinator(
         workspacePath: options.scriptDir,
         policyVersion: options.policyVersion,
       });
-      if (prepared.config.gitConfigGlobal) {
-        environment.GIT_CONFIG_GLOBAL = prepared.config.gitConfigGlobal;
-      }
-      const registry = createRuntimeRegistryForCycle(prepared, {
-        workspaceRoot,
-        openCodeDeployment: options.openCodeDeployment,
-        openCodeCommand: options.openCodeCommand,
-        openCodeExpectedVersion: options.openCodeExpectedVersion,
-        openCodeWorkspaceOwnerUid: options.openCodeWorkspaceOwnerUid,
-        environment,
+      const context = {
+        run_id: run.runId,
+        attempt_id: run.attemptId,
+        task_key: run.task?.key ?? null,
+        model: run.provider.requestedModel,
+        runtime: run.runtimeId,
+        provider: run.provider.id,
+        workspace: run.worktree.path,
+      };
+      return logger.scope(context, async () => {
+        logger.log("INFO", "Run started");
+        let terminalLogged = false;
+        try {
+          if (prepared.config.gitConfigGlobal) {
+            environment.GIT_CONFIG_GLOBAL = prepared.config.gitConfigGlobal;
+          }
+          const registry = createRuntimeRegistryForCycle(prepared, {
+            workspaceRoot,
+            openCodeDeployment: options.openCodeDeployment,
+            openCodeCommand: options.openCodeCommand,
+            openCodeExpectedVersion: options.openCodeExpectedVersion,
+            openCodeWorkspaceOwnerUid: options.openCodeWorkspaceOwnerUid,
+            environment,
+            logger: logger.child(context),
+          });
+          const result = await executeConfiguredRun(registry, run, {
+            signal,
+            projection,
+            preparedConfig: prepared.config,
+          });
+          logger.log(
+            result.terminal.payload.state === "failed" ? "ERROR" : "INFO",
+            "Run terminal",
+            {
+              state: result.terminal.payload.state,
+              duration_ms: result.durationMs,
+            },
+          );
+          terminalLogged = true;
+          if (result.error !== undefined) throw result.error;
+          if (
+            result.terminal.payload.state === "failed" ||
+            result.terminal.payload.state === "timed_out"
+          ) {
+            throw new Error(
+              `runtime returned a ${result.terminal.payload.state} terminal state: ${providerDiagnostic(result.terminal.payload.reason)}`,
+            );
+          }
+          return result;
+        } catch (error) {
+          if (!terminalLogged)
+            logger.log("ERROR", "Run terminal", {
+              state: signal.aborted ? "interrupted" : "failed",
+            });
+          const failure =
+            error instanceof Error ? error : new Error("Run failed", { cause: error });
+          errorContexts.set(failure, context);
+          // Runtime errors can embed request payloads. Classify them rather than logging raw messages.
+          logger.log("ERROR", "Run failed", {
+            diagnostic: providerDiagnostic(error),
+            exc_info: runtimeErrorDetails(error),
+          });
+          throw failure;
+        }
       });
-      const result = await executeConfiguredRun(registry, run, {
-        signal,
-        projection,
-        preparedConfig: prepared.config,
-      });
-      if (result.error !== undefined) throw result.error;
-      if (
-        result.terminal.payload.state === "failed" ||
-        result.terminal.payload.state === "timed_out"
-      ) {
-        throw new Error(
-          result.terminal.payload.reason ??
-            `runtime returned a ${result.terminal.payload.state} terminal state`,
-        );
-      }
-      return result;
     },
     afterRun: cleanupBetweenCycles,
     sleepSignal: () => consumeSleepSignal(options.sleepSignalPath),
-    sleep: options.once ? async () => undefined : sleep,
+    sleep: async (delayMs, signal) => {
+      logger.log("INFO", "Coordinator sleeping", { delay_ms: delayMs });
+      if (!options.once) await sleep(delayMs, signal);
+    },
     maxCycles: options.maxCycles ?? (options.once ? 1 : undefined),
     signal: options.signal,
     shutdownSignal: options.shutdownSignal,
     onDecision: async (plan, prepared, signal) => {
+      logger.log("INFO", "Preflight outcome", {
+        decision: plan.decision,
+        action: prepared?.preflight?.action ?? null,
+        consecutive_errors: plan.consecutivePreflightErrors,
+      });
       options.onReady?.();
       if (plan.decision === CycleDecision.Run) {
         if (prepared?.preflight?.action === "start") {
@@ -430,25 +493,31 @@ export async function runCoordinator(
       await cleanupBetweenCycles();
     },
     onError: async (error, phase) => {
-      // Housekeeping and reporting failures do not change the cycle outcome,
-      // so they must not overwrite the status the cycle already published.
-      if (phase !== LoopErrorPhase.Cleanup && phase !== LoopErrorPhase.Decision) {
-        await options.writers.status?.write({
-          state: "error",
-          message:
-            phase === LoopErrorPhase.Prepare
-              ? "Preflight failed — check bot.log"
-              : "Coordinator failed — check bot.log",
-          instanceId: options.instanceId,
+      const context =
+        typeof error === "object" && error !== null ? (errorContexts.get(error) ?? {}) : {};
+      return logger.scope(context, async () => {
+        if (phase !== LoopErrorPhase.Run)
+          logger.log("ERROR", "Coordinator phase failed", { phase }, error);
+        // Housekeeping and reporting failures do not change the cycle outcome,
+        // so they must not overwrite the status the cycle already published.
+        if (phase !== LoopErrorPhase.Cleanup && phase !== LoopErrorPhase.Decision) {
+          await options.writers.status?.write({
+            state: "error",
+            message:
+              phase === LoopErrorPhase.Prepare
+                ? "Preflight failed — check bot.log"
+                : "Coordinator failed — check bot.log",
+            instanceId: options.instanceId,
+          });
+        }
+        await options.writers.metrics?.observe({
+          type: "counter",
+          name: "devbot_coordinator_errors_total",
+          value: 1,
+          labels: { label: options.label, phase },
         });
-      }
-      await options.writers.metrics?.observe({
-        type: "counter",
-        name: "devbot_coordinator_errors_total",
-        value: 1,
-        labels: { label: options.label, phase },
+        await options.onError?.(error, phase);
       });
-      await options.onError?.(error, phase);
     },
   });
 }
