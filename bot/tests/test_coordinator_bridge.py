@@ -266,7 +266,7 @@ def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypa
     assert references["jira"]["headers"]["Authorization"] == "Bearer ${JIRA_TOKEN}"
 
 
-def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_path):
+def test_optional_mcp_servers_come_from_persona_and_all_env_manifests(tmp_path):
     from pathlib import Path
 
     from bot.config import discover_optional_mcp_servers
@@ -275,14 +275,31 @@ def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_pat
     (tmp_path / "personas" / "frontend" / "mcp.json").write_text(
         '{"mcpServers": {"persona-mcp": {"command": "persona-mcp"}}}'
     )
-    env_dir = tmp_path / "presets" / "envs" / "browser"
-    env_dir.mkdir(parents=True)
-    (env_dir / "manifest.yaml").write_text("provides:\n  mcp_servers:\n    browser-mcp:\n      type: stdio\n")
+    for env, server in (("browser", "browser-mcp"), ("patternfly", "patternfly-mcp")):
+        env_dir = tmp_path / "presets" / "envs" / env
+        env_dir.mkdir(parents=True)
+        (env_dir / "manifest.yaml").write_text(f"provides:\n  mcp_servers:\n    {server}:\n      type: stdio\n")
 
-    assert discover_optional_mcp_servers(tmp_path, ["browser"]) == ["browser-mcp", "persona-mcp"]
+    assert discover_optional_mcp_servers(tmp_path) == ["browser-mcp", "patternfly-mcp", "persona-mcp"]
 
     repository_root = Path(__file__).resolve().parents[2]
-    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
+    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root)
+
+
+def test_allowed_mcp_wildcards_are_configured_or_optional_without_envs():
+    """An instance with no envs (onboarding runs envs: [_none]) must still render
+    an OpenCode config: every MCP server named in ALLOWED_TOOLS has to be either
+    configured by the project .mcp.json or optional (REHOR-167)."""
+    from pathlib import Path
+
+    from bot.config import ALLOWED_TOOLS, discover_optional_mcp_servers, load_mcp_servers
+
+    repository_root = Path(__file__).resolve().parents[2]
+    configured = set(load_mcp_servers(repository_root, resolve_env=False, include_project=True))
+    optional = set(discover_optional_mcp_servers(repository_root))
+    referenced = {tool.split("__")[1] for tool in ALLOWED_TOOLS if tool.startswith("mcp__")}
+
+    assert referenced - configured - optional == set()
 
 
 def test_bridge_maintenance_operations_preserve_idle_and_cleanup_hooks(tmp_path, monkeypatch):

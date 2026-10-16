@@ -314,10 +314,7 @@ def load_mcp_servers(
     return servers
 
 
-def discover_optional_mcp_servers(
-    script_dir: Path,
-    active_envs: list[str] | tuple[str, ...] = (),
-) -> list[str]:
+def discover_optional_mcp_servers(script_dir: Path) -> list[str]:
     """Return MCP servers supplied by optional persona and environment layers."""
     names: set[str] = set()
 
@@ -329,8 +326,11 @@ def discover_optional_mcp_servers(
             names.update(name for name in servers if isinstance(name, str))
 
     # Environment manifests declare MCP servers under provides.mcp_servers.
-    for env in active_envs:
-        names.update(_manifest_mcp_server_names(script_dir / "presets" / "envs" / env / "manifest.yaml"))
+    # Every env counts, not only the active ones: ALLOWED_TOOLS lists their
+    # wildcards for all instances, so an instance without the env must skip
+    # them rather than fail OpenCode config validation.
+    for manifest in sorted(script_dir.glob("presets/envs/*/manifest.yaml")):
+        names.update(_manifest_mcp_server_names(manifest))
 
     return sorted(names)
 

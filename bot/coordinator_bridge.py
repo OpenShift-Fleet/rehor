@@ -168,7 +168,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "mcpServers": mcp_servers,
         "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": ALLOWED_TOOLS,
-        "optionalMcpServers": discover_optional_mcp_servers(script_dir, active_envs),
+        "optionalMcpServers": discover_optional_mcp_servers(script_dir),
     }
 
 
