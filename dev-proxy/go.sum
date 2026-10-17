@@ -334,8 +334,8 @@ github.com/smallstep/nosql v0.8.0/go.mod h1:5dUpNotHLHhOUapP0PLBVVfp3tG1DFC31VRc
 github.com/smallstep/pkcs7 v0.2.1/go.mod h1:RcXHsMfL+BzH8tRhmrF1NkkpebKpq3JEM66cOFxanf0=
 github.com/smallstep/pkcs7 v0.2.3 h1:bhoQ3TeZmdoXTatcwxCbk+FMcdsyr0gYrrW2Xq2qr+s=
 github.com/smallstep/pkcs7 v0.2.3/go.mod h1:7STkdKhZaZe4xNEXTtY4j1NGeST1gYM4GA40kC5iqr8=
-github.com/smallstep/scep v0.0.0-20260331191114-261f960a40d1 h1:lpXBkQKj1rT1oGX/2idvt8xbrOrnoQxH/+CjoeMxs9E=
-github.com/smallstep/scep v0.0.0-20260331191114-261f960a40d1/go.mod h1:QQhwLqCS13nhv8L5ov7NgusowENUtXdEzdytjmJHdZQ=
+github.com/smallstep/scep v0.0.0-20261014185058-63893dadfda8 h1:zgVu63OduupjsN62avqOI6Xber8K2ZLL4wYn7TycZn4=
+github.com/smallstep/scep v0.0.0-20261014185058-63893dadfda8/go.mod h1:QQhwLqCS13nhv8L5ov7NgusowENUtXdEzdytjmJHdZQ=
 github.com/smallstep/truststore v0.13.0 h1:90if9htAOblavbMeWlqNLnO9bsjjgVv2hQeQJCi/py4=
 github.com/smallstep/truststore v0.13.0/go.mod h1:3tmMp2aLKZ/OA/jnFUB0cYPcho402UG2knuJoPh4j7A=
 github.com/spaolacci/murmur3 v0.0.0-20180118202830-f09979ecbc72/go.mod h1:JwIasOWyU6f++ZhiEuf87xNszmSA2myDM2Kzu9HwQUA=

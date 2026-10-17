@@ -111,7 +111,7 @@ require (
 	github.com/smallstep/linkedca v0.26.0 // indirect
 	github.com/smallstep/nosql v0.8.0 // indirect
 	github.com/smallstep/pkcs7 v0.2.3 // indirect
-	github.com/smallstep/scep v0.0.0-20260331191114-261f960a40d1 // indirect
+	github.com/smallstep/scep v0.0.0-20261014185058-63893dadfda8 // indirect
 	github.com/smallstep/truststore v0.13.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
