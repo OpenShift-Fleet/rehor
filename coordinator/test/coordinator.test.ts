@@ -8,6 +8,7 @@ import {
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
+  type ValidatedRehorRun,
 } from "../src";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
 
@@ -32,6 +33,10 @@ const run: RehorRun = {
   limits: { timeoutMs: 100, maxTurns: 20 },
   preflightPayloadRef: null,
 };
+
+// @ts-expect-error unvalidated runs must not enter the validated execution path
+const unvalidated: ValidatedRehorRun = run;
+void unvalidated;
 
 const capabilities: RuntimeCapabilities = {
   runtimeId: "test-runtime",

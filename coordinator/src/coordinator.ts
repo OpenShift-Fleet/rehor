@@ -8,6 +8,7 @@ import {
   type RuntimeCapabilities,
   RuntimeContractError,
   type TerminalEventPayload,
+  type ValidatedRehorRun,
   WorkContextTracker,
 } from "./domain";
 import type { AgentRuntime, AgentRuntimeRunContext } from "./ports/agent-runtime";
@@ -130,7 +131,15 @@ export async function executeRun(
   input: RehorRun,
   options: CoordinatorOptions = {},
 ): Promise<CoordinatorResult> {
-  const run = parseRehorRun(input);
+  return executeRunWithValidatedInput(runtime, parseRehorRun(input), options);
+}
+
+/** Runs a run already validated by parseRehorRun. */
+export async function executeRunWithValidatedInput(
+  runtime: AgentRuntime,
+  run: ValidatedRehorRun,
+  options: CoordinatorOptions = {},
+): Promise<CoordinatorResult> {
   const ledger = new EventLedger(run);
   const workContext = new WorkContextTracker(run);
   const wallClockNow = options.now ?? Date.now;
