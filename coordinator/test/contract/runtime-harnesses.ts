@@ -311,7 +311,6 @@ export function openCodeHarness(): RuntimeContractHarness {
       type: "session.idle",
       properties: { sessionID: "session-contract" },
     }) as unknown as OpenCodeEvent;
-
   const create = (script: OpenCodeScript): AgentRuntime => {
     const server: OpenCodeServerInfo = {
       baseUrl: "http://127.0.0.1:41236",

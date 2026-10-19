@@ -8,11 +8,18 @@ import {
   type RuntimeCapabilities,
   type RuntimeTerminalState,
   type TokenCounts,
-  type Usage,
 } from "../domain";
 import type { AgentRuntime, AgentRuntimeRunContext, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
-import { abortError, abortReasonText } from "./shared";
+import {
+  abortError,
+  abortReasonText,
+  asObject,
+  buildTerminalPayload,
+  errorMessage,
+  numberValue,
+  stringValue,
+} from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
@@ -202,7 +209,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         partial: boolean,
         incomplete: boolean,
       ): RehorEvent => {
-        const payload: Usage = {
+        const payload = {
           requestedModel: input.provider.requestedModel,
           ...(snapshot.model ? { returnedModel: snapshot.model } : {}),
           tokenCounts: snapshot.counts,
@@ -216,7 +223,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
                 cost: {
                   amount: Math.max(0, snapshot.cost),
                   currency: "USD",
-                  source: "estimated" as const,
+                  source: "estimated",
                 },
               }),
         };
@@ -235,13 +242,13 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         durationMs = Date.now() - startedAt,
       ): RehorEvent => {
         terminalEmitted = true;
-        const payload: JsonObject = {
+        const payload = buildTerminalPayload({
           state: stateName,
-          ...(reason ? { reason } : {}),
-          ...(resultText ? { resultText } : {}),
+          reason,
+          resultText,
           turns,
           durationMs: Math.max(0, durationMs),
-        };
+        });
         return makeSdkEvent("terminal", payload, undefined);
       };
 
@@ -323,7 +330,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       } catch (error) {
         for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
         if (!terminalEmitted) {
-          const errorReason = errorMessage(error);
+          const errorReason = errorMessage(error, { serializeUnknown: true }) ?? "";
           const wasAborted = signal.aborted || controller.signal.aborted || isAbortError(error);
           const reason = wasAborted
             ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
@@ -620,31 +627,6 @@ function isResultMessage(message: unknown): boolean {
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
-}
-
-function errorMessage(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  if (typeof value === "string") return value;
-  if (value === undefined) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function asObject(value: unknown): JsonObject | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as JsonObject)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function arrayOfStrings(value: unknown): string[] {
