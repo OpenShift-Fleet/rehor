@@ -426,3 +426,24 @@ def test_scheduled_maintenance_keeps_bridge_stdout_machine_readable(tmp_path, mo
         "ok": True,
         "result": None,
     }
+
+
+def test_bridge_drops_httpx_request_logs_but_keeps_warnings(monkeypatch, capsys):
+    import io
+    import json
+    import logging
+    import sys
+
+    from bot import coordinator_bridge
+
+    def fake_handle(_request):
+        logging.getLogger("httpx").info('HTTP Request: GET http://memory/instances/x "HTTP/1.1 200 OK"')
+        logging.getLogger("httpx").warning("httpx warning")
+        return None
+
+    monkeypatch.setattr(coordinator_bridge, "handle", fake_handle)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"protocolVersion": 1})))
+
+    assert coordinator_bridge.main() == 0
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert [r["message"] for r in records if r["logger"] == "httpx"] == ["httpx warning"]

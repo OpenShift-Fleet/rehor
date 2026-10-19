@@ -280,6 +280,9 @@ def main() -> int:
         handlers=[handler],
         force=True,
     )
+    # httpx logs every request at INFO under a logger the coordinator does not
+    # allowlist, so each one surfaced as an "unclassified runtime error".
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
