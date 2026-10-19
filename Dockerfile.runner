@@ -126,7 +126,7 @@ ENV COORDINATOR_METRICS_PORT=9091
 EXPOSE 9091
 
 # Copy bot config files
-COPY dev-bot/config.json dev-bot/CLAUDE.md dev-bot/.mcp.json dev-bot/entrypoint.sh ./
+COPY dev-bot/config.json dev-bot/.mcp.json dev-bot/entrypoint.sh ./
 COPY dev-bot/.claude/ .claude/
 
 # Dev-proxy source (used by dev-proxy preset to build Caddy from source)

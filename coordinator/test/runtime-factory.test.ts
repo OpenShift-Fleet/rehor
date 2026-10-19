@@ -65,6 +65,8 @@ const preparedConfig: ConfigPreparationResult = {
   optionalMcpServers: ["optional-persona-mcp"],
 };
 
+const nativeConfig = { settings: {}, files: [] };
+
 function event(sequence: number, terminal = false): RehorEvent {
   return {
     schemaVersion: "1",
@@ -96,7 +98,12 @@ describe("runtime selection", () => {
   it("provides an explicit OpenCode factory without changing the default registry", async () => {
     const registry = new RuntimeFactoryRegistry([createOpenCodeV1RuntimeFactory()]);
 
-    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    const runtime = await registry.create(
+      { runtimeId: "opencode-v1" },
+      run,
+      undefined,
+      nativeConfig,
+    );
 
     expect(registry.runtimeIds).toEqual(["opencode-v1"]);
     await expect(runtime.start(new AbortController().signal)).resolves.toMatchObject({
@@ -119,7 +126,12 @@ describe("runtime selection", () => {
       }),
     ]);
 
-    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    const runtime = await registry.create(
+      { runtimeId: "opencode-v1" },
+      run,
+      undefined,
+      nativeConfig,
+    );
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
     expect(rendered?.config.provider).toEqual({
       "legacy-provider": {
@@ -130,7 +142,7 @@ describe("runtime selection", () => {
     expect(rendered?.packageLock).toEqual({ lockfileVersion: 1, packages: { "x-pkg": "1.0.0" } });
   });
 
-  it("rejects invalid prepared OpenCode policy before starting the supervisor", async () => {
+  it.each(["missing native snapshot", "invalid tool"])("rejects %s", async (failure) => {
     const supervisor: OpenCodeServerController = {
       crashSignal: new AbortController().signal,
       get info() {
@@ -152,10 +164,19 @@ describe("runtime selection", () => {
     ]);
 
     const result = await executeSelectedRun(registry, { runtimeId: "opencode-v1" }, run, {
-      preparedConfig: { ...preparedConfig, allowedTools: ["UnknownTool"] },
+      preparedConfig: {
+        ...preparedConfig,
+        allowedTools: failure === "invalid tool" ? ["UnknownTool"] : ["Read"],
+      },
+      nativeConfig: failure === "invalid tool" ? nativeConfig : undefined,
     });
 
-    expect(result.events.at(-1)?.payload).toMatchObject({ state: "failed" });
+    expect(result.events.at(-1)?.payload).toMatchObject({
+      state: "failed",
+      reason: expect.stringContaining(
+        failure === "invalid tool" ? "UnknownTool" : "requires a prepared nativeConfig snapshot",
+      ),
+    });
     expect(supervisor.start).not.toHaveBeenCalled();
   });
 
@@ -184,7 +205,12 @@ describe("runtime selection", () => {
       }),
     ]);
 
-    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run);
+    const runtime = await registry.create(
+      { runtimeId: "opencode-v1" },
+      run,
+      undefined,
+      nativeConfig,
+    );
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
     expect(rendered?.config).toMatchObject({
       model: "vertex/factory-model",
@@ -200,7 +226,12 @@ describe("runtime selection", () => {
       }),
     ]);
 
-    const runtime = await registry.create({ runtimeId: "opencode-v1" }, run, preparedConfig);
+    const runtime = await registry.create(
+      { runtimeId: "opencode-v1" },
+      run,
+      preparedConfig,
+      nativeConfig,
+    );
     const rendered = (runtime as OpenCodeV1Runtime).renderedConfiguration;
     expect(rendered?.config).toMatchObject({
       model: "vertex/deployment-model",

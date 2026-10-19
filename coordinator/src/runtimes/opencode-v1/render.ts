@@ -1,19 +1,27 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 
 import type { ConfigPreparationResult } from "../../ports/python-bridge";
 import type { McpServerConfig } from "../../ports/runtime-config";
 import { asObject, sortedEntries, stableJson } from "../shared";
+import { OPEN_CODE_INSTANCE_SETTING_KEYS } from "./constants";
 import {
   assertHttpUrlTemplate,
   assertMcpUrlEnvironment,
   assertProviderEnvironment,
   normalizeEnvString,
   normalizeJsonObject,
+  parseEnvironmentReferences,
   rejectMcpEnvironmentReference,
 } from "./env-refs";
 import { normalizePackageLock, pinPackageReference } from "./packages";
+import {
+  isSafeOpenCodeProjectFilePath,
+  normalizeOpenCodeInstructionPaths,
+  type OpenCodeProjectConfiguration,
+  type OpenCodeProjectFile,
+} from "./project-config";
 import {
   type JsonValue,
   OPENCODE_CONFIG_SCHEMA,
@@ -49,8 +57,9 @@ export function renderOpenCodeV1ConfigForCycle(
     >,
   providerId: string,
   deployment: OpenCodeV1DeploymentConfig = {},
+  projectConfig: OpenCodeProjectConfiguration = { settings: {}, files: [] },
 ): RenderedOpenCodeV1Config {
-  return renderOpenCodeV1Config({
+  const rendered = renderOpenCodeV1Config({
     ...normalizeDeploymentConfig(deployment),
     model: deployment.model ?? preparation.model,
     providerId: deployment.providerId ?? providerId,
@@ -58,6 +67,7 @@ export function renderOpenCodeV1ConfigForCycle(
     allowedTools: preparation.allowedTools ?? [],
     optionalMcpServers: preparation.optionalMcpServers ?? [],
   });
+  return validateOpenCodeProjectConfig(rendered, projectConfig);
 }
 
 const BUILTIN_TOOLS = [
@@ -130,6 +140,8 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
   return {
     config: deepFreeze(config),
     json: `${stable}\n`,
+    profileConfig: deepFreeze({}),
+    enforcementJson: renderOpenCodeEnforcementConfig(config, {}),
     hash: createHash("sha256").update(stable, "utf8").digest("hex"),
     packageLock: deepFreeze(packageLock),
     effectiveModel: Object.freeze({
@@ -138,6 +150,7 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
       value: model.value,
     }),
     requiredEnvironment: Object.freeze([...requiredEnvironment].sort()),
+    projectFiles: Object.freeze([]),
   };
 }
 
@@ -150,14 +163,339 @@ export async function writeOpenCodeConfig(
   directory: string,
   rendered: RenderedOpenCodeV1Config,
 ): Promise<OpenCodeConfigFiles> {
+  directory = resolve(directory);
   await mkdir(directory, { recursive: true });
-  const configPath = join(directory, "opencode.json");
+  const configPath = join(directory, "instance-opencode.json");
+  const globalConfigDirectory = join(directory, "xdg-config", "opencode");
+  const globalConfigPath = join(globalConfigDirectory, "opencode.json");
   const packageLockPath = join(directory, "opencode-packages.lock.json");
+  await rm(globalConfigDirectory, { recursive: true, force: true });
+  await mkdir(globalConfigDirectory, { recursive: true });
+
+  for (const file of rendered.projectFiles) {
+    assertSafeStagedPath(file.path);
+    const path = join(globalConfigDirectory, file.path);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, file.content, "utf8");
+  }
+
+  const profileConfig: Record<string, JsonValue> = {
+    $schema: OPENCODE_CONFIG_SCHEMA,
+    ...rendered.profileConfig,
+  };
+  if (Array.isArray(profileConfig.instructions)) {
+    profileConfig.instructions = profileConfig.instructions.map((instruction) =>
+      typeof instruction === "string" && instruction.startsWith("./")
+        ? join(globalConfigDirectory, instruction.slice(2))
+        : instruction,
+    );
+  }
   await Promise.all([
-    writeFile(configPath, rendered.json, "utf8"),
+    writeFile(globalConfigPath, rendered.json, "utf8"),
+    writeFile(configPath, `${stableJson(profileConfig)}\n`, "utf8"),
     writeFile(packageLockPath, `${stableJson(rendered.packageLock)}\n`, "utf8"),
   ]);
-  return { configPath, packageLockPath };
+  return {
+    configPath,
+    globalConfigPath,
+    globalConfigDirectory,
+    packageLockPath,
+  };
+}
+
+const SECRET_KEY =
+  /(?:api[-_]?key|authorization|credential|password|private[-_]?key|secret|token)/i;
+
+function validateOpenCodeProjectConfig(
+  rendered: RenderedOpenCodeV1Config,
+  projectConfig: OpenCodeProjectConfiguration,
+): RenderedOpenCodeV1Config {
+  const files = validateProjectFiles(projectConfig.files);
+  const config = { ...rendered.config };
+  const settings = projectConfig.settings;
+  for (const [key, value] of Object.entries(settings)) {
+    if (key === "$schema") {
+      if (value !== OPENCODE_CONFIG_SCHEMA) {
+        throw new OpenCodeConfigValidationError(["instance $schema is unsupported"]);
+      }
+      continue;
+    }
+    if (!OPEN_CODE_INSTANCE_SETTING_KEYS.has(key)) {
+      throw new OpenCodeConfigValidationError([
+        `instance opencode.json field '${key}' is unsupported or coordinator-controlled`,
+      ]);
+    }
+    validateNoInstanceReferences(value, `opencode.json.${key}`);
+  }
+
+  const generatedMcp = asRecord(config.mcp);
+  const rawMcp = asRecord(settings.mcp);
+  if (settings.mcp !== undefined && !rawMcp) {
+    throw new OpenCodeConfigValidationError(["instance mcp must be an object"]);
+  }
+  const configuredMcp = rawMcp ? { ...rawMcp } : undefined;
+  for (const [name, server] of Object.entries(configuredMcp ?? {})) {
+    if (generatedMcp?.[name] !== undefined) {
+      throw new OpenCodeConfigValidationError([
+        `instance mcp.${name} conflicts with coordinator-generated MCP configuration`,
+      ]);
+    }
+    if (configuredMcp) configuredMcp[name] = renderInstanceMcpConfig(name, server);
+  }
+
+  if (settings.plugin !== undefined) {
+    if (
+      !Array.isArray(settings.plugin) ||
+      settings.plugin.some((plugin) => typeof plugin !== "string")
+    ) {
+      throw new OpenCodeConfigValidationError([
+        "instance plugin must be an array of pinned package names",
+      ]);
+    }
+    settings.plugin.forEach((plugin, index) => {
+      if (typeof plugin !== "string") return;
+      const pinned = pinPackageReference(plugin, rendered.packageLock, `instance plugin[${index}]`);
+      if (plugin !== pinned) {
+        throw new OpenCodeConfigValidationError([
+          `instance plugin[${index}] must use pinned package '${pinned}'`,
+        ]);
+      }
+    });
+  }
+
+  const profileConfig: Record<string, JsonValue> = { ...settings };
+  if (configuredMcp) profileConfig.mcp = configuredMcp;
+  if (settings.instructions !== undefined) {
+    profileConfig.instructions = normalizeOpenCodeInstructionPaths(settings.instructions, files);
+  }
+
+  const deniedPermissions =
+    settings.permission === undefined
+      ? []
+      : validateDenyOnlyPermissions(settings.permission, "opencode.json.permission");
+  const disabledTools =
+    settings.tools === undefined
+      ? {}
+      : normalizeDisabledTools(settings.tools, "opencode.json.tools");
+  if (
+    Array.isArray(settings.disabled_providers) &&
+    settings.disabled_providers.includes(rendered.effectiveModel.providerID)
+  ) {
+    throw new OpenCodeConfigValidationError([
+      `instance disabled_providers cannot disable selected provider '${rendered.effectiveModel.providerID}'`,
+    ]);
+  }
+
+  const enforcementJson = renderOpenCodeEnforcementConfig(config, {
+    deniedPermissions,
+    tools: disabledTools,
+    disabledProviders: profileConfig.disabled_providers,
+    mcp: configuredMcp,
+  });
+  const hash = createHash("sha256").update(stableJson(config), "utf8");
+  hash.update("\0").update(stableJson(profileConfig), "utf8");
+  for (const file of files) {
+    hash.update("\0").update(file.path, "utf8").update("\0").update(file.content, "utf8");
+  }
+  return {
+    ...rendered,
+    profileConfig: deepFreeze(profileConfig),
+    enforcementJson,
+    hash: hash.digest("hex"),
+    projectFiles: Object.freeze(files),
+  };
+}
+
+function renderOpenCodeEnforcementConfig(
+  config: Record<string, JsonValue>,
+  restrictions: {
+    deniedPermissions?: readonly string[];
+    tools?: Record<string, JsonValue>;
+    disabledProviders?: JsonValue;
+    mcp?: Record<string, JsonValue>;
+  },
+): string {
+  const enforced: Record<string, JsonValue> = {};
+  for (const key of [
+    "share",
+    "autoupdate",
+    "lsp",
+    "model",
+    "small_model",
+    "enabled_providers",
+    "provider",
+    "mcp",
+    "permission",
+  ]) {
+    if (config[key] !== undefined) enforced[key] = config[key] as JsonValue;
+  }
+  if (enforced.small_model === undefined && typeof config.model === "string") {
+    enforced.small_model = config.model;
+  }
+  if (restrictions.mcp) {
+    enforced.mcp = { ...(asRecord(enforced.mcp) ?? {}), ...restrictions.mcp };
+  }
+  const permission = { ...(asRecord(enforced.permission) ?? {}) };
+  for (const key of restrictions.deniedPermissions ?? []) permission[key] = "deny";
+  const tools = restrictions.tools ?? {};
+  for (const key of Object.keys(tools)) permission[key] = "deny";
+  enforced.permission = permission;
+  if (Object.keys(tools).length > 0) enforced.tools = tools;
+  enforced.disabled_providers = restrictions.disabledProviders ?? [];
+  return `${stableJson(enforced)}\n`;
+}
+
+function validateProjectFiles(files: readonly OpenCodeProjectFile[]): OpenCodeProjectFile[] {
+  const seen = new Set<string>();
+  return files.map(({ path, content }) => {
+    assertSafeStagedPath(path);
+    if (seen.has(path)) {
+      throw new OpenCodeConfigValidationError([`duplicate instance file '${path}'`]);
+    }
+    if (typeof content !== "string") {
+      throw new OpenCodeConfigValidationError([`instance file '${path}' must be text`]);
+    }
+    seen.add(path);
+    return Object.freeze({ path, content });
+  });
+}
+
+function assertSafeStagedPath(path: string): void {
+  if (!isSafeOpenCodeProjectFilePath(path)) {
+    throw new OpenCodeConfigValidationError([`instance file path '${path}' is not allowed`]);
+  }
+}
+
+function validateDenyOnlyPermissions(value: JsonValue, path: string): string[] {
+  const permissions = asRecord(value);
+  if (!permissions) throw new OpenCodeConfigValidationError([`${path} must be an object`]);
+  const denied: string[] = [];
+  for (const [key, action] of Object.entries(permissions)) {
+    if (action === "deny") {
+      denied.push(key);
+      continue;
+    }
+    const rules = asRecord(action);
+    if (
+      rules &&
+      Object.values(rules).length > 0 &&
+      Object.values(rules).every((rule) => rule === "deny")
+    ) {
+      denied.push(key);
+      continue;
+    }
+    throw new OpenCodeConfigValidationError([
+      `${path}.${key} may only add deny-only tool restrictions`,
+    ]);
+  }
+  return denied;
+}
+
+function normalizeDisabledTools(value: JsonValue, path: string): Record<string, JsonValue> {
+  const tools = asRecord(value);
+  if (!tools) throw new OpenCodeConfigValidationError([`${path} must be an object`]);
+  const disabled: Record<string, JsonValue> = {};
+  for (const [name, enabled] of Object.entries(tools)) {
+    if (enabled !== false) {
+      throw new OpenCodeConfigValidationError([`${path}.${name} may only disable tools`]);
+    }
+    disabled[name] = false;
+  }
+  return disabled;
+}
+
+function validateNoInstanceReferences(value: unknown, path: string): void {
+  if (typeof value === "string") {
+    const allowsMcpUrl = /^opencode\.json\.mcp\.[^.]+\.url$/.test(path);
+    const normalized = normalizeEnvString(value, path);
+    const references = parseEnvironmentReferences(normalized, path);
+    const key = path.split(".").at(-1) ?? "";
+    if (SECRET_KEY.test(key) && references.length === 0) {
+      throw new OpenCodeConfigValidationError([
+        `${path} cannot contain literal credentials; reference credentials through validated runtime config`,
+      ]);
+    }
+    const hasEnvironmentOrFileReference = /\{(?:env|file):|\$\{[A-Za-z_]/.test(value);
+    if (hasEnvironmentOrFileReference && (!allowsMcpUrl || /\{file:/i.test(value))) {
+      throw new OpenCodeConfigValidationError([
+        `${path} cannot use environment or file references`,
+      ]);
+    }
+    if (allowsMcpUrl) {
+      for (const environment of references) assertMcpUrlEnvironment(environment, path);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      validateNoInstanceReferences(entry, `${path}[${index}]`);
+    });
+    return;
+  }
+  const object = asRecord(value);
+  if (object) {
+    for (const [key, entry] of Object.entries(object)) {
+      validateNoInstanceReferences(entry, `${path}.${key}`);
+    }
+  }
+}
+
+/** Adapt native MCP syntax to the existing transport/security renderer. */
+function renderInstanceMcpConfig(name: string, value: JsonValue): JsonValue {
+  const config = asRecord(value);
+  if (!config) throw new OpenCodeConfigValidationError([`mcp.${name} must be an object`]);
+  if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
+    throw new OpenCodeConfigValidationError([`mcp.${name}.enabled must be boolean`]);
+  }
+  const options = { alwaysLoad: config.enabled, timeout: config.timeout };
+  let server: McpServerConfig;
+  let allowed: string[];
+  if (config.type === "local") {
+    allowed = ["type", "command", "environment", "enabled", "timeout"];
+    if (!Array.isArray(config.command) || config.command.length === 0) {
+      throw new OpenCodeConfigValidationError([
+        `mcp.${name}.command must be a non-empty string array`,
+      ]);
+    }
+    server = {
+      ...options,
+      type: "stdio",
+      command: config.command[0],
+      args: config.command.slice(1),
+      env: instanceMcpStringMap(config.environment, `mcp.${name}.environment`),
+    } as McpServerConfig;
+  } else if (config.type === "remote") {
+    allowed = ["type", "url", "headers", "enabled", "timeout"];
+    server = {
+      ...options,
+      type: "http",
+      url: config.url,
+      headers: instanceMcpStringMap(config.headers, `mcp.${name}.headers`),
+    } as McpServerConfig;
+  } else {
+    throw new OpenCodeConfigValidationError([`mcp.${name}.type must be local or remote`]);
+  }
+  const unexpected = Object.keys(config).find((key) => !allowed.includes(key));
+  if (unexpected !== undefined) {
+    throw new OpenCodeConfigValidationError([`mcp.${name}.${unexpected} is unsupported`]);
+  }
+  return renderMcpServers({ [name]: server })[name];
+}
+
+function instanceMcpStringMap(
+  value: JsonValue | undefined,
+  path: string,
+): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  const values = asObject(value);
+  if (!values || Object.values(values).some((value) => typeof value !== "string")) {
+    throw new OpenCodeConfigValidationError([`${path} values must be strings`]);
+  }
+  return values as Record<string, string>;
+}
+
+function asRecord(value: unknown): Record<string, JsonValue> | undefined {
+  return asObject(value) as Record<string, JsonValue> | undefined;
 }
 
 function deepFreeze<T>(value: T): T {

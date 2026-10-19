@@ -137,7 +137,8 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
     active_envs = resolve_active_envs(script_dir, instance_config)
     install_skills(script_dir, workflow_dir, active_envs)
-    runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
+    if instance_config.runtime != "opencode-v1":
+        runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
     # Keep a separate reference-only view for OpenCode. It owns project-server
     # discovery; the TypeScript renderer validates its untrusted references.

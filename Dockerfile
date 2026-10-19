@@ -170,7 +170,7 @@ ENV COORDINATOR_METRICS_PORT=9091
 EXPOSE 9091
 
 # Copy bot config files
-COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./
+COPY config.json .mcp.json entrypoint.sh ./
 COPY .claude/ .claude/
 COPY presets/ presets/
 

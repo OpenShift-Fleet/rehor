@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import {
   createOpencodeClient,
   type Event as OpenCodeEvent,
@@ -17,6 +18,7 @@ import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
 import { createStructuredLogger, type Logger } from "../src/log";
 import {
   appendBoundedOpenCodeOutput,
+  assertNoSystemManagedOpenCodeConfig,
   buildOpenCodeEnvironment,
   createOpenCodeFetch,
   HttpOpenCodeReadiness,
@@ -430,7 +432,10 @@ describe("OpenCode environment", () => {
         HTTPS_PROXY: "http://proxy:3128",
         NO_PROXY: "memory-server,proxy",
         SECRET_TOKEN: "must-not-leak",
+        OPENCODE_CONFIG: "/ambient/opencode.json",
         OPENCODE_CONFIG_CONTENT: "ambient-config-must-not-leak",
+        OPENCODE_CONFIG_DIR: "/ambient/opencode-config",
+        OPENCODE_PERMISSION: '{"bash":"allow"}',
         NODE_OPTIONS: "--require=/tmp/preload.cjs",
         NPM_CONFIG_REGISTRY: "https://registry.example.invalid",
         REHOR_MODEL_PROXY_URL: "http://proxy:8450/v1",
@@ -441,7 +446,10 @@ describe("OpenCode environment", () => {
       passthrough: [
         "REHOR_MODEL_PROXY_URL",
         "REHOR_MODEL_PROXY_TOKEN",
+        "OPENCODE_CONFIG",
         "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_PERMISSION",
         "NPM_CONFIG_REGISTRY",
         "AWS_SECRET_ACCESS_KEY",
         "DATABASE_URL",
@@ -467,6 +475,9 @@ describe("OpenCode environment", () => {
     expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined();
     expect(environment.DATABASE_URL).toBeUndefined();
     expect(environment.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(environment.OPENCODE_CONFIG).toBeUndefined();
+    expect(environment.OPENCODE_CONFIG_DIR).toBeUndefined();
+    expect(environment.OPENCODE_PERMISSION).toBeUndefined();
     expect(environment.NODE_OPTIONS).toBeUndefined();
     expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
   });
@@ -2357,6 +2368,21 @@ function nodeScriptSupervisor(
 }
 
 describe("OpenCode process supervisor", () => {
+  it("fails closed when Linux managed config outranks runner enforcement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opencode-managed-config-"));
+    const path = join(directory, "opencode.json");
+    try {
+      await expect(assertNoSystemManagedOpenCodeConfig(path, "linux")).resolves.toBeUndefined();
+      await writeFile(path, "{}\n");
+      await expect(assertNoSystemManagedOpenCodeConfig(path, "linux")).rejects.toThrow(
+        "system-managed config",
+      );
+      await expect(assertNoSystemManagedOpenCodeConfig(path, "darwin")).resolves.toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("requires an approved workspace root before spawning a child", async () => {
     let spawned = false;
     const supervisor = new OpenCodeServerSupervisor({
@@ -2667,7 +2693,20 @@ describe("OpenCode process supervisor", () => {
     },
   );
 
-  it("starts one loopback server with explicit cwd and environment, then reaps it", async () => {
+  it.each([undefined, '/config "x"'])("restores shell config %s", async (configHome) => {
+    const workspace = await mkdtemp(join(tmpdir(), "opencode-config-workspace-"));
+    const projectAgents = join(workspace, "AGENTS.md");
+    const projectClaude = join(workspace, "CLAUDE.md");
+    const projectConfig = join(workspace, "opencode.json");
+    const projectOpenCodeAgent = join(workspace, ".opencode", "agents", "project-agent.md");
+    const projectSkill = join(workspace, ".claude", "skills", "local", "SKILL.md");
+    await mkdir(dirname(projectOpenCodeAgent), { recursive: true });
+    await mkdir(dirname(projectSkill), { recursive: true });
+    await writeFile(projectAgents, "Project AGENTS instructions.\n");
+    await writeFile(projectClaude, "Project CLAUDE instructions.\n");
+    await writeFile(projectConfig, '{"agent":{"project":{"description":"Project agent"}}}\n');
+    await writeFile(projectOpenCodeAgent, "Project OpenCode agent.\n");
+    await writeFile(projectSkill, "Project skill.\n");
     const child = new FakeChild();
     const config = { z: 1, nested: { b: true, a: "stable" } };
     const packageLock = {
@@ -2677,10 +2716,16 @@ describe("OpenCode process supervisor", () => {
     const renderedConfig = {
       config,
       json: '{"nested":{"a":"stable","b":true},"z":1}\n',
+      profileConfig: { instructions: ["./AGENTS.md"] },
+      enforcementJson: '{"model":"provider/model","permission":{"read":"deny"}}\n',
       hash: hashOpenCodeConfig(config),
       packageLock,
       effectiveModel: { providerID: "provider", modelID: "model", value: "provider/model" },
       requiredEnvironment: ["REHOR_MODEL_PROXY_TOKEN"],
+      projectFiles: [
+        { path: "AGENTS.md", content: "Profile AGENTS instructions.\n" },
+        { path: "agents/profile.md", content: "Profile agent.\n" },
+      ],
     };
     let spawnCall:
       | { command: string; args: readonly string[]; options: Parameters<OpenCodeSpawn>[2] }
@@ -2694,16 +2739,27 @@ describe("OpenCode process supervisor", () => {
       return spawnFakeOpenCodeServer(child);
     };
     const supervisor = createTestSupervisor({
+      workspaceRoot: workspace,
       base: {
         PATH: "/bin",
+        HOME: "/home/bot",
+        XDG_CONFIG_HOME: configHome,
+        XDG_DATA_HOME: "/persistent/data",
+        XDG_CACHE_HOME: "/persistent/cache",
+        XDG_STATE_HOME: "/persistent/state",
+        OPENCODE_AUTH_CONTENT: '{"hostile":{"type":"api","key":"ambient"}}',
         HTTP_PROXY: "http://proxy:3128",
         REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
+        OPENCODE_CONFIG: "/ambient/opencode.json",
+        OPENCODE_CONFIG_CONTENT: "ambient config must not win",
+        OPENCODE_CONFIG_DIR: "/ambient/opencode-config",
+        OPENCODE_PERMISSION: '{"read":"allow"}',
       },
       spawnProcess,
       renderedConfig,
     });
 
-    const info = await supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+    const info = await supervisor.start(workspace, new AbortController().signal);
     expect(info).toMatchObject({
       version: "1.18.29",
       hostname: "127.0.0.1",
@@ -2716,9 +2772,17 @@ describe("OpenCode process supervisor", () => {
     if (!spawnCall) throw new Error("OpenCode process was not spawned");
     const configPath = String((spawnCall.options.env as NodeJS.ProcessEnv).OPENCODE_CONFIG);
     const packageLockPath = join(dirname(configPath), "opencode-packages.lock.json");
-    await expect(readFile(configPath, "utf8")).resolves.toBe(
+    const globalConfigDirectory = join(dirname(configPath), "xdg-config", "opencode");
+    await expect(readFile(configPath, "utf8")).resolves.toContain('"instructions":["');
+    await expect(readFile(join(globalConfigDirectory, "opencode.json"), "utf8")).resolves.toBe(
       '{"nested":{"a":"stable","b":true},"z":1}\n',
     );
+    await expect(readFile(join(globalConfigDirectory, "AGENTS.md"), "utf8")).resolves.toBe(
+      "Profile AGENTS instructions.\n",
+    );
+    await expect(
+      readFile(join(globalConfigDirectory, "agents", "profile.md"), "utf8"),
+    ).resolves.toBe("Profile agent.\n");
     await expect(readFile(packageLockPath, "utf8")).resolves.toBe(
       '{"lockfileVersion":1,"packages":{"provider-package":"1.0.0"}}\n',
     );
@@ -2726,15 +2790,22 @@ describe("OpenCode process supervisor", () => {
     expect(spawnCall).toMatchObject({
       args: ["serve", "--hostname=127.0.0.1", "--port=0", "--print-logs", "--log-level=INFO"],
       options: {
-        cwd: TEST_WORKSPACE,
+        cwd: await realpath(workspace),
         detached: true,
         env: expect.objectContaining({
+          HOME: "/home/bot",
           HTTP_PROXY: "http://proxy:3128",
           NO_PROXY: expect.stringContaining("127.0.0.1"),
-          OPENCODE_CONFIG: expect.stringMatching(/\/opencode\.json$/),
-          OPENCODE_CONFIG_DIR: expect.stringMatching(/rehor-opencode-/),
+          OPENCODE_CONFIG: expect.stringMatching(/\/instance-opencode\.json$/),
+          OPENCODE_CONFIG_CONTENT: expect.any(String),
+          OPENCODE_PERMISSION: '{"read":"deny"}',
           OPENCODE_DB: expect.stringMatching(/rehor-opencode-.*\/opencode\.db$/),
           OPENCODE_TEST_HOME: expect.stringMatching(/rehor-opencode-/),
+          OPENCODE_AUTH_CONTENT: "{}",
+          XDG_CACHE_HOME: "/persistent/cache",
+          XDG_CONFIG_HOME: expect.stringMatching(/rehor-opencode-.*\/xdg-config$/),
+          XDG_DATA_HOME: "/persistent/data",
+          XDG_STATE_HOME: "/persistent/state",
           NPM_CONFIG_OFFLINE: "true",
           OPENCODE_DISABLE_AUTOUPDATE: "1",
           OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
@@ -2744,22 +2815,45 @@ describe("OpenCode process supervisor", () => {
         }),
       },
     });
+    const childEnvironment = spawnCall.options.env as NodeJS.ProcessEnv;
+    const shellPlugin = join(dirname(configPath), "shell-env.mjs");
+    expect(JSON.parse(String(childEnvironment.OPENCODE_CONFIG_CONTENT))).toEqual({
+      ...JSON.parse(renderedConfig.enforcementJson),
+      plugin: [pathToFileURL(shellPlugin).href],
+    });
+    await expect(readFile(shellPlugin, "utf8")).resolves.toBe(
+      `export default async () => ({"shell.env": async (_, output) => { output.env.XDG_CONFIG_HOME = ${JSON.stringify(configHome ?? "")}; }});\n`,
+    );
+    expect(childEnvironment.OPENCODE_CONFIG_DIR).toBeUndefined();
+    expect(childEnvironment.OPENCODE_DISABLE_PROJECT_CONFIG).toBeUndefined();
 
     await supervisor.stop();
     expect(child.killedWith).toBe("SIGTERM");
     expect(supervisor.info).toBeUndefined();
     await expect(readFile(configPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(packageLockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(projectAgents, "utf8")).resolves.toBe("Project AGENTS instructions.\n");
+    await expect(readFile(projectClaude, "utf8")).resolves.toBe("Project CLAUDE instructions.\n");
+    await expect(readFile(projectConfig, "utf8")).resolves.toBe(
+      '{"agent":{"project":{"description":"Project agent"}}}\n',
+    );
+    await expect(readFile(projectOpenCodeAgent, "utf8")).resolves.toBe("Project OpenCode agent.\n");
+    await expect(readFile(projectSkill, "utf8")).resolves.toBe("Project skill.\n");
     expect(child.stdout.listenerCount("data")).toBe(0);
     expect(child.stderr.listenerCount("data")).toBe(0);
+    await rm(workspace, { recursive: true, force: true });
   });
 
   it("waits for a complete listening line before parsing its advertised URL", async () => {
     stubReadinessFetch();
     const child = new FakeChild();
     const supervisor = createTestSupervisor({
+      base: {},
       startupTimeoutMs: 100,
-      spawnProcess: () => {
+      spawnProcess: (_command, _args, options) => {
+        for (const name of ["HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+          expect(options.env?.[name]).toBeUndefined();
+        }
         queueMicrotask(() => {
           child.stdout.write("opencode server listening on http://127.0.0.1:41");
           child.stderr.write("diagnostic newline\n");

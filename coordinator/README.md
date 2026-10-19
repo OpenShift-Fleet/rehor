@@ -203,7 +203,7 @@ const result = await executeSelectedRun(
   registry,
   { runtimeId: runForInstance.runtimeId ?? "claude" },
   runForInstance,
-  { preparedConfig: prepared.config },
+  { preparedConfig: prepared.config, nativeConfig: prepared.nativeConfig },
 );
 ```
 
@@ -220,21 +220,25 @@ Malformed `{env:...}` and `${...}` references are rejected in provider/plugin
 strings and MCP headers/environment values, including non-secret fields.
 Provider and model names reject blocked/coordinator-controlled variables but
 otherwise remain literal and are not added to the agent passthrough list.
-The factory renders one immutable snapshot for the selected run. `OpenCodeV1Runtime`
+The factory requires the prepared `nativeConfig` snapshot, then renders it for the selected run. `OpenCodeV1Runtime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
 same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
-there is no mutable server-side configuration merge. `OpenCodeV1Runtime` validates
+OpenCode then applies native project configuration and agent precedence. `OpenCodeV1Runtime` validates
 the rendered snapshot before its supervisor starts a child; provider/plugin
 package versions must be exact and are emitted in the per-cycle lockfile
 artifact. `ConfigPreparationResult` requires separate `mcpServers` and
 `openCodeMcpServers` fields; the coordinator rejects an older response instead
 of silently substituting resolved Claude MCP values into OpenCode. The
 supervisor pins OpenCode `1.18.29`; this version is part of the tested contract
-because it honors `OPENCODE_TEST_HOME`, `OPENCODE_CONFIG_DIR`, and `OPENCODE_DB`
-as the per-cycle isolation controls. A version bump requires refreshing the
+because it honors `OPENCODE_TEST_HOME`, `XDG_CONFIG_HOME`, and `OPENCODE_DB`
+as the per-cycle isolation controls. Shell HOME and XDG data/cache/state persist;
+runner-owned `shell.env` hook restores the original shell `XDG_CONFIG_HOME` (empty means `$HOME/.config`).
+runner-owned `OPENCODE_AUTH_CONTENT='{}'` bypasses saved credentials. A version bump requires refreshing the
 lifecycle and state isolation tests before changing the pin. The Python runner
 remains the default production entry point until `BOT_EXECUTION_ENGINE=coordinator`
 is enabled for a canary.
+
+GitOps profiles are trusted user configuration: plugins, tools, and formatters can execute arbitrary code in the server. Top-level permission defaults remain runner-owned; native agent/project agent permissions can override them. Profile-added MCP tools follow native default-allow behavior; generated servers retain their baseline allowlist. Package pins support reproducibility and the pre-baked offline closure, not sandboxing trusted code.
 
 ## Cycle input preparation
 

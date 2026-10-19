@@ -620,15 +620,21 @@ describe("OpenCode V1 config renderer", () => {
     ).toThrow("literal credential");
   });
 
-  it("writes opencode.json and its package lock as reproducible artifacts", async () => {
+  it("writes native global defaults and a distinct profile config source", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-opencode-config-"));
     try {
       const rendered = renderOpenCodeV1Config({ model: "provider/model" });
       const files = await writeOpenCodeConfig(directory, rendered);
 
-      expect(files.configPath).toBe(join(directory, "opencode.json"));
+      expect(files.configPath).toBe(join(directory, "instance-opencode.json"));
+      expect(files.globalConfigPath).toBe(
+        join(directory, "xdg-config", "opencode", "opencode.json"),
+      );
       expect(files.packageLockPath).toBe(join(directory, "opencode-packages.lock.json"));
-      await expect(readFile(files.configPath, "utf8")).resolves.toBe(rendered.json);
+      await expect(readFile(files.globalConfigPath, "utf8")).resolves.toBe(rendered.json);
+      await expect(readFile(files.configPath, "utf8")).resolves.toContain(
+        '"$schema":"https://opencode.ai/config.json"',
+      );
       await expect(readFile(files.packageLockPath, "utf8")).resolves.toBe(
         `${JSON.stringify(rendered.packageLock)}\n`,
       );

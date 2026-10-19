@@ -1,8 +1,9 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import { classifyDiagnostic } from "../../diagnostics";
 import { type Logger, nullLogger, safeText } from "../../log";
 
@@ -11,6 +12,7 @@ import {
   assertPositiveInteger,
   boundedOperation,
   redactSensitiveText,
+  stableJson,
 } from "../shared";
 import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
 import {
@@ -154,6 +156,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   async start(directory: string, signal: AbortSignal): Promise<OpenCodeServerInfo> {
     if (this.child || this.server) throw new Error("OpenCode server already started");
     if (signal.aborted) throw abortReason(signal);
+    if (this.renderedConfig !== undefined) {
+      await Promise.all(
+        ["opencode.json", "opencode.jsonc"].map((file) =>
+          assertNoSystemManagedOpenCodeConfig(join("/etc/opencode", file)),
+        ),
+      );
+    }
 
     const workspaceDirectory = await resolveApprovedWorkspace(
       directory,
@@ -176,23 +185,45 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const stateDirectory = await this.prepareStateDirectory();
     const environment = buildOpenCodeEnvironment({
       ...this.options,
-      configDirectory: stateDirectory,
+      // GitOps resources live under isolated XDG_CONFIG_HOME/opencode so
+      // checked-out project resources retain their later native precedence.
+      configDirectory: undefined,
       databasePath: join(stateDirectory, "opencode.db"),
     });
+    const originalConfigHome = environment.XDG_CONFIG_HOME;
+    environment.XDG_CONFIG_HOME = join(stateDirectory, "xdg-config");
+    // Bypass saved credentials while preserving shell HOME and XDG data/cache/state.
+    environment.OPENCODE_AUTH_CONTENT = "{}";
     // These flags are controlled by the runner, not inherited from ambient env.
-    // Project CLAUDE.md and .claude/skills compatibility remain enabled.
+    // Project AGENTS.md/CLAUDE.md and .claude/skills compatibility remain enabled.
     environment.OPENCODE_DISABLE_AUTOUPDATE = "1";
     environment.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
     environment.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
     environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
-    // OpenCode uses this value for its global home while shell tools retain HOME.
+    // OpenCode uses this for instruction discovery, not XDG data/cache/state paths.
     environment.OPENCODE_TEST_HOME = stateDirectory;
     environment.NPM_CONFIG_OFFLINE = "true";
     environment.npm_config_offline = "true";
     if (this.renderedConfig !== undefined) {
-      environment.OPENCODE_CONFIG = join(stateDirectory, "opencode.json");
       try {
-        await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
+        const files = await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
+        environment.OPENCODE_CONFIG = files.configPath;
+        // Inherited config content/permissions are excluded by the sanitizer;
+        // these runner-owned values override top-level settings.
+        const enforcement = JSON.parse(this.renderedConfig.enforcementJson) as {
+          permission: Record<string, unknown>;
+          plugin?: string[];
+        };
+        const shellPlugin = join(stateDirectory, "shell-env.mjs");
+        await writeFile(
+          shellPlugin,
+          `export default async () => ({"shell.env": async (_, output) => { output.env.XDG_CONFIG_HOME = ${JSON.stringify(originalConfigHome ?? "")}; }});\n`,
+        );
+        enforcement.plugin = [...(enforcement.plugin ?? []), pathToFileURL(shellPlugin).href];
+        environment.OPENCODE_CONFIG_CONTENT = stableJson(enforcement);
+        // Reapply top-level defaults after config/tool conversion; native agent
+        // permissions retain OpenCode's precedence over these defaults.
+        environment.OPENCODE_PERMISSION = stableJson(enforcement.permission);
       } catch (error) {
         await this.cleanupStateDirectory();
         throw error;
@@ -543,6 +574,24 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   }
 }
 
+/** Linux managed config loads above OPENCODE_CONFIG_CONTENT and breaks policy ownership. */
+export async function assertNoSystemManagedOpenCodeConfig(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== "linux") return;
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (isMissingPath(error)) return;
+    throw error;
+  }
+  throw new OpenCodeReadinessError(
+    `OpenCode system-managed config at ${path} conflicts with runner-enforced settings`,
+    true,
+  );
+}
+
 function redactError(error: Error): Error {
   error.message = redactSensitiveText(error.message);
   return error;
@@ -583,6 +632,10 @@ function isPermissionDenied(error: unknown): boolean {
 
 function isNoSuchProcess(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+function isMissingPath(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function waitForExit(

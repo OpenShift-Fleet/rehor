@@ -483,7 +483,9 @@ dev-bot/
     costs.py             # Cost tracking
     merge.py             # Remote config merge engine (protected-key registry)
   config.json            # Model, polling intervals, Jira config
-  CLAUDE.md              # Full agent instructions (the bot's brain)
+  presets/core/AGENTS.md # Canonical bot guidance; CLAUDE.md symlink for Claude
+  presets/workflows/     # Canonical workflow AGENTS.md files + Claude aliases
+  CLAUDE.md              # Local dev notes; Claude runtime overwrites with assembled guidance
   .mcp.json              # Project MCP servers (memory, browser)
   bot/mcp.json           # Jira MCP server definition
   .env                   # Credentials (not committed)

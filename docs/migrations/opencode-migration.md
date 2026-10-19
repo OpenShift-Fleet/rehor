@@ -22,7 +22,7 @@ Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
 - Add an OpenAI-compatible proxy endpoint backed by direct OpenAI API keys.
 - Keep existing Jira, Git, memory, and browser MCP services separate.
 - Keep Python preflights during first migration slice; migrate selected hooks to TypeScript plugins later.
-- Preserve `CLAUDE.md` and `.claude/skills` compatibility during canary migration.
+- Deliberately migrate OpenCode profiles to native `AGENTS.md` and `.opencode` resources; retain Claude instruction assembly only for runtime `claude`.
 
 ## Current Architecture
 
@@ -354,7 +354,7 @@ regional requirements remain deployment-owned.
 
 ### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
 
-The coordinator's `runtimes/opencode-v1/config.ts` owns the translation from
+The coordinator's `runtimes/opencode-v1/render.ts` owns the translation from
 provider-neutral cycle data to this OpenCode V1 subset. The runtime factory
 receives the Python preparation through the `preparedConfig` option on
 `executeSelectedRun()` and calls `renderOpenCodeV1ConfigForCycle()` with the
@@ -386,11 +386,14 @@ The runtime factory renders one immutable snapshot for the selected run and
 validates it before constructing the supervisor. `OpenCodeV1Runtime` derives
 prompt submission and Rehor event attribution from that same effective
 provider/model. The supervisor receives the snapshot in its constructor and
-writes the snapshot to a per-cycle config directory,
-sets `OPENCODE_CONFIG`, isolates OpenCode's global home/config/database paths,
-and enables offline npm resolution plus the pinned runtime's update/download
-safeguards. The pinned `1.18.29` release is a tested dependency: its
-`OPENCODE_TEST_HOME` behavior is required for per-cycle state isolation. A
+writes Rehor defaults/resources under isolated `XDG_CONFIG_HOME`, writes profile
+settings to a separate `OPENCODE_CONFIG` file, and supplies runner-owned
+`OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` top-level overrides.
+OpenCode applies `OPENCODE_PERMISSION` after config loading and tool conversion; native agent permissions can override these defaults.
+It isolates OpenCode's instruction-discovery home and database paths, then enables offline npm
+resolution plus the pinned runtime's update/download safeguards. The pinned
+`1.18.29` release is a tested dependency: its
+`OPENCODE_TEST_HOME` behavior is required for per-cycle instruction isolation. A
 version bump must update the supervisor contract tests before the pin changes.
 Package installation is not a runtime responsibility: the image
 must pre-bake the lockfile closure as part of [REHOR-142](https://issues.redhat.com/browse/REHOR-142).
@@ -400,10 +403,16 @@ unchanged. Instance configuration now carries independent `runtime` and
 `executeConfiguredRun()` consumes that normalized selection when the future
 TypeScript runner is enabled. See the [canary rollout runbook](../operations/rehor-146-opencode-canary.md).
 
-OpenCode receives the generated root `CLAUDE.md` and project `.claude/skills`
-through its project discovery path. Persona selection remains in the existing
-instruction assembly/preflight boundary; arbitrary global `CLAUDE.md`,
-`AGENTS.md`, skills, and plugin configuration are not inherited.
+OpenCode profiles are deliberately migrated to native configuration. OpenCode
+preparation never assembles core, shared, workflow, or profile `CLAUDE.md`, ignores
+`claudeMdStrategy`, and does not generate fallback guidance. No Claude instruction
+files are required. Canonical preset guidance lives in `presets/core/AGENTS.md`
+and `presets/workflows/<name>/AGENTS.md`; relative `CLAUDE.md` symlinks preserve
+Claude consumers. Runtime `claude` retains existing assembly and generated
+`CLAUDE.md` behavior. OpenCode removes that runner-managed app-root output when switching runtimes, preserves target project files, and references native
+instructions in its cycle prompt. Its own project `AGENTS.md`/`CLAUDE.md` discovery
+and `.claude/skills` compatibility remain enabled; `OPENCODE_DISABLE_PROJECT_CONFIG`
+stays unset.
 
 Provider selection remains independent from runtime selection. During canary,
 OpenCode may select either the existing Vertex route or the OpenAI gateway
@@ -462,7 +471,7 @@ rollout without changing central routing for existing Claude-based instances.
 - Add OpenCode runtime and TypeScript runner beside Python runner.
 - Start one OpenCode server per cycle as a runner-owned child process.
 - Reuse current MCP endpoints and Git auth proxy.
-- Reuse current `CLAUDE.md`, personas, and `.claude/skills`.
+- Deliberately migrate selected profiles to native `AGENTS.md`, OpenCode agents, and `.opencode/skills` before enabling OpenCode; retain built-in project discovery compatibility.
 - Keep Python preflight scripts unchanged.
 - Route model calls through OpenAI-compatible proxy.
 - Run one low-risk instance with all other instances unchanged.
@@ -489,9 +498,117 @@ the Python records for the same fixture scenarios.
 - Add `opencode.json` generation to instance config.
 - Map workflow model defaults to `provider/model` IDs.
 - Map persona prompts to OpenCode agents or `instructions` files.
-- Generate `AGENTS.md` over time; keep `CLAUDE.md` fallback during rollout.
+- Provide native profile `AGENTS.md` and `.opencode` resources; do not fall back to generated Claude guidance during rollout.
 - Map allowed tools to OpenCode `permission` rules.
 - Disable session sharing for bot instances.
+
+#### GitOps-managed profile configuration
+
+The coordinator reads OpenCode profile configuration from the selected
+`BOT_CONFIG_PATH/agent/` directory. All files are optional; profiles without
+OpenCode files continue to run using generated deployment settings and native bot guidance. Runtime `claude` retains existing `CLAUDE.md`, persona, and `.claude/skills` behavior; OpenCode profiles require deliberate native migration.
+
+Supported profile layout:
+
+```text
+<BOT_CONFIG_PATH>/agent/
+├── AGENTS.md                 # optional OpenCode instructions
+├── opencode.json             # optional supported OpenCode settings (JSON)
+└── .opencode/                # optional; staged under isolated global config dir
+    ├── agents/               # custom agents and subagents
+    ├── commands/              # custom commands
+    ├── instructions/          # instruction files referenced by opencode.json
+    ├── modes/                 # custom modes
+    ├── plugins/               # trusted, GitOps-managed local plugins
+    ├── rules/                 # instruction files referenced by opencode.json
+    ├── skills/                # agent skills
+    ├── themes/                # themes
+    └── tools/                 # custom tools
+```
+
+Example `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "reviewer": {
+      "description": "Reviews changes",
+      "mode": "subagent",
+      "permission": { "bash": "deny" }
+    }
+  },
+  "plugin": ["opencode-rehor-plugin@2.3.4"]
+}
+```
+
+The sample npm plugin is accepted only when the deployment package list pins
+that exact package and version.
+
+Supported `opencode.json` fields: `agent`, `command`, `compaction`,
+`default_agent`, `disabled_providers`, `formatter`, `instructions`, `mcp`,
+`permission`, `plugin`, `snapshot`, `subagent_depth`, `tools`, and `watcher`.
+Unknown or coordinator-controlled fields fail configuration validation.
+
+The coordinator validates profile settings, then stages `agent/opencode.json`
+as distinct `OPENCODE_CONFIG` source. It stages `.opencode` assets under native
+`$XDG_CONFIG_HOME/opencode/{agents,commands,instructions,modes,plugins,rules,skills,themes,tools}`
+paths. The profile JSON is not copied into `OPENCODE_CONFIG_DIR`: OpenCode 1.18.29
+loads that custom directory after project config, which would give profile
+resources higher priority than checked-out project resources. With isolated
+`XDG_CONFIG_HOME`, global profile assets load before project `.opencode` assets.
+
+Native config order used by the runner is deployment global config and profile resources, the
+profile `OPENCODE_CONFIG` file, checked-out project `opencode.json`, then
+runner-owned `OPENCODE_CONFIG_CONTENT` overrides. `OPENCODE_PERMISSION`
+reapplies top-level tool permission defaults after native config sources and tool
+conversion; native agent permissions take precedence. OpenCode 1.18.29 also
+supports `OPENCODE_CONFIG_DIR` between project config and inline content; the
+runner leaves it unset to preserve project-over-profile resource precedence.
+Plugin arrays append across config sources. The inline layer is constructed by
+the runner, never inherited, and pins selected model/provider, generated MCP
+endpoints, share/autoupdate/LSP settings, and top-level tool/permission defaults.
+On Linux, `/etc/opencode/opencode.json` loads above inline content. Because it
+could override runner policy, the supervisor refuses to start when that managed
+file exists.
+
+GitOps profiles are trusted, deliberate user configuration. Plugins, tools, and
+formatters can execute arbitrary code in the server; permission defaults are not
+a sandbox against that code or native agent configuration. OpenCode owns agent
+and command schema, models, permissions, and frontmatter. Native agent permissions,
+including checked-out project agents, can override top-level defaults. Top-level
+model/provider selection remains coordinator-controlled; profile `permission` may
+only add denials and top-level `tools` may only disable tools. MCP additions cannot
+replace generated servers and retain URL, credential, and environment checks.
+Profile-added MCP tools follow native default-allow behavior; generated servers
+retain their baseline allowlist. NPM plugins require exact deployment-declared
+versions for reproducibility and the pre-baked offline closure, not code isolation.
+Local `.opencode/plugins` files are staged directly.
+
+Cycle preparation requires `presets/core/AGENTS.md`, then loads optional shared
+`agent/AGENTS.md` and the selected built-in or `./` custom workflow's `AGENTS.md`.
+These remain distinct text resources under isolated global
+`instructions/rehor/{core,shared,workflow}.md`; native `instructions` references
+precede existing profile instruction references in core → shared → workflow order.
+Those three generated paths are reserved; profile collisions fail preparation.
+Shared and custom workflow guidance with only `CLAUDE.md` fails preparation with
+an actionable `AGENTS.md` migration error; instructions-free optional directories
+remain allowed. OpenCode never reads legacy aliases or applies Claude strategies.
+
+Profile `AGENTS.md` is staged directly as isolated global
+`$XDG_CONFIG_HOME/opencode/AGENTS.md`, without renaming or injected instruction
+entries. Project `AGENTS.md`/`CLAUDE.md` stay untouched and retain native discovery
+precedence. Preparation captures bot guidance, profile settings, and files once; deterministic
+hashes cover that native snapshot for instruction/config provenance, and the same
+snapshot is required by the runtime factory. These hashes do not claim to represent assembled
+Claude content or OpenCode's later project discovery.
+Coordinator rejects symlinks and paths escaping selected profile. Missing
+profile `AGENTS.md`, `opencode.json`, or `.opencode/` is normal. XDG config, database, and
+instruction-discovery home stay isolated per cycle. Shell `HOME` and XDG data/cache/
+state remain persistent. A runner-owned local `shell.env` plugin restores original
+`XDG_CONFIG_HOME` for shell commands (unset becomes empty, using `$HOME/.config`),
+while OpenCode global config stays isolated. Runner-owned `OPENCODE_AUTH_CONTENT='{}'` bypasses ambient
+saved credentials. Provider API keys still resolve from validated environment references.
 
 ### Phase 4: Plugin Port
 

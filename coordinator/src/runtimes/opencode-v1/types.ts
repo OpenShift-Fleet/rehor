@@ -5,6 +5,7 @@ export const OPENCODE_PACKAGE_LOCK_VERSION = 1 as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
 
 export interface OpenCodeModelConfig {
   name?: string;
@@ -75,15 +76,23 @@ export interface EffectiveOpenCodeModel {
 export interface RenderedOpenCodeV1Config {
   readonly config: Readonly<Record<string, JsonValue>>;
   readonly json: string;
+  /** Validated GitOps profile settings staged as OPENCODE_CONFIG. */
+  readonly profileConfig: Readonly<Record<string, JsonValue>>;
+  /** Runner-owned final layer for selected model/provider and tool boundaries. */
+  readonly enforcementJson: string;
   readonly hash: string;
   readonly packageLock: OpenCodePackageLock;
   readonly effectiveModel: EffectiveOpenCodeModel;
   /** Agent environment variables required by trusted provider/plugin config; never MCP refs. */
   requiredEnvironment: readonly string[];
+  /** Validated profile files staged under isolated global OpenCode resource paths. */
+  readonly projectFiles: readonly { readonly path: string; readonly content: string }[];
 }
 
 export interface OpenCodeConfigFiles {
   configPath: string;
+  globalConfigPath: string;
+  globalConfigDirectory: string;
   packageLockPath: string;
 }
 

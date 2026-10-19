@@ -383,6 +383,7 @@ export async function runCoordinator(
             signal,
             projection,
             preparedConfig: prepared.config,
+            nativeConfig: prepared.nativeConfig,
           });
           logger.log(
             result.terminal.payload.state === "failed" ? "ERROR" : "INFO",

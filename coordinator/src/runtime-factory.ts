@@ -11,6 +11,7 @@ import {
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
 import {
+  type OpenCodeProjectConfiguration,
   type OpenCodeV1DeploymentConfig,
   OpenCodeV1Runtime,
   type OpenCodeV1RuntimeOptions,
@@ -30,6 +31,7 @@ export interface RuntimeFactoryContext {
   selection: RuntimeSelection;
   /** Python-prepared cycle policy and reference-only OpenCode MCP view. */
   preparedConfig?: ConfigPreparationResult;
+  nativeConfig?: OpenCodeProjectConfiguration;
 }
 
 /** Factory boundary for provider-specific runtime adapters. */
@@ -74,6 +76,7 @@ export class RuntimeFactoryRegistry {
     selection: RuntimeSelection,
     run: RehorRun,
     preparedConfig?: ConfigPreparationResult,
+    nativeConfig?: OpenCodeProjectConfiguration,
   ): Promise<AgentRuntime> {
     const factory = this.factories.get(selection.runtimeId);
     if (!factory) {
@@ -82,7 +85,7 @@ export class RuntimeFactoryRegistry {
         `no runtime factory registered for '${selection.runtimeId}' (available: ${available})`,
       );
     }
-    const runtime = await factory.create({ run, selection, preparedConfig });
+    const runtime = await factory.create({ run, selection, preparedConfig, nativeConfig });
     if (!runtime)
       throw new RuntimeFactoryError(`runtime factory returned no runtime: ${selection.runtimeId}`);
     return runtime;
@@ -109,22 +112,20 @@ export function createOpenCodeV1RuntimeFactory(
 ): AgentRuntimeFactory {
   return {
     runtimeId: "opencode-v1",
-    create(context) {
+    async create(context) {
       const configured = options.config ?? {};
       let renderedConfig: RenderedOpenCodeV1Config | undefined;
       let renderError: unknown;
       try {
-        renderedConfig = context.preparedConfig
-          ? renderOpenCodeV1ConfigForCycle(
-              context.preparedConfig,
-              context.run.provider.id,
-              configured,
-            )
-          : renderOpenCodeV1ConfigForCycle(
-              { model: context.run.provider.requestedModel },
-              context.run.provider.id,
-              configured,
-            );
+        if (context.nativeConfig === undefined) {
+          throw new RuntimeFactoryError("OpenCode requires a prepared nativeConfig snapshot");
+        }
+        renderedConfig = renderOpenCodeV1ConfigForCycle(
+          context.preparedConfig ?? { model: context.run.provider.requestedModel },
+          context.run.provider.id,
+          configured,
+          context.nativeConfig,
+        );
       } catch (error) {
         renderError = error;
       }
@@ -150,6 +151,7 @@ export function resolveRuntimeSelection(runtimeId?: string | null): RuntimeSelec
 export type RuntimeExecutionOptions = CoordinatorOptions & {
   /** Cycle preparation to apply when constructing the selected runtime. */
   preparedConfig?: ConfigPreparationResult;
+  nativeConfig?: OpenCodeProjectConfiguration;
 };
 
 /** Select an adapter, then run it through the same coordinator lifecycle. */
@@ -179,7 +181,7 @@ async function executeValidatedSelectedRun(
   run: ValidatedRehorRun,
   options: RuntimeExecutionOptions,
 ): Promise<CoordinatorResult> {
-  const { preparedConfig, ...coordinatorOptions } = options;
-  const runtime = await registry.create(selection, run, preparedConfig);
+  const { preparedConfig, nativeConfig, ...coordinatorOptions } = options;
+  const runtime = await registry.create(selection, run, preparedConfig, nativeConfig);
   return executeRunWithValidatedInput(runtime, run, coordinatorOptions);
 }

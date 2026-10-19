@@ -25,6 +25,7 @@ assert.equal(
 
 const globalConfig = JSON.parse(await readFile("/home/botuser/app/config.json", "utf8"));
 assert.equal(globalConfig.opencode.model, "gpt-6-luna");
+await assert.rejects(readFile("/home/botuser/app/CLAUDE.md"), { code: "ENOENT" });
 
 const prepared = (model, providerId) => ({
   config: {

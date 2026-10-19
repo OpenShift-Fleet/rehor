@@ -1,5 +1,6 @@
 export * from "./environment";
 export * from "./process-supervisor";
+export * from "./project-config";
 export type { OpenCodeHealth } from "./readiness";
 export { HttpOpenCodeReadiness, OpenCodeReadinessError } from "./readiness";
 export {

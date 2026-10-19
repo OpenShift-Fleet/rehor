@@ -73,11 +73,32 @@ async function createCycleRoot(): Promise<string> {
   await mkdir(join(root, "presets", "core"), { recursive: true });
   await mkdir(join(root, "presets", "workflows", "test-workflow"), { recursive: true });
   await writeFile(join(root, "presets", "core", "CLAUDE.md"), "[core]");
+  await writeFile(join(root, "presets", "core", "AGENTS.md"), "[native core]");
   await writeFile(join(root, "presets", "workflows", "test-workflow", "CLAUDE.md"), "[workflow]");
+  await writeFile(
+    join(root, "presets", "workflows", "test-workflow", "AGENTS.md"),
+    "[native workflow]",
+  );
   return root;
 }
 
 describe("instruction assembly", () => {
+  it.each(["jira-sprint", "jira-kanban", "onboarding"])(
+    "preserves Claude assembly through canonical preset aliases for %s",
+    async (workflow) => {
+      for (const directory of ["presets/core", `presets/workflows/${workflow}`]) {
+        const canonical = join(repositoryRoot, directory, "AGENTS.md");
+        const alias = join(repositoryRoot, directory, "CLAUDE.md");
+        expect(await readFile(alias, "utf8")).toBe(await readFile(canonical, "utf8"));
+      }
+      const assembled = await assembleInstructions({ scriptDir: repositoryRoot, workflow });
+      expect(assembled.content).toBe(
+        (await readFile(join(repositoryRoot, "presets/core/AGENTS.md"), "utf8")) +
+          (await readFile(join(repositoryRoot, `presets/workflows/${workflow}/AGENTS.md`), "utf8")),
+      );
+    },
+  );
+
   it("preserves core, shared, workflow, and instance order", async () => {
     const root = await mkdtemp(join(tmpdir(), "rehor-instructions-"));
     await mkdir(join(root, "presets", "core"), { recursive: true });
@@ -177,7 +198,87 @@ describe("cycle preparation", () => {
     });
 
     expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("[core][instance]");
-    expect(result.instructionHash.value).toBe(result.instructions.hash.value);
+    expect(result.instructionHash.value).toBe(result.instructions?.hash.value);
+  });
+
+  it("switches Claude to native snapshots, removes managed output, and preserves project guidance", async () => {
+    const root = await createCycleRoot();
+    const workflow = join(root, "presets", "workflows", "test-workflow", "AGENTS.md");
+    const profile = join(root, "profile");
+    await mkdir(join(profile, ".opencode", "plugins"), { recursive: true });
+    await writeFile(join(profile, "AGENTS.md"), "Native profile guidance.");
+    await writeFile(join(profile, "opencode.json"), '{"snapshot":false,"default_agent":"build"}');
+    await mkdir(join(root, "repos/project"), { recursive: true });
+    const projectClaude = join(root, "repos/project/CLAUDE.md");
+    await writeFile(projectClaude, "Project-owned CLAUDE instructions.\n");
+    await writeFile(join(root, "AGENTS.md"), "Project-owned AGENTS instructions.");
+    const bridge = new FakeBridge(preflight(PreflightAction.Start), {
+      runtimeId: "opencode-v1",
+      remoteAgentDir: profile,
+      sharedAgentDir: join(root, "missing-shared"),
+    });
+    const options = {
+      scriptDir: root,
+      label: "hcc-ai-framework",
+    };
+    await prepareCycleInput(new FakeBridge(null), options);
+    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("[core][workflow]");
+    const result = await prepareCycleInput(bridge, options);
+    for (const strategy of Object.values(InstructionStrategy)) {
+      const repeated = await prepareCycleInput(
+        new FakeBridge(null, {
+          runtimeId: "opencode-v1",
+          remoteAgentDir: profile,
+          claudeMdStrategy: strategy,
+        }),
+        { ...options, strategy },
+      );
+      expect(repeated.instructionHash).toEqual(result.instructionHash);
+      expect(repeated.configHash).toEqual(result.configHash);
+    }
+
+    await expect(readFile(join(root, "CLAUDE.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(projectClaude, "utf8")).toBe("Project-owned CLAUDE instructions.\n");
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(
+      "Project-owned AGENTS instructions.",
+    );
+    expect(result.instructions).toBeUndefined();
+    expect(result.nativeConfig?.files).toEqual([
+      { path: "AGENTS.md", content: "Native profile guidance." },
+      { path: "instructions/rehor/core.md", content: "[native core]" },
+      { path: "instructions/rehor/workflow.md", content: "[native workflow]" },
+    ]);
+    expect(result.prompt).toContain("native OpenCode instructions and AGENTS.md");
+    expect(result.prompt).not.toContain("CLAUDE.md");
+
+    await writeFile(join(profile, "opencode.json"), '{"default_agent":"build","snapshot":false}');
+    expect((await prepareCycleInput(bridge, options)).instructionHash).toEqual(
+      result.instructionHash,
+    );
+    let previous = result;
+    for (const [path, content] of [
+      [join(profile, "AGENTS.md"), "Changed native instructions."],
+      [join(profile, "opencode.json"), '{"snapshot":true}'],
+      [join(profile, ".opencode/plugins/local.ts"), "export const plugin = true;"],
+      [join(root, "presets/core/AGENTS.md"), "Changed native core."],
+      [workflow, "Changed native workflow."],
+    ] as const) {
+      await writeFile(path, content);
+      const changed = await prepareCycleInput(bridge, options);
+      expect(changed.instructionHash).not.toEqual(previous.instructionHash);
+      expect(changed.configHash).not.toEqual(previous.configHash);
+      previous = changed;
+    }
+    for (const path of [
+      join(root, "presets/core/CLAUDE.md"),
+      join(root, "presets/workflows/test-workflow/CLAUDE.md"),
+      join(profile, "CLAUDE.md"),
+    ]) {
+      await writeFile(path, "Changed legacy guidance.");
+    }
+    expect((await prepareCycleInput(bridge, options)).instructionHash).toEqual(
+      previous.instructionHash,
+    );
   });
 
   it("includes MCP servers and allowed tools in configHash", async () => {

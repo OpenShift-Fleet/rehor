@@ -158,7 +158,12 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         return profile_dir, shared_dir
 
     monkeypatch.setattr(runner, "sync_config_repo", sync_config_repo)
-    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
+    assembled_claude_instructions = []
+    monkeypatch.setattr(
+        runner,
+        "assemble_claude_md",
+        lambda *args: assembled_claude_instructions.append(args),
+    )
     monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
     monkeypatch.setattr(merge, "install_skills", lambda *args: [])
 
@@ -183,6 +188,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["envs"] == ["github"]
     assert result["gitConfigGlobal"] == git_config_global
     assert result["runtimeId"] == "opencode-v1"
+    assert assembled_claude_instructions == []
     assert result["providerId"] == "rehor-openai"
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"
