@@ -1212,8 +1212,10 @@ async def api_cycle_run_transcript(request: Request) -> Response:
         try:
             import zstandard as zstd
 
-            decompressor = zstd.ZstdDecompressor()
+            decompressor = zstd.ZstdDecompressor().decompressobj()
             decompressed = decompressor.decompress(transcript)
+            if not decompressor.eof:
+                raise zstd.ZstdError("incomplete zstd frame")
             return Response(
                 content=decompressed,
                 media_type="application/x-ndjson",
