@@ -214,6 +214,12 @@ if [ -n "${BOT_MEMORY_HEALTH_URL:-}" ]; then
     wait_for_http "memory-server" "$BOT_MEMORY_HEALTH_URL" "${BOT_MEMORY_HEALTH_TIMEOUT:-120}"
 fi
 
+# The UI-test login MCP runs as a sidecar and must be ready before the agent
+# starts its first cycle. Its health URL is set only for that instance.
+if [ -n "${UI_TEST_LOGIN_HELPER_HEALTH_URL:-}" ]; then
+    wait_for_http "UI-test login helper" "$UI_TEST_LOGIN_HELPER_HEALTH_URL" "${UI_TEST_LOGIN_HELPER_HEALTH_TIMEOUT:-60}"
+fi
+
 
 # Source env preset profile scripts (persist env vars from install time)
 # || true: profile scripts may return non-zero (e.g. goenv warnings) which

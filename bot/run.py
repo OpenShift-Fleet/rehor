@@ -17,6 +17,7 @@ import time
 import uuid
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 from prometheus_client import start_http_server
@@ -57,6 +58,7 @@ from .transcripts import post_orphan_cycle, record_transcript
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
+UI_TEST_LOGIN_HELPER_RESET_TOKEN = ""
 
 
 def _resolve_path(p: str) -> str:
@@ -374,6 +376,24 @@ def cleanup_between_cycles(script_dir: Path) -> int | None:
     return free_mb
 
 
+def reset_cycle_helpers() -> None:
+    """Reset optional local helper state at the start of a new work cycle."""
+    url = os.environ.get("UI_TEST_LOGIN_HELPER_RESET_URL")
+    if not url:
+        return
+    if not UI_TEST_LOGIN_HELPER_RESET_TOKEN:
+        raise RuntimeError("UI-test login helper reset token is not configured")
+    try:
+        with httpx.Client(trust_env=False, timeout=5) as client:
+            response = client.post(
+                url,
+                headers={"Authorization": f"Bearer {UI_TEST_LOGIN_HELPER_RESET_TOKEN}"},
+            )
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError("UI-test login helper cycle reset failed") from exc
+
+
 def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:
     """Log timeout and warn about lost cost data. Returns (None, None) for result, ctx."""
     logger = logging.getLogger(__name__)
@@ -440,9 +460,9 @@ def main() -> None:
     setup_logging()
     logger = logging.getLogger(__name__)
 
+    global UI_TEST_LOGIN_HELPER_RESET_TOKEN
     try:
         config = load_config(SCRIPT_DIR)
-        mcp_servers = load_mcp_servers(SCRIPT_DIR)
 
         # Initial config sync + instance config load (before validation so
         # instance.yaml can override the workflow preset)
@@ -451,6 +471,9 @@ def main() -> None:
             apply_merged_config(SCRIPT_DIR, initial_shared_dir)
         if initial_agent_dir:
             apply_merged_config(SCRIPT_DIR, initial_agent_dir)
+        # Load after sync so instance-specific HTTP MCP servers are available
+        # for manifest validation and the first agent cycle.
+        mcp_servers = load_mcp_servers(SCRIPT_DIR)
         instance_config = load_instance_config(initial_agent_dir)
         install_skills(
             SCRIPT_DIR,
@@ -470,6 +493,9 @@ def main() -> None:
 
         # Remove secrets from env so Bash subprocesses can't leak them.
         # MCP servers already have resolved values. gh/glab use config files.
+        UI_TEST_LOGIN_HELPER_RESET_TOKEN = os.environ.get(
+            "UI_TEST_LOGIN_HELPER_RESET_TOKEN", ""
+        )
         sanitize_env()
         logger.info("Sanitized environment — secrets removed from env vars.")
 
@@ -584,6 +610,7 @@ def main() -> None:
                         preflight_prompt = preflight_result.prompt
                         logger.info("Preflight start — launching session with pre-fetched data")
 
+                    reset_cycle_helpers()
                     cycle_model = resolve_cycle_model(SCRIPT_DIR, instance_config, config, remote_agent_dir)
                     bind(model=cycle_model)
                     logger.info("Running agent cycle with model %s...", cycle_model)

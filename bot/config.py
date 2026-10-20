@@ -498,6 +498,7 @@ SECRET_ENV_VARS = [
     "GPG_SIGNING_KEY",
     "SSO_USERNAME",
     "SSO_PASSWORD",
+    "UI_TEST_LOGIN_HELPER_RESET_TOKEN",
     "REHOR_MODEL_PROXY_TOKEN",
 ]
 
@@ -547,6 +548,8 @@ ALLOWED_TOOLS = [
     "mcp__mcp-atlassian__jira_create_issue",
     "mcp__mcp-atlassian__jira_create_issue_link",
     "mcp__mcp-atlassian__jira_get_field_options",
+    # The UI-testing instance configures this narrow login helper when deployed.
+    "mcp__stage-login__sign_in",
     # Wildcard MCP tools
     "mcp__hcc-patternfly-data-view__*",
     "mcp__chrome-devtools__*",

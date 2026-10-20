@@ -1,6 +1,10 @@
 #!/bin/bash
 # Start headless Chromium for chrome-devtools MCP
 
+# The runner uses this token only for its private helper-cycle control call.
+# Do not pass it to Chromium or browser-created child processes.
+unset UI_TEST_LOGIN_HELPER_RESET_TOKEN
+
 # Map SSO credentials to E2E vars (used by Playwright global-setup).
 # SSO_USERNAME/SSO_PASSWORD are unset by entrypoint.sh before entrypoint.d runs,
 # so read from the .credentials file that entrypoint.sh writes at line 36-39.
@@ -47,13 +51,14 @@ if [ -z "$CHROME_BIN" ]; then
     echo "Chromium not installed, skipping"
     exit 0
 fi
+BROWSER_PROXY="${UI_BROWSER_PROXY:-${HTTPS_PROXY:-http://proxy:3128}}"
 "$CHROME_BIN" \
     --headless --no-sandbox --disable-gpu \
     --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 \
     --remote-allow-origins=* \
     --ignore-certificate-errors \
     --host-resolver-rules='MAP consent.trustarc.com 127.0.0.1' \
-    --proxy-server="${HTTPS_PROXY:-http://proxy:3128}" \
+    --proxy-server="$BROWSER_PROXY" \
     --proxy-bypass-list='*.foo.redhat.com;localhost;127.0.0.1' \
     --no-first-run --disable-sync --disable-extensions --disable-popup-blocking &
 

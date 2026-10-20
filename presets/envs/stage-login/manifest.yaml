@@ -1,0 +1,9 @@
+name: stage-login
+type: env
+description: Alias-based Stage sign-in through the UI-test login-helper sidecar
+
+provides:
+  mcp_servers:
+    stage-login:
+      type: http
+      url: http://127.0.0.1:8768/mcp
