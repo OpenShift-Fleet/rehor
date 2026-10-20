@@ -342,11 +342,11 @@ ALTER TABLE cycles ADD COLUMN IF NOT EXISTS cost_incomplete BOOLEAN NOT NULL DEF
 
 -- Unknown amounts are excluded from every existing SUM/AVG without changing
 -- analytics queries. Repair earlier inconsistent rows before enforcing the invariant.
-UPDATE cycles SET cost_usd = 0, cost_incomplete = TRUE
-WHERE cost_status = 'unknown' AND (cost_usd <> 0 OR NOT cost_incomplete);
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
                    WHERE conrelid = 'cycles'::regclass AND conname = 'cycles_unknown_cost_zero') THEN
+        UPDATE cycles SET cost_usd = 0, cost_incomplete = TRUE
+        WHERE cost_status = 'unknown' AND (cost_usd <> 0 OR NOT cost_incomplete);
         ALTER TABLE cycles ADD CONSTRAINT cycles_unknown_cost_zero
             CHECK (cost_status IS DISTINCT FROM 'unknown' OR cost_usd = 0);
     END IF;

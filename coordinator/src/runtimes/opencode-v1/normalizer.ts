@@ -28,6 +28,8 @@ export interface NormalizedEvents {
 
 interface NormalizeOptions {
   suppressModel?: boolean;
+  /** Refresh reconciled assistant/step usage without replaying lifecycle events. */
+  usageOnly?: boolean;
 }
 
 interface UsageSnapshot {
@@ -174,7 +176,7 @@ export function normalizeOpenCodeEvent(
       const messageId = typeof info.id === "string" ? info.id : undefined;
       const messageKey = `${withSession.runtimeSessionRef}:${messageId}`;
       let modelEvent: RehorEvent | undefined;
-      if (!options.suppressModel) {
+      if (!options.suppressModel && !options.usageOnly) {
         modelEvent = factory(
           "model",
           {
@@ -191,13 +193,14 @@ export function normalizeOpenCodeEvent(
       }
       const completed = Boolean(asObject(info.time)?.completed);
       const turns =
+        !options.usageOnly &&
         eventSessionId(event) === context.rootSessionId &&
         completed &&
         messageId &&
         !context.countedMessages.has(messageKey)
           ? 1
           : 0;
-      if (completed && messageId) context.countedMessages.add(messageKey);
+      if (!options.usageOnly && completed && messageId) context.countedMessages.add(messageKey);
       const parentEventId = messageId
         ? (context.modelEventIds.get(messageKey) ?? modelEvent?.eventId)
         : modelEvent?.eventId;
@@ -215,7 +218,9 @@ export function normalizeOpenCodeEvent(
         events: [
           ...(modelEvent ? [modelEvent] : []),
           ...(usage ? [usage] : []),
-          ...(error ? [factory("error", { message: error }, withSession)] : []),
+          ...(error && !options.usageOnly
+            ? [factory("error", { message: error }, withSession)]
+            : []),
         ],
         turns,
       };
@@ -230,14 +235,12 @@ export function normalizeOpenCodeEvent(
         const steps = snapshot?.steps ?? context.pendingSteps.get(key) ?? new Map();
         steps.set(partId, part);
         if (!snapshot) context.pendingSteps.set(key, steps);
-        const stepEvent = factory(
-          "run",
-          { state: "step_finished", reason: part.reason },
-          withSession,
-        );
+        const stepEvent = options.usageOnly
+          ? undefined
+          : factory("run", { state: "step_finished", reason: part.reason }, withSession);
         const usage = snapshot ? snapshotUsage(snapshot, factory, withSession, context) : undefined;
         return {
-          events: [stepEvent, ...(usage ? [usage] : [])],
+          events: [...(stepEvent ? [stepEvent] : []), ...(usage ? [usage] : [])],
           turns: 0,
         };
       }

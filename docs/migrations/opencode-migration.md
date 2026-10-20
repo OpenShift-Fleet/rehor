@@ -740,15 +740,24 @@ Pricing aliases are centralized in `pricing.ts`: `rehor-openai` and
 `rehor-openai-chat` use canonical `openai` rates; `vertex` uses
 `google-vertex-anthropic`, with `claude-opus-4-6@default`,
 `claude-sonnet-4-6@default`, and exact dated `claude-haiku-4-5@20251001` entries.
+Bare `claude-haiku-4-5` maps to that dated Vertex Haiku entry.
 These are pricing aliases only; API/proxy model IDs remain unchanged. No
 direct-Anthropic substitution or model-family guessing occurs.
 
 The normalizer retains each `step-finish` by session/message/part identity and
 replaces duplicate or reconciled records. Steps supersede assistant token
 summaries: native assistant cost accumulates across steps, while assistant tokens
-describe only the last step. Known child sessions are reconciled too. Snapshots
+describe only the last step. Reconciliation determines the root outcome from root
+messages and status before fetching known children in parallel within the remaining
+deadline. Unavailable children cannot discard root outcomes or valid usage. Seen
+messages and steps refresh usage without replaying errors or lifecycle events. Snapshots
 are cumulative per provider-qualified model, so root/child usage and different
 providers cannot overwrite each other in the legacy projection.
+New OpenCode `model` values and `modelUsage` keys are provider-qualified (for
+example, `rehor-openai/gpt-6.1-sol`). Historical unqualified names remain unchanged,
+so grouping by model splits historical and new rows into separate buckets.
+New OpenCode `output_tokens` totals include reasoning as well as visible output;
+older rows may omit reasoning and are not directly comparable.
 
 The estimate uses noncached input, visible output plus reasoning, cache-read,
 and cache-write counts at their respective USD-per-million rates. Native counts
@@ -774,13 +783,21 @@ coexist with unpriced usage. Local `costs.jsonl` and `/api/costs` carry optional
 numeric `cost_usd` remains backward-compatible and represents the known subtotal.
 Legacy records have no invented provenance. Dashboard rows show `≈` for
 estimates, `Unknown` for unpriced totals, and an incomplete label for subtotals;
-daily metadata warns when aggregate totals include these records. Catalog
+daily metadata provides provenance context when aggregate totals include these records. Catalog
 estimates are not invoice verification, and historical zero records are not
 retroactively repriced.
 
+Claude SDK usage intentionally retains `estimated: true` and `source: estimated`.
+New Claude rows therefore display `≈` and persist `cost_status: estimated`.
+Dollar amounts, unqualified model buckets, and token accounting remain compatible:
+Claude output totals are preserved without adding reasoning a second time.
+Historical rows keep their original provenance. The SDK is planned for removal
+after OpenCode is validated and adopted across all agents.
+
 The costs POST endpoint rejects `cost_status: unknown` with a nonzero
-`cost_usd`. Schema migration repairs any earlier inconsistent unknown rows to
-zero/incomplete and adds a database constraint, so existing aggregate queries
+`cost_usd`; omitted, null, and zero unknown amounts are stored as zero/incomplete.
+Schema migration repairs any earlier inconsistent unknown rows to zero/incomplete
+once, before installing a database constraint, so existing aggregate queries
 cannot include unknown dollar amounts. Native token completeness requires every
 expected class (`input`, `output`, `reasoning`, `cache.read`, `cache.write`) to be
 a nonnegative safe integer; missing or malformed classes remain incomplete.

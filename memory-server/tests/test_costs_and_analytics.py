@@ -137,6 +137,18 @@ async def test_cost_status_roundtrip_and_daily_subtotals(db, monkeypatch):
     assert data["daily"][0]["total_cost"] == pytest.approx(0.5)
     assert (await post({"cost_status": "verified-free"})).status_code == 400
     assert (await post({"cost_status": "unknown", "cost_usd": 9})).status_code == 400
+    for amount in [-1, "0"]:
+        assert (await post({"cost_status": "unknown", "cost_usd": amount})).status_code == 400
+
+    for body in [{"cost_usd": None}, {"cost_usd": 0}, {}]:
+        response = await post({"cost_status": "unknown", **body})
+        assert response.status_code == 201
+        saved = json.loads(bytes(response.body))
+        assert saved["cost_usd"] == 0
+        assert saved["cost_incomplete"] is True
+        persisted = await db.fetchrow("SELECT cost_usd, cost_incomplete FROM cycles WHERE id = $1", saved["id"])
+        assert persisted["cost_usd"] == 0
+        assert persisted["cost_incomplete"] is True
 
     # Simulate inconsistent pre-fix data. Schema repair must exclude it from all
     # existing aggregate queries and prevent future bypasses of POST validation.

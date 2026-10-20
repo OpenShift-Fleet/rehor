@@ -2,7 +2,6 @@ import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
 import type { createEventFactory, RehorEvent, RuntimeTerminalState } from "../../domain";
 import { asObject, boundedOperation, record, stringValue } from "../shared";
 import {
-  foldOpenCodeEvent,
   type NormalizationContext,
   type NormalizedEvents,
   normalizeOpenCodeEvent,
@@ -47,35 +46,11 @@ export async function reconcileSession(
     };
   };
 
-  try {
-    const reconciliationDeadline = Date.now() + timeoutMs;
-    const data: unknown[] = [];
-    for (const currentSession of normalization.sessionIds) {
-      const response = await boundedOperation(
-        (requestSignal) =>
-          client.session.messages({
-            path: { id: currentSession },
-            query: { directory, limit: messageLimit },
-            signal: requestSignal,
-            responseStyle: "data",
-            throwOnError: true,
-          }),
-        signal,
-        reconciliationDeadline,
-        "session messages reconciliation",
-      ).catch((error: unknown) => {
-        // A deleted/unavailable child must not discard the root evidence already fetched.
-        if (currentSession === sessionId) throw error;
-        return undefined;
-      });
-      if (response === undefined) continue;
-      const entries: unknown = unwrapSdkResponse(response, "OpenCode session messages");
-      if (Array.isArray(entries)) data.push(...entries);
-    }
-
+  const processMessages = (data: unknown[], currentSession: string): void => {
     for (const entry of data) {
       const message = record(entry);
       const info = record(message.info);
+      if (info.sessionID !== currentSession) continue;
       const messageId = typeof info.id === "string" ? info.id : undefined;
       const messageKey = `${info.sessionID}:${messageId}`;
       const isAssistant = info.role === "assistant";
@@ -90,20 +65,18 @@ export async function reconcileSession(
           type: "message.updated",
           properties: { info },
         } as unknown as OpenCodeEvent;
-        if (!unseen && !needsFinalUpdate && !info.tokens) {
-          foldOpenCodeEvent(messageEvent, normalization);
-        } else {
-          const normalized = normalizeOpenCodeEvent(messageEvent, factory, normalization, {
-            suppressModel: !unseen,
-          });
-          events.push(...normalized.events);
-          turns += normalized.turns;
-        }
+        const normalized = normalizeOpenCodeEvent(messageEvent, factory, normalization, {
+          suppressModel: !unseen,
+          usageOnly: !unseen && !needsFinalUpdate,
+        });
+        events.push(...normalized.events);
+        turns += normalized.turns;
       }
 
       const parts = Array.isArray(message.parts) ? message.parts : [];
       for (const value of parts) {
         const part = record(value);
+        if (part.sessionID !== currentSession || part.messageID !== messageId) continue;
         const partId = typeof part.id === "string" ? part.id : undefined;
         if (!partId) continue;
         const toolKey = partKey(part);
@@ -131,37 +104,72 @@ export async function reconcileSession(
           } as unknown as OpenCodeEvent,
           factory,
           normalization,
+          { usageOnly: seenPart && part.type === "step-finish" },
         );
         events.push(...normalized.events);
         normalization.seenParts.add(toolKey);
       }
     }
+  };
 
-    const statusResponse = await boundedOperation(
-      (requestSignal) =>
-        client.session.status({
-          query: { directory },
-          signal: requestSignal,
-          responseStyle: "data",
-          throwOnError: true,
-        }),
-      signal,
-      reconciliationDeadline,
-      "session status reconciliation",
-    );
-    const statuses = record(unwrapSdkResponse(statusResponse, "OpenCode session status"));
-    const rootStatus = statuses[sessionId];
-    const rootIsIdle = rootStatus === undefined || record(rootStatus).type === "idle";
-    if (rootIsIdle) {
-      const completedError = normalization.rootSessionError ?? normalization.rootAssistantError;
-      if (completedError) {
-        outcome = "failed";
-        reason = completedError;
-      } else if (data.some((entry) => isTerminalAssistantMessageEntry(entry, sessionId))) {
-        outcome = "completed";
+  try {
+    const reconciliationDeadline = Date.now() + timeoutMs;
+    const fetchMessages = async (id: string): Promise<unknown[]> => {
+      const response = await boundedOperation(
+        (requestSignal) =>
+          client.session.messages({
+            path: { id },
+            query: { directory, limit: messageLimit },
+            signal: requestSignal,
+            responseStyle: "data",
+            throwOnError: true,
+          }),
+        signal,
+        reconciliationDeadline,
+        "session messages reconciliation",
+      );
+      const entries = unwrapSdkResponse(response, "OpenCode session messages");
+      return Array.isArray(entries) ? entries : [];
+    };
+    // Root evidence determines the outcome. Children only enrich usage within
+    // the remaining budget, and must never consume the status request's budget.
+    const [messages, status] = await Promise.allSettled([
+      fetchMessages(sessionId),
+      boundedOperation(
+        (requestSignal) =>
+          client.session.status({
+            query: { directory },
+            signal: requestSignal,
+            responseStyle: "data",
+            throwOnError: true,
+          }),
+        signal,
+        reconciliationDeadline,
+        "session status reconciliation",
+      ),
+    ]);
+    const data = messages.status === "fulfilled" ? messages.value : [];
+    processMessages(data, sessionId);
+    if (status.status === "fulfilled") {
+      const statuses = record(unwrapSdkResponse(status.value, "OpenCode session status"));
+      const rootStatus = statuses[sessionId];
+      const rootIsIdle = rootStatus === undefined || record(rootStatus).type === "idle";
+      if (rootIsIdle) {
+        const completedError = normalization.rootSessionError ?? normalization.rootAssistantError;
+        if (completedError) {
+          outcome = "failed";
+          reason = completedError;
+        } else if (data.some((entry) => isTerminalAssistantMessageEntry(entry, sessionId))) {
+          outcome = "completed";
+        }
       }
     }
 
+    await Promise.allSettled(
+      [...normalization.sessionIds]
+        .filter((id) => id !== sessionId)
+        .map(async (id) => processMessages(await fetchMessages(id), id)),
+    );
     return result();
   } catch {
     return result();

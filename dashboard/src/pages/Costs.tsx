@@ -10,7 +10,7 @@ import {
   FlexItem,
   Label,
   MenuToggle,
-  MenuToggleElement,
+  type MenuToggleElement,
   Select,
   SelectList,
   SelectOption,
@@ -444,11 +444,12 @@ export default function Costs({ instanceId }: { instanceId?: string }) {
         <Alert
           variant="info"
           isInline
-          title="Cost totals include estimates or incomplete usage"
+          title="About cost reporting"
           style={{ marginBottom: "16px" }}
         >
-          Catalog estimates use published list prices, not invoice totals. Unknown usage is excluded
-          from dollar totals; incomplete amounts are known subtotals.
+          Approximate (≈) amounts are runtime or catalog estimates, not verified invoice totals.
+          Unknown records have no known dollar amount and are excluded from dollar totals;
+          incomplete records show known subtotals and may be missing usage.
         </Alert>
       )}
       <Flex

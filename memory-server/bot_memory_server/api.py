@@ -755,8 +755,11 @@ async def _api_costs_add(request: Request) -> JSONResponse:
     cost_status = body.get("cost_status")
     if cost_status not in (None, "provider", "estimated", "unknown"):
         return JSONResponse({"error": "Invalid cost_status"}, status_code=400)
-    if cost_status == "unknown" and body.get("cost_usd", 0) != 0:
-        return JSONResponse({"error": "Unknown cost must have cost_usd = 0"}, status_code=400)
+    cost_usd = body.get("cost_usd", 0)
+    if cost_status == "unknown":
+        if cost_usd not in (None, 0):
+            return JSONResponse({"error": "Unknown cost must have cost_usd = 0"}, status_code=400)
+        cost_usd = 0
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
@@ -771,7 +774,7 @@ async def _api_costs_add(request: Request) -> JSONResponse:
         body.get("session_id", ""),
         body.get("num_turns", 0),
         body.get("duration_ms", 0),
-        body.get("cost_usd", 0),
+        cost_usd,
         body.get("input_tokens", 0),
         body.get("output_tokens", 0),
         body.get("cache_read_tokens", 0),

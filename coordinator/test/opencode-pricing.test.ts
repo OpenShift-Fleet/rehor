@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toLegacyCostEntry } from "../src/adapters/compatibility";
 import {
   createEventFactory,
@@ -124,6 +124,7 @@ describe("canonical OpenCode pricing", () => {
     ["rehor-openai-chat/gpt-6-luna", 0.00057],
     ["vertex/claude-opus-4-6", 0.0285],
     ["vertex/claude-sonnet-4-6", 0.0171],
+    ["vertex/claude-haiku-4-5", 0.0057],
     ["vertex/claude-haiku-4-5@20251001", 0.0057],
   ])("prices %s cache and visible/reasoning output", (model, amount) => {
     expect(
@@ -140,10 +141,28 @@ describe("canonical OpenCode pricing", () => {
     expect(pricingModel("vertex/claude-opus-4-6")).toBe(
       "google-vertex-anthropic/claude-opus-4-6@default",
     );
-    expect(usageCost("vertex/claude-haiku-4-5", {}, 0)).toBeUndefined();
+    expect(pricingModel("vertex/claude-haiku-4-5")).toBe(
+      "google-vertex-anthropic/claude-haiku-4-5@20251001",
+    );
+    expect(pricingModel("google-vertex-anthropic/claude-haiku-4-5")).toBe(
+      "google-vertex-anthropic/claude-haiku-4-5@20251001",
+    );
+    expect(usageCost("vertex/claude-haiku-4-5@other", {}, 0)).toBeUndefined();
     expect(usageCost("anthropic/claude-opus-4-6", {}, 0)).toBeUndefined();
     expect(usageCost("unknown/gpt-6.1-sol", {}, 0)).toBeUndefined();
   });
+
+  it.each(["gpt-6.1-sol", "claude-haiku-4-5", ""])(
+    "leaves unqualified %s unchanged without guessing provider pricing",
+    (model) => {
+      expect(pricingModel(model)).toBe(model);
+      expect(usageCost(model, { input: 1000 }, 0)).toBeUndefined();
+      expect(usageCost(model, { input: 1000 }, 0.25)).toMatchObject({
+        amount: 0.25,
+        source: "provider",
+      });
+    },
+  );
 
   it("honors explicit thresholds including cached context, not legacy 200K fallback", () => {
     const sol = catalog.models["openai/gpt-6.1-sol"];
@@ -190,6 +209,189 @@ describe("canonical OpenCode pricing", () => {
 });
 
 describe("per-step usage and compatibility", () => {
+  it.each(["completed", "failed"])(
+    "preserves %s root outcome and valid sibling usage while children time out or fail",
+    async (outcome) => {
+      vi.useFakeTimers();
+      try {
+        const h = harness();
+        for (const id of ["slow", "unavailable", "malformed", "nonarray", "invalid-entry", "valid"])
+          h.context.sessionIds.add(id);
+        const calls: string[] = [];
+        let childSignal: AbortSignal | undefined;
+        const client = {
+          session: {
+            messages: async ({ path, signal }: { path: { id: string }; signal: AbortSignal }) => {
+              calls.push(path.id);
+              if (path.id === "slow") {
+                childSignal = signal;
+                return new Promise(() => {}); // Deliberately ignores cancellation.
+              }
+              if (path.id === "unavailable") throw new Error("session deleted");
+              if (path.id === "malformed") return { error: { message: "invalid response" } };
+              if (path.id === "nonarray") return { data: { unexpected: true } };
+              if (path.id === "invalid-entry") return [null, { info: h.info(), parts: [] }];
+              const root = path.id === "root";
+              return [
+                {
+                  info: {
+                    ...h.info("msg", path.id),
+                    finish: "stop",
+                    ...(root && outcome === "failed" ? { error: { message: "root failed" } } : {}),
+                  },
+                  parts: [
+                    {
+                      id: "step",
+                      messageID: "msg",
+                      sessionID: path.id,
+                      type: "step-finish",
+                      tokens: counts(),
+                      cost: 0,
+                    },
+                  ],
+                },
+              ];
+            },
+            status: async () => {
+              calls.push("status");
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              return { root: { type: "idle" } };
+            },
+          },
+        } as unknown as OpencodeClient;
+        const pending = reconcileSession(
+          { client, sessionId: "root", directory: "/tmp", controller: new AbortController() },
+          h.factory,
+          h.context,
+          100,
+          100,
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        expect(calls).toEqual(["root", "status"]);
+        await vi.advanceTimersByTimeAsync(30);
+        expect(calls).toContain("valid");
+        expect(childSignal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(69);
+        expect(childSignal?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        const result = await pending;
+        expect(result.outcome).toBe(outcome);
+        expect(result.reason).toBe(outcome === "failed" ? "root failed" : undefined);
+        expect(result.turns).toBe(1);
+        expect(childSignal?.aborted).toBe(true);
+        h.events.push(...result.events);
+        const record = await h.project();
+        expect(record).toMatchObject({ inputTokens: 2000, costIncomplete: false });
+        expect(record.costUsd).toBeCloseTo(0.0224);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("bounds child reconciliation by active cancellation while retaining root outcome", async () => {
+    const h = harness();
+    h.context.sessionIds.add("child");
+    const controller = new AbortController();
+    let childSignal: AbortSignal | undefined;
+    const client = {
+      session: {
+        messages: async ({ path, signal }: { path: { id: string }; signal: AbortSignal }) => {
+          if (path.id === "root") return [{ info: { ...h.info(), finish: "stop" }, parts: [] }];
+          childSignal = signal;
+          controller.abort("cancelled");
+          return new Promise(() => {});
+        },
+        status: async () => ({}),
+      },
+    } as unknown as OpencodeClient;
+    const result = await reconcileSession(
+      { client, sessionId: "root", directory: "/tmp", controller },
+      h.factory,
+      h.context,
+      1000,
+      100,
+    );
+    expect(childSignal?.aborted).toBe(true);
+    expect(result.outcome).toBe("completed");
+    expect(result.events.some((event) => event.kind === "usage")).toBe(true);
+  });
+
+  it("refreshes seen errored assistants and steps without replaying lifecycle events", async () => {
+    const h = harness();
+    const info = { ...h.info(), error: { message: "provider failed" }, finish: "stop" };
+    h.send("message.updated", { info });
+    const step = h.step();
+    const correctedInfo = { ...info, cost: 0.5, tokens: counts(2000) };
+    const correctedStep = { ...step, tokens: counts(2000) };
+    const client = {
+      session: {
+        messages: async () => [{ info: correctedInfo, parts: [correctedStep] }],
+        status: async () => ({}),
+      },
+    } as unknown as OpencodeClient;
+    for (let i = 0; i < 2; i++) {
+      const result = await reconcileSession(
+        { client, sessionId: "root", directory: "/tmp", controller: new AbortController() },
+        h.factory,
+        h.context,
+        1000,
+        100,
+      );
+      expect(result).toMatchObject({ outcome: "failed", reason: "provider failed", turns: 0 });
+      expect(result.events.every((event) => event.kind === "usage")).toBe(true);
+      h.events.push(...result.events);
+    }
+    expect(h.events.filter((event) => event.kind === "error")).toHaveLength(1);
+    expect(h.events.filter((event) => event.kind === "model")).toHaveLength(1);
+    expect(h.events.filter((event) => event.payload.state === "step_finished")).toHaveLength(1);
+    expect(await h.project()).toMatchObject({
+      costUsd: 0.5,
+      inputTokens: 2000,
+      costStatus: "provider",
+    });
+  });
+
+  it("retains unseen messages, final completions, and unseen step lifecycle events", async () => {
+    const h = harness();
+    h.message("msg", "root", "rehor-openai", "gpt-6.1-sol", false);
+    const client = {
+      session: {
+        messages: async () => [
+          {
+            info: { ...h.info(), finish: "stop" },
+            parts: [
+              {
+                id: "final-step",
+                messageID: "msg",
+                sessionID: "root",
+                type: "step-finish",
+                tokens: counts(),
+                cost: 0,
+              },
+            ],
+          },
+          { info: { ...h.info("unseen"), error: { message: "new error" } }, parts: [] },
+        ],
+        status: async () => ({}),
+      },
+    } as unknown as OpencodeClient;
+    const result = await reconcileSession(
+      { client, sessionId: "root", directory: "/tmp", controller: new AbortController() },
+      h.factory,
+      h.context,
+      1000,
+      100,
+    );
+    expect(result.turns).toBe(2);
+    expect(result.events.filter((event) => event.kind === "model")).toHaveLength(1);
+    expect(result.events.filter((event) => event.kind === "error")).toHaveLength(1);
+    expect(result.events.filter((event) => event.payload.state === "step_finished")).toHaveLength(
+      1,
+    );
+    expect(h.context.countedMessages.size).toBe(2);
+  });
+
   it("retains reconciled root usage when a known child is unavailable", async () => {
     const h = harness();
     h.context.sessionIds.add("child");

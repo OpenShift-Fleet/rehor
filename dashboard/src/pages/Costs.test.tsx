@@ -52,9 +52,11 @@ describe("Costs page", () => {
     expect(screen.getByText("≈$0.15")).toBeInTheDocument();
     expect(screen.getByText("≈$0.25 (incomplete)")).toBeInTheDocument();
     expect(screen.getByText("$0.35")).toBeInTheDocument();
+    expect(screen.getByText("About cost reporting")).toBeInTheDocument();
     expect(
-      screen.getByText("Cost totals include estimates or incomplete usage"),
+      screen.getByText(/runtime or catalog estimates, not verified invoice totals/),
     ).toBeInTheDocument();
+    expect(screen.getByText(/incomplete records show known subtotals/)).toBeInTheDocument();
   });
   it("handles malformed analytics response", async () => {
     // Mock API returns costs but analytics is missing fields

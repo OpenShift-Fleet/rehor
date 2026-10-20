@@ -43,10 +43,20 @@ const cases = [
     write: 3000,
     amount: 0.0171,
   },
+  {
+    provider: "vertex",
+    model: "claude-haiku-4-5",
+    input: 1000,
+    output: 100,
+    reasoning: 50,
+    read: 2000,
+    write: 3000,
+    amount: 0.0057,
+  },
 ] as const;
 
 /** Small protocol fixtures exercise the real bundled/native SDKs, not a fake provider. */
-function mockStream(provider: string): string {
+function mockStream(provider: string, model: string): string {
   const event = (type: string, fields: Record<string, unknown> = {}) =>
     `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
   if (provider === "vertex") {
@@ -55,7 +65,7 @@ function mockStream(provider: string): string {
         message: {
           id: "msg_mock",
           role: "assistant",
-          model: "claude-sonnet-4-6",
+          model,
           content: [],
           usage: {
             input_tokens: 1000,
@@ -171,7 +181,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
         body: JSON.parse(body),
       });
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(mockStream(testCase.provider));
+      res.end(mockStream(testCase.provider, testCase.model));
     });
     // Exercise the production adapter's fixed proxy port, not a relaxed test adapter.
     await new Promise<void>((resolve, reject) => {
@@ -247,7 +257,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
       expect(requests).toHaveLength(1);
       if (testCase.provider === "vertex") {
         expect(requests[0]).toMatchObject({
-          path: "/v1/projects/dummy-project/locations/dummy-region/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict",
+          path: `/v1/projects/dummy-project/locations/dummy-region/publishers/anthropic/models/${testCase.model}:streamRawPredict`,
           authorization: "Bearer rehor-proxy-placeholder",
           body: { anthropic_version: "vertex-2023-10-16", stream: true },
         });

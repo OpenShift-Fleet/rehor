@@ -19,12 +19,14 @@ const providerAliases: Readonly<Record<string, string>> = {
   vertex: "google-vertex-anthropic",
 };
 const vertexAliases: Readonly<Record<string, string>> = {
+  "claude-haiku-4-5": "claude-haiku-4-5@20251001",
   "claude-opus-4-6": "claude-opus-4-6@default",
   "claude-sonnet-4-6": "claude-sonnet-4-6@default",
 };
 
 export function pricingModel(model: string): string {
   const slash = model.indexOf("/");
+  if (slash < 0) return model;
   const provider = model.slice(0, slash);
   let id = model.slice(slash + 1);
   const canonical = providerAliases[provider] ?? provider;
