@@ -56,6 +56,26 @@ const cycle: CycleRunRecord = {
 };
 
 describe("compatibility adapters", () => {
+  it.each(["estimated", "unknown"] as const)(
+    "preserves %s cost status identically in JSONL and HTTP",
+    async (costStatus) => {
+      const dataDirectory = await mkdtemp(join(tmpdir(), "rehor-cost-status-"));
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}", { status: 201 }));
+      const sink = createCompatibilitySink({
+        dataDirectory,
+        costsUrl: "http://memory-server/api/costs",
+        fetch,
+      });
+      await sink.writers.costs?.write({ ...cost, costStatus, costIncomplete: true });
+      const local = JSON.parse(await readFile(join(dataDirectory, "costs.jsonl"), "utf8"));
+      expect(local).toMatchObject({
+        cost_status: costStatus,
+        cost_incomplete: true,
+        cost_usd: cost.costUsd,
+      });
+      expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(local);
+    },
+  );
   it("keeps the legacy cost JSONL shape while retaining coordinator identity", () => {
     expect(toLegacyCostEntry(cost)).toMatchObject({
       timestamp: cost.timestamp,

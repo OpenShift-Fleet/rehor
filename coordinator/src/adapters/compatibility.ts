@@ -307,6 +307,8 @@ export function toLegacyCostEntry(record: CostRecord): Record<string, unknown> {
     num_turns: record.numTurns,
     duration_ms: record.durationMs,
     cost_usd: record.costUsd,
+    ...(record.costStatus ? { cost_status: record.costStatus } : {}),
+    ...(record.costIncomplete === undefined ? {} : { cost_incomplete: record.costIncomplete }),
     input_tokens: record.inputTokens,
     output_tokens: record.outputTokens,
     cache_read_tokens: record.cacheReadTokens,

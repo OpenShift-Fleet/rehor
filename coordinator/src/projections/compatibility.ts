@@ -27,6 +27,8 @@ interface UsageTotals {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number;
+  costStatus: "provider" | "estimated" | "unknown";
+  costIncomplete: boolean;
   modelUsage: Readonly<Record<string, Readonly<Record<string, number>>>>;
   model: string;
 }
@@ -133,12 +135,12 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
 
   private recordUsage(state: ProjectionState, event: RehorEvent): void {
     const usage = event.payload as Usage;
-    const model = usage.returnedModel ?? usage.requestedModel;
+    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
     const previous = state.usages.get(model);
-    // Usage events are snapshots per returned model: final wins over partial,
-    // latest partial replaces old partial. Returned model keeps subagent and
-    // compaction usage from collapsing into the requested model entry.
-    if (!previous || usage.final || !previous.final) {
+    // Legacy snapshots prefer final over partial. OpenCode modelKey snapshots
+    // already include all root/child messages, so a later partial snapshot can
+    // legitimately add a new step/message after an earlier final snapshot.
+    if (usage.modelKey || !previous || usage.final || !previous.final) {
       state.usages.set(model, usage);
     }
   }
@@ -255,6 +257,8 @@ function buildCostRecord(
     numTurns: event.payload.turns ?? 0,
     durationMs,
     costUsd: totals.costUsd,
+    costStatus: totals.costStatus,
+    costIncomplete: totals.costIncomplete,
     inputTokens: totals.inputTokens,
     outputTokens: totals.outputTokens,
     cacheReadTokens: totals.cacheReadTokens,
@@ -420,20 +424,34 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
   let costUsd = 0;
+  let hasCost = false;
+  let estimated = false;
+  let costIncomplete = false;
   const modelUsage: Record<string, Record<string, number>> = {};
 
   for (const usage of usages.values()) {
-    const model = usage.returnedModel ?? usage.requestedModel;
-    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 } = usage.tokenCounts;
+    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
+    const {
+      input = 0,
+      output = 0,
+      reasoning = 0,
+      cacheRead = 0,
+      cacheWrite = 0,
+    } = usage.tokenCounts;
+    // OpenCode separates visible output and reasoning; preserve legacy Claude totals.
+    const billedOutput = output + (usage.modelKey ? reasoning : 0);
     const modelCounts = modelUsage[model] ?? {};
     modelUsage[model] = modelCounts;
     inputTokens += input;
-    outputTokens += output;
+    outputTokens += billedOutput;
     cacheReadTokens += cacheRead;
     cacheWriteTokens += cacheWrite;
-    costUsd += usage.cost?.amount ?? 0;
+    costUsd += usage.cost?.source === "unknown" ? 0 : (usage.cost?.amount ?? 0);
+    hasCost ||= usage.cost !== undefined && usage.cost.source !== "unknown";
+    estimated ||= usage.estimated || usage.cost?.source === "estimated";
+    costIncomplete ||= usage.incomplete || !usage.cost || usage.cost.source === "unknown";
     modelCounts.input_tokens = (modelCounts.input_tokens ?? 0) + input;
-    modelCounts.output_tokens = (modelCounts.output_tokens ?? 0) + output;
+    modelCounts.output_tokens = (modelCounts.output_tokens ?? 0) + billedOutput;
     modelCounts.cache_read_input_tokens = (modelCounts.cache_read_input_tokens ?? 0) + cacheRead;
     modelCounts.cache_creation_input_tokens =
       (modelCounts.cache_creation_input_tokens ?? 0) + cacheWrite;
@@ -445,6 +463,8 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
     cacheReadTokens,
     cacheWriteTokens,
     costUsd,
+    costStatus: !hasCost ? "unknown" : estimated ? "estimated" : "provider",
+    costIncomplete: costIncomplete || !hasCost,
     modelUsage,
     model: Object.keys(modelUsage)[0] ?? run.provider.requestedModel,
   };

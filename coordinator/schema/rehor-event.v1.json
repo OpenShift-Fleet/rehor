@@ -65,7 +65,8 @@
       "properties": {
         "amount": { "type": "number", "minimum": 0 },
         "currency": { "type": "string", "minLength": 1 },
-        "source": { "enum": ["provider", "estimated", "unknown"] }
+        "source": { "enum": ["provider", "estimated", "unknown"] },
+        "pricing": { "type": "string" }
       }
     },
     "usagePayload": {
@@ -74,6 +75,7 @@
       "required": ["requestedModel", "tokenCounts", "partial", "final", "estimated", "incomplete"],
       "properties": {
         "requestedModel": { "type": "string", "minLength": 1 },
+        "modelKey": { "type": "string", "minLength": 1 },
         "returnedModel": { "type": "string", "minLength": 1 },
         "tokenCounts": { "$ref": "#/$defs/tokenCounts" },
         "partial": { "type": "boolean" },

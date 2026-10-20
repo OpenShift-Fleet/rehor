@@ -2000,7 +2000,7 @@ describe("OpenCode runtime", () => {
     });
   });
 
-  it("buckets root and child usage by the bare returned model", async () => {
+  it("buckets root and child usage by the provider-qualified returned model", async () => {
     const costs: unknown[] = [];
     const { runtime } = fakeRuntime({
       events: [
@@ -2069,7 +2069,7 @@ describe("OpenCode runtime", () => {
       outputTokens: 5,
     });
     expect((costs[0] as { modelUsage: Record<string, unknown> }).modelUsage).toEqual({
-      "claude-x": {
+      "anthropic/claude-x": {
         input_tokens: 15,
         output_tokens: 5,
         cache_read_input_tokens: 1,

@@ -42,6 +42,8 @@ export interface CostRecord {
   numTurns: number;
   durationMs: number;
   costUsd: number;
+  costStatus?: "provider" | "estimated" | "unknown";
+  costIncomplete?: boolean;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;

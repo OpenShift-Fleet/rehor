@@ -49,39 +49,48 @@ export async function reconcileSession(
 
   try {
     const reconciliationDeadline = Date.now() + timeoutMs;
-    const response = await boundedOperation(
-      (requestSignal) =>
-        client.session.messages({
-          path: { id: sessionId },
-          query: { directory, limit: messageLimit },
-          signal: requestSignal,
-          responseStyle: "data",
-          throwOnError: true,
-        }),
-      signal,
-      reconciliationDeadline,
-      "session messages reconciliation",
-    );
-    const data: unknown = unwrapSdkResponse(response, "OpenCode session messages");
-    if (!Array.isArray(data)) return result();
+    const data: unknown[] = [];
+    for (const currentSession of normalization.sessionIds) {
+      const response = await boundedOperation(
+        (requestSignal) =>
+          client.session.messages({
+            path: { id: currentSession },
+            query: { directory, limit: messageLimit },
+            signal: requestSignal,
+            responseStyle: "data",
+            throwOnError: true,
+          }),
+        signal,
+        reconciliationDeadline,
+        "session messages reconciliation",
+      ).catch((error: unknown) => {
+        // A deleted/unavailable child must not discard the root evidence already fetched.
+        if (currentSession === sessionId) throw error;
+        return undefined;
+      });
+      if (response === undefined) continue;
+      const entries: unknown = unwrapSdkResponse(response, "OpenCode session messages");
+      if (Array.isArray(entries)) data.push(...entries);
+    }
 
     for (const entry of data) {
       const message = record(entry);
       const info = record(message.info);
       const messageId = typeof info.id === "string" ? info.id : undefined;
+      const messageKey = `${info.sessionID}:${messageId}`;
       const isAssistant = info.role === "assistant";
       const completed = Boolean(asObject(info.time)?.completed);
       if (messageId && typeof info.role === "string") {
-        normalization.messageRoles.set(messageId, info.role);
+        normalization.messageRoles.set(messageKey, info.role);
       }
       if (isAssistant && messageId) {
-        const unseen = !normalization.seenMessages.has(messageId);
-        const needsFinalUpdate = completed && !normalization.completedMessages.has(messageId);
+        const unseen = !normalization.seenMessages.has(messageKey);
+        const needsFinalUpdate = completed && !normalization.completedMessages.has(messageKey);
         const messageEvent = {
           type: "message.updated",
           properties: { info },
         } as unknown as OpenCodeEvent;
-        if (!unseen && !needsFinalUpdate) {
+        if (!unseen && !needsFinalUpdate && !info.tokens) {
           foldOpenCodeEvent(messageEvent, normalization);
         } else {
           const normalized = normalizeOpenCodeEvent(messageEvent, factory, normalization, {
@@ -100,16 +109,19 @@ export async function reconcileSession(
         const toolKey = partKey(part);
         const toolCompleted =
           part.type === "tool" && normalization.toolPhases.get(toolKey) === "completed";
-        const seenPart = normalization.seenParts.has(partId);
+        const seenPart = normalization.seenParts.has(toolKey);
         if (part.type === "text" && part.sessionID === sessionId) {
           const text = stringValue(part.text, "");
           const changed = normalization.resultTextParts.get(partId) !== text;
           normalization.resultTextParts.set(partId, text);
           if (!changed) {
-            normalization.seenParts.add(partId);
+            normalization.seenParts.add(toolKey);
             continue;
           }
-        } else if ((seenPart && part.type !== "tool") || (seenPart && toolCompleted)) {
+        } else if (
+          (seenPart && part.type !== "tool" && part.type !== "step-finish") ||
+          (seenPart && toolCompleted)
+        ) {
           continue;
         }
         const normalized = normalizeOpenCodeEvent(
@@ -121,7 +133,7 @@ export async function reconcileSession(
           normalization,
         );
         events.push(...normalized.events);
-        normalization.seenParts.add(partId);
+        normalization.seenParts.add(toolKey);
       }
     }
 

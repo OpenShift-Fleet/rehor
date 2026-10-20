@@ -710,6 +710,97 @@ Do not assume OpenAI streaming always includes final usage. Store partial-cycle
 records and mark usage incomplete when stream terminates before final usage
 event.
 
+### OpenCode cost estimates (REHOR-197)
+
+The coordinator bundles a generated, minimal pricing registry in
+`coordinator/src/runtimes/opencode-v1/pricing.json`. Its source is the **baked
+OpenCode 1.18.35 models.dev catalog**, independent of the **1.18.29 execution
+runtime**. The older runtime snapshot lacks the exact Sol/Luna IDs. The registry
+records the source version, upstream reference, binary SHA-256 and a canonical
+pricing-content SHA-256. No catalog is downloaded at runtime, and instances do
+not maintain their own prices.
+
+To regenerate, obtain the official pinned OpenCode 1.18.35 executable for your
+platform, then run from the repository root:
+
+```bash
+python3 coordinator/scripts/opencode-pricing.py /path/to/opencode-1.18.35 > /tmp/opencode-pricing.json
+diff -u coordinator/src/runtimes/opencode-v1/pricing.json /tmp/opencode-pricing.json
+```
+
+Review the generated model/rate changes and replace the registry with the reviewed
+output. Formatting differences are harmless; the content hash is independent of
+JSON whitespace. The binary hash is platform-specific. To add a supported model,
+extend the script's explicit model list and regenerate; do not type rates into
+instance configuration. The script runs only `--version` and `models --verbose
+--pure`, with empty temporary HOME/XDG directories, no inherited credentials,
+model fetching disabled, and no provider model overlays. It never runs inference.
+
+Pricing aliases are centralized in `pricing.ts`: `rehor-openai` and
+`rehor-openai-chat` use canonical `openai` rates; `vertex` uses
+`google-vertex-anthropic`, with `claude-opus-4-6@default`,
+`claude-sonnet-4-6@default`, and exact dated `claude-haiku-4-5@20251001` entries.
+These are pricing aliases only; API/proxy model IDs remain unchanged. No
+direct-Anthropic substitution or model-family guessing occurs.
+
+The normalizer retains each `step-finish` by session/message/part identity and
+replaces duplicate or reconciled records. Steps supersede assistant token
+summaries: native assistant cost accumulates across steps, while assistant tokens
+describe only the last step. Known child sessions are reconciled too. Snapshots
+are cumulative per provider-qualified model, so root/child usage and different
+providers cannot overwrite each other in the legacy projection.
+
+The estimate uses noncached input, visible output plus reasoning, cache-read,
+and cache-write counts at their respective USD-per-million rates. Native counts
+have already separated cache and reasoning; they must not be subtracted again.
+Tier selection uses total input including cached tokens, separately for each
+step, with strict `context > threshold`. Explicit tiers are authoritative;
+legacy `experimentalOver200K` applies only when explicit tiers are absent. This
+deliberately avoids the native V1 fallback that can incorrectly charge 272K-tier
+OpenAI models at elevated rates between 200K and 272K. Cache duration-specific,
+discounted, regional and negotiated billing is not inferred from token counts.
+
+Positive native costs retain precedence, including an interrupted assistant's
+cumulative native cost; incomplete messages remain marked incomplete. This
+precedence is intentional even for builtin providers: a positive OpenCode-reported
+amount can retain the native 1.18.29 tier bug. Corrected tier selection applies to
+catalog-backed estimates, not a silent replacement of positive native reports.
+The `provider` status means runtime-reported cost, not independently verified
+invoice billing. Native zero alone is not proof of free
+usage: known models receive catalog estimates, and unpriced models remain
+unknown. Missing step evidence is marked incomplete; known subtotal amounts can
+coexist with unpriced usage. Local `costs.jsonl` and `/api/costs` carry optional
+`cost_status` (`provider`, `estimated`, `unknown`) and `cost_incomplete`. The
+numeric `cost_usd` remains backward-compatible and represents the known subtotal.
+Legacy records have no invented provenance. Dashboard rows show `≈` for
+estimates, `Unknown` for unpriced totals, and an incomplete label for subtotals;
+daily metadata warns when aggregate totals include these records. Catalog
+estimates are not invoice verification, and historical zero records are not
+retroactively repriced.
+
+The costs POST endpoint rejects `cost_status: unknown` with a nonzero
+`cost_usd`. Schema migration repairs any earlier inconsistent unknown rows to
+zero/incomplete and adds a database constraint, so existing aggregate queries
+cannot include unknown dollar amounts. Native token completeness requires every
+expected class (`input`, `output`, `reasoning`, `cache.read`, `cache.write`) to be
+a nonnegative safe integer; missing or malformed classes remain incomplete.
+
+Offline native token/cost smoke (no paid calls):
+
+```bash
+npm --prefix coordinator test -- test/opencode-pricing.test.ts
+npm --prefix coordinator run build
+REHOR_TEST_OPENCODE_BINARY=/path/to/opencode-1.18.29 npm --prefix coordinator test -- test/opencode-pricing-native.test.ts
+```
+
+The opt-in smoke uses isolated native processes and credential-free loopback
+Chat Completions, Luna Responses, and Vertex Anthropic Messages mocks. It uses
+the built coordinator renderer and real packaged Vertex adapter (mock bound to
+`127.0.0.1:8443`, which must be free). It verifies native zero-cost custom-provider
+output, normalized cache/reasoning counts including Vertex cache writes, proxy
+request path/placeholder authorization, and the coordinator normalizer estimate. Live proxy
+billing remains a separate deployment validation.
+
 ## Validation and Rollback
 
 Canary acceptance criteria:
