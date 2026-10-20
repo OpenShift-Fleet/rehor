@@ -208,7 +208,9 @@ export async function writeOpenCodeConfig(
   }
   await Promise.all([
     writeFile(globalConfigPath, rendered.json, "utf8"),
-    writeFile(configPath, `${stableJson(profileConfig)}\n`, "utf8"),
+    // Native permission objects are ordered rules, including wildcard tool names.
+    // Sorting profile keys would silently change last-match evaluation before the hook.
+    writeFile(configPath, `${JSON.stringify(profileConfig)}\n`, "utf8"),
     writeFile(packageLockPath, `${stableJson(rendered.packageLock)}\n`, "utf8"),
   ]);
   return {
@@ -309,7 +311,8 @@ function validateOpenCodeProjectConfig(
     mcp: configuredMcp,
   });
   const hash = createHash("sha256").update(stableJson(config), "utf8");
-  hash.update("\0").update(stableJson(profileConfig), "utf8");
+  // Permission order is semantic: reordered profile rules must invalidate reuse.
+  hash.update("\0").update(JSON.stringify(profileConfig), "utf8");
   for (const file of files) {
     hash.update("\0").update(file.path, "utf8").update("\0").update(file.content, "utf8");
   }
@@ -782,7 +785,6 @@ function renderPermissions(
   if (additionalDirectories.length > 0) {
     const directories: Record<string, JsonValue> = { "*": "deny" };
     for (const directory of additionalDirectories) {
-      directories[directory] = "allow";
       directories[`${directory}/*`] = "allow";
     }
     permissions.external_directory = directories;

@@ -2745,7 +2745,6 @@ describe("OpenCode process supervisor", () => {
           read: "deny",
           external_directory: {
             "*": "deny",
-            "/tmp/opencode": "allow",
             "/tmp/opencode/*": "allow",
           },
         },

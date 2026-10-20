@@ -25,7 +25,7 @@ Agent implementation changes belong under `/home/botuser/repos`. Never write run
 
 This table describes the intended deployment contract, not isolation supplied by OpenCode. The generic template mounts writable `emptyDir` volumes at `/home/botuser/repos`, `/home/botuser/data`, and `/tmp`; it does not by itself make every other path read-only or enforce credential-path denials. Verify effective OpenShell policy and OS permissions separately. The onboarding template currently relies on its writable image filesystem and `/tmp` rather than adding these mounts.
 
-For OpenCode, supplemental access outside the cycle worktree comes from trusted deployment `additionalDirectories`. Onboarding approves only `/home/botuser/repos`, `/home/botuser/data`, and `/tmp/opencode`, with exact-root and descendant rules. This does not grant all of `/tmp` or `/home/botuser`. Native agent JSON/Markdown cannot widen this external-directory boundary; stricter per-agent denials remain. These are tool permission checks, not a filesystem or Bash sandbox. See [runtime budget and permission semantics](migrations/opencode-migration.md#runtime-specific-budgets-rehor-198).
+For OpenCode, supplemental access outside the cycle worktree comes from trusted deployment `additionalDirectories`. Onboarding approves only `/home/botuser/repos`, `/home/botuser/data`, and `/tmp/opencode`, using `root/*` rules. Native checks request `directory/*`, so these rules cover the root directory itself and descendants without separate exact-root entries. This does not grant all of `/tmp` or `/home/botuser`. Native agent JSON/Markdown cannot widen this external-directory boundary. Agent `allow`, `ask`, and `deny` rules retain native last-match ordering inside approved roots: later broad allows can override earlier narrow restrictions, and later asks or denies can restrict earlier grants. Outside requests remain denied. Other tool permissions remain unchanged. These are tool permission checks, not a filesystem or Bash sandbox. See [runtime budget and permission semantics](migrations/opencode-migration.md#runtime-specific-budgets-rehor-198).
 
 ## OpenCode Budget and Workspace Rollout (REHOR-198)
 
@@ -53,7 +53,7 @@ Live paid smoke testing has not been completed. A pod Pending for CPU or memory 
 
 Sandbox egress allows only:
 
-- `devbot-proxy` ports `3128`, `8443`, `8444`, `8446`, `8447`, `8448`, `8450` (OpenAI-compatible gateway), and `9090`.
+- `devbot-proxy` ports `3128`, `8443`, `8444`, `8446`, and `9090`.
 - `devbot-memory-server` port `8080`.
 - OpenShift DNS on TCP/UDP `53`.
 

@@ -39,11 +39,8 @@ describe("OpenCode V1 config renderer", () => {
     );
     const expected = {
       "*": "deny",
-      "/home/botuser/data": "allow",
       "/home/botuser/data/*": "allow",
-      "/home/botuser/repos": "allow",
       "/home/botuser/repos/*": "allow",
-      "/tmp/opencode": "allow",
       "/tmp/opencode/*": "allow",
     };
     expect(rendered.config.permission).toMatchObject({ external_directory: expected });
