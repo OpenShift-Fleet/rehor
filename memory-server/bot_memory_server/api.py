@@ -1214,7 +1214,7 @@ async def api_cycle_run_transcript(request: Request) -> Response:
 
             decompressor = zstd.ZstdDecompressor().decompressobj()
             decompressed = decompressor.decompress(transcript)
-            if not decompressor.eof:
+            if not decompressor.eof or decompressor.unused_data:
                 raise zstd.ZstdError("incomplete zstd frame")
             return Response(
                 content=decompressed,
