@@ -429,6 +429,28 @@ describe("OpenCode instance project config", () => {
     ).toThrow("must use a declared npm package");
   });
 
+  it("rejects instance directory grants and preserves stricter external-directory denials", () => {
+    const trusted = { ...deployment, additionalDirectories: ["/tmp/opencode"] };
+    const settingsToReject: JsonObject[] = [
+      { additionalDirectories: ["/home/botuser"] },
+      { permission: { external_directory: "allow" } },
+      { permission: { external_directory: { "/home/botuser/*": "allow" } } },
+    ];
+    for (const settings of settingsToReject) {
+      expect(() =>
+        renderOpenCodeV1ConfigForCycle(preparation, "rehor-openai", trusted, {
+          settings,
+          files: [],
+        }),
+      ).toThrow();
+    }
+    const rendered = renderOpenCodeV1ConfigForCycle(preparation, "rehor-openai", trusted, {
+      settings: { permission: { external_directory: "deny" } },
+      files: [],
+    });
+    expect(JSON.parse(rendered.enforcementJson).permission.external_directory).toBe("deny");
+  });
+
   it("rejects profile symlinks", async () => {
     const directory = await tempDirectory();
     const profile = join(directory, "agent");

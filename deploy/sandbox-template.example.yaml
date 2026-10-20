@@ -19,6 +19,9 @@ parameters:
   required: true
 - name: BOT_CONFIG_PATH
   required: true
+- name: REHOR_OPENCODE_MAX_TOOL_CALLS
+  description: Optional OpenCode tool-call budget override; empty preserves the image configuration.
+  value: ""
 - name: BOT_BOARD_NAME
   value: ""
 - name: BOT_SPRINT_PREFIX
@@ -173,6 +176,8 @@ objects:
             value: ${BOT_CONFIG_REPO}
           - name: BOT_CONFIG_PATH
             value: ${BOT_CONFIG_PATH}
+          - name: REHOR_OPENCODE_MAX_TOOL_CALLS
+            value: ${REHOR_OPENCODE_MAX_TOOL_CALLS}
           - name: BOT_DASHBOARD_URL
             value: http://devbot-memory-server:8080/api/bot-status
           - name: COSTS_API_URL

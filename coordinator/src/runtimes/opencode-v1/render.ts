@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 
 import type { ConfigPreparationResult } from "../../ports/python-bridge";
 import type { McpServerConfig } from "../../ports/runtime-config";
@@ -132,6 +132,7 @@ export function renderOpenCodeV1Config(input: OpenCodeV1ConfigInput): RenderedOp
     input.allowedTools ?? [],
     Object.keys(mcp),
     input.optionalMcpServers ?? [],
+    validateAdditionalDirectories(input.additionalDirectories),
   );
   const plugin = renderPlugins(input.plugins ?? [], packageLock, requiredEnvironment);
 
@@ -720,6 +721,7 @@ function renderPermissions(
   allowedTools: readonly string[],
   configuredMcpServers: readonly string[],
   optionalMcpServers: readonly string[],
+  additionalDirectories: readonly string[],
 ): Record<string, JsonValue> {
   const permissions: Record<string, JsonValue> = {};
   const configured = new Set(configuredMcpServers);
@@ -777,7 +779,43 @@ function renderPermissions(
   for (const tool of BUILTIN_TOOLS) {
     if (permissions[tool] === undefined) permissions[tool] = "deny";
   }
+  if (additionalDirectories.length > 0) {
+    const directories: Record<string, JsonValue> = { "*": "deny" };
+    for (const directory of additionalDirectories) {
+      directories[directory] = "allow";
+      directories[`${directory}/*`] = "allow";
+    }
+    permissions.external_directory = directories;
+  }
   return permissions;
+}
+
+/** Literal, canonical POSIX paths only: permission keys must never contain native globs/refs. */
+export function validateAdditionalDirectories(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new OpenCodeConfigValidationError([
+      "additionalDirectories must be an array of absolute paths",
+    ]);
+  }
+  for (const directory of value) {
+    if (
+      typeof directory !== "string" ||
+      !posix.isAbsolute(directory) ||
+      directory === "/" ||
+      posix.normalize(directory) !== directory ||
+      /[\\*?[\]{}$~\p{Cc}\p{Cf}]/u.test(directory) ||
+      directory
+        .split("/")
+        .slice(1)
+        .some((segment) => !segment || segment.trim() !== segment)
+    ) {
+      throw new OpenCodeConfigValidationError([
+        "additionalDirectories must contain canonical absolute non-root paths without wildcards, traversal, controls, or references",
+      ]);
+    }
+  }
+  return [...new Set(value as string[])].sort();
 }
 
 function parseClaudeMcpTool(tool: string): { server: string; tool: string } | undefined {

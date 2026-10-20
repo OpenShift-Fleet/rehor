@@ -275,6 +275,20 @@ describe("OpenCode deployment defaults", () => {
     });
   });
 
+  it("validates supplemental directory grants from deployment files", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-opencode-directories-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "deployment.json");
+    await writeFile(path, JSON.stringify({ additionalDirectories: ["/tmp/opencode"] }));
+    await expect(loadOpenCodeDeploymentConfig(path)).resolves.toEqual({
+      additionalDirectories: ["/tmp/opencode"],
+    });
+    for (const additionalDirectories of [null, "all", ["/"], ["/tmp/*"]]) {
+      await writeFile(path, JSON.stringify({ additionalDirectories }));
+      await expect(loadOpenCodeDeploymentConfig(path)).rejects.toThrow("additionalDirectories");
+    }
+  });
+
   it("rejects a missing or invalid gateway before starting OpenCode", async () => {
     const deployment = await loadOpenCodeDeploymentConfig(undefined);
 

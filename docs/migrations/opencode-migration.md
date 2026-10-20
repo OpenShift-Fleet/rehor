@@ -11,7 +11,7 @@ The initial migration slice is preparation only. It changes no tenant routing
 or model selection.
 
 Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
-`REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`
+`REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`, `REHOR-198`
 
 ## Decision Summary
 
@@ -107,6 +107,30 @@ The v1 contract intentionally supports current Python behavior:
 
 See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 for invariants, compatibility mapping, and development commands.
+
+### Runtime-specific budgets (REHOR-198)
+
+Claude and OpenCode use different budget units. Configure them independently in the runner's `config.json`:
+
+```json
+{
+  "claude": { "maxTurns": 100 },
+  "opencode": { "maxToolCalls": 200 }
+}
+```
+
+This fragment shows budget fields only; retain the other runner settings. `Config.opencode_max_tool_calls` defaults to `200` when `opencode.maxToolCalls` is absent. The JSON value must be a positive integer, not a string, boolean, or fractional number.
+
+`REHOR_OPENCODE_MAX_TOOL_CALLS` overrides the JSON/default value when nonempty. It accepts only ASCII decimal digits with a value greater than zero; leading zeros are accepted. Empty means unset. Signs, whitespace, zero, and other formats fail configuration loading. An override does not bypass validation of the JSON value.
+
+The Python bridge still calls the coordinator field `maxTurns`: it carries the OpenCode tool-call budget only for runtime `opencode-v1`, regardless of provider. Runtime `claude` retains `claude.maxTurns`, whose repository default remains `100`.
+
+| Runtime | Budget unit and enforcement |
+|---------|-----------------------------|
+| Claude Agent SDK | SDK hard limit on agentic roundtrips via `maxTurns` |
+| OpenCode | Coordinator counts successful, unique completed tool calls across the root session and child sessions; failed calls do not count. After exhaustion, it aborts at the next root turn with reason `max_turns`. |
+
+OpenCode's budget is not an exact execution ceiling: child work can continue and overshoot before the next root turn. Legacy displayed `turns` count completed root assistant messages, not budget consumption, so a `max_turns` result with far fewer displayed turns is possible. Thresholds at 75% and 90% emit policy telemetry; OpenCode receives no injected warning notice. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
 
 ## OpenCode Server Lifecycle
 
@@ -416,7 +440,7 @@ provider/model. The supervisor receives the snapshot in its constructor and
 writes Rehor defaults/resources under isolated `XDG_CONFIG_HOME`, writes profile
 settings to a separate `OPENCODE_CONFIG` file, and supplies runner-owned
 `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` top-level overrides.
-OpenCode applies `OPENCODE_PERMISSION` after config loading and tool conversion; native agent permissions can override these defaults.
+OpenCode applies `OPENCODE_PERMISSION` after config loading and tool conversion. Native agent permissions can override general defaults, but the runner's config hook clamps agent external-directory grants to the deployment boundary described below.
 It isolates OpenCode's instruction-discovery home and database paths, then enables offline npm
 resolution plus the pinned runtime's update/download safeguards. The pinned
 `1.18.29` release is a tested dependency: its
@@ -589,7 +613,7 @@ Native config order used by the runner is deployment global config and profile r
 profile `OPENCODE_CONFIG` file, checked-out project `opencode.json`, then
 runner-owned `OPENCODE_CONFIG_CONTENT` overrides. `OPENCODE_PERMISSION`
 reapplies top-level tool permission defaults after native config sources and tool
-conversion; native agent permissions take precedence. OpenCode 1.18.29 also
+conversion; native agent permissions generally take precedence, subject to the runner's external-directory clamp. OpenCode 1.18.29 also
 supports `OPENCODE_CONFIG_DIR` between project config and inline content; the
 runner leaves it unset to preserve project-over-profile resource precedence.
 Plugin arrays append across config sources. The inline layer is constructed by
@@ -603,7 +627,7 @@ GitOps profiles are trusted, deliberate user configuration. Plugins, tools, and
 formatters can execute arbitrary code in the server; permission defaults are not
 a sandbox against that code or native agent configuration. OpenCode owns agent
 and command schema, models, permissions, and frontmatter. Native agent permissions,
-including checked-out project agents, can override top-level defaults. Top-level
+including checked-out project agents, can override general top-level defaults; external-directory grants are clamped as described below. Top-level
 model/provider selection remains coordinator-controlled; profile `permission` may
 only add denials and top-level `tools` may only disable tools. MCP additions cannot
 replace generated servers and retain URL, credential, and environment checks.
@@ -636,6 +660,30 @@ state remain persistent. A runner-owned local `shell.env` plugin restores origin
 `XDG_CONFIG_HOME` for shell commands (unset becomes empty, using `$HOME/.config`),
 while OpenCode global config stays isolated. Runner-owned `OPENCODE_AUTH_CONTENT='{}'` bypasses ambient
 saved credentials. Provider API keys still resolve from validated environment references.
+
+#### Supplemental workspace access (REHOR-198)
+
+Deployment-owned `opencode-deployment.json`, selected by `REHOR_OPENCODE_DEPLOYMENT_CONFIG`, may grant supplemental paths outside the cycle worktree:
+
+```json
+{
+  "additionalDirectories": [
+    "/home/botuser/repos",
+    "/home/botuser/data",
+    "/tmp/opencode"
+  ]
+}
+```
+
+Merge this field with the deployment's provider/package settings. These are the onboarding deployment's approved roots, not automatic grants for every instance. `additionalDirectories` is not a supported profile `agent/opencode.json` field. Missing or empty grants keep external-directory access denied.
+
+Each entry must be a literal, canonical absolute POSIX path other than `/`. Wildcards, traversal, noncanonical separators, backslashes, control/format characters, environment/file references, and leading/trailing whitespace in path segments are rejected. Paths need not exist yet. The renderer sorts and deduplicates them, then emits `external_directory` rules denying `*` and allowing each exact root plus its `root/*` descendants. Other external paths remain denied by this policy.
+
+The runner-owned config hook runs after native JSON/Markdown agent loading. It narrows broad agent grants to these roots while retaining matching per-agent denials, including wildcard denials. Supplemental grants do not relax native read restrictions on credential-shaped paths or other tool permissions.
+
+This is OpenCode permission configuration, not a filesystem or Bash sandbox. It does not constrain arbitrary code from plugins, custom tools, or shell commands. OpenShell policy, mounts, Unix permissions, and network isolation are separate controls; these grants neither create mounts nor establish a controller upgrade requirement. See [OpenShell deployment and rollout](../openshell-deployment.md#opencode-budget-and-workspace-rollout-rehor-198).
+
+An offline mock-provider check against pinned OpenCode `1.18.29` exercised nonexistent nested create/read, Bash at an exact approved root, and scoped child-agent access. Sibling paths, `/`, the synthetic instruction-discovery home, explicit per-agent denied paths, and credential-shaped reads remained denied through the tested native permission paths. This verifies runtime behavior without paid inference; live deployment smoke testing remains required.
 
 ### Phase 4: Plugin Port
 

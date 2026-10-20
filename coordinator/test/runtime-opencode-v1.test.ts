@@ -34,7 +34,8 @@ import {
   type RenderedOpenCodeV1Config,
   renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
-import { boundedOperation } from "../src/runtimes/shared";
+import { renderOpenCodePolicyPlugin } from "../src/runtimes/opencode-v1/policy-plugin";
+import { boundedOperation, stableJson } from "../src/runtimes/shared";
 import { metricsProjection } from "./contract/runtime-harnesses";
 
 class FakeChild extends EventEmitter {
@@ -2738,7 +2739,17 @@ describe("OpenCode process supervisor", () => {
       config,
       json: '{"nested":{"a":"stable","b":true},"z":1}\n',
       profileConfig: { instructions: ["./AGENTS.md"] },
-      enforcementJson: '{"model":"provider/model","permission":{"read":"deny"}}\n',
+      enforcementJson: `${stableJson({
+        model: "provider/model",
+        permission: {
+          read: "deny",
+          external_directory: {
+            "*": "deny",
+            "/tmp/opencode": "allow",
+            "/tmp/opencode/*": "allow",
+          },
+        },
+      })}\n`,
       hash: hashOpenCodeConfig(config),
       packageLock,
       effectiveModel: { providerID: "provider", modelID: "model", value: "provider/model" },
@@ -2819,7 +2830,7 @@ describe("OpenCode process supervisor", () => {
           NO_PROXY: expect.stringContaining("127.0.0.1"),
           OPENCODE_CONFIG: expect.stringMatching(/\/instance-opencode\.json$/),
           OPENCODE_CONFIG_CONTENT: expect.any(String),
-          OPENCODE_PERMISSION: '{"read":"deny"}',
+          OPENCODE_PERMISSION: stableJson(JSON.parse(renderedConfig.enforcementJson).permission),
           OPENCODE_DB: expect.stringMatching(/rehor-opencode-.*\/opencode\.db$/),
           OPENCODE_TEST_HOME: expect.stringMatching(/rehor-opencode-/),
           OPENCODE_AUTH_CONTENT: "{}",
@@ -2843,7 +2854,10 @@ describe("OpenCode process supervisor", () => {
       plugin: [pathToFileURL(shellPlugin).href],
     });
     await expect(readFile(shellPlugin, "utf8")).resolves.toBe(
-      `export default async () => ({"shell.env": async (_, output) => { output.env.XDG_CONFIG_HOME = ${JSON.stringify(configHome ?? "")}; }});\n`,
+      renderOpenCodePolicyPlugin(
+        configHome,
+        JSON.parse(renderedConfig.enforcementJson).permission.external_directory,
+      ),
     );
     expect(childEnvironment.OPENCODE_CONFIG_DIR).toBeUndefined();
     expect(childEnvironment.OPENCODE_DISABLE_PROJECT_CONFIG).toBeUndefined();

@@ -41,6 +41,7 @@ class Config:
     idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
     opencode_model: str = DEFAULT_OPENCODE_MODEL
     model_tiers: dict[str, str] = field(default_factory=dict)
+    opencode_max_tool_calls: int = 200
 
 
 def _nonempty_model(value: object) -> str | None:
@@ -248,9 +249,17 @@ def load_config(script_dir: Path) -> Config:
     claude_cfg = raw.get("claude", {})
     opencode_cfg = raw.get("opencode", {})
     opencode_model = _nonempty_model(opencode_cfg.get("model")) if isinstance(opencode_cfg, dict) else None
+    opencode_max_tool_calls = opencode_cfg.get("maxToolCalls", 200) if isinstance(opencode_cfg, dict) else 200
+    if type(opencode_max_tool_calls) is not int or opencode_max_tool_calls <= 0:
+        raise ValueError("opencode.maxToolCalls must be a positive integer")
+    if budget_override := os.environ.get("REHOR_OPENCODE_MAX_TOOL_CALLS"):
+        if not re.fullmatch(r"[0-9]+", budget_override) or int(budget_override, 10) <= 0:
+            raise ValueError("REHOR_OPENCODE_MAX_TOOL_CALLS must be a positive base-10 integer")
+        opencode_max_tool_calls = int(budget_override, 10)
     return Config(
         model=claude_cfg["model"],
         opencode_model=opencode_model or DEFAULT_OPENCODE_MODEL,
+        opencode_max_tool_calls=opencode_max_tool_calls,
         max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),

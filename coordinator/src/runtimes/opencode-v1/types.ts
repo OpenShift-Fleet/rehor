@@ -52,6 +52,8 @@ export interface OpenCodeV1ConfigInput {
   plugins?: readonly OpenCodePluginConfig[];
   packages?: readonly OpenCodePackage[];
   smallModel?: string;
+  /** Trusted deployment grants outside the run worktree; not a filesystem sandbox. */
+  additionalDirectories?: readonly string[];
 }
 
 /** Deployment-owned fields that are merged with one prepared cycle. */

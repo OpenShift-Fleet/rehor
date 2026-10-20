@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { OpenCodeV1DeploymentConfig } from "./runtimes/opencode-v1";
+import { validateAdditionalDirectories } from "./runtimes/opencode-v1/render";
 
 /** Load the packaged provider defaults unless an explicit deployment file is supplied. */
 export async function loadOpenCodeDeploymentConfig(
@@ -14,5 +15,6 @@ export async function loadOpenCodeDeploymentConfig(
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("OpenCode deployment config must be a JSON object");
   }
+  validateAdditionalDirectories((raw as OpenCodeV1DeploymentConfig).additionalDirectories);
   return raw as OpenCodeV1DeploymentConfig;
 }
