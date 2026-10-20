@@ -115,7 +115,10 @@ async def test_cost_status_roundtrip_and_daily_subtotals(db, monkeypatch):
     async def post(body):
         async def receive():
             return {"type": "http.request", "body": json.dumps(body).encode()}
-        return await api.api_costs(Request({"type": "http", "method": "POST", "path": "/api/costs", "headers": []}, receive))
+
+        return await api.api_costs(
+            Request({"type": "http", "method": "POST", "path": "/api/costs", "headers": []}, receive)
+        )
 
     for status, amount in [("estimated", 0.15), ("unknown", 0), ("provider", 0), (None, 0.35)]:
         response = await post({"cost_status": status, "cost_usd": amount, "model": "test-model"})
@@ -124,7 +127,9 @@ async def test_cost_status_roundtrip_and_daily_subtotals(db, monkeypatch):
         assert saved["cost_status"] == status
         assert saved["cost_incomplete"] is (status == "unknown")
         assert saved["cost_usd"] == pytest.approx(amount)
-    response = await api.api_costs(Request({"type": "http", "method": "GET", "path": "/api/costs", "query_string": b"days=1", "headers": []}))
+    response = await api.api_costs(
+        Request({"type": "http", "method": "GET", "path": "/api/costs", "query_string": b"days=1", "headers": []})
+    )
     data = json.loads(bytes(response.body))
     assert {item["cost_status"] for item in data["items"]} == {"estimated", "unknown", "provider", None}
     assert data["daily"][0]["estimated_cycles"] == 1

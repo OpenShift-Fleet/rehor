@@ -16,12 +16,22 @@ from pathlib import Path
 VERSION = "1.18.35"
 MODELS = {
     "openai": [
-        "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini",
-        "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.6-luna", "gpt-5.6-sol",
-        "gpt-6-luna", "gpt-6.1-sol",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-6-luna",
+        "gpt-6.1-sol",
     ],
     "google-vertex-anthropic": [
-        "claude-haiku-4-5@20251001", "claude-opus-4-6@default", "claude-sonnet-4-6@default",
+        "claude-haiku-4-5@20251001",
+        "claude-opus-4-6@default",
+        "claude-sonnet-4-6@default",
     ],
 }
 
@@ -42,12 +52,15 @@ def main():
             "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
             "OPENCODE_DISABLE_MODELS_FETCH": "1",
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
-            "OPENCODE_CONFIG_CONTENT": json.dumps({
-                "enabled_providers": list(MODELS),
-                # No model declarations: V1 model overlays discard native tiers.
-                "provider": {provider: {} for provider in MODELS},
-            }),
+            "OPENCODE_CONFIG_CONTENT": json.dumps(
+                {
+                    "enabled_providers": list(MODELS),
+                    # No model declarations: V1 model overlays discard native tiers.
+                    "provider": {provider: {} for provider in MODELS},
+                }
+            ),
         }
+
         def run(*args):
             return subprocess.check_output([str(binary), *args], env=env, cwd=home, text=True)
 
@@ -68,18 +81,23 @@ def main():
         raise SystemExit(f"Missing models: {sorted(expected - models.keys())}")
     models = dict(sorted(models.items()))
     canonical = json.dumps(models, sort_keys=True, separators=(",", ":")).encode()
-    print(json.dumps({
-        "source": {
-            "name": "OpenCode baked models.dev catalog",
-            "version": VERSION,
-            "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-            "pricingSha256": hashlib.sha256(canonical).hexdigest(),
-            "upstream": f"https://github.com/anomalyco/opencode/tree/v{VERSION}",
-            "command": "models --verbose --pure (isolated HOME/XDG; model fetch disabled)",
-            "units": "USD per million tokens",
-        },
-        "models": models,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "source": {
+                    "name": "OpenCode baked models.dev catalog",
+                    "version": VERSION,
+                    "binarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                    "pricingSha256": hashlib.sha256(canonical).hexdigest(),
+                    "upstream": f"https://github.com/anomalyco/opencode/tree/v{VERSION}",
+                    "command": "models --verbose --pure (isolated HOME/XDG; model fetch disabled)",
+                    "units": "USD per million tokens",
+                },
+                "models": models,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":
