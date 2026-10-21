@@ -493,9 +493,7 @@ def main() -> None:
 
         # Remove secrets from env so Bash subprocesses can't leak them.
         # MCP servers already have resolved values. gh/glab use config files.
-        UI_TEST_LOGIN_HELPER_RESET_TOKEN = os.environ.get(
-            "UI_TEST_LOGIN_HELPER_RESET_TOKEN", ""
-        )
+        UI_TEST_LOGIN_HELPER_RESET_TOKEN = os.environ.get("UI_TEST_LOGIN_HELPER_RESET_TOKEN", "")
         sanitize_env()
         logger.info("Sanitized environment — secrets removed from env vars.")
 
