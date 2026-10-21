@@ -49,6 +49,20 @@ For the fresh Sandbox, verify:
 
 Live paid smoke testing has not been completed. A pod Pending for CPU or memory must be scheduled before runtime validation; scheduling pressure is separate from budget or path-permission behavior.
 
+## OpenCode Operational Environment Rollout (REHOR-199)
+
+The runner sanitizer now preserves 12 reviewed operational variables for OpenCode and native child tools: `EXECUTOR_ADDR`, `BOT_JIRA_EMAIL`, `BOT_INSTANCE_ID`, `BOT_MEMORY_URL`, `GH_USER_NAME`, `GL_USER_NAME`, `BOT_CONFIG_PATH`, `SLACK_NOTIFY_MODE`, `GH_RELEASE_UPLOAD_URL`, `BOT_BOARD_ID`, `BOT_BOARD_NAME`, and `SLACK_WEBHOOK_URL`. The configured webhook is an intentional credential exception; the other values are non-secret coordinates, identities, or settings. See the source-backed [operational environment contract](migrations/opencode-migration.md#operational-child-environment-rehor-199). This requires runner code adoption, not a provider passthrough or native agent permission change.
+
+1. Merge the runner fix, then update the consuming onboarding repository's `dev-bot` submodule pin to that merged commit.
+2. Build and publish a fresh onboarding image containing that pin and the rebuilt coordinator. Reconcile its immutable image reference in the deployment configuration.
+3. Obtain a fresh Sandbox using that image. A profile sync, cycle restart, or replacement using the old image cannot update the baked sanitizer.
+4. Check the 12-name contract against the deployment's enabled helpers and supply required operational values to the runner. Board helpers accept board ID or board name; GitLab identity is needed for GitLab forks. The `SLACK_WEBHOOK_URL` deployment parameter already exists: configure it if Slack notifications are wanted and it is unset. Existing configured values need no YAML or application-interface change; the sanitizer does not supply defaults.
+5. In an approved smoke workspace, confirm root and native child Bash/Python helpers receive the intended non-secret identity and service coordinates. Use harmless executor requests to verify the configured address is used rather than the Unix-socket fallback. Do not dump full environments or credentials.
+
+Configured `SLACK_WEBHOOK_URL` is inherited unchanged, preserving agent → helper → MCP `slack_notify` webhook payload and `SLACK_NOTIFY_MODE`. The existing memory-server tool performs the POST; no server-side per-instance configuration or new notification mechanism is needed. Absent/empty values retain optional helper no-ops. Other credentials and unknown ambient variables remain excluded; this exception grants no broad `SLACK_*` access or strict provider/plugin reference approval.
+
+Local acceptance against OpenCode `1.18.29` uses only localhost model/gRPC mocks and the real Go executor client, verifying all 12 values through root and child helper inheritance. Each role runs the canonical Slack helper with an in-process MCP argument capture to verify the configured synthetic webhook and mode. This capture is not transport validation. Acceptance does not establish live gateway, executor, Jira, memory-service connectivity, webhook delivery, helper-side mutations, or deployment completion. Keep those checks separate from scheduling and from unrelated cycle/status ownership issues.
+
 ## Network Contract
 
 Sandbox egress allows only:

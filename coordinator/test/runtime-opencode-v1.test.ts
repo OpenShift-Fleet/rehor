@@ -34,6 +34,7 @@ import {
   type RenderedOpenCodeV1Config,
   renderOpenCodeV1Config,
 } from "../src/runtimes/opencode-v1";
+import { OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST } from "../src/runtimes/opencode-v1/environment";
 import { renderOpenCodePolicyPlugin } from "../src/runtimes/opencode-v1/policy-plugin";
 import { boundedOperation, stableJson } from "../src/runtimes/shared";
 import { metricsProjection } from "./contract/runtime-harnesses";
@@ -488,6 +489,76 @@ describe("OpenCode environment", () => {
     expect(environment.OPENCODE_PERMISSION).toBeUndefined();
     expect(environment.NODE_OPTIONS).toBeUndefined();
     expect(environment.NPM_CONFIG_REGISTRY).toBeUndefined();
+  });
+
+  it("copies exactly 12 operational variables including the configured webhook exception", () => {
+    const operational = {
+      BOT_BOARD_ID: "42",
+      BOT_BOARD_NAME: "Synthetic board",
+      BOT_CONFIG_PATH: "/synthetic/config",
+      BOT_INSTANCE_ID: "instance-7",
+      BOT_JIRA_EMAIL: "bot@example.invalid",
+      BOT_MEMORY_URL: "http://memory-server:8080",
+      EXECUTOR_ADDR: "127.0.0.1:50551",
+      GH_RELEASE_UPLOAD_URL: "http://proxy:8446/upload",
+      GH_USER_NAME: "synthetic-github-bot",
+      GL_USER_NAME: "synthetic-gitlab-bot",
+      SLACK_NOTIFY_MODE: "batch",
+      SLACK_WEBHOOK_URL: "http://127.0.0.1:18080/synthetic-webhook",
+    };
+    expect(OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST).toEqual(Object.keys(operational));
+    const base = Object.freeze({
+      PATH: "/bin",
+      HOME: "/home/bot",
+      ...operational,
+      GH_TOKEN: "must-not-leak",
+      OPENAI_API_KEY: "must-not-leak",
+      JIRA_API_TOKEN: "must-not-leak",
+      JIRA_MCP_TOKEN: "must-not-leak",
+      JIRA_USERNAME: "must-not-leak",
+      SLACK_OTHER_CREDENTIAL: "must-not-leak",
+      BOT_SECRET_TOKEN: "must-not-leak",
+      EXECUTOR_TOKEN: "must-not-leak",
+      UNKNOWN_AMBIENT: "must-not-leak",
+    });
+    const snapshot = { ...base };
+    const environment = buildOpenCodeEnvironment({
+      base,
+      // A hostile caller cannot widen the surface by requesting secrets or unknowns.
+      passthrough: Object.keys(base),
+    });
+
+    expect(environment).toMatchObject(operational);
+    expect(base).toEqual(snapshot);
+    expect(environment.GH_TOKEN).toBeUndefined();
+    expect(environment.OPENAI_API_KEY).toBeUndefined();
+    expect(environment.JIRA_API_TOKEN).toBeUndefined();
+    expect(environment.JIRA_MCP_TOKEN).toBeUndefined();
+    expect(environment.JIRA_USERNAME).toBeUndefined();
+    expect(environment.SLACK_OTHER_CREDENTIAL).toBeUndefined();
+    expect(environment.BOT_SECRET_TOKEN).toBeUndefined();
+    expect(environment.EXECUTOR_TOKEN).toBeUndefined();
+    expect(environment.UNKNOWN_AMBIENT).toBeUndefined();
+  });
+
+  it("leaves absent operational variables absent and does not mutate the base", () => {
+    const base = Object.freeze({ PATH: "/bin", HOME: "/home/bot" });
+    const snapshot = { ...base };
+    const environment = buildOpenCodeEnvironment({ base });
+
+    for (const name of OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST) {
+      expect(environment[name]).toBeUndefined();
+    }
+    expect(base).toEqual(snapshot);
+  });
+
+  it("preserves empty and untrimmed operational values unchanged", () => {
+    for (const value of ["", "  synthetic value  "]) {
+      const base = Object.freeze(
+        Object.fromEntries(OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST.map((name) => [name, value])),
+      );
+      expect(buildOpenCodeEnvironment({ base })).toMatchObject(base);
+    }
   });
 
   it("derives a Vertex proxy URL without passing credentials to OpenCode", () => {
@@ -2390,6 +2461,100 @@ function nodeScriptSupervisor(
 }
 
 describe("OpenCode process supervisor", () => {
+  it.each([false, true])(
+    "sanitizes actual server environment (12 operational values present: %s)",
+    async (present) => {
+      const operational = {
+        EXECUTOR_ADDR: "127.0.0.1:50551",
+        BOT_JIRA_EMAIL: "fixture@example.invalid",
+        BOT_INSTANCE_ID: "synthetic-instance",
+        BOT_MEMORY_URL: "http://127.0.0.1:18080",
+        BOT_BOARD_ID: "42",
+        BOT_BOARD_NAME: "Synthetic board",
+        BOT_CONFIG_PATH: "/synthetic/config",
+        GH_RELEASE_UPLOAD_URL: "http://127.0.0.1:18446/upload",
+        GH_USER_NAME: "synthetic-github-bot",
+        GL_USER_NAME: "synthetic-gitlab-bot",
+        SLACK_NOTIFY_MODE: "batch",
+        SLACK_WEBHOOK_URL: "http://127.0.0.1:18080/synthetic-webhook",
+      };
+      const base = Object.freeze({
+        PATH: process.env.PATH,
+        ...(present ? operational : {}),
+        REHOR_MODEL_PROXY_TOKEN: "synthetic-provider-token",
+        GH_TOKEN: "synthetic-blocked",
+        JIRA_API_TOKEN: "synthetic-blocked",
+        JIRA_USERNAME: "synthetic-blocked",
+        SLACK_OTHER_CREDENTIAL: "synthetic-blocked",
+        OPENAI_API_KEY: "synthetic-blocked",
+        BOT_SECRET_TOKEN: "synthetic-blocked",
+        EXECUTOR_TOKEN: "synthetic-blocked",
+        UNKNOWN_AMBIENT: "synthetic-blocked",
+        OPENCODE_PERMISSION: '{"bash":"allow"}',
+        OPENCODE_AUTH_CONTENT: "ambient-auth",
+        NPM_CONFIG_REGISTRY: "https://example.invalid",
+      });
+      const snapshot = { ...base };
+      const source = `
+      const http = require("node:http");
+      const server = http.createServer((request, response) => {
+        const url = new URL(request.url, "http://localhost");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(url.pathname === "/global/health"
+          ? { healthy: true, version: "1.18.29" }
+          : url.pathname === "/path"
+            ? { directory: process.cwd() }
+            : process.env));
+      });
+      server.listen(0, "127.0.0.1", () => console.log("opencode server listening on http://127.0.0.1:" + server.address().port));
+    `;
+      const { supervisor } = nodeScriptSupervisor(source, {
+        base,
+        passthrough: [
+          "REHOR_MODEL_PROXY_TOKEN",
+          "GH_TOKEN",
+          "JIRA_API_TOKEN",
+          "JIRA_USERNAME",
+          "SLACK_OTHER_CREDENTIAL",
+          "OPENAI_API_KEY",
+          "BOT_SECRET_TOKEN",
+          "EXECUTOR_TOKEN",
+          "UNKNOWN_AMBIENT",
+          "OPENCODE_PERMISSION",
+          "NPM_CONFIG_REGISTRY",
+        ],
+        startupTimeoutMs: 5000,
+      });
+      try {
+        const info = await supervisor.start(TEST_WORKSPACE, AbortSignal.timeout(5000));
+        const environment = await (await fetch(`${info.baseUrl}/environment`)).json();
+        for (const [name, value] of Object.entries(operational)) {
+          expect(environment[name]).toBe(present ? value : undefined);
+        }
+        for (const name of [
+          "GH_TOKEN",
+          "JIRA_API_TOKEN",
+          "JIRA_USERNAME",
+          "SLACK_OTHER_CREDENTIAL",
+          "OPENAI_API_KEY",
+          "BOT_SECRET_TOKEN",
+          "EXECUTOR_TOKEN",
+          "UNKNOWN_AMBIENT",
+          "OPENCODE_PERMISSION",
+          "NPM_CONFIG_REGISTRY",
+        ]) {
+          expect(environment[name]).toBeUndefined();
+        }
+        expect(environment.REHOR_MODEL_PROXY_TOKEN).toBe("synthetic-provider-token");
+        expect(environment.OPENCODE_AUTH_CONTENT).toBe("{}");
+        expect(environment.NPM_CONFIG_OFFLINE).toBe("true");
+        expect(base).toEqual(snapshot);
+      } finally {
+        await supervisor.stop();
+      }
+    },
+  );
+
   it("fails closed when Linux managed config outranks runner enforcement", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opencode-managed-config-"));
     const path = join(directory, "opencode.json");
@@ -2785,7 +2950,17 @@ describe("OpenCode process supervisor", () => {
         OPENCODE_CONFIG_CONTENT: "ambient config must not win",
         OPENCODE_CONFIG_DIR: "/ambient/opencode-config",
         OPENCODE_PERMISSION: '{"read":"allow"}',
+        EXECUTOR_ADDR: "127.0.0.1:50551",
+        BOT_JIRA_EMAIL: "bot@example.invalid",
+        BOT_INSTANCE_ID: "instance-7",
+        BOT_MEMORY_URL: "http://memory-server:8080",
+        GH_TOKEN: "must-not-leak",
+        OPENAI_API_KEY: "must-not-leak",
+        JIRA_API_TOKEN: "must-not-leak",
+        UNKNOWN_AMBIENT: "must-not-leak",
       },
+      // Even an untrusted passthrough request cannot smuggle secrets or unknowns.
+      passthrough: ["GH_TOKEN", "OPENAI_API_KEY", "JIRA_API_TOKEN", "UNKNOWN_AMBIENT"],
       spawnProcess,
       renderedConfig,
     });
@@ -2843,10 +3018,18 @@ describe("OpenCode process supervisor", () => {
           OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
           OPENCODE_DISABLE_MODELS_FETCH: "1",
           REHOR_MODEL_PROXY_TOKEN: "explicitly-allowed",
+          EXECUTOR_ADDR: "127.0.0.1:50551",
+          BOT_JIRA_EMAIL: "bot@example.invalid",
+          BOT_INSTANCE_ID: "instance-7",
+          BOT_MEMORY_URL: "http://memory-server:8080",
         }),
       },
     });
     const childEnvironment = spawnCall.options.env as NodeJS.ProcessEnv;
+    expect(childEnvironment.GH_TOKEN).toBeUndefined();
+    expect(childEnvironment.OPENAI_API_KEY).toBeUndefined();
+    expect(childEnvironment.JIRA_API_TOKEN).toBeUndefined();
+    expect(childEnvironment.UNKNOWN_AMBIENT).toBeUndefined();
     const shellPlugin = join(dirname(configPath), "shell-env.mjs");
     expect(JSON.parse(String(childEnvironment.OPENCODE_CONFIG_CONTENT))).toEqual({
       ...JSON.parse(renderedConfig.enforcementJson),
@@ -2885,7 +3068,16 @@ describe("OpenCode process supervisor", () => {
       base: {},
       startupTimeoutMs: 100,
       spawnProcess: (_command, _args, options) => {
-        for (const name of ["HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"]) {
+        for (const name of [
+          "HOME",
+          "XDG_DATA_HOME",
+          "XDG_CACHE_HOME",
+          "XDG_STATE_HOME",
+          "EXECUTOR_ADDR",
+          "BOT_JIRA_EMAIL",
+          "BOT_INSTANCE_ID",
+          "BOT_MEMORY_URL",
+        ]) {
           expect(options.env?.[name]).toBeUndefined();
         }
         queueMicrotask(() => {

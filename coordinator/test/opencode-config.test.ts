@@ -416,7 +416,7 @@ describe("OpenCode V1 config renderer", () => {
   );
 
   it("rejects provider references to blocked credential environments", () => {
-    for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
+    for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "JIRA_USERNAME"]) {
       expect(() =>
         renderOpenCodeV1Config({
           model: "provider/model",
@@ -477,6 +477,26 @@ describe("OpenCode V1 config renderer", () => {
         packages,
       }),
     ).toThrow("cannot reference an unapproved OpenCode environment variable 'DATABASE_URL'");
+  });
+
+  it("keeps operational webhook inheritance separate from strict provider and plugin references", () => {
+    for (const config of [
+      { providers: [{ id: "provider", options: { apiKey: "{env:SLACK_WEBHOOK_URL}" } }] },
+      {
+        plugins: [
+          {
+            name: "opencode-rehor-plugin",
+            version: "2.3.4",
+            options: { webhookUrl: "{env:SLACK_WEBHOOK_URL}" },
+          },
+        ],
+        packages,
+      },
+    ]) {
+      expect(() => renderOpenCodeV1Config({ model: "provider/model", ...config })).toThrow(
+        "cannot reference an unapproved OpenCode environment variable 'SLACK_WEBHOOK_URL'",
+      );
+    }
   });
 
   it("does not expose MCP environment references as agent passthrough variables", () => {

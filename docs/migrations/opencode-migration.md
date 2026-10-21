@@ -661,6 +661,39 @@ state remain persistent. A runner-owned local `shell.env` plugin restores origin
 while OpenCode global config stays isolated. Runner-owned `OPENCODE_AUTH_CONTENT='{}'` bypasses ambient
 saved credentials. Provider API keys still resolve from validated environment references.
 
+#### Operational child environment (REHOR-199)
+
+The OpenCode supervisor copies these 12 reviewed operational variables from its runner environment whenever present, without provider passthrough configuration. Most are non-secret coordinates or identities; `SLACK_WEBHOOK_URL` is an intentional configured-webhook credential exception preserving the existing helper contract. The table records current consumers; it is not an exhaustive inventory of future helper requirements. Source paths are relative to the repository root:
+
+| Variable | Source consumer | Purpose |
+| --- | --- | --- |
+| `EXECUTOR_ADDR` | `proxy/executor/cmd/client/main.go:30` | Thin clients (`gh`, `glab`, `gpg`, etc.) route gRPC to the configured executor instead of falling back to `unix:///var/run/devbot/executor.sock`. |
+| `BOT_JIRA_EMAIL` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:18–29` | Bot identity for Jira assignment through MCP, not direct authentication. |
+| `BOT_INSTANCE_ID` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:20,67` | Active bot instance identity for task ownership. |
+| `BOT_MEMORY_URL` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:19,57–85` | Configured memory-service endpoint for task creation. |
+| `GH_USER_NAME` | `presets/shared/skills/auto-fork/auto_fork.py:105–141` | GitHub fork-owner identity; missing/empty value raises `ValueError`. |
+| `GL_USER_NAME` | `presets/shared/skills/auto-fork/auto_fork.py:106,147–149` | GitLab fork-owner identity; missing value prevents GitLab forking. |
+| `BOT_CONFIG_PATH` | `presets/shared/skills/auto-fork/auto_fork.py:108,152` | Instance configuration location; empty value is rejected. |
+| `SLACK_NOTIFY_MODE` | `presets/shared/skills/post-pr/scripts/post_pr_operations.py:528`; `presets/workflows/jira-sprint/skills/wrap-up/wrap_up.py:201` and the corresponding `jira-kanban` path | Notification policy mode, not a credential. |
+| `SLACK_WEBHOOK_URL` | `presets/envs/slack/skills/slack-notify/slack_notify.py:31–44`; post-pr and both wrap-up helpers | Configured webhook credential passed by the helper as `webhook_url` to the existing memory-server `slack_notify` tool. |
+| `GH_RELEASE_UPLOAD_URL` | `presets/envs/browser/skills/gh-release-upload/upload.py:10` | Release-upload proxy endpoint override. |
+| `BOT_BOARD_ID` | `presets/workflows/jira-sprint/skills/claim-ticket/scripts/claim_ticket_operations.py:327–368` and the corresponding `jira-kanban` path | Explicit Jira board selection for claim-ticket helpers. |
+| `BOT_BOARD_NAME` | Same two claim-ticket consumers, lines 327–368 | Board-name lookup when no board ID is configured; missing both prevents board resolution. |
+
+Values are copied unchanged, including empty strings; absent variables remain absent. The sanitizer does not mutate its input or invent deployment defaults. The native server, root and child-agent Bash tools, and their Python subprocesses inherit these values.
+
+This is an exact-name operational allowlist, not ambient `BOT_*`, `EXECUTOR_*`, or `SLACK_*` passthrough. Provider/plugin references retain their separate validated opt-in allowlist: strict provider/plugin configuration still rejects `SLACK_WEBHOOK_URL` as unapproved. `GH_TOKEN`, `OPENAI_API_KEY`, `JIRA_API_TOKEN`, `JIRA_MCP_TOKEN`, unknown variables, and ambient OpenCode/NPM configuration remain excluded even when explicitly requested through passthrough. `JIRA_USERNAME` remains blocked as part of the legacy direct Jira authentication surface; permitted `BOT_JIRA_EMAIL` is only bot identity. API/MCP tokens remain excluded. Runner-owned config, auth isolation, and offline controls still take precedence.
+
+The compatibility decision intentionally keeps the configured webhook available to the agent and its helpers: agent → helper → MCP `slack_notify` payload (`webhook_url`, plus the existing `notify_mode`) → memory-server webhook POST. The server already accepts this payload; no new notification mechanism or server-side per-instance configuration is required. The existing deployment parameter `SLACK_WEBHOOK_URL` needs configuration only if unset; the application interface is unchanged. Absent and empty webhook values remain unchanged, so the canonical slack-notify helper and wrap-up helpers retain their optional no-op behavior; post-pr reports an unconfigured webhook.
+
+Default coordinator tests cover all 12 names in sanitization and actual spawned-server environments with present and absent operational values. Canonical slack-notify helper tests capture MCP tool arguments for configured synthetic webhooks and notification modes, and verify absent/empty webhook no-ops. Optional native acceptance covers all 12 through the real supervisor, pinned OpenCode `1.18.29`, native root/child delegation, Bash and Python standard-library fixtures, and a temporary build of the real Go executor client against a loopback gRPC mock. Both native roles also execute the canonical Slack helper with an in-process MCP argument capture; this verifies the payload, not MCP or webhook transport. Its request-count model sequencing is intentionally version-pinned; title/summarization or version changes require a fixture update. All identities, URLs, requests, and credentials in the fixture are synthetic; it makes no real Jira or memory mutations and uses no paid inference. Run from `coordinator/` with Go and `python3` on `PATH`:
+
+```bash
+REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-1.18.29 npm test -- test/opencode-environment-native.test.ts
+```
+
+See [fresh-image rollout requirements](../openshell-deployment.md#opencode-operational-environment-rollout-rehor-199) before validating a deployed instance.
+
 #### Supplemental workspace access (REHOR-198)
 
 Deployment-owned `opencode-deployment.json`, selected by `REHOR_OPENCODE_DEPLOYMENT_CONFIG`, may grant supplemental paths outside the cycle worktree:
