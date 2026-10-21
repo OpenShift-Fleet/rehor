@@ -1,5 +1,9 @@
 """Tests for the JSON bridge used by the TypeScript coordinator."""
 
+import json
+
+import pytest
+
 from bot.coordinator_bridge import handle
 
 
@@ -104,7 +108,21 @@ def test_preflight_bridge_returns_null_when_no_scripts(tmp_path):
     assert result is None
 
 
-def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "runtime, provider, json_budget, env_budget, expected_budget",
+    [
+        ("opencode-v1", "rehor-openai", None, None, 200),
+        ("opencode-v1", "rehor-openai", 275, None, 275),
+        ("opencode-v1", "rehor-openai", 275, "450", 450),
+        ("opencode-v1", "vertex", None, None, 200),
+        ("opencode-v1", "vertex", 275, "450", 450),
+        ("claude", "vertex", None, None, 10),
+        ("claude", "vertex", 275, "450", 10),
+    ],
+)
+def test_prepare_bridge_reuses_runner_config_sequence(
+    tmp_path, monkeypatch, runtime, provider, json_budget, env_budget, expected_budget
+):
     import bot.merge as merge
     import bot.run as runner
 
@@ -114,7 +132,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     shared_dir.mkdir(parents=True)
     (profile_dir / "instance.yaml").write_text(
         "workflow: test-workflow\nsource: github\nenvs: [github]\n"
-        "runtime: opencode-v1\nprovider: rehor-openai\n"
+        f"runtime: {runtime}\nprovider: {provider}\n"
         "claude_md:\n  strategy: append\n"
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
@@ -141,6 +159,14 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )
+    if json_budget is not None:
+        config_path = tmp_path / "config.json"
+        raw = json.loads(config_path.read_text())
+        raw["opencode"]["maxToolCalls"] = json_budget
+        config_path.write_text(json.dumps(raw))
+    monkeypatch.delenv("REHOR_OPENCODE_MAX_TOOL_CALLS", raising=False)
+    if env_budget is not None:
+        monkeypatch.setenv("REHOR_OPENCODE_MAX_TOOL_CALLS", env_budget)
 
     calls = []
     git_config_global = str(tmp_path / ".gitconfig")
@@ -177,8 +203,8 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     )
 
     assert calls[:2] == [("setup_git", tmp_path), ("sync", "hcc-ai-framework")]
-    assert result["model"] == "test-model"
-    assert result["maxTurns"] == 10
+    assert result["model"] == ("test-model" if provider == "rehor-openai" else "claude-test-model")
+    assert result["maxTurns"] == expected_budget
     assert result["intervalSeconds"] == 300
     assert result["idleIntervalSeconds"] == 60
     assert result["cycleTimeoutSeconds"] == 1800
@@ -187,9 +213,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["source"] == "github"
     assert result["envs"] == ["github"]
     assert result["gitConfigGlobal"] == git_config_global
-    assert result["runtimeId"] == "opencode-v1"
-    assert assembled_claude_instructions == []
-    assert result["providerId"] == "rehor-openai"
+    assert result["runtimeId"] == runtime
+    assert len(assembled_claude_instructions) == (0 if runtime == "opencode-v1" else 1)
+    assert result["providerId"] == provider
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)

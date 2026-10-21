@@ -10,6 +10,7 @@ export const OPENCODE_BLOCKED_PASSTHROUGH = [
   "GPG_SIGNING_KEY",
   "JIRA_API_TOKEN",
   "JIRA_MCP_TOKEN",
+  // Legacy direct Jira auth identity; BOT_JIRA_EMAIL is only a bot identity.
   "JIRA_USERNAME",
   "OPENAI_API_KEY",
   "OPENCODE_CONFIG",
@@ -50,9 +51,34 @@ export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "XDG_STATE_HOME",
 ] as const;
 
+/**
+ * Trusted operational values copied automatically when present, exactly
+ * like the baseline allowlist: service coordinates, bot/fork identities, board
+ * and config selection, and notification settings. SLACK_WEBHOOK_URL is an
+ * intentional configured-credential exception preserving the existing
+ * agent -> helper -> MCP webhook payload contract. They never require passthrough
+ * opt-in, and absent values stay absent. This is an exact-name allowlist;
+ * it does not widen the provider allowlist or admit prefix matches.
+ */
+export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
+  "BOT_BOARD_ID",
+  "BOT_BOARD_NAME",
+  "BOT_CONFIG_PATH",
+  "BOT_INSTANCE_ID",
+  "BOT_JIRA_EMAIL",
+  "BOT_MEMORY_URL",
+  "EXECUTOR_ADDR",
+  "GH_RELEASE_UPLOAD_URL",
+  "GH_USER_NAME",
+  "GL_USER_NAME",
+  "SLACK_NOTIFY_MODE",
+  "SLACK_WEBHOOK_URL",
+] as const;
+
 const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 const BLOCKED_PASSTHROUGH_PREFIXES = OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES;
 const ENVIRONMENT_ALLOWLIST = OPENCODE_ENVIRONMENT_ALLOWLIST;
+const OPERATIONAL_ENVIRONMENT_ALLOWLIST = OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST;
 const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
   OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
 );
@@ -115,6 +141,7 @@ export function buildOpenCodeEnvironment(
   const environment: Record<string, string> = {};
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
+  for (const name of OPERATIONAL_ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
   for (const name of options.passthrough ?? []) {
     if (
       PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&

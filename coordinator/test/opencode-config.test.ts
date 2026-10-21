@@ -30,6 +30,97 @@ const deploymentFixtures = [
 ] as const;
 
 describe("OpenCode V1 config renderer", () => {
+  it("renders only deployment-approved external roots and descendants in every config layer", async () => {
+    const additionalDirectories = ["/home/botuser/repos", "/home/botuser/data", "/tmp/opencode"];
+    const rendered = renderOpenCodeV1ConfigForCycle(
+      { model: "provider/model", allowedTools: ["Read", "Edit", "Bash"] },
+      "provider",
+      { additionalDirectories },
+    );
+    const expected = {
+      "*": "deny",
+      "/home/botuser/data/*": "allow",
+      "/home/botuser/repos/*": "allow",
+      "/tmp/opencode/*": "allow",
+    };
+    expect(rendered.config.permission).toMatchObject({ external_directory: expected });
+    for (const json of [rendered.json, rendered.enforcementJson]) {
+      const permission = JSON.parse(json).permission;
+      expect(permission.external_directory).toEqual(expected);
+      expect(Object.keys(permission.external_directory)[0]).toBe("*");
+      // Supplemental directory grants never change read/credential policy.
+      expect(permission.read).toEqual(
+        (
+          renderOpenCodeV1Config({ model: "provider/model", allowedTools: ["Read"] }).config
+            .permission as Record<string, unknown>
+        ).read,
+      );
+    }
+    const directory = await mkdtemp(join(tmpdir(), "opencode-directories-"));
+    try {
+      const files = await writeOpenCodeConfig(directory, rendered);
+      expect(
+        JSON.parse(await readFile(files.globalConfigPath, "utf8")).permission.external_directory,
+      ).toEqual(expected);
+      expect(rendered.profileConfig).not.toHaveProperty("additionalDirectories");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+    expect(
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        additionalDirectories: [...additionalDirectories].reverse(),
+      }).hash,
+    ).toBe(renderOpenCodeV1Config({ model: "provider/model", additionalDirectories }).hash);
+  });
+
+  it.each([undefined, []])(
+    "keeps absent/empty external grants fail-closed: %s",
+    (additionalDirectories) => {
+      expect(
+        renderOpenCodeV1Config({ model: "provider/model", additionalDirectories }).config
+          .permission,
+      ).toMatchObject({ external_directory: "deny" });
+    },
+  );
+
+  it.each([
+    null,
+    "/tmp/opencode",
+    [null],
+    [12],
+    [""],
+    ["/"],
+    ["relative"],
+    ["~/repos"],
+    ["C:\\repos"],
+    ["//tmp/repos"],
+    ["/tmp/../repos"],
+    ["/tmp/./repos"],
+    ["/tmp//repos"],
+    ["/tmp/repos/"],
+    ["/tmp/*"],
+    ["/tmp/?"],
+    ["/tmp/[abc]"],
+    ["/tmp/{env:HOME}"],
+    ["/tmp/{file:secret}"],
+    ["/tmp/$HOME"],
+    ["/tmp/$" + "{HOME}"],
+    ["/tmp/\\repos"],
+    ["/tmp/repos\n"],
+    ["/tmp/re\u0000pos"],
+    ["/tmp/re\u007fpos"],
+    ["/tmp/re\u202epos"],
+    ["/tmp/ repos"],
+  ])("rejects malformed deployment directory input %j", (additionalDirectories) => {
+    expect(() =>
+      renderOpenCodeV1Config({
+        model: "provider/model",
+        additionalDirectories,
+      } as OpenCodeV1ConfigInput),
+    ).toThrow("additionalDirectories");
+  });
+
   it("matches byte-for-byte snapshots for deployment fixtures", async () => {
     const rendered = await Promise.all(
       deploymentFixtures.map(async ([, path]) => {
@@ -325,7 +416,7 @@ describe("OpenCode V1 config renderer", () => {
   );
 
   it("rejects provider references to blocked credential environments", () => {
-    for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]) {
+    for (const environment of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "JIRA_USERNAME"]) {
       expect(() =>
         renderOpenCodeV1Config({
           model: "provider/model",
@@ -386,6 +477,26 @@ describe("OpenCode V1 config renderer", () => {
         packages,
       }),
     ).toThrow("cannot reference an unapproved OpenCode environment variable 'DATABASE_URL'");
+  });
+
+  it("keeps operational webhook inheritance separate from strict provider and plugin references", () => {
+    for (const config of [
+      { providers: [{ id: "provider", options: { apiKey: "{env:SLACK_WEBHOOK_URL}" } }] },
+      {
+        plugins: [
+          {
+            name: "opencode-rehor-plugin",
+            version: "2.3.4",
+            options: { webhookUrl: "{env:SLACK_WEBHOOK_URL}" },
+          },
+        ],
+        packages,
+      },
+    ]) {
+      expect(() => renderOpenCodeV1Config({ model: "provider/model", ...config })).toThrow(
+        "cannot reference an unapproved OpenCode environment variable 'SLACK_WEBHOOK_URL'",
+      );
+    }
   });
 
   it("does not expose MCP environment references as agent passthrough variables", () => {

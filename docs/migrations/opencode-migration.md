@@ -11,7 +11,7 @@ The initial migration slice is preparation only. It changes no tenant routing
 or model selection.
 
 Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
-`REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`
+`REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`, `REHOR-198`
 
 ## Decision Summary
 
@@ -107,6 +107,30 @@ The v1 contract intentionally supports current Python behavior:
 
 See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 for invariants, compatibility mapping, and development commands.
+
+### Runtime-specific budgets (REHOR-198)
+
+Claude and OpenCode use different budget units. Configure them independently in the runner's `config.json`:
+
+```json
+{
+  "claude": { "maxTurns": 100 },
+  "opencode": { "maxToolCalls": 200 }
+}
+```
+
+This fragment shows budget fields only; retain the other runner settings. `Config.opencode_max_tool_calls` defaults to `200` when `opencode.maxToolCalls` is absent. The JSON value must be a positive integer, not a string, boolean, or fractional number.
+
+`REHOR_OPENCODE_MAX_TOOL_CALLS` overrides the JSON/default value when nonempty. It accepts only ASCII decimal digits with a value greater than zero; leading zeros are accepted. Empty means unset. Signs, whitespace, zero, and other formats fail configuration loading. An override does not bypass validation of the JSON value.
+
+The Python bridge still calls the coordinator field `maxTurns`: it carries the OpenCode tool-call budget only for runtime `opencode-v1`, regardless of provider. Runtime `claude` retains `claude.maxTurns`, whose repository default remains `100`.
+
+| Runtime | Budget unit and enforcement |
+|---------|-----------------------------|
+| Claude Agent SDK | SDK hard limit on agentic roundtrips via `maxTurns` |
+| OpenCode | Coordinator counts successful, unique completed tool calls across the root session and child sessions; failed calls do not count. After exhaustion, it aborts at the next root turn with reason `max_turns`. |
+
+OpenCode's budget is not an exact execution ceiling: child work can continue and overshoot before the next root turn. Legacy displayed `turns` count completed root assistant messages, not budget consumption, so a `max_turns` result with far fewer displayed turns is possible. Thresholds at 75% and 90% emit policy telemetry; OpenCode receives no injected warning notice. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
 
 ## OpenCode Server Lifecycle
 
@@ -416,7 +440,7 @@ provider/model. The supervisor receives the snapshot in its constructor and
 writes Rehor defaults/resources under isolated `XDG_CONFIG_HOME`, writes profile
 settings to a separate `OPENCODE_CONFIG` file, and supplies runner-owned
 `OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION` top-level overrides.
-OpenCode applies `OPENCODE_PERMISSION` after config loading and tool conversion; native agent permissions can override these defaults.
+OpenCode applies `OPENCODE_PERMISSION` after config loading and tool conversion. Native agent permissions can override general defaults, but the runner's config hook clamps agent external-directory grants to the deployment boundary described below.
 It isolates OpenCode's instruction-discovery home and database paths, then enables offline npm
 resolution plus the pinned runtime's update/download safeguards. The pinned
 `1.18.29` release is a tested dependency: its
@@ -589,7 +613,7 @@ Native config order used by the runner is deployment global config and profile r
 profile `OPENCODE_CONFIG` file, checked-out project `opencode.json`, then
 runner-owned `OPENCODE_CONFIG_CONTENT` overrides. `OPENCODE_PERMISSION`
 reapplies top-level tool permission defaults after native config sources and tool
-conversion; native agent permissions take precedence. OpenCode 1.18.29 also
+conversion; native agent permissions generally take precedence, subject to the runner's external-directory clamp. OpenCode 1.18.29 also
 supports `OPENCODE_CONFIG_DIR` between project config and inline content; the
 runner leaves it unset to preserve project-over-profile resource precedence.
 Plugin arrays append across config sources. The inline layer is constructed by
@@ -603,7 +627,7 @@ GitOps profiles are trusted, deliberate user configuration. Plugins, tools, and
 formatters can execute arbitrary code in the server; permission defaults are not
 a sandbox against that code or native agent configuration. OpenCode owns agent
 and command schema, models, permissions, and frontmatter. Native agent permissions,
-including checked-out project agents, can override top-level defaults. Top-level
+including checked-out project agents, can override general top-level defaults; external-directory grants are clamped as described below. Top-level
 model/provider selection remains coordinator-controlled; profile `permission` may
 only add denials and top-level `tools` may only disable tools. MCP additions cannot
 replace generated servers and retain URL, credential, and environment checks.
@@ -636,6 +660,63 @@ state remain persistent. A runner-owned local `shell.env` plugin restores origin
 `XDG_CONFIG_HOME` for shell commands (unset becomes empty, using `$HOME/.config`),
 while OpenCode global config stays isolated. Runner-owned `OPENCODE_AUTH_CONTENT='{}'` bypasses ambient
 saved credentials. Provider API keys still resolve from validated environment references.
+
+#### Operational child environment (REHOR-199)
+
+The OpenCode supervisor copies these 12 reviewed operational variables from its runner environment whenever present, without provider passthrough configuration. Most are non-secret coordinates or identities; `SLACK_WEBHOOK_URL` is an intentional configured-webhook credential exception preserving the existing helper contract. The table records current consumers; it is not an exhaustive inventory of future helper requirements. Source paths are relative to the repository root:
+
+| Variable | Source consumer | Purpose |
+| --- | --- | --- |
+| `EXECUTOR_ADDR` | `proxy/executor/cmd/client/main.go:30` | Thin clients (`gh`, `glab`, `gpg`, etc.) route gRPC to the configured executor instead of falling back to `unix:///var/run/devbot/executor.sock`. |
+| `BOT_JIRA_EMAIL` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:18–29` | Bot identity for Jira assignment through MCP, not direct authentication. |
+| `BOT_INSTANCE_ID` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:20,67` | Active bot instance identity for task ownership. |
+| `BOT_MEMORY_URL` | `presets/shared/skills/claim-onboarding/claim_onboarding.py:19,57–85` | Configured memory-service endpoint for task creation. |
+| `GH_USER_NAME` | `presets/shared/skills/auto-fork/auto_fork.py:105–141` | GitHub fork-owner identity; missing/empty value raises `ValueError`. |
+| `GL_USER_NAME` | `presets/shared/skills/auto-fork/auto_fork.py:106,147–149` | GitLab fork-owner identity; missing value prevents GitLab forking. |
+| `BOT_CONFIG_PATH` | `presets/shared/skills/auto-fork/auto_fork.py:108,152` | Instance configuration location; empty value is rejected. |
+| `SLACK_NOTIFY_MODE` | `presets/shared/skills/post-pr/scripts/post_pr_operations.py:528`; `presets/workflows/jira-sprint/skills/wrap-up/wrap_up.py:201` and the corresponding `jira-kanban` path | Notification policy mode, not a credential. |
+| `SLACK_WEBHOOK_URL` | `presets/envs/slack/skills/slack-notify/slack_notify.py:31–44`; post-pr and both wrap-up helpers | Configured webhook credential passed by the helper as `webhook_url` to the existing memory-server `slack_notify` tool. |
+| `GH_RELEASE_UPLOAD_URL` | `presets/envs/browser/skills/gh-release-upload/upload.py:10` | Release-upload proxy endpoint override. |
+| `BOT_BOARD_ID` | `presets/workflows/jira-sprint/skills/claim-ticket/scripts/claim_ticket_operations.py:327–368` and the corresponding `jira-kanban` path | Explicit Jira board selection for claim-ticket helpers. |
+| `BOT_BOARD_NAME` | Same two claim-ticket consumers, lines 327–368 | Board-name lookup when no board ID is configured; missing both prevents board resolution. |
+
+Values are copied unchanged, including empty strings; absent variables remain absent. The sanitizer does not mutate its input or invent deployment defaults. The native server, root and child-agent Bash tools, and their Python subprocesses inherit these values.
+
+This is an exact-name operational allowlist, not ambient `BOT_*`, `EXECUTOR_*`, or `SLACK_*` passthrough. Provider/plugin references retain their separate validated opt-in allowlist: strict provider/plugin configuration still rejects `SLACK_WEBHOOK_URL` as unapproved. `GH_TOKEN`, `OPENAI_API_KEY`, `JIRA_API_TOKEN`, `JIRA_MCP_TOKEN`, unknown variables, and ambient OpenCode/NPM configuration remain excluded even when explicitly requested through passthrough. `JIRA_USERNAME` remains blocked as part of the legacy direct Jira authentication surface; permitted `BOT_JIRA_EMAIL` is only bot identity. API/MCP tokens remain excluded. Runner-owned config, auth isolation, and offline controls still take precedence.
+
+The compatibility decision intentionally keeps the configured webhook available to the agent and its helpers: agent → helper → MCP `slack_notify` payload (`webhook_url`, plus the existing `notify_mode`) → memory-server webhook POST. The server already accepts this payload; no new notification mechanism or server-side per-instance configuration is required. The existing deployment parameter `SLACK_WEBHOOK_URL` needs configuration only if unset; the application interface is unchanged. Absent and empty webhook values remain unchanged, so the canonical slack-notify helper and wrap-up helpers retain their optional no-op behavior; post-pr reports an unconfigured webhook.
+
+Default coordinator tests cover all 12 names in sanitization and actual spawned-server environments with present and absent operational values. Canonical slack-notify helper tests capture MCP tool arguments for configured synthetic webhooks and notification modes, and verify absent/empty webhook no-ops. Optional native acceptance covers all 12 through the real supervisor, pinned OpenCode `1.18.29`, native root/child delegation, Bash and Python standard-library fixtures, and a temporary build of the real Go executor client against a loopback gRPC mock. Both native roles also execute the canonical Slack helper with an in-process MCP argument capture; this verifies the payload, not MCP or webhook transport. Its request-count model sequencing is intentionally version-pinned; title/summarization or version changes require a fixture update. All identities, URLs, requests, and credentials in the fixture are synthetic; it makes no real Jira or memory mutations and uses no paid inference. Run from `coordinator/` with Go and `python3` on `PATH`:
+
+```bash
+REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-1.18.29 npm test -- test/opencode-environment-native.test.ts
+```
+
+See [fresh-image rollout requirements](../openshell-deployment.md#opencode-operational-environment-rollout-rehor-199) before validating a deployed instance.
+
+#### Supplemental workspace access (REHOR-198)
+
+Deployment-owned `opencode-deployment.json`, selected by `REHOR_OPENCODE_DEPLOYMENT_CONFIG`, may grant supplemental paths outside the cycle worktree:
+
+```json
+{
+  "additionalDirectories": [
+    "/home/botuser/repos",
+    "/home/botuser/data",
+    "/tmp/opencode"
+  ]
+}
+```
+
+Merge this field with the deployment's provider/package settings. These are the onboarding deployment's approved roots, not automatic grants for every instance. `additionalDirectories` is not a supported profile `agent/opencode.json` field. Missing or empty grants keep external-directory access denied.
+
+Each entry must be a literal, canonical absolute POSIX path other than `/`. Wildcards, traversal, noncanonical separators, backslashes, control/format characters, environment/file references, and leading/trailing whitespace in path segments are rejected. Paths need not exist yet. The renderer sorts and deduplicates them, then emits `external_directory` rules denying `*` and allowing each `root/*`. OpenCode `1.18.29` external-directory checks request `directory/*`, so `root/*` covers requests for the root directory itself as well as descendants; a separate exact-root rule is unnecessary. Other external paths remain denied by this policy.
+
+The runner-owned config hook runs after native JSON/Markdown agent loading. It intersects every matching agent `allow`, `ask`, and `deny` rule with the approved roots, preserving native last-match ordering across permission-name wildcards and nested path rules. For example, `"*": "deny"` followed by an approved-path `allow` retains that exception; a later broad `allow` overrides an earlier narrow `ask` or `deny` only inside approved roots. Reversing those rules makes the later restriction win. `ask` remains a native permission request; the headless runner fails rather than automatically approving it. Requests outside approved roots remain denied regardless of agent grants. The explicit `external_directory` result is placed after all other permission keys so tool-name wildcard grants cannot widen the boundary. Native profile JSON staging and configuration hashing preserve permission-key order as well. Supplemental grants do not relax native read restrictions on credential-shaped paths or change other tool permissions.
+
+This is OpenCode permission configuration, not a filesystem or Bash sandbox. It does not constrain arbitrary code from plugins, custom tools, or shell commands. OpenCode `1.18.29` also appends its own internal tool-output-directory allowance after agent merging; the hook preserves that native behavior. OpenShell policy, mounts, Unix permissions, and network isolation are separate controls; these grants neither create mounts nor establish a controller upgrade requirement. See [OpenShell deployment and rollout](../openshell-deployment.md#opencode-budget-and-workspace-rollout-rehor-198).
+
+Offline mock-provider checks against pinned OpenCode `1.18.29` exercised nonexistent nested create/read, Bash at an approved root, and scoped child-agent access. Follow-up checks verified JSON/Markdown deny-except rules, the native explore permission shape, ordered permission-name/path wildcards, native string/object `ask` requests, and later broad grants overriding earlier restrictions only inside approved roots. Sibling paths, `/`, the synthetic instruction-discovery home, explicit per-agent denied paths, and credential-shaped reads remained denied through the tested native permission paths. This verifies runtime behavior without paid inference; live deployment smoke testing remains required.
 
 ### Phase 4: Plugin Port
 

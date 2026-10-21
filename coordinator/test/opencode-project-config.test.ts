@@ -92,6 +92,63 @@ async function tempDirectory(): Promise<string> {
 }
 
 describe("OpenCode instance project config", () => {
+  it("preserves ordered native agent permissions when staging and hashing profiles", async () => {
+    const root = await tempDirectory();
+    const render = (permission: JsonObject) =>
+      renderOpenCodeV1ConfigForCycle(preparation, "rehor-openai", deployment, {
+        settings: { agent: { worker: { permission } } },
+        files: [],
+      });
+    const earlierAsk = render({
+      "*": "ask",
+      read: "allow",
+      external_directory: { "/approved/private/*": "ask", "*": "allow" },
+    });
+    const laterAsk = render({
+      read: "allow",
+      external_directory: { "*": "allow", "/approved/private/*": "ask" },
+      "*": "ask",
+    });
+    const match = (value: string, pattern: string) =>
+      new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`).test(
+        value,
+      );
+    const evaluate = (permission: JsonObject, name: string, path: string) => {
+      let result = "allow";
+      for (const [key, value] of Object.entries(permission)) {
+        if (!match(name, key)) continue;
+        for (const [pattern, action] of Object.entries(
+          typeof value === "string" ? { "*": value } : (value as JsonObject),
+        )) {
+          if (match(path, pattern)) result = action as string;
+        }
+      }
+      return result;
+    };
+    for (const [index, rendered, expected] of [
+      [0, earlierAsk, "allow"],
+      [1, laterAsk, "ask"],
+    ] as const) {
+      const staged = await writeOpenCodeConfig(join(root, String(index)), rendered);
+      const permission = JSON.parse(await readFile(staged.configPath, "utf8")).agent.worker
+        .permission;
+      expect(evaluate(permission, "external_directory", "/approved/private/*")).toBe(expected);
+      expect(evaluate(permission, "read", "/approved/public.txt")).toBe(expected);
+    }
+    const original: JsonObject = { "*": "allow", "/approved/private/*": "ask" };
+    const reversed = Object.fromEntries(Object.entries(original).reverse());
+    expect(render({ external_directory: original }).hash).not.toBe(
+      render({ external_directory: reversed }).hash,
+    );
+    expect(render({ external_directory: original }).hash).toBe(
+      render({ external_directory: { ...original } }).hash,
+    );
+    const toolOrder: JsonObject = { "*": "ask", external_directory: "allow" };
+    expect(render(toolOrder).hash).not.toBe(
+      render(Object.fromEntries(Object.entries(toolOrder).reverse())).hash,
+    );
+  });
+
   it("stages native core, shared and custom workflow guidance before profile instructions", async () => {
     const root = await tempDirectory();
     const profile = join(root, "profile");
@@ -427,6 +484,28 @@ describe("OpenCode instance project config", () => {
         localPackageReference,
       ),
     ).toThrow("must use a declared npm package");
+  });
+
+  it("rejects instance directory grants and preserves stricter external-directory denials", () => {
+    const trusted = { ...deployment, additionalDirectories: ["/tmp/opencode"] };
+    const settingsToReject: JsonObject[] = [
+      { additionalDirectories: ["/home/botuser"] },
+      { permission: { external_directory: "allow" } },
+      { permission: { external_directory: { "/home/botuser/*": "allow" } } },
+    ];
+    for (const settings of settingsToReject) {
+      expect(() =>
+        renderOpenCodeV1ConfigForCycle(preparation, "rehor-openai", trusted, {
+          settings,
+          files: [],
+        }),
+      ).toThrow();
+    }
+    const rendered = renderOpenCodeV1ConfigForCycle(preparation, "rehor-openai", trusted, {
+      settings: { permission: { external_directory: "deny" } },
+      files: [],
+    });
+    expect(JSON.parse(rendered.enforcementJson).permission.external_directory).toBe("deny");
   });
 
   it("rejects profile symlinks", async () => {

@@ -15,6 +15,7 @@ import {
   stableJson,
 } from "../shared";
 import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
+import { renderOpenCodePolicyPlugin } from "./policy-plugin";
 import {
   HttpOpenCodeReadiness,
   matchesVersion,
@@ -217,7 +218,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         const shellPlugin = join(stateDirectory, "shell-env.mjs");
         await writeFile(
           shellPlugin,
-          `export default async () => ({"shell.env": async (_, output) => { output.env.XDG_CONFIG_HOME = ${JSON.stringify(originalConfigHome ?? "")}; }});\n`,
+          renderOpenCodePolicyPlugin(originalConfigHome, enforcement.permission.external_directory),
         );
         enforcement.plugin = [...(enforcement.plugin ?? []), pathToFileURL(shellPlugin).href];
         environment.OPENCODE_CONFIG_CONTENT = stableJson(enforcement);
