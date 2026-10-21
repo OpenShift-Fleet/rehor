@@ -155,17 +155,12 @@ RUN rm -rf coordinator/node_modules coordinator/dist \
     && npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev
-# Keep the provider package in the image too: OpenCode runs offline in the
-# coordinator path and must not resolve provider code from the network.
+# Native OpenAI providers are bundled in the pinned OpenCode executable.
+# The custom Vertex adapter is part of the coordinator bundle/dependencies.
 RUN npm install --global --omit=dev --no-audit --no-fund \
-    opencode-ai@1.18.29 \
-    @ai-sdk/openai@4.0.73 \
-    @ai-sdk/openai-compatible@3.0.54 \
-    && test "$(opencode --version)" = "1.18.29" \
-    && test -f "$(npm root --global)/@ai-sdk/openai/package.json" \
-    && test -f "$(npm root --global)/@ai-sdk/openai-compatible/package.json"
-ENV NODE_PATH=/usr/local/lib/node_modules
-ENV OPENCODE_EXPECTED_VERSION=1.18.29
+    @opencode/cli@2.1.2 \
+    && opencode --version | tr -d '\r' | grep -Eq '^(opencode v|v)?2\.1\.2$'
+ENV OPENCODE_EXPECTED_VERSION=2.1.2
 ENV COORDINATOR_METRICS_PORT=9091
 EXPOSE 9091
 

@@ -463,13 +463,12 @@ describe("coordinator execution", () => {
       new FakeAgentRuntime({ events: [event(), terminal()] }),
       taskRun,
     );
-    const openCodeResult = await executeRun(
-      new FakeAgentRuntime({ events: [event(), terminal()] }),
-      { ...taskRun, runtimeId: "opencode-v1" },
-    );
-
     expect(claudeResult.terminal.payload.context).not.toHaveProperty("taskId");
     expect(claudeResult.terminal.payload.context).not.toHaveProperty("externalKey");
+    const openCodeResult = await executeRun(
+      new FakeAgentRuntime({ events: [event(), terminal()] }),
+      { ...taskRun, runtimeId: "opencode" },
+    );
     expect(openCodeResult.terminal.payload).toMatchObject({
       context: { taskId: 44, externalKey: "REHOR-44" },
     });

@@ -111,11 +111,11 @@ def test_preflight_bridge_returns_null_when_no_scripts(tmp_path):
 @pytest.mark.parametrize(
     "runtime, provider, json_budget, env_budget, expected_budget",
     [
-        ("opencode-v1", "rehor-openai", None, None, 200),
-        ("opencode-v1", "rehor-openai", 275, None, 275),
-        ("opencode-v1", "rehor-openai", 275, "450", 450),
-        ("opencode-v1", "vertex", None, None, 200),
-        ("opencode-v1", "vertex", 275, "450", 450),
+        ("opencode", "rehor-openai", None, None, 200),
+        ("opencode", "rehor-openai", 275, None, 275),
+        ("opencode", "rehor-openai", 275, "450", 450),
+        ("opencode", "vertex", None, None, 200),
+        ("opencode", "vertex", 275, "450", 450),
         ("claude", "vertex", None, None, 10),
         ("claude", "vertex", 275, "450", 10),
     ],
@@ -214,7 +214,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(
     assert result["envs"] == ["github"]
     assert result["gitConfigGlobal"] == git_config_global
     assert result["runtimeId"] == runtime
-    assert len(assembled_claude_instructions) == (0 if runtime == "opencode-v1" else 1)
+    assert len(assembled_claude_instructions) == (1 if runtime == "claude" else 0)
     assert result["providerId"] == provider
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"

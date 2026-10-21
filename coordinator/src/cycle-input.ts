@@ -1,6 +1,7 @@
 import { rm, writeFile } from "node:fs/promises";
 
 import type { ContentHash } from "./domain/run";
+import { isOpenCodeRuntime } from "./domain/runtime-selection";
 import {
   type AssembledInstructions,
   assembleInstructions,
@@ -18,7 +19,7 @@ import {
 import {
   loadOpenCodeProjectConfig,
   type OpenCodeProjectConfiguration,
-} from "./runtimes/opencode-v1/project-config";
+} from "./runtimes/opencode/project-config";
 import { stableJson } from "./runtimes/shared";
 
 export interface PrepareCycleInputOptions {
@@ -54,14 +55,13 @@ export async function prepareCycleInput(
     { scriptDir: options.scriptDir, label: options.label },
     options.signal,
   );
-  const nativeConfig =
-    config.runtimeId === "opencode-v1"
-      ? await loadOpenCodeProjectConfig(config.remoteAgentDir, {
-          scriptDir: options.scriptDir,
-          workflow: config.workflow,
-          sharedAgentDir: config.sharedAgentDir,
-        })
-      : undefined;
+  const nativeConfig = isOpenCodeRuntime(config.runtimeId)
+    ? await loadOpenCodeProjectConfig(config.remoteAgentDir, {
+        scriptDir: options.scriptDir,
+        workflow: config.workflow,
+        sharedAgentDir: config.sharedAgentDir,
+      })
+    : undefined;
   const instructions =
     nativeConfig === undefined
       ? await assembleInstructions({

@@ -5,7 +5,7 @@ import { createOpenCodeFetch, type OpenCodeFetch } from "./environment";
 export interface OpenCodeHealth {
   healthy: boolean;
   version: string;
-  capabilities?: readonly string[];
+  capabilities?: { persistentPty?: boolean };
 }
 
 export class OpenCodeReadinessError extends Error {
@@ -25,27 +25,46 @@ export class HttpOpenCodeReadiness {
     this.fetchImpl = createOpenCodeFetch(fetchImpl);
   }
 
-  async check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth> {
-    const healthResponse = await this.fetchImpl(`${baseUrl}/global/health`, { signal });
+  async check(
+    baseUrl: string,
+    directory: string,
+    signal: AbortSignal,
+    password?: string,
+  ): Promise<OpenCodeHealth> {
+    const headers =
+      password === undefined
+        ? undefined
+        : {
+            authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+          };
+    const healthResponse = await this.fetchImpl(`${baseUrl}/api/info`, { signal, headers });
     if (!healthResponse.ok) {
       throw new OpenCodeReadinessError(
-        `OpenCode health returned HTTP ${healthResponse.status} at ${baseUrl}/global/health`,
+        `OpenCode server info returned HTTP ${healthResponse.status} at ${baseUrl}/api/info`,
+        healthResponse.status === 401 || healthResponse.status === 500,
       );
     }
     const health = await readJson(healthResponse, "health");
     if (
-      health.healthy !== true ||
       typeof health.version !== "string" ||
-      health.version.length === 0
+      health.version.length === 0 ||
+      !Number.isSafeInteger(health.pid) ||
+      (health.pid as number) <= 0 ||
+      !Array.isArray(health.urls) ||
+      health.urls.some((url) => typeof url !== "string") ||
+      typeof health.paths !== "object" ||
+      health.paths === null ||
+      typeof (health.paths as Record<string, unknown>).tmp !== "string"
     ) {
       throw new OpenCodeReadinessError(
-        "OpenCode health response must contain healthy=true and version",
+        "OpenCode server info response must contain version, pid, urls and paths.tmp",
+        true,
       );
     }
 
-    const pathUrl = new URL(`${baseUrl}/path`);
-    pathUrl.searchParams.set("directory", directory);
-    const pathResponse = await this.fetchImpl(pathUrl, { signal });
+    const pathUrl = new URL(`${baseUrl}/api/location`);
+    pathUrl.searchParams.set("location[directory]", directory);
+    const pathResponse = await this.fetchImpl(pathUrl, { signal, headers });
     if (!pathResponse.ok) {
       throw new OpenCodeReadinessError(
         `OpenCode path check returned HTTP ${pathResponse.status} at ${pathUrl}`,
@@ -78,12 +97,17 @@ export class HttpOpenCodeReadiness {
   }
 }
 
-function parseCapabilities(value: unknown): readonly string[] | undefined {
+function parseCapabilities(value: unknown): OpenCodeHealth["capabilities"] {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new OpenCodeReadinessError("OpenCode health capabilities must be an array of strings");
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    ("persistentPty" in value && typeof value.persistentPty !== "boolean")
+  ) {
+    throw new OpenCodeReadinessError("OpenCode server capabilities must be an object", true);
   }
-  return value;
+  return "persistentPty" in value ? { persistentPty: value.persistentPty as boolean } : {};
 }
 
 export function matchesVersion(version: string, expected: string | RegExp): boolean {

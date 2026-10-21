@@ -1,8 +1,5 @@
-import {
-  createOpencodeClient,
-  type Event as OpenCodeEvent,
-  type OpencodeClient,
-} from "@opencode-ai/sdk";
+import { setTimeout as delay } from "node:timers/promises";
+import { OpenCode, type OpenCodeClient, type OpenCodeEvent } from "@opencode/client";
 import { providerDiagnostic, runtimeErrorDetails } from "../../diagnostics";
 import {
   createEventFactory,
@@ -35,7 +32,6 @@ import {
   isSessionEvent,
   type NormalizationContext,
   normalizeOpenCodeEvent,
-  unwrapSdkResponse,
 } from "./normalizer";
 import {
   OPENCODE_VERSION,
@@ -46,14 +42,14 @@ import {
   type OpenCodeSupervisorOptions,
 } from "./process-supervisor";
 import { reconcileSession } from "./reconcile";
-import type { EffectiveOpenCodeModel, RenderedOpenCodeV1Config } from "./types";
+import type { EffectiveOpenCodeModel, RenderedOpenCodeConfig } from "./types";
 
-export type OpenCodeV1ServerOptions = Omit<OpenCodeSupervisorOptions, "renderedConfig">;
+export type OpenCodeServerOptions = Omit<OpenCodeSupervisorOptions, "renderedConfig">;
 export type OpenCodeSupervisorFactory = (
-  renderedConfig: RenderedOpenCodeV1Config | undefined,
+  renderedConfig: RenderedOpenCodeConfig | undefined,
 ) => OpenCodeServerController;
 
-export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
+export interface OpenCodeRuntimeOptions extends OpenCodeEnvironmentOptions {
   logger?: Logger;
   policyVersion?: string;
   reconciliationTimeoutMs?: number;
@@ -61,10 +57,10 @@ export interface OpenCodeV1RuntimeOptions extends OpenCodeEnvironmentOptions {
   requestTimeoutMs?: number;
   cleanupTimeoutMs?: number;
   /** Immutable configuration rendered by the runtime factory for this run. */
-  renderedConfig?: RenderedOpenCodeV1Config;
+  renderedConfig?: RenderedOpenCodeConfig;
   /** Configuration failures are emitted through the normal runtime lifecycle. */
   renderError?: unknown;
-  server?: OpenCodeV1ServerOptions;
+  server?: OpenCodeServerOptions;
   /** Build an injected supervisor with this run's immutable rendered snapshot. */
   supervisor?: OpenCodeSupervisorFactory;
   clientFactory?: OpenCodeClientFactory;
@@ -74,14 +70,14 @@ export type OpenCodeClientFactory = (
   server: OpenCodeServerInfo,
   directory: string,
   environment: Readonly<Record<string, string>>,
-) => OpencodeClient;
+) => OpenCodeClient;
 
 interface ActiveRun {
   controller: AbortController;
-  client?: OpencodeClient;
+  client?: OpenCodeClient;
   sessionId?: string;
   directory?: string;
-  stream?: AsyncGenerator<OpenCodeEvent>;
+  stream?: AsyncIterator<OpenCodeEvent>;
 }
 
 interface RuntimeOutcome {
@@ -92,7 +88,7 @@ interface RuntimeOutcome {
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
 const CAPABILITIES: RuntimeCapabilities = {
-  runtimeId: "opencode-v1",
+  runtimeId: "opencode",
   runtimeVersion: OPENCODE_VERSION,
   configVersion: "1",
   streaming: true,
@@ -106,15 +102,16 @@ const CAPABILITIES: RuntimeCapabilities = {
 };
 
 /**
- * OpenCode V1 adapter. OpenCode SDK values are consumed here and never cross
+ * OpenCode runtime adapter backed by the V2 client/server contract.
+ * OpenCode SDK values are consumed here and never cross
  * the AgentRuntime port; callers receive only Rehor-owned events.
  */
-export class OpenCodeV1Runtime implements AgentRuntime {
+export class OpenCodeRuntime implements AgentRuntime {
   private readonly logger: Logger;
   private readonly policyVersion: string;
   private readonly supervisor: OpenCodeServerController;
   private readonly clientEnvironment: Record<string, string>;
-  private readonly renderedConfig?: RenderedOpenCodeV1Config;
+  private readonly renderedConfig?: RenderedOpenCodeConfig;
   private readonly renderError?: unknown;
   private readonly reconciliationTimeoutMs: number;
   private readonly reconciliationMessageLimit: number;
@@ -126,9 +123,9 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   private hasRun = false;
   private active?: ActiveRun;
 
-  constructor(options: OpenCodeV1RuntimeOptions = {}) {
+  constructor(options: OpenCodeRuntimeOptions = {}) {
     this.logger = options.logger ?? nullLogger;
-    this.policyVersion = options.policyVersion ?? "opencode-v1";
+    this.policyVersion = options.policyVersion ?? "opencode";
     this.renderedConfig = options.renderedConfig;
     this.renderError = options.renderError;
     this.clientEnvironment = buildOpenCodeEnvironment(options);
@@ -159,10 +156,15 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       this.clientFactory = options.clientFactory;
     } else {
       const clientFetch = createOpenCodeFetch();
-      this.clientFactory = (server, directory) =>
-        createOpencodeClient({
+      this.clientFactory = (server) =>
+        OpenCode.make({
           baseUrl: server.baseUrl,
-          directory,
+          headers:
+            server.password === undefined
+              ? undefined
+              : {
+                  authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}`,
+                },
           // Do not mutate process.env. Client requests stay on the OpenCode
           // loopback server; the child receives explicit proxy settings.
           fetch: clientFetch,
@@ -178,7 +180,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     return this.clientEnvironment;
   }
 
-  get renderedConfiguration(): RenderedOpenCodeV1Config | undefined {
+  get renderedConfiguration(): RenderedOpenCodeConfig | undefined {
     return this.renderedConfig;
   }
 
@@ -196,7 +198,7 @@ export class OpenCodeV1Runtime implements AgentRuntime {
   ): AsyncIterable<RehorEvent> {
     if (!this.started) throw new Error("runtime must be started before run");
     if (this.stopped) throw new Error("stopped runtime must not stream events");
-    if (this.hasRun) throw new Error("OpenCode V1 runtime supports one run per instance");
+    if (this.hasRun) throw new Error("OpenCode runtime supports one run per instance");
     this.hasRun = true;
 
     const renderedConfig = this.renderedConfig;
@@ -220,7 +222,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     let turns = 0;
     let promptAttempted = false;
     let normalization!: NormalizationContext;
-    let stream: AsyncGenerator<OpenCodeEvent> | undefined;
     try {
       // Emit before any setup can fail so every attempt, including one that
       // never reaches a session, has a started record.
@@ -237,20 +238,10 @@ export class OpenCodeV1Runtime implements AgentRuntime {
       active.client = client;
       active.directory = directory;
 
-      const subscription = await boundedOperation(
-        (requestSignal) =>
-          client.event.subscribe({
-            query: { directory },
-            signal: requestSignal,
-            sseMaxRetryAttempts: 0,
-          }),
-        active.controller.signal,
-        Date.now() + this.requestTimeoutMs,
-        "OpenCode event subscription",
-      );
-      stream = subscription.stream;
-      active.stream = stream;
-      const iterator = stream[Symbol.asyncIterator]();
+      const iterator = client.event
+        .subscribe({ signal: active.controller.signal })
+        [Symbol.asyncIterator]();
+      active.stream = iterator;
       const connected = await boundedOperation(
         () => iterator.next(),
         active.controller.signal,
@@ -261,47 +252,38 @@ export class OpenCodeV1Runtime implements AgentRuntime {
         throw new Error("OpenCode event stream did not begin with server.connected");
       }
 
-      const sessionResponse = await boundedOperation(
+      // Location inventory loads the policy plugin before admitting any prompt.
+      // A plugin that failed to load must never silently turn enforcement off.
+      await this.assertPolicyActive(client, directory, active.controller.signal);
+
+      const session = await boundedOperation(
         (requestSignal) =>
-          client.session.create({
-            query: { directory },
-            body: { title: `Rehor ${input.runId}` },
-            signal: requestSignal,
-            responseStyle: "data",
-            throwOnError: true,
-          }),
+          client.session.create(
+            {
+              title: `Rehor ${input.runId}`,
+              location: { directory },
+              model: { providerID: effectiveModel.providerID, id: effectiveModel.modelID },
+            },
+            { signal: requestSignal },
+          ),
         active.controller.signal,
         Date.now() + this.requestTimeoutMs,
         "OpenCode session creation",
       );
-      const session = record(unwrapSdkResponse(sessionResponse, "OpenCode session creation"));
       const sessionId = stringValue(session.id, "");
       if (!sessionId) throw new Error("OpenCode session creation returned no session");
       active.sessionId = sessionId;
       normalization = createNormalizationContext(sessionId, effectiveModel.value);
 
       promptAttempted = true;
-      unwrapSdkResponse(
-        await boundedOperation(
-          (requestSignal) =>
-            client.session.promptAsync({
-              path: { id: sessionId },
-              query: { directory },
-              body: {
-                model: {
-                  providerID: effectiveModel.providerID,
-                  modelID: effectiveModel.modelID,
-                },
-                parts: [{ type: "text", text: input.prompt }],
-              },
-              signal: requestSignal,
-              responseStyle: "data",
-              throwOnError: true,
-            }),
-          active.controller.signal,
-          Date.now() + this.requestTimeoutMs,
-          "OpenCode session prompt",
-        ),
+      await boundedOperation(
+        (requestSignal) =>
+          client.session.prompt(
+            { sessionID: sessionId, text: input.prompt },
+            { signal: requestSignal },
+          ),
+        active.controller.signal,
+        Date.now() + this.requestTimeoutMs,
         "OpenCode session prompt",
       );
 
@@ -313,8 +295,49 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           "OpenCode event stream",
         );
         if (next.done) break;
+        const data = record(next.value.data);
+        const waitingSession =
+          next.value.type === "form.created" ? record(data.form).sessionID : data.sessionID;
+        if (
+          (next.value.type === "permission.asked" || next.value.type === "form.created") &&
+          typeof waitingSession === "string" &&
+          normalization.sessionIds.has(waitingSession)
+        ) {
+          const reason =
+            next.value.type === "permission.asked"
+              ? "OpenCode permission request cannot be handled in headless mode"
+              : "OpenCode form request cannot be handled in headless mode";
+          yield factory(
+            "policy",
+            {
+              state:
+                next.value.type === "permission.asked" ? "permission_requested" : "form_requested",
+            },
+            { runtimeSessionRef: waitingSession },
+          );
+          yield factory("error", { message: reason }, { runtimeSessionRef: waitingSession });
+          outcome = { state: "failed", reason };
+          break;
+        }
         if (!isSessionEvent(next.value, normalization)) continue;
-        if (beginsNewTurn(next.value, normalization)) {
+        const startsTurn = beginsNewTurn(next.value, normalization);
+        const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
+        if (
+          next.value.type === "session.execution.failed" ||
+          next.value.type === "session.step.failed"
+        ) {
+          this.logger.log("ERROR", "OpenCode session error", {
+            run_id: input.runId,
+            attempt_id: input.attemptId,
+            diagnostic: providerDiagnostic(data.error),
+            server_diagnostics: this.supervisor.diagnostics,
+          });
+        }
+        if (normalized.turns > 0) turns += normalized.turns;
+        for (const event of normalized.events) yield event;
+        if (startsTurn) {
+          // The next native step already exists. Publish its pending usage before
+          // the coordinator can abort on this budget notification and skip recovery.
           yield factory(
             "run",
             { state: "turn_started" },
@@ -322,25 +345,6 @@ export class OpenCodeV1Runtime implements AgentRuntime {
           );
           if (signal.aborted) throw abortReason(signal);
         }
-
-        const normalized = normalizeOpenCodeEvent(next.value, factory, normalization);
-        if (
-          next.value.type === "session.error" ||
-          (next.value.type === "message.updated" && record(next.value.properties.info).error)
-        ) {
-          const error =
-            next.value.type === "session.error"
-              ? next.value.properties.error
-              : record(next.value.properties.info).error;
-          this.logger.log("ERROR", "OpenCode session error", {
-            run_id: input.runId,
-            attempt_id: input.attemptId,
-            diagnostic: providerDiagnostic(error),
-            server_diagnostics: this.supervisor.diagnostics,
-          });
-        }
-        if (normalized.turns > 0) turns += normalized.turns;
-        for (const event of normalized.events) yield event;
         if (normalized.resultText !== undefined) resultText = normalized.resultText;
         if (normalized.outcome) {
           outcome = {
@@ -462,6 +466,38 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     await this.supervisor.stop();
   }
 
+  private async assertPolicyActive(
+    client: OpenCodeClient,
+    directory: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const deadline = Date.now() + this.requestTimeoutMs;
+    const inactiveError = new Error("OpenCode required policy plugin rehor-policy is not active");
+    for (;;) {
+      const inventory = await boundedOperation(
+        (signal) => client.plugin.list({ location: { directory } }, { signal }),
+        signal,
+        deadline,
+        "OpenCode policy plugin inventory",
+        inactiveError,
+      );
+      const policies = Array.isArray(inventory.data)
+        ? inventory.data.filter((plugin) => plugin.id === "rehor-policy")
+        : [];
+      if (policies.length) {
+        if (policies.every((plugin) => plugin.state?.status === "active")) return;
+        throw inactiveError;
+      }
+      // Native Plugin.list is a non-blocking inventory read: the first request
+      // may precede asynchronous source activation. Missing is never admission;
+      // allow it only a bounded startup window, while explicit failures stop now.
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw inactiveError;
+      await delay(Math.min(25, remaining), undefined, { signal });
+      if (Date.now() >= deadline) throw inactiveError;
+    }
+  }
+
   private async cleanup(active: ActiveRun): Promise<Error | undefined> {
     const failures: Error[] = [];
     const deadline = Date.now() + this.cleanupTimeoutMs;
@@ -477,32 +513,34 @@ export class OpenCodeV1Runtime implements AgentRuntime {
     ): Promise<T> => boundedOperation(operation, cleanupSignal, deadline, name);
 
     try {
-      if (active.stream) {
-        const stream = active.stream;
+      if (active.client && active.sessionId) {
+        const client = active.client;
+        const sessionID = active.sessionId;
         try {
-          await runCleanup(() => stream.return(undefined), "stream return");
+          await runCleanup(
+            (signal) => client.session.interrupt({ sessionID, resume: false }, { signal }),
+            "session interrupt",
+          );
         } catch (error) {
           failures.push(toError(error));
         }
       }
-      if (active.client && active.sessionId && active.directory) {
+      if (active.stream) {
+        const stream = active.stream;
+        try {
+          await runCleanup(() => Promise.resolve(stream.return?.()), "stream return");
+        } catch (error) {
+          failures.push(toError(error));
+        }
+      }
+      if (active.client && active.sessionId) {
         const client = active.client;
         const sessionId = active.sessionId;
-        const directory = active.directory;
         try {
-          unwrapSdkResponse(
-            await runCleanup(
-              (requestSignal) =>
-                client.session.delete({
-                  path: { id: sessionId },
-                  query: { directory },
-                  signal: requestSignal,
-                  responseStyle: "data",
-                  throwOnError: true,
-                }),
-              "session delete",
-            ),
-            "OpenCode session delete",
+          await runCleanup(
+            (requestSignal) =>
+              client.session.remove({ sessionID: sessionId }, { signal: requestSignal }),
+            "session remove",
           );
         } catch (error) {
           failures.push(toError(error));

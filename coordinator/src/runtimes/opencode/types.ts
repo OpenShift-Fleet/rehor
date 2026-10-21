@@ -9,16 +9,28 @@ export type JsonObject = { [key: string]: JsonValue };
 
 export interface OpenCodeModelConfig {
   name?: string;
-  reasoning?: boolean;
+  modelID?: string;
   limit?: { context: number; output: number };
-  options?: Readonly<Record<string, JsonValue>>;
+  settings?: Readonly<Record<string, JsonValue>>;
+  capabilities?: {
+    tools?: boolean;
+    input?: string[];
+    output?: string[];
+    temperature?: boolean;
+    reasoning?: {
+      supported: boolean;
+      toggle?: boolean;
+      effort?: string[];
+      budget?: { min?: number; max?: number };
+    };
+  };
 }
 
 export interface OpenCodeProviderConfig {
   id: string;
-  npm?: string;
+  package?: string;
   name?: string;
-  options?: Readonly<Record<string, JsonValue>>;
+  settings?: Readonly<Record<string, JsonValue>>;
   models?: Readonly<Record<string, OpenCodeModelConfig>>;
 }
 
@@ -35,12 +47,12 @@ export interface OpenCodePackage {
 
 export interface OpenCodePackageLock {
   readonly lockfileVersion: typeof OPENCODE_PACKAGE_LOCK_VERSION;
-  /** Build declarations; bundled provider versions are owned by the pinned OpenCode binary. */
+  /** Build declarations; V2's bundled native provider versions belong to the pinned binary. */
   readonly packages: Readonly<Record<string, string>>;
 }
 
 /** Runtime-owned input. No OpenCode SDK types cross this boundary. */
-export interface OpenCodeV1ConfigInput {
+export interface OpenCodeConfigInput {
   /** Either `provider/model` or a model ID paired with `providerId`. */
   model: string;
   providerId?: string;
@@ -51,23 +63,26 @@ export interface OpenCodeV1ConfigInput {
   optionalMcpServers?: readonly string[];
   plugins?: readonly OpenCodePluginConfig[];
   packages?: readonly OpenCodePackage[];
+  /** Rehor utility-model selection; rendered only as native agents.title.model. */
   smallModel?: string;
   /** Trusted deployment grants outside the run worktree; not a filesystem sandbox. */
   additionalDirectories?: readonly string[];
 }
 
 /** Deployment-owned fields that are merged with one prepared cycle. */
-export type OpenCodeV1DeploymentConfig = Omit<
-  OpenCodeV1ConfigInput,
+export type OpenCodeDeploymentConfig = Omit<
+  OpenCodeConfigInput,
   "model" | "providerId" | "mcpServers" | "allowedTools" | "optionalMcpServers"
 > & {
   model?: string;
   providerId?: string;
-  /** Legacy deployment JSON compatibility; normalized to `providers` before rendering. */
-  provider?: OpenCodeProviderConfig;
-  /** Legacy deployment JSON compatibility; normalized to `packages` before rendering. */
-  packageLock?: OpenCodePackageLock;
 };
+
+export interface OpenCodePermissionRule {
+  action: string;
+  resource: string;
+  effect: "allow" | "deny" | "ask";
+}
 
 export interface EffectiveOpenCodeModel {
   readonly providerID: string;
@@ -75,12 +90,12 @@ export interface EffectiveOpenCodeModel {
   readonly value: string;
 }
 
-export interface RenderedOpenCodeV1Config {
+export interface RenderedOpenCodeConfig {
   readonly config: Readonly<Record<string, JsonValue>>;
   readonly json: string;
   /** Validated GitOps profile settings staged as OPENCODE_CONFIG. */
   readonly profileConfig: Readonly<Record<string, JsonValue>>;
-  /** Runner-owned final layer for selected model/provider and tool boundaries. */
+  /** Runner-owned final layer; external-directory policies must also be staged globally. */
   readonly enforcementJson: string;
   readonly hash: string;
   readonly packageLock: OpenCodePackageLock;

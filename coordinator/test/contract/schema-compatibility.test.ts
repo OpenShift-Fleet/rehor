@@ -54,6 +54,12 @@ function schemaValidator(schema: unknown): ValidateFunction {
 }
 
 describe("versioned Rehor fixtures", () => {
+  it("preserves historical runtime identifiers when parsing stored runs", () => {
+    const stored = { ...runFx, runtimeId: "opencode-v1" };
+    expect(parseRehorRun(stored).runtimeId).toBe("opencode-v1");
+    expect(stored.runtimeId).toBe("opencode-v1");
+  });
+
   it("validates the v1 run fixture against its schema and parser", async () => {
     const fixture = await readJson("../fixtures/rehor-run.v1.json");
     const validate = schemaValidator(await readJson("../../schema/rehor-run.v1.json"));

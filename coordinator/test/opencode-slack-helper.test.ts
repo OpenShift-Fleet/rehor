@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { buildOpenCodeEnvironment } from "../src/runtimes/opencode-v1/environment";
+import { buildOpenCodeEnvironment } from "../src/runtimes/opencode/environment";
 
 const fixture = fileURLToPath(new URL("./fixtures/slack-helper-capture.py", import.meta.url));
 const helper = fileURLToPath(

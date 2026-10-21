@@ -85,6 +85,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     from . import run as runner
     from .config import (
         ALLOWED_TOOLS,
+        OPENCODE_RUNTIME_ID,
         discover_optional_mcp_servers,
         load_config,
         load_instance_config,
@@ -137,7 +138,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
     active_envs = resolve_active_envs(script_dir, instance_config)
     install_skills(script_dir, workflow_dir, active_envs)
-    if instance_config.runtime != "opencode-v1":
+    if instance_config.runtime != OPENCODE_RUNTIME_ID:
         runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
     # Keep a separate reference-only view for OpenCode. It owns project-server
@@ -154,7 +155,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "providerId": instance_config.provider,
         "maxTurns": (
             runtime_config.opencode_max_tool_calls
-            if instance_config.runtime == "opencode-v1"
+            if instance_config.runtime == OPENCODE_RUNTIME_ID
             else runtime_config.max_turns
         ),
         "intervalSeconds": runtime_config.interval,

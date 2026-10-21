@@ -53,7 +53,7 @@ class TestInstanceConfigFromYaml:
                     "source": "github",
                     "envs": ["browser"],
                     "claude_md": {"strategy": "append"},
-                    "runtime": "opencode-v1",
+                    "runtime": "opencode",
                     "provider": "rehor-openai",
                 }
             )
@@ -63,14 +63,14 @@ class TestInstanceConfigFromYaml:
         assert ic.source == "github"
         assert ic.envs == ["browser"]
         assert ic.claude_md_strategy == "append"
-        assert ic.runtime == "opencode-v1"
+        assert ic.runtime == "opencode"
         assert ic.provider == "rehor-openai"
 
     def test_opencode_runtime_defaults_to_native_provider(self, agent_dir):
-        (agent_dir / "instance.yaml").write_text("runtime: opencode-v1\n")
+        (agent_dir / "instance.yaml").write_text("runtime: opencode\n")
         with patch.dict(os.environ, {}, clear=True):
             ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
-        assert ic.runtime == "opencode-v1"
+        assert ic.runtime == "opencode"
         assert ic.provider == "rehor-openai"
 
     def test_minimal_config(self, agent_dir):
@@ -171,17 +171,17 @@ class TestInstanceConfigFromEnv:
     def test_runtime_and_provider_env(self):
         with patch.dict(
             os.environ,
-            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            {"BOT_RUNTIME": "opencode", "BOT_PROVIDER": "rehor-openai"},
             clear=True,
         ):
             ic = InstanceConfig.from_env()
-        assert ic.runtime == "opencode-v1"
+        assert ic.runtime == "opencode"
         assert ic.provider == "rehor-openai"
 
     def test_opencode_runtime_defaults_to_native_openai_provider(self):
-        with patch.dict(os.environ, {"BOT_RUNTIME": "opencode-v1"}, clear=True):
+        with patch.dict(os.environ, {"BOT_RUNTIME": "opencode"}, clear=True):
             ic = InstanceConfig.from_env()
-        assert ic.runtime == "opencode-v1"
+        assert ic.runtime == "opencode"
         assert ic.provider == "rehor-openai"
 
 
@@ -217,7 +217,7 @@ class TestLoadInstanceConfig:
         )
         with patch.dict(
             os.environ,
-            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            {"BOT_RUNTIME": "opencode", "BOT_PROVIDER": "rehor-openai"},
             clear=True,
         ):
             ic = load_instance_config(agent_dir)
@@ -228,11 +228,11 @@ class TestLoadInstanceConfig:
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "reviewer"}))
         with patch.dict(
             os.environ,
-            {"BOT_RUNTIME": "opencode-v1", "BOT_PROVIDER": "rehor-openai"},
+            {"BOT_RUNTIME": "opencode", "BOT_PROVIDER": "rehor-openai"},
             clear=True,
         ):
             ic = load_instance_config(agent_dir)
-        assert ic.runtime == "opencode-v1"
+        assert ic.runtime == "opencode"
         assert ic.provider == "rehor-openai"
 
     def test_no_yaml_falls_back_to_env(self, agent_dir):
@@ -278,7 +278,7 @@ class TestValidateInstanceConfig:
         with patch.dict(os.environ, env, clear=False):
             validate_instance_config(preset_tree, ic)
 
-    @pytest.mark.parametrize("runtime", ["unknown", "opencode_v1", ""])
+    @pytest.mark.parametrize("runtime", ["unknown", "opencode_v1", "opencode-v1", "opencode-v2", ""])
     def test_invalid_runtime_exits(self, preset_tree, runtime):
         ic = InstanceConfig(runtime=runtime)
         with pytest.raises(SystemExit) as exc_info:
@@ -299,7 +299,7 @@ class TestValidateInstanceConfig:
         assert exc_info.value.code == 1
 
     def test_opencode_runtime_accepts_chat_completions_provider(self, preset_tree):
-        ic = InstanceConfig(runtime="opencode-v1", provider="rehor-openai-chat")
+        ic = InstanceConfig(runtime="opencode", provider="rehor-openai-chat")
         validate_instance_config(preset_tree, ic)
 
     def test_missing_workflow_exits(self, preset_tree):
@@ -340,8 +340,8 @@ class TestValidatePythonRunnerSelection:
     @pytest.mark.parametrize(
         "selection",
         [
-            {"runtime": "opencode-v1", "provider": "rehor-openai"},
-            {"runtime": "opencode-v1", "provider": "vertex"},
+            {"runtime": "opencode", "provider": "rehor-openai"},
+            {"runtime": "opencode", "provider": "vertex"},
         ],
     )
     def test_non_default_selection_fails_closed(self, selection):
@@ -417,7 +417,7 @@ class TestResolveCycleModel:
         ic = InstanceConfig(
             workflow="jira-sprint",
             model=None,
-            runtime="opencode-v1",
+            runtime="opencode",
             provider="rehor-openai",
         )
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
@@ -427,7 +427,7 @@ class TestResolveCycleModel:
         assert resolved == "gpt-6-luna"
 
     def test_opencode_vertex_keeps_claude_model_default(self, preset_tree, global_config):
-        ic = InstanceConfig(runtime="opencode-v1", provider="vertex")
+        ic = InstanceConfig(runtime="opencode", provider="vertex")
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
         wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
 
@@ -435,7 +435,7 @@ class TestResolveCycleModel:
         assert resolved == "claude-global-default"
 
     def test_opencode_chat_provider_requires_explicit_model(self, preset_tree, global_config):
-        ic = InstanceConfig(runtime="opencode-v1", provider="rehor-openai-chat")
+        ic = InstanceConfig(runtime="opencode", provider="rehor-openai-chat")
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
         wf_manifest.write_text(yaml.dump({"name": "jira-sprint"}))
 
@@ -444,7 +444,7 @@ class TestResolveCycleModel:
 
     @pytest.mark.parametrize("provider", ["rehor-openai", "rehor-openai-chat"])
     def test_opencode_openai_provider_rejects_claude_model_tier(self, preset_tree, global_config, provider):
-        ic = InstanceConfig(runtime="opencode-v1", provider=provider)
+        ic = InstanceConfig(runtime="opencode", provider=provider)
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
         wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
 
@@ -452,7 +452,7 @@ class TestResolveCycleModel:
             resolve_cycle_model(preset_tree, ic, global_config)
 
     def test_opencode_vertex_resolves_claude_model_tier(self, preset_tree, global_config):
-        ic = InstanceConfig(runtime="opencode-v1", provider="vertex")
+        ic = InstanceConfig(runtime="opencode", provider="vertex")
         wf_manifest = preset_tree / "presets" / "workflows" / "jira-sprint" / "manifest.yaml"
         wf_manifest.write_text(yaml.dump({"name": "jira-sprint", "model_tier": "light"}))
 

@@ -2,7 +2,7 @@
 """Export a small pricing registry from a pinned OpenCode binary, without inference.
 
 Usage: python3 scripts/opencode-pricing.py /path/to/opencode > /tmp/pricing.json
-Review the output before replacing src/runtimes/opencode-v1/pricing.json.
+Review the output before replacing src/runtimes/opencode/pricing.json.
 """
 
 import hashlib

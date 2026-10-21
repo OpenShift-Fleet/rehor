@@ -38,8 +38,7 @@ export function pricingModel(model: string): string {
 export function priceTokens(tokens: TokenCounts, price: ModelPricing): number {
   const { input = 0, output = 0, reasoning = 0, cacheRead = 0, cacheWrite = 0 } = tokens;
   const context = input + cacheRead + cacheWrite;
-  // Explicit tiers are authoritative. Native V1 incorrectly applies the legacy 200K
-  // fallback below the first explicit tier (e.g. OpenAI's 272K threshold).
+  // Explicit tiers override the legacy 200K fallback (e.g. OpenAI's 272K threshold).
   const rates = price.tiers
     ? (price.tiers
         .filter((item) => item.tier.type === "context" && context > item.tier.size)
@@ -58,16 +57,21 @@ export function priceTokens(tokens: TokenCounts, price: ModelPricing): number {
 
 export function usageCost(
   model: string,
-  tokens: TokenCounts,
+  tokens: TokenCounts | undefined,
   native: unknown,
 ): UsageCost | undefined {
-  // A positive native amount can include provider-specific billing adjustments.
-  // Intentional even for builtin providers: do not silently replace a native
-  // report (including V1 tier bugs) with our estimate. "provider" is not invoice proof.
-  // Native zero is also the default for unpriced custom models, not proof of free usage.
+  // OpenCode computes this amount from model catalog rates, not provider billing.
+  // Preserve a positive native estimate without mislabelling it as billed usage.
+  // Zero is also the default for unpriced custom models, not proof of free usage.
   if (typeof native === "number" && Number.isFinite(native) && native > 0) {
-    return { amount: native, currency: "USD", source: "provider" };
+    return {
+      amount: native,
+      currency: "USD",
+      source: "estimated",
+      pricing: "opencode/2.1.2:native-catalog",
+    };
   }
+  if (tokens === undefined) return undefined;
   const price = models[pricingModel(model)];
   if (!price) return undefined;
   return {

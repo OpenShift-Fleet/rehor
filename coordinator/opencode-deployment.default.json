@@ -2,24 +2,24 @@
   "providers": [
     {
       "id": "rehor-openai",
-      "npm": "@ai-sdk/openai",
+      "package": "@opencode/ai/providers/openai/responses",
       "name": "Rehor OpenAI Responses",
-      "options": {
+      "settings": {
         "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
       "models": {
         "gpt-6-luna": {
           "name": "GPT-6 Luna",
-          "reasoning": true
+          "capabilities": { "reasoning": { "supported": true } }
         }
       }
     },
     {
       "id": "rehor-openai-chat",
-      "npm": "@ai-sdk/openai-compatible",
+      "package": "@opencode/ai/providers/openai-compatible",
       "name": "Rehor OpenAI Chat Completions",
-      "options": {
+      "settings": {
         "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
       },
@@ -32,7 +32,7 @@
         },
         "gpt-4o": {
           "name": "GPT-4o",
-          "reasoning": false,
+          "capabilities": { "reasoning": { "supported": false } },
           "limit": {
             "context": 128000,
             "output": 16384
@@ -43,7 +43,7 @@
     {
       "id": "vertex",
       "name": "Claude on Vertex via Rehor proxy",
-      "options": {
+      "settings": {
         "baseURL": "{env:REHOR_VERTEX_PROXY_URL}"
       },
       "models": {
@@ -71,14 +71,5 @@
       }
     }
   ],
-  "packages": [
-    {
-      "name": "@ai-sdk/openai",
-      "version": "4.0.73"
-    },
-    {
-      "name": "@ai-sdk/openai-compatible",
-      "version": "3.0.54"
-    }
-  ]
+  "packages": []
 }

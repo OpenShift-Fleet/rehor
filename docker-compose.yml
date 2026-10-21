@@ -120,7 +120,7 @@ services:
       - REHOR_MODEL_PROXY_URL=${REHOR_MODEL_PROXY_URL:-http://proxy:8450/v1}
       - REHOR_MODEL_PROXY_TOKEN=${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}
       - OPENCODE_COMMAND=/usr/local/bin/opencode
-      - OPENCODE_EXPECTED_VERSION=1.18.29
+      - OPENCODE_EXPECTED_VERSION=2.1.2
       - CLAUDE_CODE_SKIP_VERTEX_AUTH=true
       # Empty so .env's OPENAI_API_KEY does not leak into the bot.
       - OPENAI_API_KEY=

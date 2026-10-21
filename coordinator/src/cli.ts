@@ -173,7 +173,7 @@ function parseArgs(argv: readonly string[], environment: NodeJS.ProcessEnv): Cli
     openCodeCommand:
       values.get("opencode-command") ?? environment.OPENCODE_COMMAND ?? "/usr/local/bin/opencode",
     openCodeExpectedVersion:
-      values.get("opencode-version") ?? environment.OPENCODE_EXPECTED_VERSION ?? "1.18.29",
+      values.get("opencode-version") ?? environment.OPENCODE_EXPECTED_VERSION ?? "2.1.2",
     deploymentConfigPath:
       values.get("opencode-deployment-config") ?? environment.REHOR_OPENCODE_DEPLOYMENT_CONFIG,
   };

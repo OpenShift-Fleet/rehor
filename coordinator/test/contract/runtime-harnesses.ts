@@ -1,15 +1,15 @@
-import type { Event as OpenCodeEvent, OpencodeClient } from "@opencode-ai/sdk";
+import type { OpenCodeClient, OpenCodeEvent, SessionInfo } from "@opencode/client";
 
 import { createEventFactory, type RehorEvent, type RehorRun } from "../../src/domain";
 import type { AgentRuntime } from "../../src/ports/agent-runtime";
 import { LegacyCompatibilityProjection } from "../../src/projections/compatibility";
 import { ClaudeAgentRuntime, type ClaudeQueryFunction } from "../../src/runtimes/claude-agent";
 import {
+  OpenCodeRuntime,
   type OpenCodeServerController,
   type OpenCodeServerInfo,
-  OpenCodeV1Runtime,
-  renderOpenCodeV1Config,
-} from "../../src/runtimes/opencode-v1";
+  renderOpenCodeConfig,
+} from "../../src/runtimes/opencode";
 import { FakeAgentRuntime } from "../../src/testing/fake-agent-runtime";
 
 const TASK_UPDATE_INPUT = {
@@ -287,30 +287,37 @@ export function postToolUseHook(options: Record<string, unknown>) {
 export function openCodeHarness(): RuntimeContractHarness {
   const run: RehorRun = {
     ...baseRun,
+    runtimeId: "opencode",
     provider: { id: "rehor-openai", requestedModel: "rehor-openai/gpt-5.6-luna" },
   };
-  const renderedConfig = renderOpenCodeV1Config({
+  const renderedConfig = renderOpenCodeConfig({
     model: run.provider.requestedModel,
     providerId: run.provider.id,
   });
-  const assistantMessage = (id: string, created: number) =>
-    ({
-      type: "message.updated",
-      properties: {
-        info: {
-          id,
-          sessionID: "session-contract",
-          role: "assistant",
-          modelID: "gpt-5.6-luna",
-          time: { created },
-        },
-      },
-    }) as unknown as OpenCodeEvent;
-  const idle = () =>
-    ({
-      type: "session.idle",
-      properties: { sessionID: "session-contract" },
-    }) as unknown as OpenCodeEvent;
+  let sequence = 0;
+  const envelope = (version: 1 | 2 = 1) => ({
+    id: `event-contract-${++sequence}`,
+    created: sequence,
+    durable: { aggregateID: "session-contract", seq: sequence, version },
+  });
+  const assistantMessage = (id: string, created: number): OpenCodeEvent => ({
+    ...envelope(),
+    type: "session.step.started",
+    durable: { aggregateID: "session-contract", seq: sequence, version: 1 },
+    data: {
+      sessionID: "session-contract",
+      assistantMessageID: id,
+      agent: "build",
+      model: { providerID: "rehor-openai", id: "gpt-5.6-luna" },
+      started: created,
+    },
+  });
+  const idle = (): OpenCodeEvent => ({
+    id: `idle-contract-${++sequence}`,
+    created: sequence,
+    type: "session.idle",
+    data: { sessionID: "session-contract" },
+  });
   const create = (script: OpenCodeScript): AgentRuntime => {
     const server: OpenCodeServerInfo = {
       baseUrl: "http://127.0.0.1:41236",
@@ -318,9 +325,9 @@ export function openCodeHarness(): RuntimeContractHarness {
       port: 41236,
       directory: run.worktree.path,
       healthy: true,
-      version: "1.18.29",
+      version: "2.1.2",
       configHash: run.configHash.value,
-      capabilities: ["sse", "sessions"],
+      capabilities: {},
     };
     let active: OpenCodeServerInfo | undefined;
     const supervisor: OpenCodeServerController = {
@@ -340,35 +347,68 @@ export function openCodeHarness(): RuntimeContractHarness {
     };
     const sessionId = "session-contract";
     const stream = async function* (signal: AbortSignal): AsyncGenerator<OpenCodeEvent> {
-      yield { type: "server.connected", properties: {} } as unknown as OpenCodeEvent;
+      yield { id: "connected-contract", type: "server.connected", data: {} };
       if (script.blockUntilAborted) {
         await waitForAbort(signal, script.blockUntilAborted);
         throw new Error("OpenCode event stream aborted");
       }
-      for (const event of script.events ?? [
-        { type: "session.idle", properties: { sessionID: sessionId } } as unknown as OpenCodeEvent,
-      ]) {
+      for (const event of script.events ?? []) {
         yield event;
       }
+      yield {
+        ...envelope(),
+        type: "session.execution.succeeded",
+        durable: { aggregateID: sessionId, seq: sequence, version: 1 },
+        data: { sessionID: sessionId },
+      };
+      yield idle();
+    };
+    const session: SessionInfo = {
+      id: sessionId,
+      projectID: "project-contract",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 0, updated: 0 },
+      location: { directory: run.worktree.path },
     };
     const client = {
       event: {
-        subscribe: async ({ signal }: { signal: AbortSignal }) => ({ stream: stream(signal) }),
+        subscribe: ({ signal }: { signal: AbortSignal }) => stream(signal),
+      },
+      plugin: {
+        list: async () => ({
+          location: { directory: run.worktree.path },
+          data: [
+            {
+              id: "rehor-policy",
+              source: { type: "local", path: "/policy.js" },
+              features: { server: true },
+              state: { status: "active" },
+            },
+          ],
+        }),
       },
       session: {
-        create: async () => ({ data: { id: sessionId } }),
-        promptAsync: async () => ({ data: {} }),
-        messages: async () => ({ data: [] }),
-        status: async () => ({ data: { [sessionId]: { type: "busy" } } }),
-        abort: async () => ({ data: {} }),
-        delete: async () => {
+        create: async () => session,
+        prompt: async () => ({
+          id: "input-contract",
+          sessionID: sessionId,
+          time: { created: 0 },
+          type: "user",
+          payload: { text: run.prompt },
+          delivery: "queue",
+        }),
+        active: async () => ({ [sessionId]: { type: "running" } }),
+        get: async () => session,
+        interrupt: async () => ({}),
+        remove: async () => {
           if (script.deleteError) throw script.deleteError;
-          return { data: {} };
         },
       },
-    } as unknown as OpencodeClient;
+      message: { list: async () => ({ data: [], cursor: {} }) },
+    } as unknown as OpenCodeClient;
 
-    return new OpenCodeV1Runtime({
+    return new OpenCodeRuntime({
       supervisor: () => supervisor,
       clientFactory: () => client,
       renderedConfig,
@@ -378,7 +418,7 @@ export function openCodeHarness(): RuntimeContractHarness {
   };
 
   return {
-    name: "opencode-v1",
+    name: "opencode",
     enforcesTurnLimit: false,
     run,
     completed: () => create({}),
@@ -387,18 +427,16 @@ export function openCodeHarness(): RuntimeContractHarness {
         events: [
           assistantMessage("no-work-message", 1),
           {
-            type: "message.part.updated",
-            properties: {
-              part: {
-                id: "no-work-text",
-                messageID: "no-work-message",
-                sessionID: "session-contract",
-                type: "text",
-                text: NO_WORK_TEXT,
-              },
+            ...envelope(),
+            type: "session.text.ended",
+            durable: { aggregateID: "session-contract", seq: sequence, version: 1 },
+            data: {
+              assistantMessageID: "no-work-message",
+              sessionID: "session-contract",
+              ordinal: 0,
+              text: NO_WORK_TEXT,
             },
-          } as unknown as OpenCodeEvent,
-          idle(),
+          },
         ],
       }),
     failsBeforeSession: () => create({ serverStartError: new Error("OpenCode server not ready") }),
@@ -410,31 +448,38 @@ export function openCodeHarness(): RuntimeContractHarness {
       create({
         events: [
           assistantMessage("budget-message", 1),
-          ...Array.from(
-            { length: count },
-            (_, index) =>
-              ({
-                type: "message.part.updated",
-                properties: {
-                  part: {
-                    id: `budget-tool-${index}`,
-                    messageID: "budget-message",
-                    sessionID: "session-contract",
-                    type: "tool",
-                    tool: "bot-memory_task_update",
-                    callID: `budget-call-${index}`,
-                    state: {
-                      status: "completed",
-                      input: TASK_UPDATE_INPUT,
-                      output: TASK_UPDATE_RESULT,
-                      time: { start: index, end: index + 1 },
-                    },
-                  },
+          ...Array.from({ length: count }, (_, index): OpenCodeEvent[] => {
+            const data = {
+              sessionID: "session-contract",
+              assistantMessageID: "budget-message",
+              id: `budget-call-${index}`,
+            };
+            return [
+              {
+                ...envelope(),
+                type: "session.tool.input.started",
+                durable: { aggregateID: "session-contract", seq: sequence, version: 1 },
+                data: { ...data, name: "bot-memory_task_update" },
+              },
+              {
+                ...envelope(),
+                type: "session.tool.called",
+                durable: { aggregateID: "session-contract", seq: sequence, version: 1 },
+                data: { ...data, input: TASK_UPDATE_INPUT, executed: true },
+              },
+              {
+                ...envelope(2),
+                type: "session.tool.success",
+                durable: { aggregateID: "session-contract", seq: sequence, version: 2 },
+                data: {
+                  ...data,
+                  content: [{ type: "text", text: TASK_UPDATE_RESULT }],
+                  executed: true,
                 },
-              }) as unknown as OpenCodeEvent,
-          ),
+              },
+            ];
+          }).flat(),
           assistantMessage("budget-next-turn", count + 1),
-          idle(),
         ],
       }),
     completedWithCleanupFailure: () =>

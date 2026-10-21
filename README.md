@@ -5,7 +5,7 @@ implement code changes, open PRs/MRs, and maintain them through review. The
 default `jira-sprint` workflow uses groomed Jira tickets; custom workflows can
 use other sources and decision loops. Řehoř runs in a polling loop using the
 Claude Agent SDK (Python), with optional Jira, GitHub/GitLab, and persistent
-memory integrations.
+memory integrations. The opt-in TypeScript coordinator supports OpenCode V2 through the single runtime ID `opencode`, with client and CLI pinned to `2.1.2`. Migrate Claude SDK instances directly to V2 using the [migration guide](docs/migrations/opencode-migration.md); retain the previous Claude image/config for rollback.
 
 ## Documentation
 
@@ -15,6 +15,7 @@ memory integrations.
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | Current system, coordinator migration boundary, credential isolation |
 | [Coordinator](coordinator/README.md) | Provider-neutral runtime contract, invariants, and Python compatibility |
+| [OpenCode V2 Migration](docs/migrations/opencode-migration.md) | Direct Claude SDK migration, native profiles/policies, validation, and rollback |
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |

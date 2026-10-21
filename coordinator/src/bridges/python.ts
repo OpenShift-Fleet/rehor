@@ -292,6 +292,9 @@ function parseMcpServer(value: unknown, path: string): McpServerConfig {
       ...(config.alwaysLoad === undefined
         ? {}
         : { alwaysLoad: booleanValue(config.alwaysLoad, `${path}.alwaysLoad`) }),
+      ...(config.codemode === undefined
+        ? {}
+        : { codemode: booleanValue(config.codemode, `${path}.codemode`) }),
     };
   }
 
@@ -310,6 +313,9 @@ function parseMcpServer(value: unknown, path: string): McpServerConfig {
     ...(config.alwaysLoad === undefined
       ? {}
       : { alwaysLoad: booleanValue(config.alwaysLoad, `${path}.alwaysLoad`) }),
+    ...(config.codemode === undefined
+      ? {}
+      : { codemode: booleanValue(config.codemode, `${path}.codemode`) }),
   };
 }
 

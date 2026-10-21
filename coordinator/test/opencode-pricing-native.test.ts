@@ -1,15 +1,18 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Event as OpenCodeEvent } from "@opencode-ai/sdk";
+import { OpenCode, type OpenCodeEvent } from "@opencode/client";
 import { expect, it } from "vitest";
 import { createEventFactory, parseRehorRun, type Usage } from "../src/domain";
 import {
   createNormalizationContext,
   normalizeOpenCodeEvent,
-} from "../src/runtimes/opencode-v1/normalizer";
+} from "../src/runtimes/opencode/normalizer";
+import { reconcileSession } from "../src/runtimes/opencode/reconcile";
 import runFixture from "./fixtures/rehor-run.v1.json";
 
 const cases = [
@@ -22,6 +25,18 @@ const cases = [
     read: 800,
     write: 0,
     amount: 0.0016,
+    failed: false,
+  },
+  {
+    provider: "rehor-openai-chat",
+    model: "gpt-4.1",
+    input: 200,
+    output: 80,
+    reasoning: 20,
+    read: 800,
+    write: 0,
+    amount: 0.0016,
+    failed: true,
   },
   {
     provider: "rehor-openai",
@@ -55,11 +70,11 @@ const cases = [
   },
 ] as const;
 
-/** Small protocol fixtures exercise the real bundled/native SDKs, not a fake provider. */
-function mockStream(provider: string, model: string): string {
+/** Protocol fixtures exercise the real native provider SDKs via loopback only. */
+function mockStream(provider: string, model: string, failed = false): string {
   const event = (type: string, fields: Record<string, unknown> = {}) =>
     `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
-  if (provider === "vertex") {
+  if (provider === "vertex")
     return [
       event("message_start", {
         message: {
@@ -93,7 +108,6 @@ function mockStream(provider: string, model: string): string {
       }),
       event("message_stop"),
     ].join("");
-  }
   if (provider === "rehor-openai") {
     const item = {
       type: "message",
@@ -106,7 +120,7 @@ function mockStream(provider: string, model: string): string {
       id: "resp_mock",
       object: "response",
       created_at: 1,
-      model: "gpt-6-luna",
+      model,
       status: "completed",
       output: [item],
       incomplete_details: null,
@@ -135,17 +149,10 @@ function mockStream(provider: string, model: string): string {
     ].join("");
   }
   const chunk = (choices: unknown[], usage?: unknown) =>
-    `data: ${JSON.stringify({
-      id: "chatcmpl-mock",
-      object: "chat.completion.chunk",
-      created: 1,
-      model: "gpt-4.1",
-      choices,
-      usage,
-    })}\n\n`;
+    `data: ${JSON.stringify({ id: "chatcmpl-mock", object: "chat.completion.chunk", created: 1, model, choices, usage })}\n\n`;
   return (
     chunk([{ index: 0, delta: { role: "assistant", content: "hello" }, finish_reason: null }]) +
-    chunk([{ index: 0, delta: {}, finish_reason: "stop" }]) +
+    chunk([{ index: 0, delta: {}, finish_reason: failed ? "content_filter" : "stop" }]) +
     chunk([], {
       prompt_tokens: 1000,
       completion_tokens: 100,
@@ -157,10 +164,10 @@ function mockStream(provider: string, model: string): string {
   );
 }
 
-// Opt-in smoke against the pinned native executable. The only model endpoint is
-// this credential-free loopback mock; no provider API or paid inference is used.
+// Build first for the shipped renderer and aisdk:file:// Vertex adapter. The execution pin is
+// independent of pricing.json's intentionally retained catalog provenance.
 it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
-  "prices native $provider/$model step tokens from a loopback mock",
+  "prices native V2 $provider/$model events and reconciles persisted messages",
   async (testCase) => {
     const binary = process.env.REHOR_TEST_OPENCODE_BINARY;
     if (!binary) throw new Error("REHOR_TEST_OPENCODE_BINARY required");
@@ -169,7 +176,8 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
         encoding: "utf8",
         env: { PATH: process.env.PATH },
       }).stdout.trim(),
-    ).toBe("1.18.29");
+    ).toBe("opencode v2.1.2");
+    const { renderOpenCodeConfig } = await import("../dist/index.js");
     const home = await mkdtemp(join(tmpdir(), "rehor-pricing-smoke-"));
     const requests: { path: string; authorization?: string; body: Record<string, unknown> }[] = [];
     const server = createServer(async (req, res) => {
@@ -181,140 +189,258 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
         body: JSON.parse(body),
       });
       res.writeHead(200, { "content-type": "text/event-stream" });
-      res.end(mockStream(testCase.provider, testCase.model));
+      res.end(
+        mockStream(testCase.provider, testCase.model, "failed" in testCase && testCase.failed),
+      );
     });
-    // Exercise the production adapter's fixed proxy port, not a relaxed test adapter.
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(testCase.provider === "vertex" ? 8443 : 0, "127.0.0.1", resolve);
     });
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("mock address missing");
-    try {
-      // Build first: use the real renderer and the packaged file:// Vertex adapter.
-      const { loadOpenCodeDeploymentConfig, renderOpenCodeV1ConfigForCycle } = (await import(
-        new URL("../dist/index.js", import.meta.url).href
-      )) as typeof import("../src");
-      const rendered = renderOpenCodeV1ConfigForCycle(
-        { model: testCase.model },
-        testCase.provider,
-        await loadOpenCodeDeploymentConfig(),
-        undefined,
-        [testCase.model],
-      );
-      const config = { ...rendered.config, snapshot: false };
-      const output = await new Promise<string>((resolve, reject) => {
-        const child = spawn(
-          binary,
-          ["run", "--format", "json", "--title", "Offline pricing smoke", "--pure", "Say hello"],
-          {
-            cwd: home,
-            env: {
-              PATH: process.env.PATH,
-              HOME: home,
-              XDG_CONFIG_HOME: join(home, "config"),
-              XDG_DATA_HOME: join(home, "data"),
-              XDG_CACHE_HOME: join(home, "cache"),
-              XDG_STATE_HOME: join(home, "state"),
-              OPENCODE_TEST_HOME: home,
-              OPENCODE_AUTH_CONTENT: "{}",
-              OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
-              OPENCODE_DISABLE_MODELS_FETCH: "1",
-              OPENCODE_DISABLE_AUTOUPDATE: "1",
-              OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-              OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-              OPENCODE_PURE: "1",
-              REHOR_VERTEX_PROXY_URL: `http://127.0.0.1:${address.port}`,
-              REHOR_MODEL_PROXY_URL: `http://127.0.0.1:${address.port}/v1`,
-              REHOR_MODEL_PROXY_TOKEN: "mock",
-            },
-            stdio: ["ignore", "pipe", "pipe"],
+    const password = randomBytes(32).toString("hex");
+    const vertex = testCase.provider === "vertex";
+    const requestedModel = `${testCase.provider}/${testCase.model}`;
+    const rendered = renderOpenCodeConfig({
+      providerId: testCase.provider,
+      model: testCase.model,
+      smallModel: requestedModel,
+      providers: [
+        {
+          id: testCase.provider,
+          ...(vertex
+            ? {}
+            : {
+                package:
+                  testCase.provider === "rehor-openai"
+                    ? "@opencode/ai/providers/openai/responses"
+                    : "@opencode/ai/providers/openai-compatible",
+              }),
+          settings: {
+            baseURL: `http://127.0.0.1:${address.port}${vertex ? "" : "/v1"}`,
+            ...(vertex ? {} : { apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}" }),
           },
-        );
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => {
-          stdout += chunk;
-        });
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk;
-        });
-        const timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new Error(`native smoke timed out: ${stderr}`));
-        }, 20000);
-        child.on("error", reject);
-        child.on("close", (code) => {
-          clearTimeout(timer);
-          code === 0 ? resolve(stdout) : reject(new Error(stderr || stdout));
-        });
+          models: {
+            [testCase.model]: {
+              name: testCase.model,
+              limit: { context: 200000, output: 32000 },
+              capabilities: { reasoning: { supported: true } },
+            },
+          },
+        },
+      ],
+    });
+    if (vertex)
+      expect(rendered.config.providers).toMatchObject({
+        vertex: { package: `aisdk:${new URL("../dist/vertex-provider.js", import.meta.url).href}` },
       });
-      const steps = output
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line))
-        .filter((event) => event.type === "step_finish");
+    const configPath = join(home, "opencode.json");
+    await writeFile(configPath, rendered.json);
+    const child = spawn(
+      binary,
+      ["serve", "--stdio", "--hostname=127.0.0.1", "--port=0", "--print-logs", "--log-level=debug"],
+      {
+        cwd: home,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          XDG_CONFIG_HOME: join(home, "config"),
+          XDG_DATA_HOME: join(home, "data"),
+          XDG_CACHE_HOME: join(home, "cache"),
+          XDG_STATE_HOME: join(home, "state"),
+          OPENCODE_PASSWORD: password,
+          OPENCODE_DB: join(home, "opencode.db"),
+          OPENCODE_DISABLE_MODELS_FETCH: "1",
+          OPENCODE_DISABLE_FFF: "1",
+          OPENCODE_CONFIG_PROJECT_DISABLE: "1",
+          OPENCODE_CONFIG: configPath,
+          REHOR_MODEL_PROXY_TOKEN: "mock",
+        },
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 25000);
+    const streamController = new AbortController();
+    try {
+      const url = await new Promise<string>((resolve, reject) => {
+        let output = "";
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+          for (const line of output.split("\n")) {
+            try {
+              const info = JSON.parse(line);
+              if (typeof info.url === "string") resolve(info.url);
+            } catch {
+              /* Partial line. */
+            }
+          }
+        });
+        child.once("error", reject);
+        child.once("exit", () => reject(new Error(`native startup failed: ${stderr}`)));
+      });
+      const client = OpenCode.make({
+        baseUrl: url,
+        headers: {
+          authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+        },
+      });
+      const signal = AbortSignal.timeout(18000);
+      await expect
+        .poll(
+          async () =>
+            JSON.stringify(
+              await client.provider.list({ location: { directory: home } }, { signal }),
+            ),
+          { timeout: 5000 },
+        )
+        .toContain(testCase.provider);
+      const iterator = client.event
+        .subscribe({ signal: AbortSignal.any([signal, streamController.signal]) })
+        [Symbol.asyncIterator]();
+      await iterator.next();
+      const session = await client.session.create(
+        {
+          title: "Offline pricing smoke",
+          location: { directory: home },
+          model: { providerID: testCase.provider, id: testCase.model },
+        },
+        { signal },
+      );
+      const run = {
+        ...parseRehorRun(runFixture),
+        provider: { id: testCase.provider, requestedModel },
+      };
+      const factory = createEventFactory(run, "native-smoke");
+      const context = createNormalizationContext(session.id, requestedModel);
+      const observed: OpenCodeEvent[] = [];
+      const expectedOutcome = "failed" in testCase && testCase.failed ? "failed" : "completed";
+      const normalizedEvents = [];
+      let usage: Usage | undefined;
+      await client.session.prompt({ sessionID: session.id, text: "Say hello" }, { signal });
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) throw new Error("native stream ended before terminal execution");
+        const event = next.value;
+        if (!("sessionID" in event.data) || event.data.sessionID !== session.id) continue;
+        observed.push(event);
+        const normalized = normalizeOpenCodeEvent(event, factory, context);
+        normalizedEvents.push(...normalized.events);
+        const update = normalized.events.find((event) => event.kind === "usage")?.payload as
+          | Usage
+          | undefined;
+        usage = update ?? usage;
+        if (normalized.outcome) {
+          expect(normalized.outcome, JSON.stringify(observed)).toBe(expectedOutcome);
+          break;
+        }
+      }
       expect(requests).toHaveLength(1);
-      if (testCase.provider === "vertex") {
+      if (vertex)
         expect(requests[0]).toMatchObject({
           path: `/v1/projects/dummy-project/locations/dummy-region/publishers/anthropic/models/${testCase.model}:streamRawPredict`,
           authorization: "Bearer rehor-proxy-placeholder",
           body: { anthropic_version: "vertex-2023-10-16", stream: true },
         });
-      } else {
+      else
         expect(requests[0]?.path).toBe(
           testCase.provider === "rehor-openai" ? "/v1/responses" : "/v1/chat/completions",
         );
-      }
+      const steps = observed.filter(
+        (event) =>
+          event.type ===
+          (expectedOutcome === "failed" ? "session.step.failed" : "session.step.ended"),
+      );
       expect(steps).toHaveLength(1);
-      const part = steps[0].part;
-      expect(part.cost).toBe(0); // Native custom-provider pricing is missing.
-      expect(part.tokens).toMatchObject({
-        input: testCase.input,
-        output: testCase.output,
-        reasoning: testCase.reasoning,
-        cache: { read: testCase.read, write: testCase.write },
+      expect(steps[0]?.data).toMatchObject({
+        cost: 0,
+        tokens: {
+          input: testCase.input,
+          output: testCase.output,
+          reasoning: testCase.reasoning,
+          cache: { read: testCase.read, write: testCase.write },
+        },
       });
-      const model = `${testCase.provider}/${testCase.model}`;
-      const run = {
-        ...parseRehorRun(runFixture),
-        provider: { id: testCase.provider, requestedModel: model },
-      };
-      const factory = createEventFactory(run, "native-smoke");
-      const context = createNormalizationContext(part.sessionID, model);
-      normalizeOpenCodeEvent(
-        {
-          type: "message.updated",
-          properties: {
-            info: {
-              id: part.messageID,
-              sessionID: part.sessionID,
-              role: "assistant",
-              providerID: testCase.provider,
-              modelID: testCase.model,
-              time: { completed: 1 },
-              cost: 0,
-            },
-          },
-        } as unknown as OpenCodeEvent,
-        factory,
-        context,
-      );
-      const normalized = normalizeOpenCodeEvent(
-        { type: "message.part.updated", properties: { part } } as OpenCodeEvent,
-        factory,
-        context,
-      );
-      const usage = normalized.events.find((event) => event.kind === "usage")?.payload as
-        | Usage
-        | undefined;
       expect(usage).toMatchObject({
         estimated: true,
         incomplete: false,
+        cost: { source: "estimated" },
         tokenCounts: { cacheWrite: testCase.write },
       });
       expect(usage?.cost?.amount).toBeCloseTo(testCase.amount, 10);
+      expect(normalizedEvents.map((event) => event.sequence)).toEqual(
+        [...normalizedEvents.map((event) => event.sequence)].sort((a, b) => a - b),
+      );
+      const usageEvent = normalizedEvents.find((event) => event.kind === "usage");
+      expect(usageEvent?.payload).toMatchObject({ partial: true, final: false, incomplete: true });
+      expect(usageEvent?.parentEventId).toBe(
+        normalizedEvents.find((event) => event.kind === "model")?.eventId,
+      );
+      expect([...context.resultTextParts.values()].join("")).toBe("hello");
+      // Fresh context proves recovery needs neither SSE history nor session.log.
+      const recovered = await reconcileSession(
+        { client, sessionId: session.id, directory: home, controller: new AbortController() },
+        factory,
+        createNormalizationContext(session.id, requestedModel),
+        3000,
+        100,
+      );
+      expect(
+        recovered,
+        JSON.stringify(
+          await client.message.list(
+            { sessionID: session.id, limit: 100, order: "desc" },
+            { signal },
+          ),
+        ),
+      ).toMatchObject({ outcome: expectedOutcome, turns: 1, resultText: "hello" });
+      expect(
+        (recovered.events.filter((event) => event.kind === "usage").at(-1)?.payload as Usage)?.cost
+          ?.amount,
+      ).toBeCloseTo(testCase.amount, 10);
+
+      // Missing-provider failure must survive reconciliation without an assistant.
+      const failed = await client.session.create(
+        {
+          title: "Offline failure smoke",
+          location: { directory: home },
+          model: { providerID: "missing-provider", id: "none" },
+        },
+        { signal },
+      );
+      await client.session.prompt(
+        { sessionID: failed.id, text: "No upstream request possible" },
+        { signal },
+      );
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) throw new Error("failure stream ended");
+        if (
+          next.value.type === "session.execution.failed" &&
+          next.value.data.sessionID === failed.id
+        )
+          break;
+      }
+      const recoveredFailure = await reconcileSession(
+        { client, sessionId: failed.id, controller: new AbortController() },
+        factory,
+        createNormalizationContext(failed.id, requestedModel),
+        3000,
+        100,
+      );
+      expect(recoveredFailure).toMatchObject({ outcome: "failed", turns: 0 });
+      expect(recoveredFailure.reason).toContain("missing-provider");
+      streamController.abort();
+      await iterator.return?.();
     } finally {
+      streamController.abort();
+      child.stdin.end();
+      if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+      clearTimeout(timer);
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await rm(home, { recursive: true, force: true });
     }

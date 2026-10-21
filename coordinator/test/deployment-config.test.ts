@@ -4,18 +4,18 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadOpenCodeDeploymentConfig, renderOpenCodeV1ConfigForCycle } from "../src";
+import { loadOpenCodeDeploymentConfig, renderOpenCodeConfigForCycle } from "../src";
 import type { PreparedCycleInput } from "../src/cycle-input";
 import { InstructionStrategy } from "../src/instructions";
 import { validateOpenCodeDeployment } from "../src/runner";
-import { parseVertexAllowedModels } from "../src/runtimes/opencode-v1/model-defaults";
+import { parseVertexAllowedModels } from "../src/runtimes/opencode/model-defaults";
 
 const temporaryDirectories: string[] = [];
 
 const prepared: PreparedCycleInput = {
   config: {
     model: "gpt-6-luna",
-    runtimeId: "opencode-v1",
+    runtimeId: "opencode",
     providerId: "rehor-openai",
     maxTurns: 10,
     intervalSeconds: 60,
@@ -69,30 +69,34 @@ describe("OpenCode deployment defaults", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "rehor-openai",
-          options: {
+          package: "@opencode/ai/providers/openai/responses",
+          settings: {
             apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
             baseURL: "{env:REHOR_MODEL_PROXY_URL}",
           },
         }),
         expect.objectContaining({
           id: "rehor-openai-chat",
+          package: "@opencode/ai/providers/openai-compatible",
           models: expect.objectContaining({ "gpt-4.1": expect.any(Object) }),
         }),
         expect.objectContaining({
           id: "vertex",
-          options: { baseURL: "{env:REHOR_VERTEX_PROXY_URL}" },
+          settings: { baseURL: "{env:REHOR_VERTEX_PROXY_URL}" },
           models: expect.objectContaining({ "claude-opus-4-6": expect.any(Object) }),
         }),
       ]),
     );
 
-    const defaultRendered = renderOpenCodeV1ConfigForCycle(
+    const defaultRendered = renderOpenCodeConfigForCycle(
       prepared.config,
       prepared.config.providerId,
       deployment,
     );
     expect(defaultRendered.config.model).toBe("rehor-openai/gpt-6-luna");
-    expect(defaultRendered.config.small_model).toBe("rehor-openai/gpt-6-luna");
+    expect(defaultRendered.config.agents).toMatchObject({
+      title: { model: "rehor-openai/gpt-6-luna" },
+    });
     expect(defaultRendered.requiredEnvironment).toEqual([
       "REHOR_MODEL_PROXY_TOKEN",
       "REHOR_MODEL_PROXY_URL",
@@ -107,7 +111,7 @@ describe("OpenCode deployment defaults", () => {
       model: "gpt-4.1",
       providerId: "rehor-openai-chat",
     };
-    const overrideRendered = renderOpenCodeV1ConfigForCycle(
+    const overrideRendered = renderOpenCodeConfigForCycle(
       instanceOverride,
       instanceOverride.providerId,
       deployment,
@@ -130,7 +134,7 @@ describe("OpenCode deployment defaults", () => {
       model: "claude-opus-4-6",
       providerId: "vertex",
     };
-    const rendered = renderOpenCodeV1ConfigForCycle(
+    const rendered = renderOpenCodeConfigForCycle(
       vertexConfig,
       "vertex",
       deployment,
@@ -140,12 +144,15 @@ describe("OpenCode deployment defaults", () => {
 
     expect(rendered.config).toMatchObject({
       model: "vertex/claude-opus-4-6",
-      small_model: "vertex/claude-sonnet-4-6",
-      enabled_providers: ["vertex"],
-      provider: {
+      agents: { title: { model: "vertex/claude-sonnet-4-6" } },
+      policies: expect.arrayContaining([
+        { action: "provider.use", resource: "*", effect: "deny" },
+        { action: "provider.use", resource: "vertex", effect: "allow" },
+      ]),
+      providers: {
         vertex: {
-          npm: expect.stringMatching(/^file:.*vertex-provider\.js$/),
-          options: { baseURL: "{env:REHOR_VERTEX_PROXY_URL}" },
+          package: expect.stringMatching(/^aisdk:file:.*vertex-provider\.js$/),
+          settings: { baseURL: "{env:REHOR_VERTEX_PROXY_URL}" },
           models: expect.objectContaining({
             "claude-opus-4-6": expect.any(Object),
             "claude-sonnet-4-6": expect.any(Object),
@@ -180,7 +187,7 @@ describe("OpenCode deployment defaults", () => {
       ...deployment,
       providers: deployment.providers?.map((provider) =>
         provider.id === "vertex"
-          ? { ...provider, options: { baseURL: "https://aiplatform.googleapis.com" } }
+          ? { ...provider, settings: { baseURL: "https://aiplatform.googleapis.com" } }
           : provider,
       ),
     };
@@ -229,7 +236,7 @@ describe("OpenCode deployment defaults", () => {
       ...gatewayEnvironment,
       VERTEX_ALLOWED_MODELS: "claude-opus-4-6",
     };
-    const rendered = renderOpenCodeV1ConfigForCycle(
+    const rendered = renderOpenCodeConfigForCycle(
       vertexConfig,
       "vertex",
       deployment,
@@ -237,7 +244,9 @@ describe("OpenCode deployment defaults", () => {
       parseVertexAllowedModels(opusOnlyEnvironment.VERTEX_ALLOWED_MODELS),
     );
 
-    expect(rendered.config.small_model).toBe("vertex/claude-opus-4-6");
+    expect(rendered.config.agents).toMatchObject({
+      title: { model: "vertex/claude-opus-4-6" },
+    });
     expect(() =>
       validateOpenCodeDeployment(
         { ...prepared, config: vertexConfig },

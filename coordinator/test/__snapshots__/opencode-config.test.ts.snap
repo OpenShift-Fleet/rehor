@@ -1,52 +1,71 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`OpenCode V1 config renderer > matches byte-for-byte snapshots for deployment fixtures 1`] = `
+exports[`native OpenCode V2 config > matches native deployment snapshots and identical default/example inputs 1`] = `
 {
   "config": {
     "$schema": "https://opencode.ai/config.json",
-    "autoupdate": false,
-    "enabled_providers": [
-      "rehor-openai",
-    ],
-    "lsp": false,
-    "mcp": {
-      "snapshot": {
-        "enabled": true,
-        "type": "remote",
-        "url": "https://mcp.example/mcp",
+    "agents": {
+      "title": {
+        "model": "rehor-openai/gpt-6-luna",
       },
     },
-    "model": "rehor-openai/gpt-6-luna",
-    "permission": {
-      "bash": "deny",
-      "doom_loop": "deny",
-      "edit": "deny",
-      "external_directory": "deny",
-      "glob": "deny",
-      "grep": "deny",
-      "list": "deny",
-      "lsp": "deny",
-      "question": "deny",
-      "read": "allow",
-      "skill": "deny",
-      "snapshot_*": "deny",
-      "snapshot_search": "allow",
-      "task": "deny",
-      "todowrite": "deny",
-      "webfetch": "deny",
-      "websearch": "deny",
+    "mcp": {
+      "servers": {},
     },
-    "provider": {
+    "model": "rehor-openai/gpt-6-luna",
+    "permissions": [
+      {
+        "action": "*",
+        "effect": "deny",
+        "resource": "*",
+      },
+      {
+        "action": "read",
+        "effect": "allow",
+        "resource": "*",
+      },
+      {
+        "action": "external_directory",
+        "effect": "deny",
+        "resource": "*",
+      },
+    ],
+    "plugins": [
+      "-opencode.tools",
+      "-opencode.tools.mcp-resources",
+    ],
+    "policies": [
+      {
+        "action": "provider.use",
+        "effect": "deny",
+        "resource": "*",
+      },
+      {
+        "action": "provider.use",
+        "effect": "allow",
+        "resource": "rehor-openai",
+      },
+      {
+        "action": "tool.use",
+        "effect": "deny",
+        "resource": "external_directory:*",
+      },
+    ],
+    "providers": {
       "rehor-openai": {
         "models": {
           "gpt-6-luna": {
+            "capabilities": {
+              "reasoning": {
+                "supported": true,
+              },
+            },
             "name": "GPT-6 Luna",
-            "reasoning": true,
           },
         },
         "name": "Rehor OpenAI Responses",
-        "npm": "@ai-sdk/openai",
-        "options": {
+        "package": "@opencode/ai/providers/openai/responses",
+        "settings": {
           "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
           "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         },
@@ -60,17 +79,21 @@ exports[`OpenCode V1 config renderer > matches byte-for-byte snapshots for deplo
             "name": "GPT-4.1 Mini",
           },
           "gpt-4o": {
+            "capabilities": {
+              "reasoning": {
+                "supported": false,
+              },
+            },
             "limit": {
               "context": 128000,
               "output": 16384,
             },
             "name": "GPT-4o",
-            "reasoning": false,
           },
         },
         "name": "Rehor OpenAI Chat Completions",
-        "npm": "@ai-sdk/openai-compatible",
-        "options": {
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
           "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
           "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
         },
@@ -100,20 +123,18 @@ exports[`OpenCode V1 config renderer > matches byte-for-byte snapshots for deplo
           },
         },
         "name": "Claude on Vertex via Rehor proxy",
-        "npm": "<coordinator-vertex-provider>",
-        "options": {
+        "package": "aisdk:<coordinator-vertex-provider>",
+        "settings": {
           "baseURL": "{env:REHOR_VERTEX_PROXY_URL}",
         },
       },
     },
     "share": "disabled",
+    "update": "disable",
   },
   "packageLock": {
     "lockfileVersion": 1,
-    "packages": {
-      "@ai-sdk/openai": "4.0.73",
-      "@ai-sdk/openai-compatible": "3.0.54",
-    },
+    "packages": {},
   },
 }
 `;

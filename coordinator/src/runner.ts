@@ -10,6 +10,7 @@ import type { PreparedCycleInput } from "./cycle-input";
 import { prepareCycleInput } from "./cycle-input";
 import { providerDiagnostic, runtimeErrorDetails } from "./diagnostics";
 import type { RehorRun, RepositorySnapshot, TaskIdentity } from "./domain/run";
+import { isOpenCodeRuntime } from "./domain/runtime-selection";
 import { sha256Hash } from "./instructions";
 import { type LogFields, type Logger, nullLogger } from "./log";
 import { type CoordinatorLoopResult, LoopErrorPhase, runCoordinatorLoop } from "./loop";
@@ -19,27 +20,24 @@ import type { McpServerConfig } from "./ports/runtime-config";
 import { LegacyCompatibilityProjection } from "./projections/compatibility";
 import {
   createDefaultRuntimeRegistry,
-  createOpenCodeV1RuntimeFactory,
+  createOpenCodeRuntimeFactory,
   executeConfiguredRun,
   type RuntimeFactoryRegistry,
 } from "./runtime-factory";
 import type {
+  OpenCodeDeploymentConfig,
   OpenCodeProviderConfig,
   OpenCodeSupervisorOptions,
-  OpenCodeV1DeploymentConfig,
-} from "./runtimes/opencode-v1";
+} from "./runtimes/opencode";
 import {
   OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT,
   resolveVertexProxyUrl,
-} from "./runtimes/opencode-v1/environment";
+} from "./runtimes/opencode/environment";
 import {
   parseVertexAllowedModels,
   resolveDefaultSmallModel,
-} from "./runtimes/opencode-v1/model-defaults";
-import {
-  normalizeDeploymentConfig,
-  renderOpenCodeV1ConfigForCycle,
-} from "./runtimes/opencode-v1/render";
+} from "./runtimes/opencode/model-defaults";
+import { renderOpenCodeConfigForCycle } from "./runtimes/opencode/render";
 import { CycleDecision, CycleScheduler, consumeSleepSignal, sleep } from "./scheduler";
 
 const execFileAsync = promisify(execFile);
@@ -66,7 +64,7 @@ export interface RunBuildOptions {
 export interface RuntimeRegistryOptions {
   logger?: Logger;
   workspaceRoot: string;
-  openCodeDeployment?: OpenCodeV1DeploymentConfig;
+  openCodeDeployment?: OpenCodeDeploymentConfig;
   openCodeCommand?: string;
   openCodeExpectedVersion?: string | RegExp;
   openCodeWorkspaceOwnerUid?: number;
@@ -87,7 +85,7 @@ export interface CoordinatorRunnerOptions {
   pythonExecutable?: string;
   pythonCwd?: string;
   workspaceRoot?: string;
-  openCodeDeployment?: OpenCodeV1DeploymentConfig;
+  openCodeDeployment?: OpenCodeDeploymentConfig;
   openCodeCommand?: string;
   openCodeExpectedVersion?: string | RegExp;
   openCodeWorkspaceOwnerUid?: number;
@@ -149,10 +147,10 @@ export async function buildRehorRun(
 
 export function validateOpenCodeDeployment(
   prepared: PreparedCycleInput,
-  deployment: OpenCodeV1DeploymentConfig = {},
+  deployment: OpenCodeDeploymentConfig = {},
   environment: NodeJS.ProcessEnv = process.env,
 ): void {
-  if (prepared.config.runtimeId !== "opencode-v1") return;
+  if (!isOpenCodeRuntime(prepared.config.runtimeId)) return;
   if (deployment.providerId !== undefined && deployment.providerId !== prepared.config.providerId) {
     throw new Error(
       `OpenCode deployment provider '${deployment.providerId}' does not match prepared provider '${prepared.config.providerId}'`,
@@ -163,7 +161,7 @@ export function validateOpenCodeDeployment(
       `OpenCode deployment model '${deployment.model}' does not match prepared model '${prepared.config.model}'`,
     );
   }
-  const providers = normalizeDeploymentConfig(deployment).providers ?? [];
+  const providers = deployment.providers ?? [];
   const selectedProvider = providers.find((provider) => provider.id === prepared.config.providerId);
   if (selectedProvider === undefined) {
     throw new Error(
@@ -213,7 +211,7 @@ export function validateOpenCodeDeployment(
   if (selectedProvider.id === "vertex") {
     validateVertexProxyConfig(selectedProvider, environment);
   }
-  renderOpenCodeV1ConfigForCycle(
+  renderOpenCodeConfigForCycle(
     prepared.config,
     prepared.config.providerId,
     deployment,
@@ -227,7 +225,7 @@ function validateVertexProxyConfig(
   environment: NodeJS.ProcessEnv,
 ): void {
   if (
-    exactEnvironmentReference(provider.options?.baseURL) !== OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT
+    exactEnvironmentReference(provider.settings?.baseURL) !== OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT
   ) {
     throw new Error(
       `OpenCode deployment provider '${provider.id}' baseURL must reference ${OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT}`,
@@ -262,7 +260,7 @@ function validateOpenAIGatewayConfig(
   provider: OpenCodeProviderConfig,
   environment: NodeJS.ProcessEnv,
 ): void {
-  const baseURL = provider.options?.baseURL;
+  const baseURL = provider.settings?.baseURL;
   if (typeof baseURL !== "string" || !baseURL.trim()) {
     throw new Error(`OpenCode deployment provider '${provider.id}' requires a gateway URL`);
   }
@@ -295,7 +293,7 @@ function validateOpenAIGatewayConfig(
     );
   }
 
-  const tokenEnvironment = exactEnvironmentReference(provider.options?.apiKey);
+  const tokenEnvironment = exactEnvironmentReference(provider.settings?.apiKey);
   if (!tokenEnvironment) {
     throw new Error(
       `OpenCode deployment provider '${provider.id}' apiKey must reference the bot-to-proxy token environment`,
@@ -329,7 +327,7 @@ export function createRuntimeRegistryForCycle(
     allowedTools: prepared.config.allowedTools ?? [],
   });
   validateOpenCodeDeployment(prepared, deployment, environment);
-  if (prepared.config.runtimeId !== "opencode-v1") return registry;
+  if (!isOpenCodeRuntime(prepared.config.runtimeId)) return registry;
 
   const server: OpenCodeSupervisorOptions = {
     logger: options.logger,
@@ -343,7 +341,7 @@ export function createRuntimeRegistryForCycle(
       : { workspaceOwnerUid: options.openCodeWorkspaceOwnerUid }),
   };
   registry.register(
-    createOpenCodeV1RuntimeFactory({
+    createOpenCodeRuntimeFactory({
       base: options.environment,
       config: deployment,
       server,

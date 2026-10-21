@@ -5,8 +5,8 @@ export type { OpenCodeHealth } from "./readiness";
 export { HttpOpenCodeReadiness, OpenCodeReadinessError } from "./readiness";
 export {
   hashOpenCodeConfig,
-  renderOpenCodeV1Config,
-  renderOpenCodeV1ConfigForCycle,
+  renderOpenCodeConfig,
+  renderOpenCodeConfigForCycle,
   writeOpenCodeConfig,
 } from "./render";
 export * from "./runtime";

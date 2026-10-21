@@ -96,14 +96,14 @@ provider: vertex
 | `source` | string | `jira` | Ticket source. `jira` = Jira sprint polling. `scheduled` = time-based. |
 | `envs` | list or null | `null` (all) | Env presets to activate. `null`/omitted = all available. `[]` = none. |
 | `claude_md.strategy` | string | `ignore` | How to handle instance CLAUDE.md: `ignore`, `append`, `replace`. |
-| `runtime` | string | `claude` | Runtime adapter: `claude` or `opencode-v1`. |
+| `runtime` | string | `claude` | Runtime adapter: `claude` or `opencode` (V2 only). |
 | `provider` | string | Runtime-dependent | `vertex` (Claude via Vertex auth proxy), `rehor-openai` (native Responses), or `rehor-openai-chat` (Chat Completions). Defaults to `vertex` for Claude and `rehor-openai` for OpenCode. |
 | `model` | string or null | `null` | Optional model override (e.g. `claude-sonnet-4-6`). Must be allowed by the selected provider route. |
 
 `runtime` and `provider` are selected independently and passed to the TypeScript
-coordinator. Supported combinations are `claude` + `vertex`, `opencode-v1` +
-`vertex`, `opencode-v1` + `rehor-openai` (native Responses), and
-`opencode-v1` + `rehor-openai-chat` (Chat Completions). OpenCode+`rehor-openai`
+coordinator. Supported combinations are `claude` + `vertex`, `opencode` +
+`vertex`, `opencode` + `rehor-openai` (native Responses), and
+`opencode` + `rehor-openai-chat` (Chat Completions). OpenCode+`rehor-openai`
 uses `config.json`'s `opencode.model` (`gpt-6-luna`); OpenCode+Vertex preserves
 `claude.model` and uses the existing Vertex proxy. Chat Completions requires a
 model declared under its provider. OpenCode+Vertex supports the approved Claude
@@ -114,6 +114,8 @@ omitted from `instance.yaml`, deployment operators can set `BOT_RUNTIME` and
 `BOT_PROVIDER`; the default remains the Claude/Vertex path. Keep that path
 available as the rollback while running the [OpenCode canary
 runbook](operations/rehor-146-opencode-canary.md).
+
+OpenCode uses client/CLI `2.1.2` with no versioned runtime aliases. Migrate existing Claude SDK instances directly to V2 using the [migration steps](migrations/opencode-migration.md#runtime-migration). The experimental onboarding consumer follows in a separate PR only after the main runtime PR merges, pinning its gitlink to that merged commit and adopting native V2 profile settings.
 
 `runtime` and `provider` select the agent adapter and provider route inside the
 coordinator; they do not switch the runner engine.
@@ -446,7 +448,7 @@ Leave this unset (or `python`) for every other runner. Set it only when the
 selected image contains the coordinator and its required configuration. For
 an OpenCode canary, follow the [OpenCode canary
 runbook](operations/rehor-146-opencode-canary.md). This switch does not select
-OpenCode: set `runtime: opencode-v1` and a supported
+OpenCode V2: set `runtime: opencode` and a supported
 `provider` in this instance's `instance.yaml` (or use the deployment fallbacks
 when those keys are omitted).
 

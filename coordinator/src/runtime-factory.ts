@@ -4,6 +4,7 @@ import {
   executeRunWithValidatedInput,
 } from "./coordinator";
 import { parseRehorRun, type RehorRun, type ValidatedRehorRun } from "./domain";
+import { OPENCODE_RUNTIME_ID } from "./domain/runtime-selection";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { ConfigPreparationResult } from "./ports/python-bridge";
 import {
@@ -11,14 +12,14 @@ import {
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
 import {
+  type OpenCodeDeploymentConfig,
   type OpenCodeProjectConfiguration,
-  type OpenCodeV1DeploymentConfig,
-  OpenCodeV1Runtime,
-  type OpenCodeV1RuntimeOptions,
-  type RenderedOpenCodeV1Config,
-  renderOpenCodeV1ConfigForCycle,
-} from "./runtimes/opencode-v1";
-import { parseVertexAllowedModels } from "./runtimes/opencode-v1/model-defaults";
+  OpenCodeRuntime,
+  type OpenCodeRuntimeOptions,
+  type RenderedOpenCodeConfig,
+  renderOpenCodeConfigForCycle,
+} from "./runtimes/opencode";
+import { parseVertexAllowedModels } from "./runtimes/opencode/model-defaults";
 
 export const DEFAULT_RUNTIME_ID = "claude";
 
@@ -58,10 +59,11 @@ export class RuntimeFactoryRegistry {
 
   register(factory: AgentRuntimeFactory): this {
     if (!factory.runtimeId) throw new RuntimeFactoryError("runtime factory must have a runtimeId");
-    if (this.factories.has(factory.runtimeId)) {
+    const runtimeId = factory.runtimeId;
+    if (this.factories.has(runtimeId)) {
       throw new RuntimeFactoryError(`runtime factory already registered: ${factory.runtimeId}`);
     }
-    this.factories.set(factory.runtimeId, factory);
+    this.factories.set(runtimeId, factory);
     return this;
   }
 
@@ -79,6 +81,7 @@ export class RuntimeFactoryRegistry {
     preparedConfig?: ConfigPreparationResult,
     nativeConfig?: OpenCodeProjectConfiguration,
   ): Promise<AgentRuntime> {
+    selection = resolveRuntimeSelection(selection.runtimeId);
     const factory = this.factories.get(selection.runtimeId);
     if (!factory) {
       const available = this.runtimeIds.length > 0 ? this.runtimeIds.join(", ") : "none";
@@ -101,27 +104,27 @@ export function createDefaultRuntimeRegistry(
 }
 
 /** Registers OpenCode without changing the default production runtime selection. */
-export type OpenCodeV1RuntimeFactoryOptions = Omit<
-  OpenCodeV1RuntimeOptions,
+export type OpenCodeRuntimeFactoryOptions = Omit<
+  OpenCodeRuntimeOptions,
   "renderedConfig" | "renderError"
 > & {
-  config?: OpenCodeV1DeploymentConfig;
+  config?: OpenCodeDeploymentConfig;
 };
 
-export function createOpenCodeV1RuntimeFactory(
-  options: OpenCodeV1RuntimeFactoryOptions = {},
+export function createOpenCodeRuntimeFactory(
+  options: OpenCodeRuntimeFactoryOptions = {},
 ): AgentRuntimeFactory {
   return {
-    runtimeId: "opencode-v1",
+    runtimeId: OPENCODE_RUNTIME_ID,
     async create(context) {
       const configured = options.config ?? {};
-      let renderedConfig: RenderedOpenCodeV1Config | undefined;
+      let renderedConfig: RenderedOpenCodeConfig | undefined;
       let renderError: unknown;
       try {
         if (context.nativeConfig === undefined) {
           throw new RuntimeFactoryError("OpenCode requires a prepared nativeConfig snapshot");
         }
-        renderedConfig = renderOpenCodeV1ConfigForCycle(
+        renderedConfig = renderOpenCodeConfigForCycle(
           context.preparedConfig ?? { model: context.run.provider.requestedModel },
           context.run.provider.id,
           configured,
@@ -133,7 +136,7 @@ export function createOpenCodeV1RuntimeFactory(
       }
 
       const { config: _config, ...runtimeOptions } = options;
-      return new OpenCodeV1Runtime({
+      return new OpenCodeRuntime({
         ...runtimeOptions,
         renderedConfig,
         renderError,
@@ -183,6 +186,10 @@ async function executeValidatedSelectedRun(
   run: ValidatedRehorRun,
   options: RuntimeExecutionOptions,
 ): Promise<CoordinatorResult> {
+  selection = resolveRuntimeSelection(selection.runtimeId);
+  // This is a new attempt, not a historical record projection. Do not mutate
+  // the caller's input or normalize parseRehorRun's storage/read contract.
+  run = { ...run, runtimeId: selection.runtimeId };
   const { preparedConfig, nativeConfig, ...coordinatorOptions } = options;
   const runtime = await registry.create(selection, run, preparedConfig, nativeConfig);
   return executeRunWithValidatedInput(runtime, run, coordinatorOptions);

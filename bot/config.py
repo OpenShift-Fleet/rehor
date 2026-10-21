@@ -20,12 +20,13 @@ DEFAULT_RUNTIME_ID = "claude"
 DEFAULT_PROVIDER_ID = "vertex"
 DEFAULT_OPENCODE_PROVIDER_ID = "rehor-openai"
 DEFAULT_OPENCODE_MODEL = "gpt-6-luna"
-SUPPORTED_RUNTIME_IDS = frozenset({DEFAULT_RUNTIME_ID, "opencode-v1"})
+OPENCODE_RUNTIME_ID = "opencode"
+SUPPORTED_RUNTIME_IDS = frozenset({DEFAULT_RUNTIME_ID, OPENCODE_RUNTIME_ID})
 SUPPORTED_PROVIDER_IDS = frozenset({DEFAULT_PROVIDER_ID, "rehor-openai", "rehor-openai-chat"})
 
 
 def default_provider_for_runtime(runtime: str) -> str:
-    if runtime == "opencode-v1":
+    if runtime == OPENCODE_RUNTIME_ID:
         return DEFAULT_OPENCODE_PROVIDER_ID
     return DEFAULT_PROVIDER_ID
 
@@ -411,7 +412,7 @@ def resolve_cycle_model(
         return pinned
     manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir) or {}
     if tier := _nonempty_model(manifest.get("model_tier")):
-        if instance_config.runtime == "opencode-v1" and instance_config.provider != "vertex":
+        if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider != "vertex":
             raise ValueError(
                 f"Workflow '{instance_config.workflow}' requests model tier '{tier}', but OpenCode provider "
                 f"'{instance_config.provider}' has no model-tier mapping; set an explicit model in instance.yaml "
@@ -425,11 +426,11 @@ def resolve_cycle_model(
             instance_config.workflow,
             tier,
         )
-    if instance_config.runtime == "opencode-v1" and instance_config.provider == "rehor-openai-chat":
+    if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider == "rehor-openai-chat":
         raise ValueError(
             "OpenCode provider 'rehor-openai-chat' requires an explicit model; set model in instance.yaml or BOT_MODEL"
         )
-    if instance_config.runtime == "opencode-v1" and instance_config.provider == "rehor-openai":
+    if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider == "rehor-openai":
         logger.info("Resolved cycle model: %s (source=config.json opencode.model)", global_config.opencode_model)
         return global_config.opencode_model
     logger.info("Resolved cycle model: %s (source=config.json claude.model)", global_config.model)

@@ -1,4 +1,5 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -23,11 +24,11 @@ import {
   OpenCodeReadinessError,
 } from "./readiness";
 import { writeOpenCodeConfig } from "./render";
-import type { RenderedOpenCodeV1Config } from "./types";
+import type { OpenCodePermissionRule, RenderedOpenCodeConfig } from "./types";
 import { OpenCodeWorkspaceOwnershipError, resolveApprovedWorkspace } from "./workspace";
 
 /** Pinned because state/config isolation is verified against this CLI contract. */
-export const OPENCODE_VERSION = "1.18.29" as const;
+export const OPENCODE_VERSION = "2.1.2" as const;
 const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
 
@@ -38,6 +39,8 @@ export interface OpenCodeServerInfo extends OpenCodeHealth {
   /** Canonical, validated worktree path used for child cwd and client requests. */
   directory: string;
   configHash?: string;
+  /** Private per-process credential; never include in diagnostics or logs. */
+  password?: string;
 }
 
 export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
@@ -48,7 +51,7 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
   /** Immutable, already validated configuration for this server instance. */
-  renderedConfig?: RenderedOpenCodeV1Config;
+  renderedConfig?: RenderedOpenCodeConfig;
   /** Required by start; absolute root containing only approved worktrees. */
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
@@ -107,7 +110,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private diagnosticCount = 0;
   private stateDirectory?: string;
   private ownsStateDirectory = false;
-  private readonly renderedConfig?: RenderedOpenCodeV1Config;
+  private readonly renderedConfig?: RenderedOpenCodeConfig;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
     this.renderedConfig = options.renderedConfig;
@@ -192,17 +195,20 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       databasePath: join(stateDirectory, "opencode.db"),
     });
     const originalConfigHome = environment.XDG_CONFIG_HOME;
+    const originalDataHome = environment.XDG_DATA_HOME;
     environment.XDG_CONFIG_HOME = join(stateDirectory, "xdg-config");
-    // Bypass saved credentials while preserving shell HOME and XDG data/cache/state.
-    environment.OPENCODE_AUTH_CONTENT = "{}";
-    // These flags are controlled by the runner, not inherited from ambient env.
-    // Project AGENTS.md/CLAUDE.md and .claude/skills compatibility remain enabled.
-    environment.OPENCODE_DISABLE_AUTOUPDATE = "1";
-    environment.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
-    environment.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
-    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
-    // OpenCode uses this for instruction discovery, not XDG data/cache/state paths.
+    // V2 imports legacy auth.json from data home when creating a database.
+    environment.XDG_DATA_HOME = join(stateDirectory, "xdg-data");
+    // Global.home still bounds V2's ambient AGENTS discovery. Keep it outside
+    // the worktree so traversal stops at the project root, while shell HOME
+    // remains the caller's original operational home.
     environment.OPENCODE_TEST_HOME = stateDirectory;
+    const password = randomBytes(32).toString("base64url");
+    // --stdio consumes and deletes this before tool processes inherit the environment.
+    environment.OPENCODE_PASSWORD = password;
+    // These flags are controlled by the runner, not inherited from ambient env.
+    // Native project AGENTS.md and configured skill discovery remain enabled.
+    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
     environment.NPM_CONFIG_OFFLINE = "true";
     environment.npm_config_offline = "true";
     if (this.renderedConfig !== undefined) {
@@ -212,19 +218,27 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         // Inherited config content/permissions are excluded by the sanitizer;
         // these runner-owned values override top-level settings.
         const enforcement = JSON.parse(this.renderedConfig.enforcementJson) as {
-          permission: Record<string, unknown>;
-          plugin?: string[];
+          permissions: OpenCodePermissionRule[];
+          plugins?: unknown[];
         };
-        const shellPlugin = join(stateDirectory, "shell-env.mjs");
+        const boundary = enforcement.permissions;
+        const shellPluginDirectory = join(stateDirectory, "rehor-policy");
+        const shellPlugin = join(shellPluginDirectory, "index.js");
+        await mkdir(shellPluginDirectory, { recursive: true });
+        await writeFile(join(shellPluginDirectory, "package.json"), '{"type":"module"}\n');
         await writeFile(
           shellPlugin,
-          renderOpenCodePolicyPlugin(originalConfigHome, enforcement.permission.external_directory),
+          renderOpenCodePolicyPlugin(originalConfigHome, boundary, originalDataHome),
         );
-        enforcement.plugin = [...(enforcement.plugin ?? []), pathToFileURL(shellPlugin).href];
+        // Configured local plugins must target directories in V2; a file path
+        // is ignored by the native source scanner even when its module is valid.
+        enforcement.plugins = [
+          ...(enforcement.plugins ?? []),
+          pathToFileURL(shellPluginDirectory).href,
+        ];
         environment.OPENCODE_CONFIG_CONTENT = stableJson(enforcement);
-        // Reapply top-level defaults after config/tool conversion; native agent
-        // permissions retain OpenCode's precedence over these defaults.
-        environment.OPENCODE_PERMISSION = stableJson(enforcement.permission);
+        // writeOpenCodeConfig owns the authoritative GLOBAL native policies.
+        // Keep those out of inline content, whose policy authority is lower.
       } catch (error) {
         await this.cleanupStateDirectory();
         throw error;
@@ -232,10 +246,11 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     }
     const args = [
       "serve",
+      "--stdio",
       `--hostname=${this.options.hostname}`,
       "--port=0",
       "--print-logs",
-      `--log-level=${(this.options.base ?? process.env).DEBUG === "true" ? "DEBUG" : "INFO"}`,
+      `--log-level=${(this.options.base ?? process.env).DEBUG === "true" ? "debug" : "info"}`,
     ];
     (this.options.logger ?? nullLogger).log("INFO", "OpenCode server starting");
     const spawnProcess = this.options.spawnProcess ?? spawn;
@@ -246,7 +261,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       child = spawnProcess(this.options.command, args, {
         cwd: workspaceDirectory,
         env: environment,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
     } catch (error) {
@@ -269,6 +284,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         workspaceDirectory,
         startupSignal,
         startupDeadline,
+        password,
       );
       this.server = {
         ...health,
@@ -276,6 +292,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         hostname: baseUrl.hostname,
         port: Number(baseUrl.port),
         directory: workspaceDirectory,
+        password,
         ...(configHash ? { configHash } : {}),
       };
       (this.options.logger ?? nullLogger).log("INFO", "OpenCode server ready", {
@@ -337,6 +354,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         }
       };
       if (!this.exited || (groupExists() && !this.termSent)) {
+        // EOF is the native --stdio lease release; retain process-group signaling
+        // and escalation for tool descendants and a stuck server finalizer.
+        child.stdin?.end();
         this.signalChild(child, "SIGTERM");
       }
       await waitForExit(
@@ -468,9 +488,19 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
             });
         }
         if (settled) return;
-        const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
-        if (!match) return;
-        const rawUrl = match[1];
+        let announcement: unknown;
+        try {
+          announcement = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (typeof announcement !== "object" || announcement === null || !("url" in announcement))
+          return;
+        const rawUrl = announcement.url;
+        if (typeof rawUrl !== "string") {
+          finish(new OpenCodeReadinessError("OpenCode server advertised an invalid URL"));
+          return;
+        }
         const url = URL.canParse(rawUrl) ? new URL(rawUrl) : undefined;
         const problem = !url
           ? "OpenCode server advertised an invalid URL"
@@ -532,6 +562,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     directory: string,
     signal: AbortSignal,
     deadline: number,
+    password: string,
   ): Promise<OpenCodeHealth> {
     const readiness = new HttpOpenCodeReadiness();
     let lastError: unknown;
@@ -541,7 +572,12 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       try {
         const health = await boundedOperation(
           (requestSignal) =>
-            readiness.check(baseUrl.toString().replace(/\/$/, ""), directory, requestSignal),
+            readiness.check(
+              baseUrl.toString().replace(/\/$/, ""),
+              directory,
+              requestSignal,
+              password,
+            ),
           signal,
           deadline,
           "OpenCode readiness",

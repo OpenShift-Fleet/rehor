@@ -41,7 +41,7 @@ model: claude-sonnet-4-6
 | `envs` | `null` | `null` enables all env presets; `[]` disables them |
 | `claude_md.strategy` | `ignore` | `ignore`, `append`, or `replace` for instance `CLAUDE.md` |
 | `idle_cycle_limit` | `0` | Optional idle-cycle reminder threshold; `0` disables it |
-| `runtime` | `claude` | Runtime adapter: `claude` or `opencode-v1` |
+| `runtime` | `claude` | Runtime adapter: `claude` or `opencode` (V2 only) |
 | `provider` | Runtime-dependent | `vertex` (Claude on Vertex through the auth proxy), `rehor-openai` (native Responses), or `rehor-openai-chat` (Chat Completions). Defaults to `vertex` for Claude and `rehor-openai` for OpenCode. |
 | `model` | `null` | Optional model override. Claude/Vertex and OpenCode/Vertex use `claude.model`; OpenCode/`rehor-openai` uses `opencode.model`; Chat Completions requires an explicit model. |
 
@@ -53,12 +53,15 @@ preparation into the TypeScript coordinator. Supported pairs are:
 | Runtime | Providers | Use |
 |---|---|---|
 | `claude` | `vertex` | Existing rollback/default path |
-| `opencode-v1` | `vertex` | Claude on Vertex through the existing auth proxy; available in packaged defaults |
-| `opencode-v1` | `rehor-openai` | Native OpenAI Responses route; default model is GPT-6 Luna |
-| `opencode-v1` | `rehor-openai-chat` | OpenAI-compatible Chat Completions route; model must be declared under this provider |
+| `opencode` | `vertex` | Claude on Vertex through the existing auth proxy; available in packaged defaults |
+| `opencode` | `rehor-openai` | Native OpenAI Responses route; default model is GPT-6 Luna |
+| `opencode` | `rehor-openai-chat` | OpenAI-compatible Chat Completions route; model must be declared under this provider |
 
 Unsupported IDs and either `claude`/OpenAI-provider combination fail
-validation. OpenCode's `vertex` adapter sends a placeholder bearer value to
+validation. OpenCode has one runtime ID, `opencode`, using client/CLI `2.1.2`;
+versioned IDs and legacy aliases are unsupported. Migrate Claude instances directly
+to V2 using the [migration steps](../migrations/opencode-migration.md#runtime-migration).
+OpenCode's `vertex` adapter sends a placeholder bearer value to
 `ANTHROPIC_VERTEX_BASE_URL`; the proxy replaces it with its service-account
 token. The key and Google ADC credentials stay on the proxy. The runner supplies
 the existing proxy URL without exposing Google credentials to OpenCode. URL
@@ -78,7 +81,7 @@ setting, not an `instance.yaml` field. Omitted or `python` (default) launches
 the Python runner; `coordinator` launches the TypeScript coordinator. Within
 that coordinator, `runtime` selects the agent adapter. An OpenCode canary
 therefore needs both `BOT_EXECUTION_ENGINE=coordinator` on the target
-deployment and `runtime: opencode-v1` plus a supported provider in this
+deployment and `runtime: opencode` plus a supported provider in this
 instance's configuration. See [Onboarding a New Instance](../onboarding-new-instance.md#step-4-app-interface-configuration)
 for how to scope the engine to one app-interface deployment.
 

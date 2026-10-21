@@ -29,15 +29,11 @@ RUN rm -rf node_modules dist \
     && cp -L /lib64/libbrotlidec.so.1 /tmp/node-runtime-libs/ \
     && cp -L /lib64/libbrotlienc.so.1 /tmp/node-runtime-libs/ \
     && cp -L /lib64/libbrotlicommon.so.1 /tmp/node-runtime-libs/
-# Keep the provider package in the image too: OpenCode runs offline in the
-# coordinator path and must not resolve provider code from the network.
+# Native OpenAI providers are bundled in the pinned OpenCode executable.
+# The custom Vertex adapter is part of the coordinator bundle/dependencies.
 RUN npm install --global --prefix /opt/opencode --omit=dev --no-audit --no-fund \
-    opencode-ai@1.18.29 \
-    @ai-sdk/openai@4.0.73 \
-    @ai-sdk/openai-compatible@3.0.54 \
-    && test "$(/opt/opencode/bin/opencode --version)" = "1.18.29" \
-    && test -f /opt/opencode/lib/node_modules/@ai-sdk/openai/package.json \
-    && test -f /opt/opencode/lib/node_modules/@ai-sdk/openai-compatible/package.json
+    @opencode/cli@2.1.2 \
+    && /opt/opencode/bin/opencode --version | tr -d '\r' | grep -Eq '^(opencode v|v)?2\.1\.2$'
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
 FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:15c3098dc4639e8a0e6a1bc77b50964513a1d76dccae4b07b9808101c5addd04 AS executor-client-builder
@@ -120,8 +116,7 @@ COPY --from=coordinator-builder /build/coordinator/node_modules /home/botuser/ap
 COPY --from=coordinator-builder /build/coordinator/opencode-deployment.default.json /home/botuser/app/coordinator/opencode-deployment.default.json
 COPY --from=coordinator-builder /opt/opencode /opt/opencode
 RUN ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode
-ENV NODE_PATH=/opt/opencode/lib/node_modules
-ENV OPENCODE_EXPECTED_VERSION=1.18.29
+ENV OPENCODE_EXPECTED_VERSION=2.1.2
 ENV COORDINATOR_METRICS_PORT=9091
 EXPOSE 9091
 

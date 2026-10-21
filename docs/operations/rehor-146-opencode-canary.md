@@ -1,8 +1,10 @@
-# OpenCode Compatibility Canary and Rollout
+# OpenCode V2 Canary and Rollout
 
-This runbook covers the compatibility canary for [REHOR-146](https://issues.redhat.com/browse/REHOR-146).
+This runbook carries the original [REHOR-146](https://issues.redhat.com/browse/REHOR-146) canary forward to the REHOR-200 V2 contract.
 The canary changes runtime and provider selection per instance while keeping the
 legacy Claude/Vertex path available for rollback.
+
+Use client/CLI `2.1.2` and the single runtime ID `opencode`; versioned IDs and legacy aliases are unsupported. Migrate Claude SDK instances directly to V2. Historical V1 was onboarding-only validation, not a rollout prerequisite. Follow the [migration procedure](../migrations/opencode-migration.md#runtime-migration): main PR merges first, then a separate onboarding PR updates the merged gitlink, runtime, and native profile settings.
 
 ## Scope
 
@@ -10,7 +12,7 @@ The selection is declared in the instance config and carried through Python
 config preparation into the TypeScript coordinator:
 
 ```yaml
-runtime: opencode-v1
+runtime: opencode
 provider: rehor-openai
 model: gpt-6-luna
 ```
@@ -28,16 +30,16 @@ Supported combinations are:
 | Runtime | Provider | Role |
 |---|---|---|
 | `claude` | `vertex` | Legacy/default rollback path |
-| `opencode-v1` | `vertex` | Claude on Vertex through the existing Rehor auth proxy |
-| `opencode-v1` | `rehor-openai` | OpenAI Responses route (`@ai-sdk/openai`), default model `gpt-6-luna` |
-| `opencode-v1` | `rehor-openai-chat` | OpenAI Chat Completions compatibility route (`@ai-sdk/openai-compatible`) |
+| `opencode` | `vertex` | Claude on Vertex through the existing Rehor auth proxy |
+| `opencode` | `rehor-openai` | Native Responses runtime (`@opencode/ai/providers/openai/responses`), default model `gpt-6-luna` |
+| `opencode` | `rehor-openai-chat` | Native Chat Completions runtime (`@opencode/ai/providers/openai-compatible`) |
 
-With `runtime: opencode-v1`, `provider: rehor-openai`, and no model override,
+With `runtime: opencode`, `provider: rehor-openai`, and no model override,
 Python reads `config.json`'s `opencode.model` (`gpt-6-luna`). OpenCode+Vertex
 continues to use `claude.model`; `rehor-openai-chat` requires a model declared
 under that provider. GPT-6 Luna uses the native Responses route. The
-compatible provider pin fixes completion/turn-finish behavior; GPT-4o's model
-configuration caps output at 16384 tokens.
+native compatible runtime uses the pinned CLI; GPT-4o's model configuration caps
+output at 16384 tokens.
 Set a model declared under `rehor-openai-chat` (for example `gpt-4.1`); an
 undeclared model fails before OpenCode starts.
 
@@ -54,9 +56,8 @@ without changing the other.
 ## Before enabling a canary
 
 1. Confirm the target image includes `coordinator/dist/cli.js`, its locked Node
-   dependencies, `/usr/local/bin/opencode` version `1.18.29`,
-   `@ai-sdk/openai@4.0.73`, `@ai-sdk/openai-compatible@3.0.54`,
-   `@ai-sdk/google-vertex@4.0.181`, `zstd`, and the configured provider proxies.
+   dependencies including `@opencode/client@2.1.2`, `/usr/local/bin/opencode` from `@opencode/cli@2.1.2`,
+   the native Responses/compatible provider runtimes, `@ai-sdk/google-vertex@4.0.219` for the coordinator-owned Vertex shim, `zstd`, and configured provider proxies. Native OpenAI runtimes require no `packages` entries or separate `@ai-sdk` metadata. Preserve frozen pricing-catalog provenance `1.18.35` separately.
 2. Confirm the instance has a known-good Claude/Vertex deployment or revision
    available for rollback.
 3. Confirm the instance config contains no API keys. Credentials remain in
@@ -68,7 +69,7 @@ without changing the other.
    changes.
 6. Verify `BOT_EXECUTION_ENGINE=coordinator` is set deliberately,
    `CYCLE_RUNS_API_URL` is configured, and the OpenCode deployment JSON declares
-   the prepared provider with exact package versions and environment references.
+   the prepared provider with native `package`/`settings` fields and environment references. Exact external-package pins are required only for external providers/plugins.
 7. For an OpenAI route (`rehor-openai` or `rehor-openai-chat`), verify the
    runner's SandboxTemplate egress list allows TCP/8450 to `devbot-proxy` (see
    `deploy/sandbox-template.example.yaml`); without it the gateway is
@@ -77,6 +78,10 @@ without changing the other.
 9. Run one local/staging `--once` cycle first; verify `/health`, `/ready`,
    `/metrics`, local JSONL output, HTTP projections, transcript compression,
    and lock release.
+10. Verify native V2 profiles: core/shared/workflow `AGENTS.md`, strict native agent/command YAML frontmatter rejecting legacy/mixed fields, canonical plural resource directories, skills, `mcp.servers`, `experimental.subagent_depth`, and V2-compatible local/external plugins. Check utility-model selection at `agents.title.model` and ordered `permissions` using `shell`/`subagent`/`edit` actions. Confirm the runner's global native policy ceiling survives project/agent grants and that private server auth/config/data/DB remain isolated while root/child shells recover original XDG homes. Use the [native and image acceptance gates](../migrations/opencode-migration.md#local-and-image-validation); earlier partial checks are not full acceptance.
+11. Verify native Code Mode selection: central `mcpServers.<server>` and native `mcp.servers.<server>` accept optional boolean `codemode`, with omitted/default `true` or explicit direct `false`. Allowed active generated wrapped MCP grants automatically enable `execute`; agent allow/deny changes wrapper availability but cannot rewrap direct servers. Confirm nested grants/denials, no-count wrapper containers, unique successful nested/native-fetch accounting, and unfiltered nested work-context results even when scripts filter output. Errors do not count. Test batch budget exhaustion at the next root model boundary, not as an atomic nested-call stop. Code Mode fetch uses raw HTTP, not `webfetch` permission; verify effective network sandbox/egress and `execute` authority. Scoped management plugins stay disabled.
+
+Native Code Mode bridge and configuration tests have passed for root and child execution. The generated runner plugin uses native Effect with fiber-ID invocation correlation, including repeated scalar/null inputs, rather than Promise hooks or input identity. External V2 plugins may use native Effect or supported Promise APIs. Strict native Markdown validation is implemented. The full rebuild succeeded after the earlier external DNS failure, and a fresh unmounted Linux ARM64 production image containing the final fiber fix passed Responses/Chat/Vertex, read-tool, exact usage, and Code Mode checks. The built runtime captures filtered task results, counts two nested successes separately, blocks denied MCP calls before the server, and excludes the wrapper from budget accounting; budget 3 completes and budget 2 stops at the next root model boundary. These offline checks do not establish live canary acceptance; the deployment procedure and staging work-cycle checks above remain required.
 
 The Python compatibility entrypoint remains the default. A deployment must set
 `BOT_EXECUTION_ENGINE=coordinator` before setting a non-default runtime in an
@@ -87,7 +92,7 @@ it must not silently route OpenCode work through the Claude SDK.
 
 ### 1. Single-instance canary
 
-Set `runtime: opencode-v1` and `provider: rehor-openai` for one low-volume
+Set `runtime: opencode` and `provider: rehor-openai` for one low-volume
 instance. Keep the previous deployment revision and config ready. Observe at
 least one complete work cycle and one no-work/preflight cycle.
 
@@ -97,6 +102,7 @@ Required gates:
 - terminal state and status projection agree;
 - transcript, cost, cycle-run, and legacy metric records are written;
 - provider/model attribution matches the selected provider and effective model;
+- usage counts one assistant projection per V2 step, replaces duplicate/recovered IDs, and deduplicates compaction recovery; positive native costs remain estimates, and interrupted/pending steps retain incomplete known subtotals;
 - MCP failures remain visible and do not produce a false successful terminal;
 - no runtime process or session remains after completion, cancellation, timeout,
   or shutdown;
@@ -158,8 +164,7 @@ when comparing canary and rollback traffic.
    If deployment environment overrides are being used, set both
    `BOT_RUNTIME=claude` and `BOT_PROVIDER=vertex`; an `instance.yaml` value
    takes precedence over those fallbacks.
-3. Redeploy or restart the instance using the previous known-good image/config
-   revision. Confirm the first new cycle reports `claude`/`vertex` selection.
+3. Restore the previous known-good **Claude image digest and matching config/template revision**, including its gitlink and engine setting. For the Python baseline restore `BOT_EXECUTION_ENGINE=python` (or its previous omitted default); for a coordinator Claude baseline restore that exact setup. Obtain a fresh Sandbox and confirm the first new cycle reports `claude`/`vertex`. Provider-only changes are not runtime rollback.
 4. Check that no OpenCode process, session, or temporary state directory
    remains. Escalate any `devbot_runtime_resource_leaks_total` increase before
    retrying the canary.

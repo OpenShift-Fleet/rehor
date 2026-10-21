@@ -5,9 +5,17 @@ import { createServer as createGrpcServer, type ServerHttp2Stream } from "node:h
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { OpenCode, type OpenCodeEvent } from "@opencode/client";
 import { expect, it } from "vitest";
-import { OpenCodeServerSupervisor } from "../src/runtimes/opencode-v1/process-supervisor";
-import { renderOpenCodeV1ConfigForCycle } from "../src/runtimes/opencode-v1/render";
+import { createEventFactory, parseRehorRun } from "../src/domain";
+import { WorkContextTracker } from "../src/domain/work-context";
+import {
+  createNormalizationContext,
+  normalizeOpenCodeEvent,
+} from "../src/runtimes/opencode/normalizer";
+import { OpenCodeServerSupervisor } from "../src/runtimes/opencode/process-supervisor";
+import { renderOpenCodeConfigForCycle } from "../src/runtimes/opencode/render";
+import runFixture from "./fixtures/rehor-run.v1.json";
 
 // ExecuteRequest/Response contain only length-delimited fields here. Keep this
 // tiny localhost gRPC fixture dependency-free; production client uses real Go gRPC.
@@ -46,13 +54,15 @@ function requestFields(frame: Buffer): { tool: string; args: string[] } {
   return { tool: fields[1]?.[0] ?? "", args: fields[2] ?? [] };
 }
 
+let completionID = 0;
+
 function completion(tool?: string, args?: Record<string, unknown>): string {
   const delta = tool
     ? {
         tool_calls: [
           {
             index: 0,
-            id: `call_${tool}`,
+            id: `call_${++completionID}_${tool}`,
             type: "function",
             function: { name: tool, arguments: JSON.stringify(args) },
           },
@@ -64,11 +74,11 @@ function completion(tool?: string, args?: Record<string, unknown>): string {
   return `${chunk(delta, null)}${chunk({}, tool ? "tool_calls" : "stop")}data: [DONE]\n\n`;
 }
 
-// Opt in with pinned OpenCode 1.18.29, Go, and python3 on PATH. No paid inference,
+// Opt in with pinned OpenCode V2, Go, and python3 on PATH. No paid inference,
 // saved credentials, real services, or helper mutations: all endpoints are loopback.
-it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
-  "preserves 12 operational values through native root/child Bash and canonical Slack/Python executor helpers",
-  async () => {
+it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(["set", "empty", "unset"] as const)(
+  "preserves native root/child environment (%s XDG), helpers, credential isolation and policy ceiling",
+  async (xdgMode) => {
     const binary = process.env.REHOR_TEST_OPENCODE_BINARY;
     if (!binary) throw new Error("REHOR_TEST_OPENCODE_BINARY required");
     const version = spawnSync(binary, ["--version"], {
@@ -77,10 +87,30 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     });
     expect(version.error, `Cannot execute OpenCode binary: ${binary}`).toBeUndefined();
     expect(version.status, `OpenCode version probe failed: ${version.stderr}`).toBe(0);
-    expect(version.stdout.trim()).toBe("1.18.29");
+    expect(version.stdout.trim()).toBe("opencode v2.1.2");
     const home = await realpath(await mkdtemp(join(tmpdir(), "rehor-environment-native-")));
     const workspace = join(home, "workspace");
     await mkdir(workspace);
+    const approved = join(home, "approved");
+    const outside = join(home, "outside");
+    await mkdir(approved);
+    await mkdir(outside);
+    await writeFile(join(approved, "public.txt"), "synthetic-approved-read");
+    await writeFile(join(approved, "private.txt"), "synthetic-agent-denied-content");
+    await writeFile(join(outside, "secret.txt"), "synthetic-outside-content-must-not-be-read");
+    const configHome =
+      xdgMode === "set" ? join(home, "config") : xdgMode === "empty" ? "" : undefined;
+    const dataHome = xdgMode === "set" ? join(home, "data") : xdgMode === "empty" ? "" : undefined;
+    // Seed both explicit and HOME-default data locations, never real credentials.
+    for (const data of [join(home, "data"), join(home, ".local/share")]) {
+      await mkdir(join(data, "opencode"), { recursive: true });
+      await writeFile(
+        join(data, "opencode/auth.json"),
+        JSON.stringify({
+          ambient: { type: "api", key: "synthetic-ambient-credential-must-not-import" },
+        }),
+      );
+    }
     const rpcRequests: { path: unknown; frame: Buffer }[] = [];
     const grpc = createGrpcServer();
     grpc.on("stream", (stream: ServerHttp2Stream, headers) => {
@@ -102,35 +132,101 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     const command = (role: string) =>
       `printf '%s\\n' "$EXECUTOR_ADDR" "$BOT_JIRA_EMAIL" "$BOT_INSTANCE_ID" "$BOT_MEMORY_URL" "$GH_USER_NAME" "$GL_USER_NAME" "$BOT_CONFIG_PATH" "$SLACK_NOTIFY_MODE" "$GH_RELEASE_UPLOAD_URL" "$BOT_BOARD_ID" "$BOT_BOARD_NAME" "$SLACK_WEBHOOK_URL" > shell-${role}.txt && python3 helper.py ${role}`;
     const modelRequests: Record<string, unknown>[] = [];
+    const modelTransport: { path: string | undefined; authorization: string | undefined }[] = [];
+    const steps = { root: 0, child: 0 };
+    const mcpCalls: string[] = [];
     const model = createServer(async (req, res) => {
+      if (req.method !== "POST") {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
       let body = "";
       for await (const chunk of req) body += chunk;
-      modelRequests.push(JSON.parse(body));
-      // Request-count sequencing is intentionally pinned to OpenCode 1.18.29.
-      // Title/summarization behavior or version changes require a fixture update.
-      const step = modelRequests.length;
+      const request = JSON.parse(body);
+      if (req.url === "/mcp") {
+        if (request.id === undefined) {
+          res.writeHead(202);
+          res.end();
+          return;
+        }
+        let result: unknown = {};
+        if (request.method === "initialize")
+          result = {
+            protocolVersion: "2025-03-26",
+            capabilities: { tools: {} },
+            serverInfo: { name: "fixture", version: "1" },
+          };
+        if (request.method === "tools/list")
+          result = {
+            tools: ["search", "delete", "task_update"].map((name) => ({
+              name,
+              description: `Synthetic ${name}`,
+              inputSchema: {
+                type: "object",
+                properties: {
+                  query: { type: "string" },
+                  external_key: { type: "string" },
+                  repo: { type: "string" },
+                  status: { type: "string" },
+                },
+              },
+            })),
+          };
+        if (request.method === "tools/call") {
+          mcpCalls.push(request.params.name);
+          result = { content: [{ type: "text", text: "synthetic-mcp-search-ok" }] };
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+        return;
+      }
+      modelRequests.push(request);
+      modelTransport.push({ path: req.url, authorization: req.headers.authorization });
+      const tools = (request.tools ?? []).map(
+        (tool: { function: { name: string } }) => tool.function.name,
+      );
+      if (!tools.includes("shell")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(completion());
+        return;
+      }
+      const users = request.messages.filter((message: { role: string }) => message.role === "user");
+      const role = JSON.stringify(users).includes("NATIVE CHILD ENVIRONMENT") ? "child" : "root";
+      const step = steps[role]++;
       const response =
-        step === 1
-          ? completion("bash", {
-              command: command("root"),
-              description: "Check root operational environment",
-            })
-          : step === 2
-            ? completion("task", {
-                subagent_type: "env-worker",
-                description: "Check child environment",
-                prompt: "Run synthetic child environment fixture.",
-              })
-            : step === 3
-              ? completion("bash", {
-                  command: command("child"),
-                  description: "Check child operational environment",
-                })
-              : completion();
+        step === 0
+          ? completion("shell", { command: command(role) })
+          : step === 1
+            ? completion("read", { path: join(approved, "public.txt") })
+            : step === 2
+              ? completion("read", { path: join(approved, "private.txt") })
+              : step === 3
+                ? completion("read", { path: join(outside, "secret.txt") })
+                : step === 4
+                  ? completion("fixture_search", { query: role })
+                  : step === 5
+                    ? completion("fixture_delete", {})
+                    : step === 6
+                      ? completion("bot-memory_task_update", {
+                          external_key: `SYNTHETIC-${role}`,
+                          repo: "synthetic/repository",
+                          status: "pr_open",
+                        })
+                      : step === 7 && role === "root"
+                        ? completion("subagent", {
+                            agent: "env-worker",
+                            description: "Check child environment",
+                            prompt: "NATIVE CHILD ENVIRONMENT",
+                          })
+                        : completion();
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.end(response);
     });
     let supervisor: OpenCodeServerSupervisor | undefined;
+    const eventAbort = new AbortController();
+    let recording: Promise<void> | undefined;
+    let recordingError: unknown;
     try {
       const build = spawnSync(
         "go",
@@ -184,12 +280,22 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
       );
       await writeFile(join(workspace, "expected.json"), JSON.stringify(operational));
       await writeFile(
+        join(workspace, "xdg-expected.json"),
+        JSON.stringify({
+          XDG_CONFIG_HOME: configHome ?? null,
+          XDG_DATA_HOME: dataHome ?? null,
+        }),
+      );
+      await writeFile(
         join(workspace, "helper.py"),
         `import json, os, pathlib, subprocess, sys
 role = sys.argv[1]
 expected = json.loads(pathlib.Path("expected.json").read_text())
 actual = {key: os.environ.get(key) for key in expected}
 assert actual == expected, actual
+for key, value in json.loads(pathlib.Path("xdg-expected.json").read_text()).items():
+    assert os.environ.get(key) == value, (key, os.environ.get(key), value)
+assert "OPENCODE_PASSWORD" not in os.environ
 assert pathlib.Path("shell-" + role + ".txt").read_text().splitlines() == list(expected.values())
 for key in ["GH_TOKEN", "OPENAI_API_KEY", "JIRA_API_TOKEN", "JIRA_USERNAME", "SLACK_OTHER_CREDENTIAL", "BOT_SECRET_TOKEN", "EXECUTOR_TOKEN", "UNKNOWN_AMBIENT"]:
     assert key not in os.environ, key
@@ -204,15 +310,38 @@ pathlib.Path(role + ".json").write_text(json.dumps(actual))
 print("synthetic-" + role + "-ok")
 `,
       );
-      const renderedConfig = renderOpenCodeV1ConfigForCycle(
-        { model: "fixture", allowedTools: ["Bash", "Task"] },
+      const renderedConfig = renderOpenCodeConfigForCycle(
+        {
+          model: "fixture",
+          allowedTools: [
+            "Bash",
+            "Task",
+            "Read",
+            "mcp__fixture__search",
+            "mcp__bot-memory__task_update",
+          ],
+          openCodeMcpServers: {
+            fixture: {
+              type: "http",
+              url: `http://127.0.0.1:${modelAddress.port}/mcp`,
+              timeout: 30000,
+              codemode: false,
+            },
+            "bot-memory": {
+              type: "http",
+              url: `http://127.0.0.1:${modelAddress.port}/mcp`,
+              timeout: 30000,
+              codemode: false,
+            },
+          },
+        },
         "fixture-provider",
         {
           providers: [
             {
               id: "fixture-provider",
-              npm: "@ai-sdk/openai-compatible",
-              options: {
+              package: "@opencode/ai/providers/openai-compatible",
+              settings: {
                 baseURL: `http://127.0.0.1:${modelAddress.port}/v1`,
                 apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
               },
@@ -220,20 +349,34 @@ print("synthetic-" + role + "-ok")
             },
           ],
           packages: [{ name: "@ai-sdk/openai-compatible", version: "1.0.0" }],
+          additionalDirectories: [approved],
         },
         {
           settings: {
             default_agent: "env-root",
-            subagent_depth: 1,
-            agent: {
+            experimental: { subagent_depth: 1 },
+            agents: {
               "env-root": {
                 mode: "primary",
-                permission: { bash: "allow", task: { "*": "deny", "env-worker": "allow" } },
+                permissions: [
+                  { action: "external_directory", resource: "*", effect: "allow" },
+                  { action: "read", resource: "*", effect: "allow" },
+                  { action: "read", resource: join(approved, "private.txt"), effect: "deny" },
+                  { action: "shell", resource: "*", effect: "allow" },
+                  { action: "subagent", resource: "*", effect: "deny" },
+                  { action: "subagent", resource: "env-worker", effect: "allow" },
+                ],
               },
               "env-worker": {
                 description: "Synthetic environment worker",
                 mode: "subagent",
-                permission: { bash: "allow", task: "deny" },
+                permissions: [
+                  { action: "external_directory", resource: "*", effect: "allow" },
+                  { action: "read", resource: "*", effect: "allow" },
+                  { action: "read", resource: join(approved, "private.txt"), effect: "deny" },
+                  { action: "shell", resource: "*", effect: "allow" },
+                  { action: "subagent", resource: "*", effect: "deny" },
+                ],
               },
             },
           },
@@ -248,7 +391,8 @@ print("synthetic-" + role + "-ok")
         base: {
           PATH: process.env.PATH,
           HOME: home,
-          XDG_DATA_HOME: join(home, "data"),
+          XDG_CONFIG_HOME: configHome,
+          XDG_DATA_HOME: dataHome,
           XDG_CACHE_HOME: join(home, "cache"),
           XDG_STATE_HOME: join(home, "state"),
           ...operational,
@@ -275,27 +419,65 @@ print("synthetic-" + role + "-ok")
         ],
       });
       const info = await supervisor.start(workspace, AbortSignal.timeout(25000));
-      const api = async (path: string, body?: unknown) => {
-        const response = await fetch(
-          `${info.baseUrl}${path}?directory=${encodeURIComponent(workspace)}`,
-          {
-            method: body === undefined ? "GET" : "POST",
-            headers: { "content-type": "application/json" },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-            signal: AbortSignal.timeout(30000),
-          },
-        );
-        expect(response.ok, await response.clone().text()).toBe(true);
-        return response.json();
-      };
-      const session = await api("/session", { title: "Synthetic operational environment" });
-      const result = await api(`/session/${session.id}/message`, {
-        agent: "env-root",
-        model: { providerID: "fixture-provider", modelID: "fixture" },
-        parts: [{ type: "text", text: "Run root fixture then delegate child fixture." }],
+      const client = OpenCode.make({
+        baseUrl: info.baseUrl,
+        headers: {
+          authorization: `Basic ${Buffer.from(`opencode:${info.password}`).toString("base64")}`,
+        },
       });
-      expect(result.info.error).toBeUndefined();
-      expect(modelRequests).toHaveLength(5);
+      const options = { signal: AbortSignal.timeout(60000) };
+      const location = { directory: workspace };
+      const session = await client.session.create(
+        {
+          title: "Synthetic operational environment",
+          agent: "env-root",
+          location,
+          model: { providerID: "fixture-provider", id: "fixture" },
+        },
+        options,
+      );
+      expect(await client.credential.list(options)).toEqual([]);
+      await expect
+        .poll(async () => (await client.plugin.list({ location }, options)).data, {
+          timeout: 15000,
+          interval: 100,
+        })
+        .toContainEqual(
+          expect.objectContaining({ id: "rehor-policy", state: { status: "active" } }),
+        );
+      const plugins = await client.plugin.list({ location }, options);
+      expect(plugins.data).toContainEqual(
+        expect.objectContaining({ id: "rehor-policy", state: { status: "active" } }),
+      );
+      expect(
+        plugins.data.some(
+          (plugin) =>
+            plugin.id === "opencode.tools" || plugin.id === "opencode.tools.mcp-resources",
+        ),
+      ).toBe(false);
+      const capturedEvents: OpenCodeEvent[] = [];
+      const iterator = client.event
+        .subscribe({ signal: eventAbort.signal })
+        [Symbol.asyncIterator]();
+      // Prime the stream before dispatch; live session.tool events must not be missed.
+      expect((await iterator.next()).done).toBe(false);
+      recording = (async () => {
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) break;
+          capturedEvents.push(next.value);
+        }
+      })().catch((error: unknown) => {
+        if (!eventAbort.signal.aborted) recordingError = error;
+      });
+      await client.session.prompt(
+        { sessionID: session.id, text: "NATIVE ROOT ENVIRONMENT" },
+        options,
+      );
+      await client.session.wait({ sessionID: session.id }, options);
+      expect((await client.session.get({ sessionID: session.id }, options)).outcome).toBe(
+        "succeeded",
+      );
       for (const role of ["root", "child"]) {
         expect(JSON.parse(await readFile(join(workspace, `${role}.json`), "utf8"))).toEqual(
           operational,
@@ -324,10 +506,136 @@ print("synthetic-" + role + "-ok")
         { tool: "gh", args: ["api", "/synthetic-root"] },
         { tool: "gh", args: ["api", "/synthetic-child"] },
       ]);
-      const children = await api(`/session/${session.id}/children`);
-      expect(children).toHaveLength(1);
-      expect(children[0].parentID).toBe(session.id);
+      const children = await client.session.list({ parentID: session.id, limit: 10 }, options);
+      expect(children.data).toHaveLength(1);
+      expect(children.data[0].parentID).toBe(session.id);
+      expect(steps).toEqual({ root: 9, child: 8 });
+      expect(mcpCalls).toEqual(["search", "task_update", "search", "task_update"]);
+      for (const request of modelRequests) {
+        const names =
+          (request.tools as { function: { name: string } }[] | undefined)?.map(
+            (tool) => tool.function.name,
+          ) ?? [];
+        expect(names).not.toContain("execute");
+        expect(names).not.toContain("webfetch");
+        expect(names).not.toContain("fixture_delete");
+      }
+      expect(modelTransport.length).toBeGreaterThan(0);
+      expect(
+        modelTransport.every(
+          (request) =>
+            request.path === "/v1/chat/completions" &&
+            request.authorization === "Bearer synthetic-provider-token",
+        ),
+      ).toBe(true);
+      for (const [role, id] of [
+        ["root", session.id],
+        ["child", children.data[0].id],
+      ] as const) {
+        await expect
+          .poll(() =>
+            capturedEvents.some(
+              (event) =>
+                event.type === "session.execution.succeeded" && event.data.sessionID === id,
+            ),
+          )
+          .toBe(true);
+        const log = capturedEvents.filter(
+          (event) =>
+            "data" in event &&
+            event.data &&
+            "sessionID" in event.data &&
+            event.data.sessionID === id,
+        );
+        const starts = log.filter((event) => event.type === "session.tool.input.started");
+        const searchStarts = starts.filter((event) => event.data.name === "fixture_search");
+        expect(searchStarts).toHaveLength(1);
+        const searchID = searchStarts[0].data.id;
+        expect(
+          log.filter((event) => event.type === "session.tool.called" && event.data.id === searchID),
+        ).toEqual([
+          expect.objectContaining({
+            data: expect.objectContaining({ input: { query: role } }),
+          }),
+        ]);
+        expect(
+          log.filter(
+            (event) => event.type === "session.tool.success" && event.data.id === searchID,
+          ),
+        ).toHaveLength(1);
+        const taskStarts = starts.filter((event) => event.data.name === "bot-memory_task_update");
+        expect(taskStarts).toHaveLength(1);
+        expect(
+          log.filter(
+            (event) =>
+              event.type === "session.tool.success" && event.data.id === taskStarts[0].data.id,
+          ),
+        ).toHaveLength(1);
+        const rejected = starts.filter((event) => event.data.name === "fixture_delete");
+        expect(rejected).toHaveLength(1);
+        expect(
+          log.filter(
+            (event) =>
+              event.type === "session.tool.failed" && event.data.id === rejected[0].data.id,
+          ),
+        ).toHaveLength(1);
+        expect(
+          starts.some((event) => event.data.name === "execute" || event.data.name === "webfetch"),
+        ).toBe(false);
+        const run = parseRehorRun({ ...runFixture, runtimeId: "opencode", task: null });
+        const factory = createEventFactory(run, "native-config-acceptance");
+        const normalization = createNormalizationContext(id, "fixture-provider/fixture");
+        const work = new WorkContextTracker(run);
+        const normalized = log.flatMap(
+          (event) => normalizeOpenCodeEvent(event as OpenCodeEvent, factory, normalization).events,
+        );
+        const successfulMcp = normalized.filter(
+          (event) =>
+            event.kind === "tool" &&
+            event.payload.state === "completed" &&
+            event.payload.isError !== true &&
+            ["fixture_search", "bot-memory_task_update"].includes(String(event.payload.name)),
+        );
+        expect(successfulMcp.map((event) => event.payload.name)).toEqual([
+          "fixture_search",
+          "bot-memory_task_update",
+        ]);
+        for (const event of normalized) work.observe(event);
+        expect(normalized).toContainEqual(
+          expect.objectContaining({
+            kind: "tool",
+            payload: expect.objectContaining({
+              name: "bot-memory_task_update",
+              input: {
+                external_key: `SYNTHETIC-${role}`,
+                repo: "synthetic/repository",
+                status: "pr_open",
+              },
+            }),
+          }),
+        );
+        expect(
+          work.enrichTerminal(factory("terminal", { state: "succeeded" })).payload.context,
+        ).toMatchObject({
+          externalKey: `SYNTHETIC-${role}`,
+          repository: "synthetic/repository",
+          workType: "new_ticket",
+        });
+        const context = JSON.stringify(await client.session.context({ sessionID: id }, options));
+        expect(context).toContain("synthetic-approved-read");
+        expect(context).toContain("Blocked by configuration policy");
+        expect(context).toContain("Permission denied: read");
+        expect(context).toContain("synthetic-mcp-search-ok");
+        expect(context).not.toContain("synthetic-agent-denied-content");
+        expect(context).not.toContain("synthetic-outside-content-must-not-be-read");
+      }
+      expect(JSON.stringify(modelRequests)).not.toContain(
+        "synthetic-ambient-credential-must-not-import",
+      );
+      expect(recordingError).toBeUndefined();
     } finally {
+      eventAbort.abort();
+      await recording;
       await supervisor?.stop();
       await Promise.all([
         new Promise<void>((resolve) => model.close(() => resolve())),

@@ -28,12 +28,21 @@ describe("FileCycleAdmission", () => {
 
     const lease = await first.acquire(new AbortController().signal);
     expect(lease).not.toBeNull();
-    await expect(second.acquire(new AbortController().signal)).resolves.toBeNull();
     if (!lease) throw new Error("first admission did not acquire");
-
-    await lease.release();
-    await expect(second.acquire(new AbortController().signal)).resolves.not.toBeNull();
-  });
+    try {
+      await expect(second.acquire(new AbortController().signal)).resolves.toBeNull();
+    } finally {
+      await lease.release();
+    }
+    const nextLease = await second.acquire(new AbortController().signal);
+    try {
+      expect(nextLease).not.toBeNull();
+    } finally {
+      await nextLease?.release();
+    }
+    // Three real Python startups plus flock teardown can exceed Vitest's 5s
+    // default under full-suite process contention; keep the protocol assertions.
+  }, 10_000);
 
   it("denies coordinator admission while Python holds flock on the empty lock file", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-admission-"));

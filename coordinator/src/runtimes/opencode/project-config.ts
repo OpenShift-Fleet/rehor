@@ -1,10 +1,12 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isAlias, isMap, isNode, isScalar, parseDocument, visit } from "yaml";
 
 import { type InstructionAssemblyRequest, resolveWorkflowDir } from "../../instructions";
 import { isMissingFile } from "../../utils";
 import { asObject } from "../shared";
 import { OPEN_CODE_AGENTS_FILE, OPEN_CODE_RESOURCE_DIRECTORY_SET } from "./constants";
+import { validateNativeAgent, validateNativeCommand } from "./native-definitions";
 import type { JsonObject } from "./types";
 
 export interface OpenCodeProjectFile {
@@ -123,7 +125,9 @@ async function loadProfileConfig(
       (!OPEN_CODE_RESOURCE_DIRECTORY_SET.has(path.split("/")[0] ?? "") ||
         !isSafeOpenCodeProjectFilePath(path))
     ) {
-      throw new Error(`instance .opencode/${path} is not a supported config path`);
+      throw new Error(
+        `instance .opencode/${path} is not a native V2 config path; use agents, commands, plugins, or skills`,
+      );
     }
     if (stats.isDirectory()) {
       for (const name of (await readdir(source)).sort()) {
@@ -138,6 +142,7 @@ async function loadProfileConfig(
       if (files.length >= MAX_PROJECT_FILES || totalBytes > MAX_PROJECT_BYTES) {
         throw new Error("instance OpenCode project files exceed snapshot limits");
       }
+      validateOpenCodeProjectFile({ path, content });
       files.push({ path, content });
     }
   };
@@ -200,4 +205,79 @@ export function isSafeOpenCodeProjectFilePath(path: string): boolean {
     !segments.some((segment) => segment === "" || segment === "." || segment === "..") &&
     (path === OPEN_CODE_AGENTS_FILE || OPEN_CODE_RESOURCE_DIRECTORY_SET.has(segments[0] ?? ""))
   );
+}
+
+/** Validate without rewriting the original Markdown, including its body and line endings. */
+export function validateOpenCodeProjectFile(file: OpenCodeProjectFile): void {
+  const path = `.opencode/${file.path}`;
+  const invalid = (message: string): never => {
+    throw new Error(`${path}: ${message}`);
+  };
+  if (!isSafeOpenCodeProjectFilePath(file.path)) invalid("not a canonical native V2 resource path");
+  if (typeof file.content !== "string" || file.content.includes("\0"))
+    invalid("must be a text file");
+  if (Buffer.byteLength(file.content) > MAX_CONFIG_FILE_BYTES)
+    invalid("exceeds definition size limit");
+  if (
+    !file.path.endsWith(".md") ||
+    (!file.path.startsWith("agents/") && !file.path.startsWith("commands/"))
+  )
+    return;
+  try {
+    const text = file.content.startsWith("\uFEFF") ? file.content.slice(1) : file.content;
+    const lines = text.split(/\r?\n/);
+    let body = text;
+    let data: Record<string, unknown> = {};
+    if (lines[0].startsWith("---")) {
+      if (lines[0] !== "---") invalid("frontmatter must use a plain --- YAML delimiter");
+      const end = lines.indexOf("---", 1);
+      if (end < 0) invalid("unterminated YAML frontmatter");
+      const document = parseDocument(lines.slice(1, end).join("\n"), {
+        version: "1.2",
+        schema: "core",
+        // Reject ambiguous plain scalars rather than disagree with upstream's
+        // YAML resolver (e.g. numeric underscores, timestamps, yes/no).
+        compat: "yaml-1.1",
+        customTags: ["timestamp"],
+        strict: true,
+        uniqueKeys: true,
+        merge: false,
+        resolveKnownTags: false,
+      });
+      if (document.errors.length || document.warnings.length) invalid("invalid YAML frontmatter");
+      if (document.directives?.yaml.explicit || document.directives?.docEnd)
+        invalid("YAML directives/document markers are not supported");
+      let nodes = 0;
+      visit(document, (_key, node, parents) => {
+        if (++nodes > 20000 || parents.length > 64) invalid("frontmatter exceeds parsing limits");
+        if (isAlias(node) || (isNode(node) && (node.tag || ("anchor" in node && node.anchor))))
+          invalid("YAML tags, anchors and aliases are not supported");
+        if (isMap(node))
+          for (const pair of node.items) {
+            if (
+              !isScalar(pair.key) ||
+              typeof pair.key.value !== "string" ||
+              pair.key.value === "<<"
+            )
+              invalid("frontmatter keys must be strings; YAML merges are not supported");
+          }
+      });
+      const value: unknown = document.contents === null ? {} : document.toJS({ maxAliasCount: 0 });
+      if (!asObject(value))
+        invalid("frontmatter must be a native mapping, not a scalar or sequence");
+      data = value as Record<string, unknown>;
+      body = lines.slice(end + 1).join("\n");
+    }
+    if (file.path.startsWith("agents/")) {
+      validateNativeAgent(data, path);
+      validateNativeAgent({ ...data, system: body.trim() }, path);
+    } else {
+      if (data.template !== undefined && typeof data.template !== "string")
+        invalid("template must be a string");
+      validateNativeCommand({ ...data, template: body.trim() }, path);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(`${path}:`)) throw error;
+    invalid(error instanceof Error ? error.message : "invalid native frontmatter");
+  }
 }

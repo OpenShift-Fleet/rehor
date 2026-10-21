@@ -90,21 +90,21 @@ migration. It will move cycle orchestration out of SDK-specific code without
 moving workflow policy, credentials, or external services into an agent
 runtime.
 
-Current status: **scaffolding only**. Production continues through
-`bot/run.py` and `bot/agent.py`. The package currently provides:
+Current status: **opt-in coordinator runner**. Python/Claude remains the default through `bot/run.py` and `bot/agent.py`; `BOT_EXECUTION_ENGINE=coordinator` enables the TypeScript path. The package provides:
 
 - versioned run and event schemas;
 - an `AgentRuntime` port with no provider SDK types;
 - event validation, ordering, deduplication, attribution, terminal-state, and
   usage contracts;
 - a fake runtime and contract fixtures for adapter development;
+- Claude and OpenCode runtime adapters, scheduling, preflight preparation, and compatibility projections;
 - Node 22/npm tests, typecheck, a Vite Node bundle with TypeScript
   declaration emit, audit, pre-push, and CI coverage.
 
 The coordinator owns the complete command for one model attempt: label,
 workflow, assembled prompt, optional task identity, workspace snapshot,
 provider/model selection, policy/config hashes, and limits. It consumes a
-normalized event stream and later projects those events into the existing
+normalized event stream and projects those events into the existing
 status, cost, transcript, and cycle-run APIs.
 
 Runtime adapters own only runtime-specific process/session setup, event
@@ -131,7 +131,7 @@ remain outside `AgentRuntime` and create no model session.
 
 See [the coordinator contract](coordinator/README.md) and the
 [OpenCode migration design](docs/migrations/opencode-migration.md) for detailed
-invariants, parity mapping, and rollout phases.
+invariants, parity mapping, and rollout steps. OpenCode V2 uses only runtime ID `opencode`, `@opencode/client@2.1.2`, and `@opencode/cli@2.1.2`; versioned runtime aliases are unsupported. Each cycle owns an authenticated loopback child with private config/data homes, database, and instruction discovery. A V2 plugin restores original shell XDG homes, while native core/shared/workflow instructions and profile resources remain distinct. Explicit global native policies impose the external-directory ceiling above project/agent grants. Claude instances migrate directly to V2; the prior Claude image/config remains rollback. The frozen pricing fallback retains independent catalog provenance `1.18.35`.
 
 ### Claude Code (Agent)
 
@@ -500,7 +500,7 @@ This keeps the deployment simple — one memory server serves all bot instances,
 
 Both images use Red Hat UBI9 base images:
 
-- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 24 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. All secrets live in the proxy container — the bot never sees them. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README). The coordinator is not copied into or launched by the production image yet; a later runtime-adapter slice will add its supported Node/OpenCode runtime.
+- **Bot container** (`Dockerfile`) — `ubi9/ubi` with Python 3.12, Node.js 24 (official binary tarball), Chromium headless (via Playwright), Go (multiple versions), gh/glab/gpg thin client shims, bubblewrap (sandbox), uv. Runs as non-root `botuser` (Claude Code rejects root). Entrypoint syncs remote config repo, configures git credential helpers (routing through thin client shims to the proxy), and launches the bot runner. Model/service authentication remains proxy-owned; configured Slack webhooks are an intentional helper-environment exception. Git uses HTTPS with credential helpers, not SSH. Runner instances can be built from `Dockerfile.runner` via git submodule (see README). Both image paths package the coordinator and pinned OpenCode V2 CLI; `BOT_EXECUTION_ENGINE=python|coordinator` selects the entrypoint, independently of the instance runtime/provider selection.
 
 - **Memory server** (`memory-server/Dockerfile`) — multi-stage build. Stage 1: `ubi9/nodejs-22` builds the React dashboard. Stage 2: `ubi9/python-312-minimal` runs the FastMCP app with dashboard assets baked in.
 

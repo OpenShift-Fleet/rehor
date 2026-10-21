@@ -21,7 +21,7 @@ import {
   validateOpenCodeDeployment,
 } from "../src/runner";
 import * as runtimeFactory from "../src/runtime-factory";
-import type { OpenCodeV1DeploymentConfig } from "../src/runtimes/opencode-v1";
+import type { OpenCodeDeploymentConfig } from "../src/runtimes/opencode";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -31,7 +31,7 @@ afterEach(() => {
 const prepared: PreparedCycleInput = {
   config: {
     model: "gpt-6-luna",
-    runtimeId: "opencode-v1",
+    runtimeId: "opencode",
     providerId: "rehor-openai",
     maxTurns: 17,
     intervalSeconds: 30,
@@ -64,31 +64,34 @@ const prepared: PreparedCycleInput = {
   preflightPayloadRef: null,
 };
 
-const deployment: OpenCodeV1DeploymentConfig = {
+const deployment: OpenCodeDeploymentConfig = {
   providers: [
     {
       id: "rehor-openai",
-      npm: "@ai-sdk/openai",
-      options: {
+      package: "@opencode/ai/providers/openai/responses",
+      settings: {
         apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
         baseURL: "{env:REHOR_MODEL_PROXY_URL}",
       },
-      models: { "gpt-6-luna": { name: "GPT-6 Luna", reasoning: true } },
+      models: {
+        "gpt-6-luna": {
+          name: "GPT-6 Luna",
+          capabilities: { reasoning: { supported: true } },
+          settings: { reasoning: { effort: "medium" } },
+        },
+      },
     },
     {
       id: "rehor-openai-chat",
-      npm: "@ai-sdk/openai-compatible",
-      options: {
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: {
         apiKey: "{env:REHOR_MODEL_PROXY_TOKEN}",
         baseURL: "{env:REHOR_MODEL_PROXY_URL}",
       },
       models: { "gpt-4o": { name: "GPT-4o", limit: { context: 128_000, output: 16_384 } } },
     },
   ],
-  packages: [
-    { name: "@ai-sdk/openai", version: "4.0.73" },
-    { name: "@ai-sdk/openai-compatible", version: "3.0.54" },
-  ],
+  packages: [],
 };
 
 const proxyEnvironment = {
@@ -112,7 +115,7 @@ describe("production runner boundary", () => {
       instanceId: "instance-1",
       label: "hcc-ai-framework",
       workflowId: "jira-sprint",
-      runtimeId: "opencode-v1",
+      runtimeId: "opencode",
       provider: { id: "rehor-openai", requestedModel: "gpt-6-luna" },
       limits: { timeoutMs: 120_000, maxTurns: 17 },
       worktree: {
@@ -162,11 +165,13 @@ describe("production runner boundary", () => {
       workspaceRoot: "/work",
       openCodeDeployment: deployment,
       openCodeCommand: "/usr/local/bin/opencode",
-      openCodeExpectedVersion: "1.18.29",
+      openCodeExpectedVersion: "2.1.2",
       environment: { PATH: "/usr/bin", ...proxyEnvironment },
     });
 
-    expect(registry.runtimeIds).toEqual(["claude", "opencode-v1"]);
+    expect(registry.runtimeIds).toEqual(["claude", "opencode"]);
+    expect(registry.has("opencode-v1")).toBe(false);
+    expect(registry.has("opencode-v2")).toBe(false);
   });
 
   it("keeps the legacy Claude registry Claude-only", () => {

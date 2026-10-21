@@ -2,21 +2,12 @@ export const OPEN_CODE_AGENTS_FILE = "AGENTS.md" as const;
 
 export const OPEN_CODE_RESOURCE_DIRECTORIES = [
   "agents",
-  "agent",
   "commands",
-  "command",
   "instructions",
   "rules",
-  "modes",
-  "mode",
   "plugins",
-  "plugin",
   "skills",
-  "skill",
-  "tools",
-  "tool",
   "themes",
-  "theme",
 ] as const;
 
 export const OPEN_CODE_RESOURCE_DIRECTORY_SET: ReadonlySet<string> = new Set(
@@ -24,18 +15,24 @@ export const OPEN_CODE_RESOURCE_DIRECTORY_SET: ReadonlySet<string> = new Set(
 );
 
 export const OPEN_CODE_INSTANCE_SETTING_KEYS: ReadonlySet<string> = new Set([
-  "agent",
-  "command",
+  "agents",
+  "commands",
   "compaction",
   "default_agent",
-  "disabled_providers",
+  "experimental",
   "formatter",
   "instructions",
   "mcp",
-  "permission",
-  "plugin",
-  "snapshot",
-  "subagent_depth",
-  "tools",
+  "permissions",
+  "plugins",
+  "snapshots",
   "watcher",
 ]);
+
+// V2 built-ins manage sessions/worktrees outside the coordinator's lifecycle.
+// Native MCP exposure follows each server's codemode option; these management
+// integrations stay disabled independently of the execute wrapper permission.
+export const OPEN_CODE_MANAGEMENT_PLUGIN_REMOVALS = [
+  "-opencode.tools",
+  "-opencode.tools.mcp-resources",
+] as const;

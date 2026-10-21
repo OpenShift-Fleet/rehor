@@ -354,7 +354,7 @@ async function consumeEvents(
       workContext.observe(event);
       await projectEvent(event, run, projection);
 
-      if (event.kind === "tool") {
+      if (event.kind === "tool" && event.payload.budgetUnit !== "container") {
         const toolUseId =
           typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
         if (event.payload.state === "started") toolStarts.set(toolUseId, event);

@@ -1,5 +1,6 @@
 import type { RehorEvent } from "./event";
 import type { RehorRun } from "./run";
+import { isOpenCodeRuntime } from "./runtime-selection";
 import type { TerminalEventPayload, TerminalWorkContext } from "./terminal-state";
 
 type JsonRecord = Record<string, unknown>;
@@ -32,7 +33,7 @@ export class WorkContextTracker {
   private readonly startedTools = new Set<string>();
 
   constructor(run: RehorRun) {
-    if (!run.task || run.runtimeId !== "opencode-v1") return;
+    if (!run.task || !isOpenCodeRuntime(run.runtimeId)) return;
     const taskId = Number(run.task.id);
     if (Number.isSafeInteger(taskId) && taskId > 0) this.context.taskId = taskId;
     if (run.task.key) this.context.externalKey = run.task.key;
@@ -41,6 +42,7 @@ export class WorkContextTracker {
   observe(event: RehorEvent): void {
     if (event.kind !== "tool") return;
     const payload = event.payload;
+    if (payload.budgetUnit === "container" || payload.workContextAvailable === false) return;
     const id =
       typeof payload.toolUseId === "string" && payload.toolUseId
         ? payload.toolUseId
@@ -53,7 +55,8 @@ export class WorkContextTracker {
       this.startedTools.add(id);
       return;
     }
-    if (payload.state !== "completed") return;
+    if (payload.state !== "completed" || (payload.codeMode === true && payload.isError === true))
+      return;
 
     if (!this.startedTools.has(id)) extractToolContext(name, input, this.context);
     extractTaskResult(payload.content, this.context);
@@ -145,6 +148,7 @@ export function extractToolContext(
 export function extractTaskResult(value: unknown, context: TerminalWorkContext): void {
   const texts: string[] = [];
   if (typeof value === "string") texts.push(value);
+  if (asRecord(value)) texts.push(JSON.stringify(value));
   if (Array.isArray(value)) {
     for (const part of value) {
       const object = asRecord(part);

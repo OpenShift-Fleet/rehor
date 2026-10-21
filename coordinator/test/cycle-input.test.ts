@@ -207,13 +207,13 @@ describe("cycle preparation", () => {
     const profile = join(root, "profile");
     await mkdir(join(profile, ".opencode", "plugins"), { recursive: true });
     await writeFile(join(profile, "AGENTS.md"), "Native profile guidance.");
-    await writeFile(join(profile, "opencode.json"), '{"snapshot":false,"default_agent":"build"}');
+    await writeFile(join(profile, "opencode.json"), '{"snapshots":false,"default_agent":"build"}');
     await mkdir(join(root, "repos/project"), { recursive: true });
     const projectClaude = join(root, "repos/project/CLAUDE.md");
     await writeFile(projectClaude, "Project-owned CLAUDE instructions.\n");
     await writeFile(join(root, "AGENTS.md"), "Project-owned AGENTS instructions.");
     const bridge = new FakeBridge(preflight(PreflightAction.Start), {
-      runtimeId: "opencode-v1",
+      runtimeId: "opencode",
       remoteAgentDir: profile,
       sharedAgentDir: join(root, "missing-shared"),
     });
@@ -227,7 +227,7 @@ describe("cycle preparation", () => {
     for (const strategy of Object.values(InstructionStrategy)) {
       const repeated = await prepareCycleInput(
         new FakeBridge(null, {
-          runtimeId: "opencode-v1",
+          runtimeId: "opencode",
           remoteAgentDir: profile,
           claudeMdStrategy: strategy,
         }),
@@ -243,6 +243,7 @@ describe("cycle preparation", () => {
       "Project-owned AGENTS instructions.",
     );
     expect(result.instructions).toBeUndefined();
+    expect(result.config.runtimeId).toBe("opencode");
     expect(result.nativeConfig?.files).toEqual([
       { path: "AGENTS.md", content: "Native profile guidance." },
       { path: "instructions/rehor/core.md", content: "[native core]" },
@@ -251,14 +252,14 @@ describe("cycle preparation", () => {
     expect(result.prompt).toContain("native OpenCode instructions and AGENTS.md");
     expect(result.prompt).not.toContain("CLAUDE.md");
 
-    await writeFile(join(profile, "opencode.json"), '{"default_agent":"build","snapshot":false}');
+    await writeFile(join(profile, "opencode.json"), '{"default_agent":"build","snapshots":false}');
     expect((await prepareCycleInput(bridge, options)).instructionHash).toEqual(
       result.instructionHash,
     );
     let previous = result;
     for (const [path, content] of [
       [join(profile, "AGENTS.md"), "Changed native instructions."],
-      [join(profile, "opencode.json"), '{"snapshot":true}'],
+      [join(profile, "opencode.json"), '{"snapshots":true}'],
       [join(profile, ".opencode/plugins/local.ts"), "export const plugin = true;"],
       [join(root, "presets/core/AGENTS.md"), "Changed native core."],
       [workflow, "Changed native workflow."],
@@ -311,7 +312,7 @@ describe("cycle preparation", () => {
       options,
     );
     const runtimeChanged = await prepareCycleInput(
-      new FakeBridge(preflight(PreflightAction.Start), { runtimeId: "opencode-v1" }),
+      new FakeBridge(preflight(PreflightAction.Start), { runtimeId: "opencode" }),
       options,
     );
     const providerChanged = await prepareCycleInput(
@@ -361,7 +362,7 @@ describe("Python preflight bridge", () => {
       ok: true,
       result: {
         model: "test-model",
-        runtimeId: "opencode-v1",
+        runtimeId: "opencode",
         providerId: "rehor-openai",
         maxTurns: 10,
         intervalSeconds: 300,
@@ -402,7 +403,7 @@ describe("Python preflight bridge", () => {
       ok: true,
       result: {
         model: "test-model",
-        runtimeId: "opencode-v1",
+        runtimeId: "opencode",
         providerId: "rehor-openai",
         maxTurns: 10,
         intervalSeconds: 300,
@@ -454,7 +455,7 @@ describe("Python preflight bridge", () => {
 
     expect(result.mcpServers).toEqual(response.result.mcpServers);
     expect(result.openCodeMcpServers).toEqual(response.result.openCodeMcpServers);
-    expect(result.runtimeId).toBe("opencode-v1");
+    expect(result.runtimeId).toBe("opencode");
     expect(result.providerId).toBe("rehor-openai");
     expect(result.gitConfigGlobal).toBe(response.result.gitConfigGlobal);
     expect(result.allowedTools).toEqual(response.result.allowedTools);
