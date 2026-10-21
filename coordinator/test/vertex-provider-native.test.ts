@@ -17,7 +17,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     expect(spawnSync(binary, ["--version"], { encoding: "utf8" }).stdout.trim()).toBe(
       "opencode v2.1.2",
     );
-    const { renderOpenCodeConfig } = await import("../dist/index.js");
+    const { renderOpenCodeConfig } = (await import(
+      /* @vite-ignore */ new URL("../dist/index.js", import.meta.url).href
+    )) as typeof import("../src/index");
     const model = "claude-sonnet-4-6";
     const home = await mkdtemp(join(tmpdir(), "rehor-vertex-native-"));
     const requests: { path: string; authorization?: string; body: unknown }[] = [];

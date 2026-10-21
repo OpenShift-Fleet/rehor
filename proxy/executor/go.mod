@@ -2,7 +2,7 @@ module github.com/RedHatInsights/platform-frontend-ai-dev/proxy/executor
 
 go 1.26.7
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/prometheus/client_golang v1.24.1

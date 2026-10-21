@@ -177,7 +177,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(cases)(
         env: { PATH: process.env.PATH },
       }).stdout.trim(),
     ).toBe("opencode v2.1.2");
-    const { renderOpenCodeConfig } = await import("../dist/index.js");
+    const { renderOpenCodeConfig } = (await import(
+      /* @vite-ignore */ new URL("../dist/index.js", import.meta.url).href
+    )) as typeof import("../src/index");
     const home = await mkdtemp(join(tmpdir(), "rehor-pricing-smoke-"));
     const requests: { path: string; authorization?: string; body: Record<string, unknown> }[] = [];
     const server = createServer(async (req, res) => {
