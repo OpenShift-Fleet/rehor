@@ -1,0 +1,161 @@
+{
+  "source": {
+    "name": "OpenCode baked models.dev catalog",
+    "version": "1.18.35",
+    "binarySha256": "8c3c351b138cfe35905ab11846a1373f1beea590aee7eda412fb765b72c79d82",
+    "pricingSha256": "6a479280eb8e4a0863db4317a232615c192446b4eff88a2b1098f37b2ae16a5b",
+    "upstream": "https://github.com/anomalyco/opencode/tree/v1.18.35",
+    "command": "models --verbose --pure (isolated HOME/XDG; model fetch disabled)",
+    "units": "USD per million tokens"
+  },
+  "models": {
+    "google-vertex-anthropic/claude-haiku-4-5@20251001": {
+      "input": 1,
+      "output": 5,
+      "cache": { "read": 0.1, "write": 1.25 }
+    },
+    "google-vertex-anthropic/claude-opus-4-6@default": {
+      "input": 5,
+      "output": 25,
+      "cache": { "read": 0.5, "write": 6.25 },
+      "tiers": [
+        {
+          "input": 10,
+          "output": 37.5,
+          "cache": { "read": 1, "write": 12.5 },
+          "tier": { "type": "context", "size": 200000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 1, "write": 12.5 },
+        "input": 10,
+        "output": 37.5
+      }
+    },
+    "google-vertex-anthropic/claude-sonnet-4-6@default": {
+      "input": 3,
+      "output": 15,
+      "cache": { "read": 0.3, "write": 3.75 },
+      "tiers": [
+        {
+          "input": 6,
+          "output": 22.5,
+          "cache": { "read": 0.6, "write": 7.5 },
+          "tier": { "type": "context", "size": 200000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.6, "write": 7.5 },
+        "input": 6,
+        "output": 22.5
+      }
+    },
+    "openai/gpt-4.1": {
+      "input": 2,
+      "output": 8,
+      "cache": { "read": 0.5, "write": 0 }
+    },
+    "openai/gpt-4.1-mini": {
+      "input": 0.4,
+      "output": 1.6,
+      "cache": { "read": 0.1, "write": 0 }
+    },
+    "openai/gpt-4o": {
+      "input": 2.5,
+      "output": 10,
+      "cache": { "read": 1.25, "write": 0 }
+    },
+    "openai/gpt-4o-mini": {
+      "input": 0.15,
+      "output": 0.6,
+      "cache": { "read": 0.075, "write": 0 }
+    },
+    "openai/gpt-5": {
+      "input": 1.25,
+      "output": 10,
+      "cache": { "read": 0.125, "write": 0 }
+    },
+    "openai/gpt-5-mini": {
+      "input": 0.25,
+      "output": 2,
+      "cache": { "read": 0.025, "write": 0 }
+    },
+    "openai/gpt-5-nano": {
+      "input": 0.05,
+      "output": 0.4,
+      "cache": { "read": 0.005, "write": 0 }
+    },
+    "openai/gpt-5.6-luna": {
+      "input": 0.2,
+      "output": 1.2,
+      "cache": { "read": 0.02, "write": 0.25 },
+      "tiers": [
+        {
+          "input": 0.4,
+          "output": 1.8,
+          "cache": { "read": 0.04, "write": 0.5 },
+          "tier": { "type": "context", "size": 272000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.04, "write": 0.5 },
+        "input": 0.4,
+        "output": 1.8
+      }
+    },
+    "openai/gpt-5.6-sol": {
+      "input": 4,
+      "output": 20,
+      "cache": { "read": 0.4, "write": 5 },
+      "tiers": [
+        {
+          "input": 8,
+          "output": 30,
+          "cache": { "read": 0.8, "write": 10 },
+          "tier": { "type": "context", "size": 272000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.8, "write": 10 },
+        "input": 8,
+        "output": 30
+      }
+    },
+    "openai/gpt-6-luna": {
+      "input": 0.1,
+      "output": 0.5,
+      "cache": { "read": 0.01, "write": 0.125 },
+      "tiers": [
+        {
+          "input": 0.2,
+          "output": 0.75,
+          "cache": { "read": 0.02, "write": 0.25 },
+          "tier": { "type": "context", "size": 272000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.02, "write": 0.25 },
+        "input": 0.2,
+        "output": 0.75
+      }
+    },
+    "openai/gpt-6.1-sol": {
+      "input": 2,
+      "output": 10,
+      "cache": { "read": 0.1, "write": 2.5 },
+      "tiers": [
+        {
+          "input": 4,
+          "output": 15,
+          "cache": { "read": 0.2, "write": 5 },
+          "tier": { "type": "context", "size": 272000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.2, "write": 5 },
+        "input": 4,
+        "output": 15
+      }
+    }
+  }
+}

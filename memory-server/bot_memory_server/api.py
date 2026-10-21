@@ -713,7 +713,9 @@ async def api_costs(request: Request) -> JSONResponse:
                SUM(duration_ms) AS total_duration,
                SUM(num_turns) AS total_turns,
                SUM(CASE WHEN no_work THEN 1 ELSE 0 END) AS idle_cycles,
-               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles
+               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles,
+               COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_cycles,
+               COUNT(*) FILTER (WHERE cost_incomplete OR cost_status = 'unknown') AS incomplete_cycles
         FROM cycles
         WHERE {date_filter}
         GROUP BY DATE(timestamp)
@@ -734,6 +736,8 @@ async def api_costs(request: Request) -> JSONResponse:
             "total_turns": r["total_turns"],
             "idle_cycles": r["idle_cycles"],
             "error_cycles": r["error_cycles"],
+            "estimated_cycles": r["estimated_cycles"],
+            "incomplete_cycles": r["incomplete_cycles"],
         }
         for r in daily_rows
     ]
@@ -748,20 +752,29 @@ async def _api_costs_add(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    cost_status = body.get("cost_status")
+    if cost_status not in (None, "provider", "estimated", "unknown"):
+        return JSONResponse({"error": "Invalid cost_status"}, status_code=400)
+    cost_usd = body.get("cost_usd", 0)
+    if cost_status == "unknown":
+        if cost_usd not in (None, 0):
+            return JSONResponse({"error": "Unknown cost must have cost_usd = 0"}, status_code=400)
+        cost_usd = 0
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary, instance_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                            external_key, source_type, repo, work_type, summary, instance_id,
+                            cost_status, cost_incomplete)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING *
         """,
         body.get("label", ""),
         body.get("session_id", ""),
         body.get("num_turns", 0),
         body.get("duration_ms", 0),
-        body.get("cost_usd", 0),
+        cost_usd,
         body.get("input_tokens", 0),
         body.get("output_tokens", 0),
         body.get("cache_read_tokens", 0),
@@ -775,6 +788,8 @@ async def _api_costs_add(request: Request) -> JSONResponse:
         body.get("work_type"),
         body.get("summary"),
         body.get("instance_id"),
+        cost_status,
+        bool(body.get("cost_incomplete", False)) or cost_status == "unknown",
     )
     cycle = _cycle(row)
 
@@ -1352,6 +1367,8 @@ def _cycle(row) -> dict:
         "num_turns": row["num_turns"],
         "duration_ms": row["duration_ms"],
         "cost_usd": float(row["cost_usd"]),
+        "cost_status": row.get("cost_status"),
+        "cost_incomplete": row.get("cost_incomplete", False),
         "input_tokens": row["input_tokens"],
         "output_tokens": row["output_tokens"],
         "cache_read_tokens": row["cache_read_tokens"],

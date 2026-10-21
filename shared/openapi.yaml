@@ -1197,6 +1197,8 @@ components:
         num_turns: { type: integer }
         duration_ms: { type: integer }
         cost_usd: { type: number }
+        cost_status: { type: string, nullable: true, enum: [provider, estimated, unknown, null] }
+        cost_incomplete: { type: boolean }
         input_tokens: { type: integer }
         output_tokens: { type: integer }
         cache_read_tokens: { type: integer }
@@ -1270,6 +1272,8 @@ components:
         total_turns: { type: integer }
         idle_cycles: { type: integer }
         error_cycles: { type: integer }
+        estimated_cycles: { type: integer }
+        incomplete_cycles: { type: integer }
 
     BotStatus:
       type: object

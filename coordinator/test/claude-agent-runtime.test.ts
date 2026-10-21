@@ -4,7 +4,9 @@ const { queryMock } = vi.hoisted(() => ({ queryMock: vi.fn() }));
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: queryMock }));
 
+import { toLegacyCostEntry } from "../src/adapters/compatibility";
 import type { RehorEvent, RehorRun } from "../src/domain";
+import type { CostRecord } from "../src/ports/compatibility";
 import { LegacyCompatibilityProjection } from "../src/projections/compatibility";
 import { createDefaultRuntimeRegistry, executeSelectedRun } from "../src/runtime-factory";
 import { ClaudeAgentRuntime } from "../src/runtimes/claude-agent";
@@ -133,7 +135,7 @@ describe("ClaudeAgentRuntime", () => {
     vi.unstubAllEnvs();
   });
 
-  it("configures the SDK and normalizes representative Claude cycles", async () => {
+  it("projects actual Claude SDK usage as estimated without changing amounts or token accounting", async () => {
     let captured: Record<string, unknown> | undefined;
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
       captured = options;
@@ -147,9 +149,9 @@ describe("ClaudeAgentRuntime", () => {
         "mcp-atlassian": { type: "http", url: "http://jira-mcp" },
       },
     });
-    const costs: Array<Record<string, unknown>> = [];
+    const costs: CostRecord[] = [];
     const projection = new LegacyCompatibilityProjection({
-      costs: { write: (record) => void costs.push(record as unknown as Record<string, unknown>) },
+      costs: { write: (record) => void costs.push(record) },
     });
     const result = await executeSelectedRun(registry, { runtimeId: "claude" }, run, { projection });
     const events = [...result.events];
@@ -181,6 +183,7 @@ describe("ClaudeAgentRuntime", () => {
       tokenCounts: { input: 100, output: 20, reasoning: 4, cacheRead: 10, cacheWrite: 5 },
       final: true,
       estimated: true,
+      cost: { amount: 0.42, currency: "USD", source: "estimated" },
     });
     expect(usageEvents[1]?.payload).toMatchObject({
       requestedModel: "claude-opus-4-6",
@@ -188,6 +191,7 @@ describe("ClaudeAgentRuntime", () => {
       tokenCounts: { input: 30, output: 4, cacheRead: 2, cacheWrite: 1 },
       final: true,
       estimated: true,
+      cost: { amount: 0.08, currency: "USD", source: "estimated" },
     });
     expect(events.at(-1)?.payload).toMatchObject({
       state: "completed",
@@ -205,6 +209,8 @@ describe("ClaudeAgentRuntime", () => {
       cacheReadTokens: 12,
       cacheWriteTokens: 6,
       costUsd: 0.5,
+      costStatus: "estimated",
+      costIncomplete: false,
       modelUsage: {
         "claude-opus-4-6": {
           input_tokens: 100,
@@ -219,6 +225,18 @@ describe("ClaudeAgentRuntime", () => {
           cache_creation_input_tokens: 1,
         },
       },
+    });
+    const cost = costs[0];
+    if (!cost) throw new Error("Missing projected Claude cost");
+    expect(toLegacyCostEntry(cost)).toMatchObject({
+      cost_usd: 0.5,
+      cost_status: "estimated",
+      cost_incomplete: false,
+      input_tokens: 130,
+      output_tokens: 24, // thinkingTokens are already included in Claude output.
+      cache_read_tokens: 12,
+      cache_write_tokens: 6,
+      model: "claude-opus-4-6",
     });
   });
 
