@@ -115,7 +115,7 @@ export function extractToolContext(
     if (input.status === "pr_open") context.workType = "new_ticket";
     if (input.status === "pr_changes") context.workType = "pr_review";
     if (input.status === "done") context.workType = context.workType ?? "pr_review";
-  } else if (name.toLowerCase() === "bash") {
+  } else if (name.toLowerCase() === "bash" || name.toLowerCase() === "shell") {
     const command = typeof input.command === "string" ? input.command : "";
     if (command.includes("gh pr checks") || command.includes("glab ci view")) {
       context.workType = context.workType ?? "ci_fix";

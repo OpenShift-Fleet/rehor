@@ -129,8 +129,18 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(["set", "empty", "unset"
         stream.end(Buffer.concat([frame, message]));
       });
     });
+    const runnerEnv = [
+      "OPENCODE_CONFIG",
+      "OPENCODE_CONFIG_CONTENT",
+      "OPENCODE_CONFIG_DIR",
+      "OPENCODE_TEST_HOME",
+      "OPENCODE_DB",
+      "OPENCODE_AUTH_CONTENT",
+      "OPENCODE_PASSWORD",
+      "OPENCODE_SERVER_PASSWORD",
+    ];
     const command = (role: string) =>
-      `printf '%s\\n' "$EXECUTOR_ADDR" "$BOT_JIRA_EMAIL" "$BOT_INSTANCE_ID" "$BOT_MEMORY_URL" "$GH_USER_NAME" "$GL_USER_NAME" "$BOT_CONFIG_PATH" "$SLACK_NOTIFY_MODE" "$GH_RELEASE_UPLOAD_URL" "$BOT_BOARD_ID" "$BOT_BOARD_NAME" "$SLACK_WEBHOOK_URL" > shell-${role}.txt && python3 helper.py ${role}`;
+      `${runnerEnv.map((name) => `test "\${${name}+present}" != present`).join(" && ")} && printf '%s\\n' "$EXECUTOR_ADDR" "$BOT_JIRA_EMAIL" "$BOT_INSTANCE_ID" "$BOT_MEMORY_URL" "$GH_USER_NAME" "$GL_USER_NAME" "$BOT_CONFIG_PATH" "$SLACK_NOTIFY_MODE" "$GH_RELEASE_UPLOAD_URL" "$BOT_BOARD_ID" "$BOT_BOARD_NAME" "$SLACK_WEBHOOK_URL" > shell-${role}.txt && python3 helper.py ${role}`;
     const modelRequests: Record<string, unknown>[] = [];
     const modelTransport: { path: string | undefined; authorization: string | undefined }[] = [];
     const steps = { root: 0, child: 0 };
@@ -295,7 +305,11 @@ actual = {key: os.environ.get(key) for key in expected}
 assert actual == expected, actual
 for key, value in json.loads(pathlib.Path("xdg-expected.json").read_text()).items():
     assert os.environ.get(key) == value, (key, os.environ.get(key), value)
-assert "OPENCODE_PASSWORD" not in os.environ
+runner_env = ${JSON.stringify(runnerEnv)}
+assert not any(key in os.environ for key in runner_env)
+# A helper's own subprocess inherits the same cleaned environment.
+descendant = subprocess.run([sys.executable, "-c", "import json, os; print(json.dumps(dict(os.environ)))"], capture_output=True, text=True, check=True)
+assert not any(key in json.loads(descendant.stdout) for key in runner_env)
 assert pathlib.Path("shell-" + role + ".txt").read_text().splitlines() == list(expected.values())
 for key in ["GH_TOKEN", "OPENAI_API_KEY", "JIRA_API_TOKEN", "JIRA_USERNAME", "SLACK_OTHER_CREDENTIAL", "BOT_SECRET_TOKEN", "EXECUTOR_TOKEN", "UNKNOWN_AMBIENT"]:
     assert key not in os.environ, key

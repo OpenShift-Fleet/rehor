@@ -26,7 +26,10 @@ export const OPEN_CODE_CODE_MODE_BRIDGE = `
       try { return JSON.parse(JSON.stringify(value)); }
       catch { return { rehorCaptureError: "Tool evidence is not JSON serializable" }; }
     };
-    const errorText = (error) => typeof error?.message === "string" ? error.message : String(error);
+    const errorText = (error) => {
+      try { return typeof error?.message === "string" ? error.message : String(error); }
+      catch { return "Tool failed"; }
+    };
     const snapshot = (execution) => ({ calls: execution.calls.map(({ row }) => json(row)) });
     const resultContent = (result) => {
       const captured = json(result.content);
@@ -127,7 +130,15 @@ export const OPEN_CODE_CODE_MODE_BRIDGE = `
           if (entry.row.status === "running") failed(entry, new Error("Code Mode call interrupted"));
         }
         const target = event.status === "completed" ? event.result : event.error;
-        target.metadata = { ...target.metadata, rehorCodeMode: snapshot(execution) };
+        // Native V2 supplies Tool.Error, but malformed hook payloads and immutable
+        // errors must not turn the original outcome into a plugin failure.
+        let attached = false;
+        try {
+          if (target !== null && typeof target === "object" && !Object.isFrozen(target)) {
+            attached = Reflect.set(target, "metadata", { ...target.metadata, rehorCodeMode: snapshot(execution) });
+          }
+        } catch { /* Non-writable metadata, accessors and proxies use progress instead. */ }
+        if (!attached && execution.publish) yield* execution.publish();
       } finally {
         executions.delete(id);
       }

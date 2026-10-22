@@ -1,6 +1,7 @@
 import type { OpenCodeClient, OpenCodeEvent, SessionMessageAssistant } from "@opencode/client";
 import { describe, expect, it, vi } from "vitest";
 import { createEventFactory, parseRehorEvent, parseRehorRun } from "../src/domain";
+import { WorkContextTracker } from "../src/domain/work-context";
 import {
   beginsNewTurn,
   createNormalizationContext,
@@ -29,8 +30,8 @@ const assistant = (
   finish: "stop",
 });
 
-function harness() {
-  const factory = createEventFactory(parseRehorRun(fixture), "v2");
+function harness(run = parseRehorRun(fixture)) {
+  const factory = createEventFactory(run, "v2");
   const context = createNormalizationContext("root", "rehor-openai/gpt-6.1-sol");
   let seq = 0;
   const event = (type: string, data: Record<string, unknown>, id = `evt-${++seq}`) =>
@@ -204,7 +205,7 @@ describe("V2 event normalization", () => {
   it("preserves V2 tool input, structured results, error, duration, and completed phase during reconciliation", () => {
     const h = harness();
     const data = { sessionID: "root", assistantMessageID: "msg", id: "call" };
-    h.send("session.tool.input.started", { ...data, name: "bash" });
+    h.send("session.tool.input.started", { ...data, name: "shell" });
     h.send("session.tool.called", { ...data, input: { command: "pwd" }, executed: true });
     const result = h.send("session.tool.success", {
       ...data,
@@ -212,7 +213,7 @@ describe("V2 event normalization", () => {
       executed: true,
     });
     expect(result.events[0]?.payload).toMatchObject({
-      name: "bash",
+      name: "shell",
       state: "completed",
       input: { command: "pwd" },
       content: "/work",
@@ -222,7 +223,7 @@ describe("V2 event normalization", () => {
       {
         type: "tool",
         id: "call",
-        name: "bash",
+        name: "shell",
         state: {
           status: "completed",
           input: { command: "pwd" },
@@ -246,6 +247,63 @@ describe("V2 event normalization", () => {
         error: { type: "ToolError", message: "denied" },
       }).events[0]?.payload,
     ).toMatchObject({ isError: true, content: "denied" });
+  });
+});
+
+describe.each(["direct", "codemode"])("V2 native shell work context (%s)", (path) => {
+  it.each([
+    ["gh pr checks 582", "ci_fix"],
+    ["gh pr view 582 --comments", "pr_review"],
+  ])("preserves %s as terminal %s", (command, workType) => {
+    const run = parseRehorRun({ ...fixture, runtimeId: "opencode", task: null });
+    const tracker = new WorkContextTracker(run);
+    const h = harness(run);
+    const input = { command };
+    const data = { sessionID: "root", assistantMessageID: "msg", id: "call" };
+    const send = (type: string, fields: Record<string, unknown>) => {
+      const result = h.send(type, { ...data, ...fields });
+      for (const event of result.events) tracker.observe(parseRehorEvent(event));
+      return result.events;
+    };
+    send("session.tool.input.started", { name: path === "direct" ? "shell" : "execute" });
+    if (path === "direct") {
+      send("session.tool.called", { input, executed: true });
+      send("session.tool.success", { content: [{ type: "text", text: "done" }] });
+    } else {
+      send("session.tool.called", { input: { code: "await tools.shell(input)" }, executed: true });
+      const row = { tool: "shell", input, status: "running" };
+      // Native-only metadata is display fallback until the bridge confirms context.
+      send("session.tool.progress", { metadata: { toolCalls: [row] } });
+      expect(
+        tracker.enrichTerminal(h.factory("terminal", { state: "completed" })).payload.context,
+      ).toBeUndefined();
+      const events = send("session.tool.success", {
+        metadata: {
+          toolCalls: [{ ...row, status: "completed" }],
+          rehorCodeMode: {
+            calls: [
+              {
+                id: "root:msg:call:nested:0",
+                name: "shell",
+                input,
+                status: "completed",
+                content: "done",
+              },
+            ],
+          },
+        },
+        content: [{ type: "text", text: "done" }],
+      });
+      expect(events.find((event) => event.payload.codeMode === true)?.payload).toMatchObject({
+        name: "shell",
+        input,
+        workContextAvailable: true,
+        nativeOrdinal: 0,
+      });
+    }
+    expect(
+      tracker.enrichTerminal(h.factory("terminal", { state: "completed" })).payload.context,
+    ).toEqual({ workType });
   });
 });
 

@@ -80,6 +80,17 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
             output: Schema.String,
             execute: () => Effect.succeed({ output: "second decoder succeeded" })
           });
+          editor.add({ name: "failure", options, description: "Foreign and immutable failures",
+            input: Schema.String, output: Schema.String,
+            execute: (kind) => Effect.suspend(() => {
+              const values = {
+                string: "native string failure", undefined: undefined, null: null,
+                object: { message: "native object failure" },
+                immutable: Object.freeze(new Error("native immutable Error"))
+              };
+              return Effect.fail(values[kind]);
+            })
+          });
         })
       };
     `,
@@ -153,11 +164,19 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         ? "child"
         : "root";
       const step = names.includes("execute") ? steps[role]++ : -1;
-      const tool = step === 0 ? "execute" : role === "root" && step === 1 ? "subagent" : undefined;
+      const tool =
+        step === 0 || step === 1
+          ? "execute"
+          : role === "root" && step === 2
+            ? "subagent"
+            : undefined;
       const args =
         tool === "execute"
           ? {
-              code: `await Promise.allSettled([
+              code:
+                step === 1
+                  ? `await Promise.allSettled(["string", "undefined", "null", "object", "immutable"].map((kind) => tools.bridge.failure(kind))); throw "outer native failure";`
+                  : `await Promise.allSettled([
                 tools["bot-memory"].task_add({index:0,external_key:"SYNTHETIC-${role}"}),
                 tools["bot-memory"].task_add({index:1,external_key:"SYNTHETIC-${role}"}),
                 tools["bot-memory"].blocked({index:2,external_key:"SYNTHETIC-${role}"}),
@@ -298,6 +317,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
           { timeout: 15000 },
         )
         .toBe("active");
+      expect((await client.plugin.list({ location }, options)).data, diagnostics).toContainEqual(
+        expect.objectContaining({ id: "bridge-native-fixture", state: { status: "active" } }),
+      );
       await expect
         .poll(
           async () =>
@@ -361,6 +383,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         );
         expect(executed, diagnostics).toBeDefined();
         if (!executed) throw new Error("Missing native execute success");
+        const executedID = (executed.data as { id: string }).id;
         const metadata = (executed.data as unknown as { metadata: Record<string, unknown> })
           .metadata;
         const evidence = metadata.rehorCodeMode as OpenCodeCodeModeEvidence;
@@ -395,6 +418,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
           (event) =>
             event.type === "session.tool.progress" &&
             event.data.sessionID === id &&
+            event.data.id === executedID &&
             event.data.metadata.rehorCodeMode,
         );
         expect(
@@ -409,6 +433,30 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         ).toEqual(evidence);
         const projected = await client.session.context({ sessionID: id }, options);
         expect(JSON.stringify(projected)).toContain(JSON.stringify(evidence));
+        // Native V2 turns foreign typed failures into Tool.Error objects, and
+        // Code Mode returns JavaScript throws as successful tool error results.
+        // Preserve those semantics while retaining every nested failure row.
+        const failedExecution = successes.find(
+          (event) => "metadata" in event.data && event.data.metadata?.error === true,
+        );
+        expect(failedExecution, diagnostics).toBeDefined();
+        if (!failedExecution) throw new Error("Missing native execute error result");
+        const failureMetadata = (
+          failedExecution.data as unknown as { metadata: Record<string, unknown> }
+        ).metadata;
+        const failures = failureMetadata.rehorCodeMode as OpenCodeCodeModeEvidence;
+        expect(failures.calls.map((row) => [row.name, row.input, row.status, row.error])).toEqual([
+          ["bridge_failure", "string", "error", "native string failure"],
+          ["bridge_failure", "undefined", "error", "undefined"],
+          ["bridge_failure", "null", "error", "null"],
+          ["bridge_failure", "object", "error", "[object Object]"],
+          ["bridge_failure", "immutable", "error", "native immutable Error"],
+        ]);
+        expect(JSON.stringify(projected)).toContain(JSON.stringify(failures));
+        expect(JSON.stringify(projected)).toContain("outer native failure");
+        expect((await client.plugin.list({ location }, options)).data).toContainEqual(
+          expect.objectContaining({ id: "rehor-policy", state: { status: "active" } }),
+        );
         expect(mcpCalls.filter((call) => call.sessionID === id)).toHaveLength(2);
       }
     } finally {

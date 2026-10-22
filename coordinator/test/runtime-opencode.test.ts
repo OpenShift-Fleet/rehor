@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
   OpenCode,
@@ -41,6 +42,11 @@ import {
 import { OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST } from "../src/runtimes/opencode/environment";
 import { renderOpenCodePolicyPlugin } from "../src/runtimes/opencode/policy-plugin";
 import { boundedOperation } from "../src/runtimes/shared";
+
+vi.mock("node:timers/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) };
+});
 
 const ROOT = "session-opencode";
 const MODEL = { providerID: "rehor-openai", id: "gpt-5.6-luna" };
@@ -143,6 +149,7 @@ class FakeChild extends EventEmitter {
 interface FakeServerOptions {
   version?: string;
   directory?: (requested: string) => string;
+  healthStatus?: () => number;
   advertiseDelayMs?: number;
   block?: boolean;
   onHealth?: () => void;
@@ -164,7 +171,7 @@ function stubReadinessFetch(options: FakeServerOptions = {}): AbortSignal[] {
           if (signal?.aborted) abort();
           else signal?.addEventListener("abort", abort, { once: true });
         });
-      return Response.json(infoBody(options.version));
+      return Response.json(infoBody(options.version), { status: options.healthStatus?.() ?? 200 });
     }
     const requested = url.searchParams.get("location[directory]") ?? "";
     return Response.json({ directory: options.directory?.(requested) ?? requested });
@@ -670,12 +677,20 @@ describe("OpenCode V2 readiness and real SDK transport", () => {
         `Basic ${Buffer.from("opencode:private").toString("base64")}`,
       );
   });
-  it.each([401, 500, 503])("rejects non-ready HTTP %s", async (status) => {
-    const readiness = new HttpOpenCodeReadiness(async () => Response.json(infoBody(), { status }));
-    await expect(
-      readiness.check("http://127.0.0.1:4096", "/worktree", new AbortController().signal),
-    ).rejects.toMatchObject({ deterministic: status !== 503 });
-  });
+  it.each(["/api/info", "/api/location"])(
+    "classifies non-ready HTTP responses from %s",
+    async (path) => {
+      for (const status of [401, 403, 500, 502, 503, 504]) {
+        const readiness = new HttpOpenCodeReadiness(async (input) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          return Response.json(infoBody(), { status: url.pathname === path ? status : 200 });
+        });
+        await expect(
+          readiness.check("http://127.0.0.1:4096", "/worktree", new AbortController().signal),
+        ).rejects.toMatchObject({ deterministic: status === 401 || status === 403 });
+      }
+    },
+  );
   it.each([
     {},
     { ...infoBody(), version: "" },
@@ -1662,6 +1677,152 @@ describe("OpenCode process supervisor", () => {
       );
       expect(requests).toBe(1);
     }
+  });
+  describe("readiness retry deadline", () => {
+    afterEach(() => vi.mocked(delay).mockRestore());
+
+    function retryHarness(options: FakeServerOptions = {}, startupTimeoutMs = 125) {
+      // Vitest's clock does not replace node:timers/promises. Route only these
+      // tests' retry delays through its fake, abortable callback timers.
+      vi.mocked(delay).mockImplementation(
+        (ms, value, options) =>
+          new Promise((resolve, reject) => {
+            const signal = options?.signal;
+            const onAbort = () => {
+              clearTimeout(timer);
+              reject(signal?.reason);
+            };
+            const timer = setTimeout(() => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve(value);
+            }, ms);
+            if (signal?.aborted) onAbort();
+            else signal?.addEventListener("abort", onAbort, { once: true });
+          }),
+      );
+      const child = new FakeChild();
+      const probes: number[] = [];
+      let onFirstProbe: () => void = () => undefined;
+      const firstProbe = new Promise<void>((resolve) => {
+        onFirstProbe = resolve;
+      });
+      const supervisor = createTestSupervisor({
+        startupTimeoutMs,
+        spawnProcess: () =>
+          spawnFakeOpenCodeServer(child, {
+            ...options,
+            onHealth: () => {
+              probes.push(Date.now());
+              onFirstProbe();
+            },
+          }),
+      });
+      return { child, probes, firstProbe, supervisor };
+    }
+
+    it("retries HTTP 500 then accepts HTTP 200 through the supervisor", async () => {
+      vi.useFakeTimers();
+      let responses = 0;
+      const h = retryHarness({ healthStatus: () => (++responses === 1 ? 500 : 200) });
+      try {
+        const pending = h.supervisor.start(TEST_WORKSPACE, new AbortController().signal);
+        await h.firstProbe;
+        await vi.advanceTimersByTimeAsync(49);
+        expect(h.probes).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(pending).resolves.toMatchObject({ healthy: true, version: "2.1.2" });
+        expect(h.probes).toEqual([h.probes[0], (h.probes[0] as number) + 50]);
+      } finally {
+        await h.supervisor.stop();
+        vi.useRealTimers();
+      }
+    });
+
+    it("retries repeated HTTP 500 only until the shared startup deadline", async () => {
+      vi.useFakeTimers();
+      const h = retryHarness({ healthStatus: () => 500 });
+      try {
+        const pending = h.supervisor
+          .start(TEST_WORKSPACE, new AbortController().signal)
+          .catch((error: unknown) => error);
+        await h.firstProbe;
+        const start = Date.now();
+        await vi.advanceTimersByTimeAsync(124);
+        expect(h.probes).toEqual([start, start + 50, start + 100]);
+        expect(h.child.killedWith).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending).toMatchObject({
+          name: "OpenCodeReadinessError",
+          message: expect.stringMatching(/readiness failed.*HTTP 500/),
+        });
+        expect(Date.now() - start).toBe(125);
+        expect(h.probes).toEqual([start, start + 50, start + 100]);
+        expect(h.supervisor.info).toBeUndefined();
+        expect(h.child.killedWith).toBe("SIGTERM");
+        expect(h.child.stdout.listenerCount("data")).toBe(0);
+      } finally {
+        await h.supervisor.stop();
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([401, 403])(
+      "fails HTTP %s authentication immediately without retrying",
+      async (status) => {
+        vi.useFakeTimers();
+        const h = retryHarness({ healthStatus: () => status });
+        try {
+          const start = Date.now();
+          await expect(
+            h.supervisor.start(TEST_WORKSPACE, new AbortController().signal),
+          ).rejects.toMatchObject({
+            deterministic: true,
+            message: expect.stringContaining(`HTTP ${status}`),
+          });
+          expect(Date.now()).toBe(start);
+          expect(h.probes).toEqual([start]);
+          expect(h.child.killedWith).toBe("SIGTERM");
+        } finally {
+          await h.supervisor.stop();
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it.each([
+      ["cancel", false],
+      ["crash", false],
+      ["cancel", true],
+      ["crash", true],
+    ] as const)("handles %s without advancing time (in-flight=%s)", async (cause, block) => {
+      vi.useFakeTimers();
+      const caller = new AbortController();
+      const h = retryHarness({ healthStatus: () => 500, block });
+      try {
+        const pending = h.supervisor
+          .start(TEST_WORKSPACE, caller.signal)
+          .catch((error: unknown) => error);
+        await h.firstProbe;
+        // Flush the response into the retry delay, or leave the request blocked.
+        await vi.advanceTimersByTimeAsync(0);
+        const start = Date.now();
+        if (cause === "cancel") caller.abort(new Error("caller cancelled readiness"));
+        else h.child.emit("exit", 2, null);
+        expect(await pending).toMatchObject({
+          message: expect.stringContaining(
+            cause === "cancel" ? "caller cancelled readiness" : "exited before readiness",
+          ),
+        });
+        expect(Date.now()).toBe(start);
+        expect(h.probes).toHaveLength(1);
+        expect(h.child.killedWith).toBe("SIGTERM");
+        expect(h.child.stdout.listenerCount("data")).toBe(0);
+        expect(h.child.stderr.listenerCount("data")).toBe(0);
+      } finally {
+        await h.supervisor.stop();
+        vi.useRealTimers();
+      }
+    });
   });
   it.each([0, 20])(
     "shares one startup deadline between announcement and readiness (%sms announcement delay)",

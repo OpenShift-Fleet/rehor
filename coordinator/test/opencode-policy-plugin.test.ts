@@ -14,7 +14,7 @@ it.each([
   [undefined, ""],
   ["", undefined],
 ])(
-  "restores shell XDG config %j and data %j without changing other environment",
+  "restores shell XDG config %j and data %j and strips runner config/auth only",
   async (config, data) => {
     const directory = await mkdtemp(join(tmpdir(), "opencode-policy-"));
     try {
@@ -60,8 +60,35 @@ it.each([
         XDG_CACHE_HOME: "/persistent/cache",
         XDG_STATE_HOME: "/persistent/state",
         EXECUTOR_ADDR: "127.0.0.1:50551",
+        BOT_JIRA_EMAIL: "fixture@example.invalid",
+        BOT_INSTANCE_ID: "fixture-instance",
+        BOT_MEMORY_URL: "http://127.0.0.1:8080",
+        OPENCODE_CONFIG: "/runner/opencode.json",
+        OPENCODE_CONFIG_CONTENT: '{"permissions":["synthetic-enforcement"]}',
+        OPENCODE_CONFIG_DIR: "/runner/config",
+        OPENCODE_TEST_HOME: "/runner/home",
+        OPENCODE_DB: "/runner/opencode.db",
+        OPENCODE_AUTH_CONTENT: '{"synthetic":"credential"}',
+        OPENCODE_PASSWORD: "synthetic-password",
+        OPENCODE_SERVER_PASSWORD: "synthetic-server-password",
+        OPENCODE_TERMINAL: "1",
+        OPENCODE_DISABLE_MODELS_FETCH: "1",
       };
+      const serverEnv = { ...env };
       await Effect.runPromise(registrations[0].callback({ env }));
+      for (const name of [
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_TEST_HOME",
+        "OPENCODE_DB",
+        "OPENCODE_AUTH_CONTENT",
+        "OPENCODE_PASSWORD",
+        "OPENCODE_SERVER_PASSWORD",
+      ]) {
+        expect(env).not.toHaveProperty(name);
+        expect(serverEnv).toHaveProperty(name);
+      }
       expect(Object.hasOwn(env, "XDG_CONFIG_HOME")).toBe(config !== undefined);
       expect(Object.hasOwn(env, "XDG_DATA_HOME")).toBe(data !== undefined);
       expect(env.XDG_CONFIG_HOME).toBe(config);
@@ -71,6 +98,11 @@ it.each([
         XDG_CACHE_HOME: "/persistent/cache",
         XDG_STATE_HOME: "/persistent/state",
         EXECUTOR_ADDR: "127.0.0.1:50551",
+        BOT_JIRA_EMAIL: "fixture@example.invalid",
+        BOT_INSTANCE_ID: "fixture-instance",
+        BOT_MEMORY_URL: "http://127.0.0.1:8080",
+        OPENCODE_TERMINAL: "1",
+        OPENCODE_DISABLE_MODELS_FETCH: "1",
       });
       await Effect.runPromise(Scope.close(scope, Exit.void));
     } finally {
@@ -269,6 +301,17 @@ async function bridgeFixture() {
     transformRegistration,
     begin: (ctx: EvidenceContext) =>
       Effect.runPromise(hook("execute.before", { ...ctx, tool: "execute", input: {} })),
+    beginNested: (ctx: EvidenceContext) =>
+      Effect.runPromise(hook("execute.before", { ...ctx, tool: "unfinished", input: {} })),
+    fail: (ctx: EvidenceContext, error: unknown) =>
+      Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const event = { ...ctx, tool: "execute", input: {}, status: "error", error };
+          yield* hook("execute.after", event);
+          expect(event.error).toBe(error);
+          return yield* Effect.fail(error);
+        }),
+      ),
     end: async (ctx: EvidenceContext, metadata: Record<string, unknown> = {}) => {
       const result = { content: "filtered", metadata };
       await Effect.runPromise(
@@ -340,6 +383,123 @@ it("records parallel repeated calls in start order with distinct stable IDs and 
     // Earlier replacements are immutable despite subsequent completion updates.
     expect(progress[0]).not.toEqual(progress.at(-1));
     expect(original).toHaveBeenCalledTimes(2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+const failureCases: [string, () => unknown, string, boolean][] = [
+  // Malformed values are defensive coverage beyond native Tool.Error's schema.
+  ["string", () => "original string", "original string", false],
+  ["undefined", () => undefined, "undefined", false],
+  ["null", () => null, "null", false],
+  ["number", () => 7, "7", false],
+  ["boolean", () => false, "false", false],
+  ["symbol", () => Symbol("original"), "Symbol(original)", false],
+  [
+    "object",
+    () => ({ message: "original object", metadata: { native: true } }),
+    "original object",
+    true,
+  ],
+  ["Error", () => new Error("original Error"), "original Error", true],
+  ["frozen Error", () => Object.freeze(new Error("immutable Error")), "immutable Error", false],
+  [
+    "frozen object",
+    () => Object.freeze({ message: "immutable object" }),
+    "immutable object",
+    false,
+  ],
+  [
+    "non-extensible Error",
+    () => Object.preventExtensions(new Error("closed Error")),
+    "closed Error",
+    false,
+  ],
+  [
+    "read-only metadata",
+    () => Object.defineProperty(new Error("read-only"), "metadata", { value: {} }),
+    "read-only",
+    false,
+  ],
+  [
+    "throwing accessor",
+    () =>
+      Object.defineProperty({}, "metadata", {
+        get() {
+          throw new Error("metadata unavailable");
+        },
+      }),
+    "[object Object]",
+    false,
+  ],
+  ["unprintable object", () => Object.create(null), "Tool failed", true],
+];
+it.each(failureCases)(
+  "preserves %s failure, final evidence fallback and cleanup",
+  async (_name, create, text, attached) => {
+    const fixture = await bridgeFixture();
+    try {
+      const error = create();
+      const [tool] = fixture.wrap([
+        {
+          id: "fixture_failure",
+          execute: async () => {
+            throw error;
+          },
+        },
+      ]);
+      const ctx = fixture.context();
+      await fixture.begin(ctx);
+      await fixture.call(tool, {}, ctx).catch(() => {});
+      // Simulate a nested call interrupted before its after hook. The fallback
+      // must publish the final settlement, not merely reuse earlier progress.
+      await fixture.beginNested(ctx);
+      const exit = await fixture.fail(ctx, error);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) throw new Error("Expected original failure");
+      expect(Cause.squash(exit.cause)).toBe(error);
+      const evidence = {
+        calls: [
+          expect.objectContaining({ name: "fixture_failure", status: "error", error: text }),
+          expect.objectContaining({
+            name: "unfinished",
+            status: "error",
+            error: "Code Mode call interrupted",
+          }),
+        ],
+      };
+      if (attached) {
+        expect(error).toHaveProperty("metadata.rehorCodeMode", evidence);
+        if (_name === "object") expect(error).toHaveProperty("metadata.native", true);
+      } else {
+        expect(ctx.progress.mock.calls.at(-1)?.[0]).toEqual({ rehorCodeMode: evidence });
+      }
+      const published = ctx.progress.mock.calls.length;
+      await fixture.call(tool, {}, ctx).catch(() => {});
+      expect(ctx.progress.mock.calls).toHaveLength(published);
+      expect((await fixture.end(ctx)).metadata).not.toHaveProperty("rehorCodeMode");
+      await fixture.begin(ctx);
+      expect((await fixture.end(ctx)).metadata.rehorCodeMode).toEqual({ calls: [] });
+    } finally {
+      await fixture.close();
+    }
+  },
+);
+
+it("keeps original outer failure when final fallback progress fails", async () => {
+  const fixture = await bridgeFixture();
+  try {
+    const [tool] = fixture.wrap([
+      { id: "fixture_lookup", execute: async () => ({ content: "captured" }) },
+    ]);
+    const ctx = fixture.context();
+    await fixture.begin(ctx);
+    await fixture.call(tool, {}, ctx);
+    ctx.progress.mockRejectedValue(new Error("final progress unavailable"));
+    const exit = await fixture.fail(ctx, "original failure");
+    expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toBe("original failure");
+    expect((await fixture.end(ctx)).metadata).not.toHaveProperty("rehorCodeMode");
   } finally {
     await fixture.close();
   }

@@ -41,7 +41,9 @@ export class HttpOpenCodeReadiness {
     if (!healthResponse.ok) {
       throw new OpenCodeReadinessError(
         `OpenCode server info returned HTTP ${healthResponse.status} at ${baseUrl}/api/info`,
-        healthResponse.status === 401 || healthResponse.status === 500,
+        // Authentication cannot recover by polling; server failures remain
+        // retryable within the supervisor's shared startup deadline.
+        healthResponse.status === 401 || healthResponse.status === 403,
       );
     }
     const health = await readJson(healthResponse, "health");
@@ -68,6 +70,7 @@ export class HttpOpenCodeReadiness {
     if (!pathResponse.ok) {
       throw new OpenCodeReadinessError(
         `OpenCode path check returned HTTP ${pathResponse.status} at ${pathUrl}`,
+        pathResponse.status === 401 || pathResponse.status === 403,
       );
     }
     const path = await readJson(pathResponse, "path");

@@ -84,7 +84,6 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     from . import run as runner
     from .config import (
-        ALLOWED_TOOLS,
         OPENCODE_RUNTIME_ID,
         discover_optional_mcp_servers,
         load_config,
@@ -174,9 +173,29 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "gitConfigGlobal": os.environ.get("GIT_CONFIG_GLOBAL"),
         "mcpServers": mcp_servers,
         "openCodeMcpServers": opencode_mcp_servers,
-        "allowedTools": ALLOWED_TOOLS,
+        "allowedTools": _allowed_tools_for_runtime(instance_config.runtime),
         "optionalMcpServers": discover_optional_mcp_servers(script_dir),
     }
+
+
+def _allowed_tools_for_runtime(runtime: str) -> list[str]:
+    """Adapt the shared grant list at the runtime boundary, without widening it."""
+    from .config import ALLOWED_TOOLS, OPENCODE_RUNTIME_ID
+
+    if runtime != OPENCODE_RUNTIME_ID:
+        return list(ALLOWED_TOOLS)
+    # Pinned V2.1.2 preserves lsp config but has no LSP runtime or native tool.
+    # Do not invent a permission alias; unknown grants still fail in the renderer.
+    tools = []
+    for tool in ALLOWED_TOOLS:
+        if tool == "LSP":
+            logging.getLogger(__name__).warning(
+                "OpenCode V2.1.2 does not support LSP; omitting shared ALLOWED_TOOLS grant "
+                "(no language servers, LSP tools, or diagnostics; use lint/typecheck commands)",
+            )
+        else:
+            tools.append(tool)
+    return tools
 
 
 def _validate_or_raise(validate: Any, *args: Any, **kwargs: Any) -> None:

@@ -42,6 +42,8 @@ import {
 } from "./types";
 
 const VERTEX_PACKAGE = `aisdk:${new URL("./vertex-provider.js", import.meta.url).href}`;
+// Shared runtime grants, not V1 config aliases. The Python bridge explicitly
+// omits unsupported LSP for V2.1.2; never grant a nonexistent native lsp tool.
 const TOOL_ACTIONS: Readonly<Record<string, string>> = {
   Edit: "edit",
   Write: "edit",

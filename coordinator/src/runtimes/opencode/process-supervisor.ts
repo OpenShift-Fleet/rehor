@@ -596,8 +596,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       } catch (error) {
         if (error instanceof OpenCodeReadinessError && error.deterministic) throw error;
         lastError = error;
-        if (Date.now() < deadline) {
-          await delay(50, undefined, { signal }).catch(() => {
+        if (signal.aborted) throw abortReason(signal);
+        const remaining = deadline - Date.now();
+        if (remaining > 0) {
+          await delay(Math.min(50, remaining), undefined, { signal }).catch(() => {
             throw abortReason(signal);
           });
         }
