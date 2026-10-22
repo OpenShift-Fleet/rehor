@@ -913,11 +913,10 @@ npm --prefix coordinator ci
 npm --prefix coordinator test
 npm --prefix coordinator run typecheck
 npm --prefix coordinator run build
-REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-2.1.2 npm --prefix coordinator test -- test/opencode-config-native.test.ts test/opencode-environment-native.test.ts test/opencode-pricing-native.test.ts
-REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-2.1.2 npm --prefix coordinator test -- test/opencode-codemode-native.test.ts test/opencode-code-mode-bridge-native.test.ts
+(cd coordinator && REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-2.1.2 npm test -- test/*-native.test.ts test/runtime-opencode.test.ts --maxWorkers=1)
 ```
 
-Native suites are opt-in; a default suite passing with native tests skipped is not CLI validation. Go and `python3` must be on `PATH` for environment fixtures, and TCP/8443 must be free for the Vertex pricing mock. After building the target image, run the repository's image smoke wrapper (replace the image reference with the built image):
+Native suites are opt-in locally; a default suite passing with native tests skipped is not CLI validation. Coordinator CI runs all seven native files plus the three native lifecycle cases in `runtime-opencode.test.ts` after unit tests, type checking, and build, using serial workers to avoid fixed-port conflicts. CI installs `@opencode/cli@2.1.2` outside repository dependencies and checks the executable's actual version before running with `REHOR_TEST_OPENCODE_BINARY`. Go (the toolchain pinned in `proxy/executor/go.mod`), Python 3.12+, and PyYAML must be available for environment fixtures, and TCP/8443 must be free for the Vertex pricing mock. After building the target image, run the repository's image smoke wrapper (replace the image reference with the built image):
 
 ```bash
 bash tests/container-e2e/checks/verify-opencode-image.sh podman <built-runner-image>

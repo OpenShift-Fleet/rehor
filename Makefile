@@ -99,8 +99,7 @@ container-verify: ## Run container build + smoke checks locally (CI-equivalent, 
 			&& echo "OK: $$tool present" \
 			|| { echo "MISSING: $$tool"; exit 1; }; \
 	done
-	$(CONTAINER_RT) run --rm --entrypoint bash bot:verify -c \
-		'test -f /home/botuser/app/coordinator/dist/cli.js && test "$$(opencode --version)" = "1.18.29" && test -f "$${NODE_PATH}/@ai-sdk/openai/package.json" && test -f "$${NODE_PATH}/@ai-sdk/openai-compatible/package.json"'
+	bash tests/container-e2e/checks/verify-opencode-image.sh $(CONTAINER_RT) bot:verify
 	@echo "=== proxy: build ==="
 	$(CONTAINER_RT) build -t proxy:verify ./proxy
 	@echo "=== proxy: smoke check ==="

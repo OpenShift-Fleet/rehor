@@ -2160,7 +2160,7 @@ describe("OpenCode process supervisor", () => {
 });
 
 describe("native V2 lifecycle smoke", () => {
-  it.skipIf(!process.env.REHOR_TEST_OPENCODE_V2_BINARY)(
+  it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     "bounds production supervisor instruction discovery to project and ordered sanitized profile guidance",
     async () => {
       const root = await realpath(
@@ -2246,7 +2246,7 @@ describe("native V2 lifecycle smoke", () => {
           profile,
         );
         supervisor = new OpenCodeServerSupervisor({
-          command: process.env.REHOR_TEST_OPENCODE_V2_BINARY,
+          command: process.env.REHOR_TEST_OPENCODE_BINARY,
           workspaceRoot: worktree,
           stateDirectory: state,
           renderedConfig,
@@ -2346,7 +2346,7 @@ describe("native V2 lifecycle smoke", () => {
     },
     40000,
   );
-  it.skipIf(!process.env.REHOR_TEST_OPENCODE_V2_BINARY)(
+  it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     "runs production client factory and V2 runtime through real policy readiness and terminal cleanup",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "opencode-runtime-"));
@@ -2363,7 +2363,7 @@ describe("native V2 lifecycle smoke", () => {
           XDG_STATE_HOME: join(root, "state"),
         },
         server: {
-          command: process.env.REHOR_TEST_OPENCODE_V2_BINARY,
+          command: process.env.REHOR_TEST_OPENCODE_BINARY,
           workspaceRoot: root,
           startupTimeoutMs: 15000,
           shutdownTimeoutMs: 3000,
@@ -2399,7 +2399,7 @@ describe("native V2 lifecycle smoke", () => {
     },
     30000,
   );
-  it.skipIf(!process.env.REHOR_TEST_OPENCODE_V2_BINARY)(
+  it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     "runs authenticated isolated server, enforces active policy inventory, recovers failure and deletes children",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "opencode-native-"));
@@ -2408,7 +2408,7 @@ describe("native V2 lifecycle smoke", () => {
         allowedTools: [],
       });
       const supervisor = new OpenCodeServerSupervisor({
-        command: process.env.REHOR_TEST_OPENCODE_V2_BINARY,
+        command: process.env.REHOR_TEST_OPENCODE_BINARY,
         workspaceRoot: root,
         renderedConfig,
         base: {
