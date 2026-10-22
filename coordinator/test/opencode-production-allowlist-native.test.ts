@@ -1,7 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,12 +60,20 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
       { tool: "read", input: { path: join(workspace, "fixture.ts") } },
       {
         tool: "edit",
-        input: { path: join(workspace, "fixture.ts"), oldString: "value = 1", newString: "value = 2" },
+        input: {
+          path: join(workspace, "fixture.ts"),
+          oldString: "value = 1",
+          newString: "value = 2",
+        },
       },
       { tool: "read", input: { path: join(workspace, "fixture.py") } },
       {
         tool: "edit",
-        input: { path: join(workspace, "fixture.py"), oldString: "value = 1", newString: "value = 2" },
+        input: {
+          path: join(workspace, "fixture.py"),
+          oldString: "value = 1",
+          newString: "value = 2",
+        },
       },
       {
         tool: "write",
@@ -198,11 +215,15 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
           }
         });
         child.once("error", reject);
-        child.once("exit", (code) => reject(new Error(`Native startup exit ${code}: ${diagnostics}`)));
+        child.once("exit", (code) =>
+          reject(new Error(`Native startup exit ${code}: ${diagnostics}`)),
+        );
       });
       const client = OpenCode.make({
         baseUrl: url,
-        headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` },
+        headers: {
+          authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
+        },
       });
       const options = { signal: AbortSignal.timeout(40000) };
       const location = { directory: workspace };
@@ -243,13 +264,19 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         options,
       );
       await client.session.wait({ sessionID: session.id }, options);
-      expect((await client.session.get({ sessionID: session.id }, options)).outcome).toBe("succeeded");
-      expect(await readFile(join(workspace, "fixture.ts"), "utf8")).toBe("export const value = 2;\n");
+      expect((await client.session.get({ sessionID: session.id }, options)).outcome).toBe(
+        "succeeded",
+      );
+      expect(await readFile(join(workspace, "fixture.ts"), "utf8")).toBe(
+        "export const value = 2;\n",
+      );
       expect(await readFile(join(workspace, "fixture.py"), "utf8")).toBe("value = 2\n");
       expect(await readFile(join(workspace, "new.ts"), "utf8")).toBe("export const fresh = 3;\n");
       expect(await readFile(join(workspace, "new.py"), "utf8")).toBe("fresh = 3\n");
       expect(calls).toBe(steps.length + 1);
-      expect(catalogs.some((tools) => tools.includes("edit") && tools.includes("write"))).toBe(true);
+      expect(catalogs.some((tools) => tools.includes("edit") && tools.includes("write"))).toBe(
+        true,
+      );
       expect(catalogs.flat().some((tool) => /lsp/i.test(tool))).toBe(false);
       expect(await readdir(evidence)).toEqual([]);
       expect(proxyRequests).toEqual([]);

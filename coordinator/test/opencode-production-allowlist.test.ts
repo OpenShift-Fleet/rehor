@@ -40,7 +40,10 @@ it.each([false, true])(
       ),
     ).toThrow("allowed tool 'UnknownFutureTool'");
     expect(() =>
-      renderOpenCodeConfigForCycle({ ...result, allowedTools: sharedAllowedTools }, result.providerId),
+      renderOpenCodeConfigForCycle(
+        { ...result, allowedTools: sharedAllowedTools },
+        result.providerId,
+      ),
     ).toThrow("allowed tool 'LSP'");
   },
 );
