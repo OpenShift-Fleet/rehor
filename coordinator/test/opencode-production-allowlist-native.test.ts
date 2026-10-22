@@ -19,10 +19,13 @@ import { expect, it } from "vitest";
 import { renderOpenCodeConfigForCycle, writeOpenCodeConfig } from "../src/runtimes/opencode/render";
 import { prepareProductionAllowlist } from "./fixtures/production-allowlist";
 
-// Independent native config test: no supervisor/readiness dependency, inference
-// or real MCP services. LSP canary is test-only; production renders no lsp field.
+// Pinned 2.1.2 snapshot: spawn the native server directly, without the production
+// supervisor or real inference. FFF/native indexing and all MCP loading are
+// excluded; Jira points at loopback port 1. Zero trap requests describe only
+// this file-tool/LSP fixture, not deployed supervisor egress or download behavior.
+// LSP canary is test-only; production renders no lsp field.
 it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
-  "edits/writes TypeScript and Python with production grants and no observed LSP launches/downloads",
+  "snapshots OpenCode 2.1.2 TS/Python read/edit/write and inert LSP with FFF/MCP loading excluded",
   async () => {
     const binary = process.env.REHOR_TEST_OPENCODE_BINARY;
     if (!binary) throw new Error("REHOR_TEST_OPENCODE_BINARY required");
@@ -112,9 +115,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         `${chunk(delta, null)}${chunk({}, step ? "tool_calls" : "stop")}data: [DONE]\n\n`,
       );
     });
-    // Trap proxy-aware external HTTP/CONNECT attempts. This is observation, not
-    // a claim of OS-level egress confinement; source evidence establishes that
-    // the pinned engine has no LSP runtime. Deployment owns network confinement.
+    // Observe proxy-aware HTTP/CONNECT attempts under this fixture's exclusions.
+    // Zero requests do not establish deployed supervisor download/egress behavior
+    // or OS-level confinement. Tagged source establishes the lack of LSP runtime.
     const proxyRequests: string[] = [];
     const proxy = createServer((request, response) => {
       proxyRequests.push(request.url ?? "unknown");
@@ -139,7 +142,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     const rendered = renderOpenCodeConfigForCycle(
       {
         ...preparation,
-        // Keep real grants/server identities but prevent external service access.
+        // Keep prepared grants/server identities, but exclude all MCP loading.
         openCodeMcpServers: Object.fromEntries(
           Object.entries(preparation.openCodeMcpServers).map(([name, server]) => [
             name,
@@ -162,8 +165,8 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
     expect(rendered.config).not.toHaveProperty("lsp");
     const files = await writeOpenCodeConfig(state, rendered);
     const enforcement = JSON.parse(rendered.enforcementJson);
-    // Even an explicit configured language server remains inert in 2.1.2.
-    // Stronger than lsp:false: a future runtime implementation trips the canary.
+    // Snapshot only: an explicit configured language server stays inert in 2.1.2.
+    // The exact version assertion intentionally excludes future runtime behavior.
     enforcement.lsp = { canary: { command: [sentinel], extensions: [".ts", ".py"] } };
     const password = randomBytes(32).toString("hex");
     const proxyURL = `http://127.0.0.1:${proxyAddress.port}`;
@@ -182,7 +185,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         OPENCODE_CONFIG_CONTENT: JSON.stringify(enforcement),
         OPENCODE_PASSWORD: password,
         OPENCODE_DISABLE_MODELS_FETCH: "1",
+        // Test-only exclusion of FFF/native indexing, not a supervisor setting.
         OPENCODE_DISABLE_FFF: "1",
+        // MCP loading is disabled above; no live Jira service participates.
         JIRA_MCP_URL: "http://127.0.0.1:1/mcp",
         NPM_CONFIG_OFFLINE: "true",
         npm_config_offline: "true",
@@ -278,7 +283,9 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY)(
         true,
       );
       expect(catalogs.flat().some((tool) => /lsp/i.test(tool))).toBe(false);
+      // No configured LSP/PATH sentinel attempts during these pinned file-tool calls.
       expect(await readdir(evidence)).toEqual([]);
+      // Fixture observation only: FFF/native indexing and MCP loading were excluded.
       expect(proxyRequests).toEqual([]);
     } finally {
       child.stdin.end();
