@@ -71,6 +71,8 @@ Creates a SaaS deploy file in the `<app_interface_repo_path>` (a clone of app-in
 | `pattern` | no | `shared` | `shared` creates file in shared service tree; `separate` creates in team's service tree |
 | `service_tree` | separate only | — | Path under `data/services/` (e.g., `my-platform/my-team`) |
 | `config_repo` | no | `repo_url` | Used as-is — no `.git` suffix auto-added |
+| `config_name` | no | derived from `instance_name` | Pass the exact value selected for instance generation; do not infer it again during onboarding |
+| `config_path` | no | `instance/<config_name>` | Pass the actual generated profile path; used as `BOT_CONFIG_PATH` |
 | `target_branch` | no | `main` | Branch ref for the deployment target |
 | `slack_notify_mode` | no | — | Only included if set (e.g. `daily_digest`) |
 | `team_name` | no | `instance_name` | Used in SaaS file description |
@@ -113,6 +115,12 @@ Creates a new SaaS file in the team's own service tree at:
 `data/services/<service_tree>/<instance_name>.yml`
 
 Requires `service_tree` config. The team must work with app-sre to set up the service tree (app.yml, namespace, pipeline provider) in app-interface before the bot can generate the deploy file.
+
+## Output Verification and Component Formats
+
+Parse the actual generated SaaS file, edited `app.yml`, and role file when self-service access was requested. Check deployment parameters, one component with the requested repository URL (allowing a trailing `/` or terminal `.git`), and unchanged existing components and sibling fields. Rerun with identical inputs and compare output bytes only after validating these files. An `action: unchanged` result alone is not validation; any returned `error` or nonzero exit status is a failure.
+
+The component updater supports empty and nonempty flow lists and block lists, plus bare empty keys and explicit YAML null values, which become inline lists. It preserves surrounding text and comments through a scoped edit. New components are prepended. Duplicate detection compares decoded URLs after removing trailing slashes and a terminal `.git`; protocols and host/path case remain distinct. An equivalent URL under another name is an unchanged component, but a requested name already using a different normalized URL is an error, even if another component matches the URL. Invalid YAML, non-list/non-null `codeComponents`, duplicate or merged component fields, and component anchors or aliases require correction. Missing app files or missing `codeComponents` remain optional skips; verify their presence when expecting an update.
 
 ## Critical Gotchas
 

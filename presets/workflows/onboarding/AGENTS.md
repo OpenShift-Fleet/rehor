@@ -342,6 +342,20 @@ Post the MR link with approval instructions:
 
 Link MR to Jira: `jira_create_remote_issue_link` on both the parent ticket and the Phase 3 sub-ticket. Apply `onboarding:app-interface-mr`. Transition Phase 3 sub-ticket to "In Progress" (team needs to review/approve MR). Update metadata: `phase: 3`.
 
+### Focused Onboarding Smoke Verification
+
+Carry the resolved `config_name` and `config_path` from the instance generation step into the app-interface generator's input. Confirm that `BOT_CONFIG_PATH` points to the profile actually generated, rather than deriving it from `instance_name` again.
+
+Before reporting smoke success, inspect the actual outputs in all three generated trees:
+
+1. **Instance repository:** verify the returned file paths exist, including `deploy/template.yaml` and `instance/<config_name>/agent/instance.yaml`. Parse the generated YAML and check the selected profile path.
+2. **Konflux repository:** verify the returned `files_written` paths exist and parse the generated YAML. Check that the repository and image names match the instance inputs.
+3. **App-interface fixture:** parse the generated SaaS file and the actual edited `app.yml`, plus the role file when self-service access was requested. Check the deployment parameters, exactly one component with the requested repository URL (allowing a trailing `/` or terminal `.git`), and unchanged existing components and sibling fields. Follow the generator skill's component-format limitations and verify that expected component updates were not skipped.
+
+Use isolated synthetic repositories for this focused smoke. YAML parsing checks syntax and generated values; do not install local app-interface schemas, build a schema bundle, or run full app-interface validation for this smoke.
+
+Only after these checks, rerun the generators with identical inputs and compare the generated files byte-for-byte. An `action: unchanged` result alone is not validation: the SaaS file can already exist while another output is invalid or incomplete. Treat any returned `error` or nonzero exit status as a failed smoke.
+
 ### `onboarding:app-interface-mr`
 
 When MR merged: `/post-manual-steps` `{"epic_key", "bot_label", "bot_name", "dedicated_proxy", "workflow"}`.
