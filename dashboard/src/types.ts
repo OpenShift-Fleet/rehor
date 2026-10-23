@@ -117,6 +117,7 @@ export interface EmbeddingPoint {
 
 export interface TaskCycleGroup {
   task_id: number | null;
+  source_type?: string | null;
   external_key: string | null;
   title: string | null;
   task_status: string | null;

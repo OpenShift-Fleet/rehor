@@ -64,6 +64,18 @@ describe("fetchInstances", () => {
 });
 
 describe("fetchTasks", () => {
+  it("encodes literal list search, intersects status and forwards cancellation", async () => {
+    const signal = new AbortController().signal;
+    await fetchTasks({ q: " review %_ ", status: "done" }, signal);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/tasks?q=review+%25_&status=done&limit=20&offset=0",
+      { signal },
+    );
+  });
+  it("rejects failed task reads instead of rendering a false empty list", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(fetchTasks({ q: "review" })).rejects.toThrow("Failed to fetch tasks: 503");
+  });
   it("builds query with all params", async () => {
     await fetchTasks({
       status: "in_progress",
@@ -80,6 +92,11 @@ describe("fetchTasks", () => {
   it("uses default limit and offset", async () => {
     await fetchTasks({});
     expect(mockFetch).toHaveBeenCalledWith("/api/tasks?limit=20&offset=0");
+  });
+
+  it("resolves an exact task for dashboard deep links", async () => {
+    await fetchTasks({ task_id: 42 });
+    expect(mockFetch).toHaveBeenCalledWith("/api/tasks?task_id=42&limit=20&offset=0");
   });
 
   it("includes only provided params", async () => {
@@ -239,6 +256,20 @@ describe("fetchCosts", () => {
 });
 
 describe("fetchCycleRuns", () => {
+  it("encodes exact run and literal key filters, including empty keys", async () => {
+    await fetchCycleRuns({ run_id: 91, task_id: 42, external_key: "" });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/cycle-runs?run_id=91&external_key=&task_id=42&limit=50&offset=0",
+    );
+    await fetchCycleRuns({ external_key: "A&B%_" });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      "/api/cycle-runs?external_key=A%26B%25_&limit=50&offset=0",
+    );
+  });
+  it("does not mistake a failed request for an empty history", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(fetchCycleRuns({ task_id: 42 })).rejects.toThrow("Failed to fetch cycles: 503");
+  });
   it("builds query with all params", async () => {
     await fetchCycleRuns({
       task_id: 42,
@@ -264,6 +295,10 @@ describe("fetchCycleRuns", () => {
 });
 
 describe("fetchCycleRunsByTask", () => {
+  it("rejects failed requests instead of treating them as valid groups", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 503 });
+    await expect(fetchCycleRunsByTask({})).rejects.toThrow("Failed to fetch cycle groups: 503");
+  });
   it("includes instance_id when provided", async () => {
     await fetchCycleRunsByTask({ instance_id: "dev-bot" });
     expect(mockFetch).toHaveBeenCalledWith("/api/cycle-runs/by-task?instance_id=dev-bot");

@@ -4,7 +4,7 @@ import {
   Dropdown,
   DropdownList,
   MenuToggle,
-  MenuToggleElement,
+  type MenuToggleElement,
   ToggleGroup,
   ToggleGroupItem,
 } from "@patternfly/react-core";
@@ -95,6 +95,7 @@ export default function ThemeSelector() {
       onOpenChange={setIsOpen}
       toggle={(toggleRef: React.Ref<MenuToggleElement>) => (
         <MenuToggle
+          aria-label="Theme settings"
           ref={toggleRef}
           onClick={() => setIsOpen(!isOpen)}
           isExpanded={isOpen}
