@@ -64,7 +64,9 @@ def discover_preflight_scripts(
 def _run_script(script: Path, script_dir: Path) -> ScriptResult:
     """Run a single preflight script and parse its JSON output."""
     name = script.name
-    env = os.environ.copy()
+    from .config import preflight_secret_env
+
+    env = {**preflight_secret_env(), **os.environ}
     shared_preflight = script_dir / "presets" / "shared" / "preflight"
     skills_dir = script_dir / ".claude" / "skills"
     extra = [str(shared_preflight), str(skills_dir)]
@@ -97,6 +99,12 @@ def _run_script(script: Path, script_dir: Path) -> ScriptResult:
         stderr = proc.stderr.strip() or f"{name} exited with code {proc.returncode}"
         logger.error("Preflight %s failed (exit %d) in %.2fs: %s", name, proc.returncode, elapsed, stderr[:200])
         return ScriptResult(name=name, status="error", content=stderr)
+
+    # Surface the ingestion client's sanitized diagnostics even on successful
+    # scripts. Never forward arbitrary CLI/provider stderr into runner logs.
+    for line in proc.stderr.splitlines():
+        if line.startswith("WARN PR/MR label ingestion "):
+            logger.warning("Preflight %s: %s", name, line[:200])
 
     stdout = proc.stdout.strip()
     if not stdout:

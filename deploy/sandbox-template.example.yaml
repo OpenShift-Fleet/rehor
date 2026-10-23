@@ -126,6 +126,9 @@ objects:
             value: ${BOT_LABEL}
           - name: BOT_MEMORY_URL
             value: http://devbot-memory-server:8080/mcp
+          # Do not inject UPLOAD_MEMORY_PASSWORD here: shared-UID model/tool
+          # processes can read a parent's initial environment through /proc.
+          # Snapshot ingestion needs a separate trusted runner/proxy boundary.
           - name: BOT_MEMORY_HEALTH_URL
             value: http://devbot-memory-server:8080/health
           - name: BOT_MEMORY_HEALTH_TIMEOUT
