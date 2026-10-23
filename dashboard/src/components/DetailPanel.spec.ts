@@ -1,6 +1,40 @@
 import { expect, test } from "../../e2e/fixtures";
 
 test.describe("DetailPanel — TaskDetail", () => {
+  test("task details expose their cycle history and link to an exact run", async ({
+    mount,
+    page,
+  }) => {
+    await page.route("**/api/cycle-runs?*", (route) => {
+      expect(new URL(route.request().url()).searchParams.get("task_id")).toBe("42");
+      return route.fulfill({
+        json: {
+          items: [
+            {
+              id: 91,
+              task_id: 42,
+              cycle_type: "task_work",
+              started_at: "2026-10-22T10:00:00Z",
+              progress: { last_step: "Verified demo model" },
+              instance_id: "demo-alpha",
+            },
+          ],
+          total: 1,
+        },
+      });
+    });
+    const root = await mount("DetailPanel/HistoryTask");
+    await expect(root.getByRole("heading", { name: "Cycle history", exact: true })).toBeVisible();
+    await expect(root.getByText("Verified demo model")).toBeVisible();
+    await expect(root.getByRole("link", { name: "Open cycle #91", exact: true })).toHaveAttribute(
+      "href",
+      "/cycles?task_id=42&cycle=91",
+    );
+    await expect(root.getByRole("link", { name: "View all cycles for this task" })).toHaveAttribute(
+      "href",
+      "/cycles?task_id=42",
+    );
+  });
   test("shows Pause Task button when status is in_progress", async ({ mount }) => {
     const root = await mount("DetailPanel/PauseVisible");
     await expect(root.getByText("Pause Task")).toBeVisible();
