@@ -352,7 +352,6 @@ header {
 }
 
 .pf-v6-c-masthead {
-  display: flex;
   width: 100%;
   --pf-v6-c-masthead--PaddingBlockStart: 0.5rem;
   --pf-v6-c-masthead--PaddingBlockEnd: 0.5rem;

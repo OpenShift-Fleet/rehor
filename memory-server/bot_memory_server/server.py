@@ -102,6 +102,7 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_task_unpause,
         api_tasks,
     )
+    from .pull_requests import api_pull_request_snapshot
     from .task_outcomes import (
         api_task_outcome_detail,
         api_task_outcomes,
@@ -109,6 +110,7 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_task_outcomes_trends,
     )
 
+    mcp.custom_route("/api/internal/pull-requests", methods=["POST"])(api_pull_request_snapshot)
     mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
     mcp.custom_route("/api/task-outcomes/summary", methods=["GET"])(api_task_outcomes_summary)
     mcp.custom_route("/api/task-outcomes/trends", methods=["GET"])(api_task_outcomes_trends)

@@ -13,6 +13,14 @@ paths:
       operationId: listTasks
       summary: List tasks with optional filters
       parameters:
+        - name: q
+          in: query
+          description: Trimmed case-insensitive literal task text, assigned bot identity or associated cached PR/MR label search. Combined with status and instance filters before counting/pagination; no 50-result cap. Archived tasks are included unless explicitly filtered out.
+          schema: { type: string, minLength: 2, maxLength: 200 }
+        - name: task_id
+          in: query
+          description: Resolve one dashboard task independently of its position in the listing.
+          schema: { type: integer, minimum: 1, maximum: 2147483647 }
         - name: status
           in: query
           schema: { type: string }
@@ -42,6 +50,15 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/TaskItem'
+        '400':
+          description: Invalid query, task identity, status or pagination
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string }
 
   /api/task-outcomes/summary:
     get:
@@ -407,6 +424,46 @@ paths:
                   deleted: { type: boolean }
                   id: { type: integer }
 
+  /api/internal/pull-requests:
+    post:
+      operationId: updatePullRequestSnapshot
+      summary: Internal PR/MR label snapshot ingestion
+      description: >-
+        Requires the existing UPLOAD_MEMORY_PASSWORD bearer secret on the server and
+        calling bot. Disabled when unset. Browser-originated requests are rejected.
+        Atomically replaces the full label set without changing task progress.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PullRequestSnapshot' }
+      responses:
+        '200':
+          description: Snapshot replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: boolean }
+                additionalProperties: false
+        '400':
+          description: Invalid or incomplete snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '403':
+          description: Missing or invalid bearer secret, or browser-originated write
+        '404':
+          description: Ingestion disabled or task not found
+        '409':
+          description: PR/MR belongs to another task or is not currently referenced by the requested task; associations are not reassigned
+        '413':
+          description: Request exceeds 64 KiB
+
   /api/memories/search:
     get:
       operationId: searchMemories
@@ -537,8 +594,18 @@ paths:
       operationId: listCycleRuns
       summary: List cycle runs with optional filters
       parameters:
+        - name: run_id
+          in: query
+          description: Exact cycle run identity, independent of pagination; combined with all other filters.
+          schema: { type: integer, minimum: 1, maximum: 2147483647 }
+        - name: external_key
+          in: query
+          description: Exact progress external key. An empty value selects runs with no external key.
+          allowEmptyValue: true
+          schema: { type: string }
         - name: task_id
           in: query
+          description: Positive task identity (includes legacy progress-key associations for Jira tasks), or none for unassigned runs.
           schema: { type: string }
         - name: instance_id
           in: query
@@ -566,6 +633,15 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/CycleRunItem'
+        '400':
+          description: Invalid task or cycle run identity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string }
     post:
       operationId: addCycleRun
       summary: Record a new cycle run
@@ -597,9 +673,16 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TaskCycleGroup'
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TaskCycleGroup'
+                  total:
+                    type: integer
+                    minimum: 0
 
   /api/cycle-runs/{id}/transcript:
     get:
@@ -803,6 +886,25 @@ components:
       scheme: bearer
 
   schemas:
+    PullRequestSnapshot:
+      type: object
+      required: [external_key, source_type, host, repository, number, url, labels]
+      properties:
+        external_key: { type: string, minLength: 1, maxLength: 500 }
+        source_type: { type: string, minLength: 1, maxLength: 500 }
+        host: { type: string, enum: [github, gitlab] }
+        repository: { type: string, minLength: 1, maxLength: 500 }
+        number: { type: integer, minimum: 1, maximum: 2147483647 }
+        url: { type: string, format: uri }
+        title: { type: string, maxLength: 2000, nullable: true }
+        state: { type: string, maxLength: 50, nullable: true }
+        is_draft: { type: boolean, nullable: true }
+        labels:
+          type: array
+          maxItems: 100
+          items: { type: string, minLength: 1, maxLength: 500 }
+      additionalProperties: false
+
     PaginatedResponse:
       type: object
       required: [items, total, limit, offset]
@@ -1328,6 +1430,7 @@ components:
       required: [task_id, external_key, title, task_status, repo, cycle_count, transcript_count, total_tool_calls, total_tokens, first_cycle, last_cycle]
       properties:
         task_id: { type: integer }
+        source_type: { type: string }
         external_key: { type: string }
         title: { type: string }
         task_status: { type: string }
