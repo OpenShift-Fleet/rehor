@@ -378,7 +378,7 @@ export async function runCoordinator(
           ),
         }),
   });
-  const projection = new LegacyCompatibilityProjection(options.writers);
+  const projection = new LegacyCompatibilityProjection(options.writers, logger);
   const workspaceRoot = options.workspaceRoot ?? options.scriptDir;
   const environment = { ...(options.environment ?? process.env) };
   const cleanupBetweenCycles = async (): Promise<void> => {
@@ -442,6 +442,7 @@ export async function runCoordinator(
         workspace: run.worktree.path,
       };
       return logger.scope(context, async () => {
+        const runLogger = logger.child(context);
         logger.log("INFO", "Run started");
         let terminalLogged = false;
         try {
@@ -455,11 +456,12 @@ export async function runCoordinator(
             openCodeExpectedVersion: options.openCodeExpectedVersion,
             openCodeWorkspaceOwnerUid: options.openCodeWorkspaceOwnerUid,
             environment,
-            logger: logger.child(context),
+            logger: runLogger,
           });
           const result = await executeConfiguredRun(registry, run, {
             signal,
             projection,
+            logger: runLogger,
             preparedConfig: prepared.config,
             nativeConfig: prepared.nativeConfig,
           });

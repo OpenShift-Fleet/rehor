@@ -198,8 +198,11 @@ describe("production runner boundary", () => {
     const logger = createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) });
     const runtimeEnvironment: NodeJS.ProcessEnv = { ...proxyEnvironment };
     const createRegistry = vi.spyOn(runtimeFactory, "createDefaultRuntimeRegistry");
-    vi.spyOn(runtimeFactory, "executeConfiguredRun").mockRejectedValue(
-      new Error("runtime unavailable"),
+    vi.spyOn(runtimeFactory, "executeConfiguredRun").mockImplementation(
+      async (_registry, _run, options) => {
+        options?.logger?.log("INFO", "Scoped runtime progress probe");
+        throw new Error("runtime unavailable");
+      },
     );
     const gitConfigGlobal = join(directory, ".gitconfig");
     const bridge = {
@@ -248,6 +251,12 @@ describe("production runner boundary", () => {
     const started = records.find((record) => record.message === "Run started");
     expect(started?.run_id).toEqual(expect.any(String));
     expect(started?.attempt_id).toEqual(expect.any(String));
+    expect(
+      records.find((record) => record.message === "Scoped runtime progress probe"),
+    ).toMatchObject({
+      run_id: started?.run_id,
+      attempt_id: started?.attempt_id,
+    });
     for (const message of ["Run failed", "External error hook"]) {
       expect(records.find((record) => record.message === message)).toMatchObject({
         run_id: started?.run_id,

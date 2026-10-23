@@ -1429,7 +1429,10 @@ describe("OpenCode V2 runtime lifecycle", () => {
       },
     });
     expect(statuses).toContainEqual(
-      expect.objectContaining({ message: "Tool: mcp__bot-memory__task_add" }),
+      expect.objectContaining({ message: "Tool started: mcp__bot-memory__task_add" }),
+    );
+    expect(statuses).toContainEqual(
+      expect.objectContaining({ message: "Tool completed: mcp__bot-memory__task_add" }),
     );
     expect(costs[0]).toMatchObject({ repository: "rehor", externalKey: "REHOR-143" });
     expect(cycleRuns[0]).toMatchObject({ taskId: 143, cycleType: "task_work" });
