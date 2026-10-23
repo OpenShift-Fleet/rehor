@@ -1,4 +1,5 @@
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- Outcome repository extraction is shared by live SQL rollups and report writes.
 -- No extensions beyond the schema's existing vector dependency are required.
@@ -434,6 +435,121 @@ CREATE TABLE IF NOT EXISTS cycle_runs (
 ALTER TABLE cycle_runs ADD COLUMN IF NOT EXISTS input_prompt TEXT;
 CREATE INDEX IF NOT EXISTS idx_cycle_runs_task_started
     ON cycle_runs (task_id, started_at, id);
+
+-- Completion marker is committed atomically with the one-time identity backfill.
+CREATE TABLE IF NOT EXISTS search_backfills (
+    name TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Cached PR/MR read model; task metadata remains the association source of truth.
+CREATE TABLE IF NOT EXISTS pull_requests (
+    id              BIGSERIAL PRIMARY KEY,
+    task_id         INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    host            TEXT NOT NULL CHECK (host IN ('github', 'gitlab')),
+    repository      TEXT NOT NULL,
+    number          INTEGER NOT NULL CHECK (number > 0),
+    url             TEXT NOT NULL,
+    title           TEXT,
+    state           TEXT,
+    is_draft        BOOLEAN,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(host, repository, number)
+);
+CREATE INDEX IF NOT EXISTS idx_pull_requests_task ON pull_requests (task_id);
+
+CREATE TABLE IF NOT EXISTS pull_request_labels (
+    pull_request_id BIGINT NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+    label           TEXT NOT NULL CHECK (label <> ''),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(pull_request_id, label)
+);
+
+-- PR ownership follows declared task references, not an immortal cached row.
+CREATE OR REPLACE FUNCTION task_references_pr(
+    task_metadata JSONB, task_artifacts JSONB, pr_host TEXT, pr_repository TEXT,
+    pr_number INTEGER, pr_url TEXT, task_source_url TEXT
+) RETURNS BOOLEAN LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$
+    WITH refs AS (
+        SELECT ref, 'github' AS provider FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(task_metadata->'prs') = 'array' THEN task_metadata->'prs' ELSE '[]'::jsonb END
+        ) AS entries(ref)
+        UNION ALL
+        SELECT ref, 'gitlab' FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(task_metadata->'mrs') = 'array' THEN task_metadata->'mrs' ELSE '[]'::jsonb END
+        ) AS entries(ref)
+        UNION ALL
+        SELECT ref, CASE ref->>'type' WHEN 'pull_request' THEN 'github' WHEN 'merge_request' THEN 'gitlab' ELSE '' END
+        FROM jsonb_array_elements(CASE WHEN jsonb_typeof(task_artifacts) = 'array' THEN task_artifacts ELSE '[]'::jsonb END) AS entries(ref)
+    )
+    SELECT coalesce(
+        rtrim(regexp_replace(replace(task_source_url, '/-/merge_requests/', '/merge_requests/'), '[?#].*$', ''), '/') =
+        rtrim(regexp_replace(replace(pr_url, '/-/merge_requests/', '/merge_requests/'), '[?#].*$', ''), '/'), false
+    ) OR EXISTS (
+        SELECT 1 FROM refs WHERE
+            rtrim(regexp_replace(replace(ref->>'url', '/-/merge_requests/', '/merge_requests/'), '[?#].*$', ''), '/') =
+            rtrim(regexp_replace(replace(pr_url, '/-/merge_requests/', '/merge_requests/'), '[?#].*$', ''), '/')
+            OR (
+                coalesce(ref->>'host', provider) = pr_host
+                AND ltrim(ref->>'number', '0') = pr_number::text
+                AND (coalesce(ref->>'repo', ref->>'repository') = pr_repository
+                    OR (coalesce(ref->>'repo', ref->>'repository') NOT LIKE '%/%'
+                        AND right(pr_repository, length(coalesce(ref->>'repo', ref->>'repository')) + 1) =
+                            '/' || coalesce(ref->>'repo', ref->>'repository')))
+            )
+    )
+$$;
+
+CREATE OR REPLACE FUNCTION prune_detached_pull_requests()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.metadata->'prs' IS DISTINCT FROM NEW.metadata->'prs'
+       OR OLD.metadata->'mrs' IS DISTINCT FROM NEW.metadata->'mrs'
+       OR OLD.artifacts IS DISTINCT FROM NEW.artifacts
+       OR OLD.source_url IS DISTINCT FROM NEW.source_url THEN
+        DELETE FROM pull_requests pr WHERE pr.task_id = NEW.id AND NOT task_references_pr(
+            NEW.metadata, NEW.artifacts, pr.host, pr.repository, pr.number, pr.url, NEW.source_url
+        );
+    END IF;
+    RETURN NEW;
+END
+$$;
+DROP TRIGGER IF EXISTS prune_detached_pull_requests ON tasks;
+CREATE TRIGGER prune_detached_pull_requests AFTER UPDATE OF metadata, artifacts, source_url ON tasks
+    FOR EACH ROW EXECUTE FUNCTION prune_detached_pull_requests();
+
+-- Retire the unshipped grouped endpoint's indexes. Task search matches each
+-- field independently across all source types, including assigned instance IDs.
+DROP INDEX IF EXISTS idx_tasks_global_search_trgm;
+DROP INDEX IF EXISTS idx_bot_instances_global_search_trgm;
+CREATE INDEX IF NOT EXISTS idx_tasks_search_fields_trgm ON tasks USING gin (
+    lower(external_key) gin_trgm_ops, lower(title) gin_trgm_ops,
+    lower(summary) gin_trgm_ops, lower(repo) gin_trgm_ops, lower(instance_id) gin_trgm_ops
+);
+CREATE INDEX IF NOT EXISTS idx_pull_request_labels_search_trgm
+    ON pull_request_labels USING gin (lower(label) gin_trgm_ops);
+
+-- pg_trgm cannot index an arbitrary two-character substring. Store exact
+-- per-field bigrams instead: no prefix substitution or cross-field matches.
+CREATE OR REPLACE FUNCTION search_bigrams(VARIADIC fields TEXT[])
+RETURNS JSONB LANGUAGE SQL IMMUTABLE PARALLEL SAFE AS $$
+    SELECT coalesce(jsonb_object_agg(substr(value, position, 2), true), '{}'::jsonb)
+    FROM (SELECT lower(value) AS value FROM unnest(fields) AS field(value)) lowered
+    CROSS JOIN LATERAL generate_series(1, length(value) - 1) AS positions(position)
+$$;
+-- Store the derived keys so broad short queries can scan cheaply too, rather
+-- than recomputing every field's bigrams when a sequential scan is cheaper.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS search_bigrams JSONB GENERATED ALWAYS AS (
+    search_bigrams(external_key, title, summary, repo, instance_id)
+) STORED;
+ALTER TABLE pull_request_labels ADD COLUMN IF NOT EXISTS search_bigrams JSONB
+    GENERATED ALWAYS AS (search_bigrams(label)) STORED;
+CREATE INDEX IF NOT EXISTS idx_tasks_search_bigrams ON tasks USING gin (search_bigrams);
+CREATE INDEX IF NOT EXISTS idx_pull_request_labels_search_bigrams
+    ON pull_request_labels USING gin (search_bigrams);
+CREATE INDEX IF NOT EXISTS idx_tasks_search_order ON tasks (created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_archive_order ON tasks (last_addressed DESC, id DESC)
+    WHERE status = 'archived'::task_status;
 
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
