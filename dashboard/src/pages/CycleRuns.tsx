@@ -20,11 +20,12 @@ import {
 } from "@patternfly/react-core";
 import { CompressIcon, DownloadIcon, ExpandIcon, TimesIcon } from "@patternfly/react-icons";
 import JSZip from "jszip";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from "../api";
 import CycleRunCard from "../components/CycleRunCard";
+import Pagination from "../components/Pagination";
 import { useWS } from "../hooks/useWebSocket";
 import { parseTranscript } from "../transcript";
 import type { CycleRun, TaskCycleGroup } from "../types";
@@ -292,7 +293,9 @@ function CycleRunDetail({
   onClose,
   fullscreen,
   onToggleFullscreen,
+  taskHref,
 }: {
+  taskHref: string | null;
   run: CycleRun;
   onClose: () => void;
   fullscreen: boolean;
@@ -305,7 +308,12 @@ function CycleRunDetail({
       : null;
 
   return (
-    <Card isGlass className={fullscreen ? "detail-fullscreen" : ""}>
+    <Card
+      isGlass
+      className={fullscreen ? "detail-fullscreen" : ""}
+      role="region"
+      aria-label={`Cycle #${run.id} details`}
+    >
       <CardHeader
         actions={{
           actions: (
@@ -332,6 +340,12 @@ function CycleRunDetail({
       </CardHeader>
       <CardBody>
         <DescriptionList isHorizontal isCompact>
+          <DescriptionListGroup>
+            <DescriptionListTerm>Task</DescriptionListTerm>
+            <DescriptionListDescription>
+              {taskHref ? <Link to={taskHref}>Open task</Link> : "No associated task"}
+            </DescriptionListDescription>
+          </DescriptionListGroup>
           <DescriptionListGroup>
             <DescriptionListTerm>Type</DescriptionListTerm>
             <DescriptionListDescription>
@@ -520,7 +534,14 @@ function TaskGroupCard({
         <CardTitle>
           <Flex alignItems={{ default: "alignItemsCenter" }} gap={{ default: "gapSm" }}>
             <FlexItem>
-              {key ? (
+              {group.task_id != null ? (
+                <Link
+                  to={`/${group.task_status === "archived" ? "archived" : "tasks"}?task_id=${group.task_id}`}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {label}
+                </Link>
+              ) : key ? (
                 <a
                   href={url || "#"}
                   target="_blank"
@@ -577,160 +598,301 @@ function groupKey(g: TaskCycleGroup): string {
   return "orphan";
 }
 
+function findRunGroup(run: CycleRun, groups: TaskCycleGroup[]): TaskCycleGroup | undefined {
+  if (run.task_id != null) return groups.find((group) => group.task_id === run.task_id);
+  const key = run.progress?.external_key;
+  return groups.find(
+    (group) =>
+      (group.external_key || "") === (key || "") &&
+      (group.task_id == null || (key && group.source_type === "jira")),
+  );
+}
+
 export default function CycleRuns({ instanceId }: { instanceId?: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [groups, setGroups] = useState<TaskCycleGroup[]>([]);
-  const [expandedGroupKey, setExpandedGroupKey] = useState<string | undefined>(undefined);
+  const [loadingGroups, setLoadingGroups] = useState(true);
+  const [groupsError, setGroupsError] = useState(false);
   const [runs, setRuns] = useState<CycleRun[]>([]);
-  const [selectedRun, setSelectedRun] = useState<CycleRun | null>(null);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const [runsContext, setRunsContext] = useState("");
+  const [selection, setSelection] = useState<{ key: string; run: CycleRun } | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const { onEvent } = useWS();
+  const taskParam = searchParams.get("task_id");
+  const cycleParam = searchParams.get("cycle");
+  const externalKey = searchParams.get("external_key");
+  const taskId = taskParam && taskParam !== "none" ? Number(taskParam) : null;
+  const cycleId = cycleParam !== null ? Number(cycleParam) : null;
+  const validTask =
+    taskParam === null ||
+    taskParam === "none" ||
+    (Number.isSafeInteger(taskId) && (taskId ?? 0) > 0);
+  const validCycle = cycleParam === null || (Number.isSafeInteger(cycleId) && (cycleId ?? 0) > 0);
+  const context = JSON.stringify([taskParam, cycleParam, externalKey, instanceId, offset]);
+  const selectedRun = selection?.key === context ? selection.run : null;
+  const scopeGroup = groups.find((g) =>
+    taskId != null
+      ? g.task_id === taskId
+      : taskParam === "none" && g.task_id == null && (g.external_key || "") === (externalKey || ""),
+  );
+  const selectedGroup =
+    scopeGroup ||
+    (taskParam !== "none" && selectedRun ? findRunGroup(selectedRun, groups) : undefined);
+  const expandedKey = scopeGroup
+    ? groupKey(scopeGroup)
+    : selectedGroup
+      ? groupKey(selectedGroup)
+      : taskId != null
+        ? `t:${taskId}`
+        : taskParam === "none"
+          ? externalKey
+            ? `k:${externalKey}`
+            : "orphan"
+          : undefined;
+  const associatedId =
+    taskParam === "none" ? null : (taskId ?? selectedRun?.task_id ?? selectedGroup?.task_id);
+  const taskHref =
+    associatedId != null
+      ? `/${selectedGroup?.task_status === "archived" ? "archived" : "tasks"}?task_id=${associatedId}`
+      : null;
+  const visibleGroups =
+    taskParam !== null ? groups.filter((g) => groupKey(g) === expandedKey) : groups;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changing URL/bot identity resets presentation, not history data.
+  useEffect(() => {
+    setOffset(0);
+    setFullscreen(false);
+  }, [taskParam, cycleParam, externalKey, instanceId]);
 
   useEffect(() => {
     if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFullscreen(false);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFullscreen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
-  const { onEvent } = useWS();
-
-  const loadGroups = useCallback(async () => {
-    const data = await fetchCycleRunsByTask({ instance_id: instanceId });
-    setGroups(data?.items || []);
-  }, [instanceId]);
-
-  const loadCyclesForTask = useCallback(
-    async (taskId: number | null, orphan = false, showLoading = true) => {
-      if (showLoading) setLoadingRuns(true);
-      try {
-        const params: { task_id?: number | "none"; instance_id?: string; limit: number } = {
-          limit: 50,
-        };
-        if (taskId != null) params.task_id = taskId;
-        else if (orphan) params.task_id = "none";
-        if (instanceId) params.instance_id = instanceId;
-        const res = await fetchCycleRuns(params);
-        setRuns(res.items || []);
-        return res.items || [];
-      } finally {
-        if (showLoading) setLoadingRuns(false);
-      }
-    },
-    [instanceId],
+  useEffect(
+    () =>
+      onEvent((event) => {
+        if (event.type === "cycle_run_added") setRevision((value) => value + 1);
+      }),
+    [onEvent],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision refreshes groups after live cycle events and explicit retries.
   useEffect(() => {
-    loadGroups();
-  }, [loadGroups]);
-
-  useEffect(() => {
-    const cycleParam = searchParams.get("cycle");
-    const taskParam = searchParams.get("task_id");
-    if (cycleParam && groups.length > 0 && !selectedRun) {
-      const cycleId = parseInt(cycleParam);
-      const tid = taskParam ? parseInt(taskParam) : null;
-      const match = groups.find((g) => g.task_id === tid);
-      setExpandedGroupKey(match ? groupKey(match) : tid != null ? `t:${tid}` : "orphan");
-      loadCyclesForTask(tid, tid == null, false).then((items) => {
-        const found = items.find((r: CycleRun) => r.id === cycleId);
-        if (found) setSelectedRun(found);
+    let current = true;
+    setLoadingGroups(true);
+    setGroupsError(false);
+    fetchCycleRunsByTask({ instance_id: instanceId })
+      .then((data) => {
+        if (!Array.isArray(data?.items)) throw new Error("Invalid cycle groups");
+        if (current) setGroups(data.items);
+      })
+      .catch(() => {
+        if (current) setGroupsError(true);
+      })
+      .finally(() => {
+        if (current) setLoadingGroups(false);
       });
-    }
-  }, [groups, loadCyclesForTask]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      current = false;
+    };
+  }, [instanceId, revision]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision refreshes the selected history after cycle events and retries.
   useEffect(() => {
-    return onEvent((event) => {
-      if (event.type === "cycle_run_added") {
-        loadGroups();
-        if (expandedGroupKey) {
-          const expanded = groups.find((g) => groupKey(g) === expandedGroupKey);
-          if (expanded) {
-            const isOrphan = expanded.task_id == null && !expanded.external_key;
-            loadCyclesForTask(expanded.task_id, isOrphan, false);
-          }
-        }
-      }
-    });
-  }, [onEvent, loadGroups, expandedGroupKey, groups, loadCyclesForTask]);
-
-  const handleGroupClick = async (g: TaskCycleGroup) => {
-    const key = groupKey(g);
-    if (expandedGroupKey === key) {
-      setExpandedGroupKey(undefined);
-      setRuns([]);
-      setSelectedRun(null);
-      setFullscreen(false);
+    let current = true;
+    setRunsError(null);
+    if (!validTask || !validCycle) {
+      setRunsError("Invalid task or cycle link.");
       return;
     }
-    setExpandedGroupKey(key);
-    setSelectedRun(null);
-    setFullscreen(false);
-    const isOrphan = g.task_id == null && !g.external_key;
-    await loadCyclesForTask(g.task_id, isOrphan);
-  };
+    if (taskParam === null && cycleId === null) {
+      setRuns([]);
+      setSelection(null);
+      return;
+    }
+    setLoadingRuns(true);
+    const load = async () => {
+      const filter = {
+        task_id: taskParam === "none" ? ("none" as const) : (taskId ?? undefined),
+        external_key: taskParam === "none" ? (externalKey ?? "") : undefined,
+        instance_id: instanceId,
+      };
+      let selected: CycleRun | null = null;
+      if (cycleId !== null) {
+        const exact = await fetchCycleRuns({ ...filter, run_id: cycleId, limit: 1 });
+        selected = exact.items?.find((run: CycleRun) => run.id === cycleId) ?? null;
+        if (!selected) throw new Error("Requested cycle was not found in this history.");
+      }
+      const resolvedGroup = selected && findRunGroup(selected, groups);
+      const resolvedId =
+        taskParam === "none" ? null : (taskId ?? selected?.task_id ?? resolvedGroup?.task_id);
+      const page = await fetchCycleRuns({
+        ...filter,
+        task_id: resolvedId ?? "none",
+        external_key:
+          resolvedId == null
+            ? (filter.external_key ?? selected?.progress?.external_key ?? "")
+            : undefined,
+        limit: 50,
+        offset,
+      });
+      if (!Array.isArray(page.items) || typeof page.total !== "number")
+        throw new Error("Invalid cycle history");
+      if (current) {
+        setRuns(page.items);
+        setTotal(page.total);
+        setRunsContext(context);
+        setSelection(selected ? { key: context, run: selected } : null);
+      }
+    };
+    load()
+      .catch((error) => {
+        if (current) setRunsError(error.message || "Could not load cycles.");
+      })
+      .finally(() => {
+        if (current) setLoadingRuns(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, [
+    taskParam,
+    taskId,
+    cycleId,
+    externalKey,
+    instanceId,
+    offset,
+    revision,
+    context,
+    validTask,
+    validCycle,
+    groups,
+  ]);
 
-  const handleSelectRun = (run: CycleRun) => {
-    setSelectedRun(run);
-    setFullscreen(false);
+  const showAll = () => {
     const params = new URLSearchParams(searchParams);
-    params.set("cycle", String(run.id));
-    if (run.task_id != null) params.set("task_id", String(run.task_id));
-    else params.delete("task_id");
-    setSearchParams(params, { replace: true });
+    for (const name of ["task_id", "cycle", "external_key"]) params.delete(name);
+    setSearchParams(params);
   };
-
-  const handleClose = () => {
-    setSelectedRun(null);
-    setFullscreen(false);
+  const handleGroupClick = (group: TaskCycleGroup) => {
+    if (expandedKey === groupKey(group)) {
+      showAll();
+      return;
+    }
     const params = new URLSearchParams(searchParams);
     params.delete("cycle");
-    params.delete("task_id");
-    setSearchParams(params, { replace: true });
+    params.delete("external_key");
+    params.set("task_id", group.task_id != null ? String(group.task_id) : "none");
+    if (group.task_id == null) params.set("external_key", group.external_key || "");
+    setSearchParams(params);
   };
-
-  if (fullscreen && selectedRun) {
-    return (
-      <CycleRunDetail
-        run={selectedRun}
-        onClose={handleClose}
-        fullscreen={true}
-        onToggleFullscreen={() => setFullscreen(false)}
-      />
-    );
-  }
+  const handleSelectRun = (run: CycleRun) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("cycle", String(run.id));
+    setSearchParams(params);
+  };
+  const handleClose = () => {
+    const params = new URLSearchParams(searchParams);
+    params.delete("cycle");
+    setSearchParams(params);
+    setFullscreen(false);
+  };
+  const detail = selectedRun && (
+    <CycleRunDetail
+      run={selectedRun}
+      taskHref={taskHref}
+      onClose={handleClose}
+      fullscreen={fullscreen}
+      onToggleFullscreen={() => setFullscreen((value) => !value)}
+    />
+  );
+  if (fullscreen && selectedRun) return detail;
 
   return (
     <div className="split-layout">
       <div className="split-main">
+        {(taskParam !== null || cycleParam !== null) && (
+          <div className="controls">
+            <Button variant="secondary" onClick={showAll}>
+              Show all cycles
+            </Button>
+            {validTask && taskId != null && !scopeGroup && (
+              <Link to={`/tasks?task_id=${taskId}`}>Open task</Link>
+            )}
+          </div>
+        )}
+        {groupsError && (
+          <p role="alert">
+            Could not load cycle groups.{" "}
+            <Button variant="link" onClick={() => setRevision((value) => value + 1)}>
+              Retry cycles
+            </Button>
+          </p>
+        )}
+        {runsError && (
+          <p role="alert">
+            {runsError}{" "}
+            <Button variant="link" onClick={() => setRevision((value) => value + 1)}>
+              Retry cycle history
+            </Button>
+          </p>
+        )}
+        {loadingGroups && <p role="status">Loading cycle groups…</p>}
         <div className="task-group-list">
-          {groups.length === 0 && <div className="empty-state">No cycle runs found</div>}
-          {groups.map((g) => {
-            const gk = groupKey(g);
-            const isExpanded = expandedGroupKey === gk;
+          {!loadingGroups && !groupsError && visibleGroups.length === 0 && (
+            <div className="empty-state">
+              {taskParam !== null ? "No cycles recorded for this task." : "No cycle runs found"}
+            </div>
+          )}
+          {visibleGroups.map((group) => {
+            const key = groupKey(group);
+            const expanded = key === expandedKey;
+            const groupTaskHref =
+              group.task_id != null
+                ? `/${group.task_status === "archived" ? "archived" : "tasks"}?task_id=${group.task_id}`
+                : undefined;
             return (
-              <div key={gk}>
+              <div key={key}>
                 <TaskGroupCard
-                  group={g}
-                  expanded={isExpanded}
-                  onClick={() => handleGroupClick(g)}
+                  group={group}
+                  expanded={expanded}
+                  onClick={() => handleGroupClick(group)}
                   instanceId={instanceId}
                 />
-                {isExpanded && (
+                {expanded && (
                   <div className="task-group-cycles">
-                    {loadingRuns ? (
-                      <div className="empty-state">Loading cycles...</div>
+                    {(loadingRuns || runsContext !== context) && !runsError ? (
+                      <p role="status">Loading cycles…</p>
                     ) : (
-                      runs.map((r) => (
-                        <CycleRunCard
-                          key={r.id}
-                          run={r}
-                          selected={selectedRun?.id === r.id}
-                          onClick={() => handleSelectRun(r)}
-                        />
-                      ))
+                      !runsError && (
+                        <>
+                          {runs.map((run) => (
+                            <CycleRunCard
+                              key={run.id}
+                              run={run}
+                              taskHref={groupTaskHref}
+                              selected={selectedRun?.id === run.id}
+                              onClick={() => handleSelectRun(run)}
+                            />
+                          ))}
+                          <Pagination
+                            total={total}
+                            limit={50}
+                            offset={offset}
+                            onChange={setOffset}
+                          />
+                        </>
+                      )
                     )}
                   </div>
                 )}
@@ -739,16 +901,7 @@ export default function CycleRuns({ instanceId }: { instanceId?: string }) {
           })}
         </div>
       </div>
-      {selectedRun && (
-        <div className="split-detail">
-          <CycleRunDetail
-            run={selectedRun}
-            onClose={handleClose}
-            fullscreen={false}
-            onToggleFullscreen={() => setFullscreen(true)}
-          />
-        </div>
-      )}
+      {detail && <div className="split-detail">{detail}</div>}
     </div>
   );
 }

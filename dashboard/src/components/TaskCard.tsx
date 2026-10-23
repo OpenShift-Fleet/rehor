@@ -1,4 +1,5 @@
 import {
+  Button,
   Card,
   CardBody,
   CardHeader,
@@ -11,6 +12,8 @@ import {
   LabelGroup,
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon } from "@patternfly/react-icons";
+import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import type { Task } from "../types";
 import { displayKey, sourceUrl, timeAgo } from "../utils";
 
@@ -18,6 +21,7 @@ interface Props {
   task: Task;
   selected?: boolean;
   onClick?: () => void;
+  query?: string;
 }
 
 const statusLabels: Record<string, string> = {
@@ -38,7 +42,29 @@ const statusColors: Record<string, "blue" | "green" | "orange" | "red" | "purple
   archived: "grey",
 };
 
-export default function TaskCard({ task, selected, onClick }: Props) {
+function Highlight({ text, query }: { text: string; query: string }) {
+  if (!query.trim()) return <>{text}</>;
+  const pattern = new RegExp(query.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  const parts: ReactNode[] = [];
+  let start = 0;
+  for (const match of text.matchAll(pattern)) {
+    parts.push(text.slice(start, match.index));
+    parts.push(
+      <mark key={match.index} className="search-highlight">
+        {match[0]}
+      </mark>,
+    );
+    start = match.index + match[0].length;
+  }
+  return (
+    <>
+      {parts}
+      {text.slice(start)}
+    </>
+  );
+}
+
+export default function TaskCard({ task, selected, onClick, query = "" }: Props) {
   const url = sourceUrl(task);
   const key = displayKey(task);
   const firstArtifact = task.artifacts?.[0];
@@ -58,13 +84,24 @@ export default function TaskCard({ task, selected, onClick }: Props) {
         actions={{
           actions: (
             <Label color={statusColors[task.status] || "grey"}>
-              {statusLabels[task.status] || task.status}
+              <Highlight text={statusLabels[task.status] || task.status} query={query} />
             </Label>
           ),
         }}
       >
         <CardTitle>
-          {url ? (
+          {query ? (
+            <Button
+              variant="link"
+              isInline
+              onClick={(event) => {
+                event.stopPropagation();
+                onClick?.();
+              }}
+            >
+              <Highlight text={key} query={query} />
+            </Button>
+          ) : url ? (
             <a
               href={url}
               target="_blank"
@@ -72,10 +109,12 @@ export default function TaskCard({ task, selected, onClick }: Props) {
               onClick={(e) => e.stopPropagation()}
               style={{ fontWeight: 600 }}
             >
-              {key}
+              <Highlight text={key} query={query} />
             </a>
           ) : (
-            <span style={{ fontWeight: 600 }}>{key}</span>
+            <span style={{ fontWeight: 600 }}>
+              <Highlight text={key} query={query} />
+            </span>
           )}
         </CardTitle>
       </CardHeader>
@@ -84,13 +123,15 @@ export default function TaskCard({ task, selected, onClick }: Props) {
           {task.title && (
             <FlexItem>
               <Content component="p" style={{ margin: 0 }}>
-                {task.title}
+                <Highlight text={task.title} query={query} />
               </Content>
             </FlexItem>
           )}
           <FlexItem>
             <LabelGroup>
-              <Label variant="outline">{task.repo}</Label>
+              <Label variant="outline">
+                <Highlight text={task.repo || ""} query={query} />
+              </Label>
               {firstArtifact && (
                 <span onClick={(e) => e.stopPropagation()}>
                   <Label color="blue" href={firstArtifact.url}>
@@ -104,10 +145,15 @@ export default function TaskCard({ task, selected, onClick }: Props) {
               )}
             </LabelGroup>
           </FlexItem>
+          <FlexItem>
+            <Link to={`/cycles?task_id=${task.id}`} onClick={(event) => event.stopPropagation()}>
+              View cycles
+            </Link>
+          </FlexItem>
           {task.instance_id && (
             <FlexItem>
               <Label variant="outline" color="grey">
-                {task.instance_id}
+                <Highlight text={task.instance_id} query={query} />
               </Label>
             </FlexItem>
           )}
@@ -120,7 +166,7 @@ export default function TaskCard({ task, selected, onClick }: Props) {
                 <Icon status="warning" size="sm">
                   <ExclamationTriangleIcon />
                 </Icon>{" "}
-                {task.paused_reason}
+                <Highlight text={task.paused_reason} query={query} />
               </Content>
             </FlexItem>
           )}

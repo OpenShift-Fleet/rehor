@@ -21,6 +21,7 @@ import {
 import { TimesIcon } from "@patternfly/react-icons";
 import type { Memory, Task } from "../types";
 import { displayKey, sourceUrl, timeAgo } from "../utils";
+import TaskCycleHistory from "./TaskCycleHistory";
 
 interface MemoryDetailProps {
   type: "memory";
@@ -346,6 +347,9 @@ function TaskDetail({
             </DescriptionList>
           </>
         )}
+
+        <Divider style={{ margin: "16px 0" }} />
+        <TaskCycleHistory key={task.id} taskId={task.id} />
 
         {!meta.last_step && Object.keys(meta).length > 0 && (
           <>
