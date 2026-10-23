@@ -680,5 +680,10 @@ DAILY_COSTS = [
     },
 ]
 
+TASK_PR_LABELS = {
+    TASKS["RHCLOUD-001"]["id"]: ["awaiting-review"],
+    TASKS["RHCLOUD-002"]["id"]: ["awaiting-review"],
+}
+
 ACTIVE_STATUSES = {"in_progress", "pr_open", "review", "waiting"}
 MAX_ACTIVE = 3
