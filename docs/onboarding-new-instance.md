@@ -252,6 +252,11 @@ Key environment variables (already wired in the template):
 - `EXECUTOR_ADDR=devbot-proxy:9090` — executor
 - `HTTP_PROXY=http://devbot-proxy:3128` — Squid proxy
 - `JIRA_MCP_URL=http://devbot-proxy:8444/mcp` — Jira MCP
+- `REHOR_WORKSPACE_OWNER_UID=1000` — expected owner UID of `/home/botuser/app`
+
+#### Workspace owner UID — required on OpenShift
+
+OpenShift assigns every Sandbox pod a random namespace UID (for example `1000870000`), but `/home/botuser/app` keeps the UID it was built with in the image (normally `1000`). The coordinator refuses to start an OpenCode run when the workspace owner differs from the expected UID, logging `workspace ownership mismatch` with the actual and expected values — the run then fails before any model call. `REHOR_WORKSPACE_OWNER_UID` tells the coordinator which UID to expect; set it to the image's `/home/botuser/app` owner (default `1000`). Do not set it to the pod's runtime UID and do not `chown` the image at build time to work around the check.
 
 ### Shared Proxy
 
