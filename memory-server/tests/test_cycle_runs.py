@@ -405,13 +405,16 @@ async def test_get_transcript_raw(mock_pool):
 
 
 @pytest.mark.asyncio
-async def test_get_transcript_decompressed(mock_pool):
+@pytest.mark.parametrize("write_content_size", [True, False], ids=["known-size", "unknown-size"])
+async def test_get_transcript_decompressed(mock_pool, write_content_size):
     transcript_text = b'{"role": "assistant"}\n{"role": "user"}\n'
 
     import zstandard as zstd
 
-    compressor = zstd.ZstdCompressor()
+    compressor = zstd.ZstdCompressor(write_content_size=write_content_size, write_checksum=True)
     compressed = compressor.compress(transcript_text)
+    expected_size = len(transcript_text) if write_content_size else zstd.CONTENTSIZE_UNKNOWN
+    assert zstd.get_frame_parameters(compressed).content_size == expected_size
 
     mock_pool.fetchrow = AsyncMock(return_value={"transcript": compressed})
 
@@ -421,6 +424,40 @@ async def test_get_transcript_decompressed(mock_pool):
     assert resp.status_code == 200
     assert resp.content == transcript_text
     assert resp.headers["content-type"] == "application/x-ndjson"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transcript", [b"", b"not a zstd frame"], ids=["empty", "invalid"])
+async def test_get_transcript_decompressed_invalid(mock_pool, transcript):
+    mock_pool.fetchrow = AsyncMock(return_value={"transcript": transcript})
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/cycle-runs/1/transcript?decompress=true")
+
+    assert resp.status_code == 500
+    assert resp.json()["error"].startswith("Decompression failed: ")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_content_size", [True, False], ids=["known-size", "unknown-size"])
+async def test_get_transcript_decompressed_truncated(mock_pool, write_content_size):
+    import zstandard as zstd
+
+    transcript_text = b'{"role": "assistant"}\n{"role": "user"}\n'
+    compressed = zstd.ZstdCompressor(write_content_size=write_content_size, write_checksum=True).compress(
+        transcript_text
+    )
+    truncated = compressed[:-1]
+    decompressor = zstd.ZstdDecompressor().decompressobj()
+    assert decompressor.decompress(truncated) == transcript_text
+    assert not decompressor.eof
+    mock_pool.fetchrow = AsyncMock(return_value={"transcript": truncated})
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/cycle-runs/1/transcript?decompress=true")
+
+    assert resp.status_code == 500
+    assert resp.json()["error"].startswith("Decompression failed: ")
 
 
 # --- MCP tools: progress_store / progress_load ---

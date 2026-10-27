@@ -1,0 +1,75 @@
+{
+  "providers": [
+    {
+      "id": "rehor-openai",
+      "package": "@opencode/ai/providers/openai/responses",
+      "name": "Rehor OpenAI Responses",
+      "settings": {
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna",
+          "capabilities": { "reasoning": { "supported": true } }
+        }
+      }
+    },
+    {
+      "id": "rehor-openai-chat",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "name": "Rehor OpenAI Chat Completions",
+      "settings": {
+        "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}"
+      },
+      "models": {
+        "gpt-4.1": {
+          "name": "GPT-4.1"
+        },
+        "gpt-4.1-mini": {
+          "name": "GPT-4.1 Mini"
+        },
+        "gpt-4o": {
+          "name": "GPT-4o",
+          "capabilities": { "reasoning": { "supported": false } },
+          "limit": {
+            "context": 128000,
+            "output": 16384
+          }
+        }
+      }
+    },
+    {
+      "id": "vertex",
+      "name": "Claude on Vertex via Rehor proxy",
+      "settings": {
+        "baseURL": "{env:REHOR_VERTEX_PROXY_URL}"
+      },
+      "models": {
+        "claude-sonnet-4-6": {
+          "name": "Claude Sonnet 4.6",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "claude-opus-4-6": {
+          "name": "Claude Opus 4.6",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "claude-haiku-4-5@20251001": {
+          "name": "Claude Haiku 4.5",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        }
+      }
+    }
+  ],
+  "packages": []
+}

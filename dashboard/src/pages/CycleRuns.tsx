@@ -26,6 +26,7 @@ import { useSearchParams } from "react-router-dom";
 import { fetchCycleRuns, fetchCycleRunsByTask, fetchCycleRunTranscript } from "../api";
 import CycleRunCard from "../components/CycleRunCard";
 import { useWS } from "../hooks/useWebSocket";
+import { parseTranscript } from "../transcript";
 import type { CycleRun, TaskCycleGroup } from "../types";
 import { displayKey, formatDuration, formatTokens, sourceUrl, timeAgo } from "../utils";
 
@@ -68,97 +69,6 @@ async function downloadAllTranscripts(
   const label = key || (taskId != null ? `task-${taskId}` : "orphan");
   const blob = await zip.generateAsync({ type: "blob" });
   downloadBlob(blob, `transcripts-${label}.zip`);
-}
-
-interface ParsedEntry {
-  role: string;
-  blockType: string;
-  label: string;
-  content: string;
-  isLarge: boolean;
-}
-
-function parseTranscript(raw: string): ParsedEntry[] {
-  const entries: ParsedEntry[] = [];
-  for (const line of raw.trim().split("\n")) {
-    let data: any;
-    try {
-      data = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const lineType = data.type || "";
-    if (
-      !data.message ||
-      lineType === "queue-operation" ||
-      lineType === "last-prompt" ||
-      lineType === "attachment"
-    ) {
-      continue;
-    }
-    const msg = data.message;
-    const role = msg.role || lineType;
-    const blocks = Array.isArray(msg.content) ? msg.content : [];
-
-    for (const block of blocks) {
-      if (!block || typeof block !== "object") continue;
-      const bt = block.type || "";
-
-      if (bt === "text") {
-        const text = block.text || "";
-        if (text.trim()) {
-          entries.push({
-            role,
-            blockType: "text",
-            label: "",
-            content: text,
-            isLarge: text.length > 500,
-          });
-        }
-      } else if (bt === "thinking") {
-        const text = block.thinking || "";
-        if (text.trim()) {
-          entries.push({
-            role: "thinking",
-            blockType: "thinking",
-            label: "",
-            content: text,
-            isLarge: text.length > 300,
-          });
-        }
-      } else if (bt === "tool_use") {
-        const name = block.name || "?";
-        const input = block.input || {};
-        const summary = Object.entries(input)
-          .slice(0, 3)
-          .map(([k, v]) => `${k}=${String(v).slice(0, 60)}`)
-          .join(", ");
-        entries.push({
-          role: "tool",
-          blockType: "tool_use",
-          label: name,
-          content: summary,
-          isLarge: false,
-        });
-      } else if (bt === "tool_result") {
-        let content = block.content || "";
-        if (Array.isArray(content)) {
-          content = content
-            .map((c: any) => (typeof c === "string" ? c : c.text || JSON.stringify(c)))
-            .join("\n");
-        }
-        const text = typeof content === "string" ? content : JSON.stringify(content);
-        entries.push({
-          role: "result",
-          blockType: "tool_result",
-          label: "",
-          content: text,
-          isLarge: text.length > 300,
-        });
-      }
-    }
-  }
-  return entries;
 }
 
 const transcriptCache = new Map<number, string>();
@@ -219,8 +129,8 @@ function TranscriptViewer({
         if (e.isLarge) largeIds.add(i);
       });
       setCollapsed(largeIds);
-    } catch (e: any) {
-      setError(e.message || "Failed to load transcript");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load transcript");
     } finally {
       setLoading(false);
     }
@@ -243,16 +153,19 @@ function TranscriptViewer({
         {error}
       </Content>
     );
-  if (!transcript) return null;
+  if (transcript === null) return null;
 
   const entries = parseTranscript(transcript);
   const searchLower = search.toLowerCase();
-  let visible = showThinking ? entries : entries.filter((e) => e.blockType !== "thinking");
+  const indexed = entries.map((entry, index) => ({ entry, index }));
+  let visible = showThinking
+    ? indexed
+    : indexed.filter(({ entry }) => entry.blockType !== "thinking");
   if (search) {
     visible = visible.filter(
-      (e) =>
-        e.content.toLowerCase().includes(searchLower) ||
-        e.label.toLowerCase().includes(searchLower),
+      ({ entry }) =>
+        entry.content.toLowerCase().includes(searchLower) ||
+        entry.label.toLowerCase().includes(searchLower),
     );
   }
 
@@ -319,13 +232,23 @@ function TranscriptViewer({
         <pre className="transcript-raw">{transcript}</pre>
       ) : (
         <div className="transcript-messages">
-          {visible.map((entry, i) => {
-            const isCollapsed = collapsed.has(i) && !search;
+          {entries.length === 0 ? (
+            <Content component="p">
+              No renderable messages in this transcript. Records may contain only metadata or an
+              unsupported format. Use Raw or download to inspect.
+            </Content>
+          ) : visible.length === 0 ? (
+            <Content component="p">
+              No entries match the current search and Thinking filters.
+            </Content>
+          ) : null}
+          {visible.map(({ entry, index }) => {
+            const isCollapsed = collapsed.has(index) && !search;
             return (
-              <div key={i} className={`transcript-line role-${entry.role}`}>
+              <div key={index} className={`transcript-line role-${entry.role}`}>
                 <div
                   className="transcript-line-header"
-                  onClick={() => entry.isLarge && toggleCollapse(i)}
+                  onClick={() => entry.isLarge && toggleCollapse(index)}
                 >
                   <span className="transcript-role">{entry.role}</span>
                   {entry.label && (
@@ -334,7 +257,9 @@ function TranscriptViewer({
                     </span>
                   )}
                   {entry.isLarge && !search && (
-                    <span className="transcript-toggle">{collapsed.has(i) ? "[+]" : "[-]"}</span>
+                    <span className="transcript-toggle">
+                      {collapsed.has(index) ? "[+]" : "[-]"}
+                    </span>
                   )}
                 </div>
                 {!isCollapsed &&

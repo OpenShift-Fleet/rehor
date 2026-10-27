@@ -50,6 +50,7 @@ class Task(BaseModel):
     source_url: str | None = None
     artifacts: list[dict[str, Any]] = []
     status: str
+    category: Literal["delivery", "monitoring", "grooming"] = "delivery"
     repo: str | None = None
     branch: str | None = None
     title: str | None = None

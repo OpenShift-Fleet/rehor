@@ -195,7 +195,7 @@ Runs as root during `docker build`. Installs system packages, binaries, and npm 
 set -e
 
 # Chromium runtime libraries
-dnf install -y --nodocs \
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs \
     alsa-lib atk at-spi2-atk at-spi2-core cairo cups-libs dbus-libs \
     libdrm mesa-libgbm glib2 nspr nss pango \
     libX11 libxcb libXcomposite libXdamage libXext libXfixes \
@@ -221,7 +221,7 @@ curl -fsSL "https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.
     | tar -xz -C /usr/local/bin grype
 
 # Buildah (rootless container builder)
-dnf install -y --nodocs buildah fuse-overlayfs && dnf clean all
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs && dnf clean all
 ```
 
 ### Runtime: `entrypoint.d/*.sh`
@@ -279,7 +279,7 @@ exec uv run dev-bot --label "$BOT_LABEL"
 
 ### Instance `setup.sh` Still Works
 
-Instance repos keep their `setup.sh` for instance-specific installs that don't fit any preset. The build chain runs: preset install scripts → instance `setup.sh`. Instance setup runs last so it can depend on anything presets installed.
+Instance repos keep their `setup.sh` for instance-specific installs that don't fit any preset. The build chain runs: preset install scripts → instance `setup.sh`. `setup.sh` runs as root after preset installs, but Dockerfile repo flags do not carry into it; every custom DNF install must explicitly use `--disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'`.
 
 ### What Moves Out of the Core Dockerfile
 

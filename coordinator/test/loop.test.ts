@@ -5,6 +5,7 @@ import {
   createLoopSignals,
   InstructionStrategy,
   installProcessSignalHandlers,
+  LoopStopReason,
   PreflightAction,
   type PreparedCycleInput,
   runCoordinatorLoop,
@@ -15,6 +16,8 @@ function prepared(action: PreflightAction): PreparedCycleInput {
   return {
     config: {
       model: "test-model",
+      runtimeId: "claude",
+      providerId: "vertex",
       maxTurns: 10,
       intervalSeconds: 1,
       idleIntervalSeconds: 2,
@@ -104,6 +107,26 @@ describe("coordinator loop", () => {
     expect(released.value).toBe(1);
   });
 
+  it("retains a runtime failure in the result instead of counting an empty one-shot as success", async () => {
+    const result = await runCoordinatorLoop({
+      admission: admission({ value: 0 }),
+      scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
+      prepare: async () => prepared(PreflightAction.Start),
+      run: async () => {
+        throw new Error("deployment runtime failed");
+      },
+      maxCycles: 1,
+      sleep: async () => undefined,
+    });
+
+    expect(result).toMatchObject({
+      stopReason: "max_cycles",
+      cycles: 1,
+      results: [],
+      failures: 1,
+    });
+  });
+
   it("runs only actionable cycles and applies normal post-run delay", async () => {
     const sleeps: number[] = [];
     let runCalls = 0;
@@ -128,6 +151,91 @@ describe("coordinator loop", () => {
     expect(sleeps).toEqual([3]);
   });
 
+  it("reads the sleep signal before post-run cleanup and survives cleanup failure", async () => {
+    const events: string[] = [];
+    const sleeps: number[] = [];
+    const errors: string[] = [];
+    const result = await runCoordinatorLoop({
+      admission: admission({ value: 0 }),
+      scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
+      prepare: async () => prepared(PreflightAction.Start),
+      run: async () => "completed",
+      sleepSignal: async () => {
+        events.push("sleep-signal");
+        return { recommendedSleepSeconds: 0.004 };
+      },
+      afterRun: async () => {
+        events.push("cleanup");
+        throw new Error("bridge unavailable");
+      },
+      maxCycles: 1,
+      sleep: async (delayMs) => {
+        sleeps.push(delayMs);
+      },
+      onError: (_error, phase) => {
+        errors.push(phase);
+      },
+    });
+
+    expect(events).toEqual(["sleep-signal", "cleanup"]);
+    expect(sleeps).toEqual([4]);
+    expect(errors).toEqual(["cleanup"]);
+    expect(result).toMatchObject({ results: ["completed"], failures: 0 });
+  });
+
+  it("still cleans up when shutdown interrupts a run", async () => {
+    const controller = new AbortController();
+    const events: string[] = [];
+    const result = await runCoordinatorLoop({
+      admission: admission({ value: 0 }),
+      scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
+      prepare: async () => prepared(PreflightAction.Start),
+      run: async () => {
+        controller.abort("SIGTERM");
+        return "completed";
+      },
+      afterRun: async () => {
+        events.push("cleanup");
+      },
+      shutdownSignal: controller.signal,
+      sleep: async () => undefined,
+    });
+
+    expect(result.stopReason).toBe("shutdown");
+    expect(result.results).toEqual(["completed"]);
+    expect(events).toEqual(["cleanup"]);
+  });
+
+  it("keeps running when decision and error reporting hooks throw", async () => {
+    const decisions: string[] = [];
+    const preparedInputs = [prepared(PreflightAction.Skip), prepared(PreflightAction.Start)];
+    let prepareCalls = 0;
+    const result = await runCoordinatorLoop({
+      admission: admission({ value: 0 }),
+      scheduler: new CycleScheduler({ intervalMs: 10, idleIntervalMs: 20 }),
+      prepare: async () => {
+        const input = preparedInputs[prepareCalls++];
+        if (!input) throw new Error("test input exhausted");
+        return input;
+      },
+      run: async () => {
+        throw new Error("runtime failed");
+      },
+      maxCycles: 2,
+      sleep: async () => undefined,
+      onDecision: (plan) => {
+        decisions.push(plan.decision);
+        throw new Error("dashboard unavailable");
+      },
+      onError: () => {
+        throw new Error("status POST failed");
+      },
+    });
+
+    expect(decisions).toEqual(["idle", "run"]);
+    expect(result).toMatchObject({ stopReason: "max_cycles", cycles: 2, failures: 1 });
+  });
+
   it("denies admission without preparing a cycle", async () => {
     let prepareCalls = 0;
     const result = await runCoordinatorLoop({
@@ -146,11 +254,27 @@ describe("coordinator loop", () => {
 });
 
 describe("loop signals", () => {
+  it("keeps typed shutdown reasons flat and treats options.signal aborts as cancellation", () => {
+    const shutdown = new AbortController();
+    const shutdownSignals = createLoopSignals({ shutdownSignal: shutdown.signal });
+    shutdown.abort({ kind: "shutdown", reason: "SIGTERM" });
+    expect(shutdownSignals.signal.reason).toEqual({ kind: "shutdown", reason: "SIGTERM" });
+    expect(shutdownSignals.stopReason).toBe(LoopStopReason.Shutdown);
+    shutdownSignals.dispose();
+
+    const cancel = new AbortController();
+    const cancelSignals = createLoopSignals({ signal: cancel.signal });
+    cancel.abort({ kind: "shutdown", reason: "caller-supplied cause" });
+    expect(cancelSignals.stopReason).toBe(LoopStopReason.Cancelled);
+    cancelSignals.dispose();
+  });
+
   it("maps cancellation and shutdown to distinct abort reasons", () => {
     const cancel = new AbortController();
     const signals = createLoopSignals({ signal: cancel.signal });
     cancel.abort("cancel");
     expect(signals.signal.aborted).toBe(true);
+    expect(signals.signal.reason).toEqual({ kind: "cancelled", reason: "cancel" });
     expect(signals.stopReason).toBe("cancelled");
     signals.dispose();
 

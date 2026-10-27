@@ -1,9 +1,12 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
-import { createServer } from "node:net";
+import { randomBytes } from "node:crypto";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+import { classifyDiagnostic } from "../../diagnostics";
+import { type Logger, nullLogger, safeText } from "../../log";
 
 import {
   abortReason,
@@ -12,32 +15,22 @@ import {
   redactSensitiveText,
   stableJson,
 } from "../shared";
-import { type RenderedOpenCodeV1Config, writeOpenCodeConfig } from "./config";
-
+import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
+import { renderOpenCodePolicyPlugin } from "./policy-plugin";
 import {
-  buildOpenCodeEnvironment,
-  createOpenCodeFetch,
-  type OpenCodeEnvironmentOptions,
-  type OpenCodeFetch,
-} from "./environment";
+  HttpOpenCodeReadiness,
+  matchesVersion,
+  type OpenCodeHealth,
+  OpenCodeReadinessError,
+} from "./readiness";
+import { writeOpenCodeConfig } from "./render";
+import type { OpenCodePermissionRule, RenderedOpenCodeConfig } from "./types";
+import { OpenCodeWorkspaceOwnershipError, resolveApprovedWorkspace } from "./workspace";
 
 /** Pinned because state/config isolation is verified against this CLI contract. */
-export const OPENCODE_VERSION = "1.18.29" as const;
+export const OPENCODE_VERSION = "2.1.2" as const;
 const STARTUP_OUTPUT_LIMIT = 16_384;
 const STARTUP_DIAGNOSTIC_LIMIT = 2_048;
-
-/** Capabilities provided by the pinned server/SDK protocol, not /global/health. */
-export const OPENCODE_V1_CAPABILITIES = ["sse", "sessions"] as const;
-
-export interface OpenCodeHealth {
-  healthy: boolean;
-  version: string;
-  capabilities?: readonly string[];
-}
-
-export interface OpenCodeReadiness {
-  check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth>;
-}
 
 export interface OpenCodeServerInfo extends OpenCodeHealth {
   baseUrl: string;
@@ -46,34 +39,28 @@ export interface OpenCodeServerInfo extends OpenCodeHealth {
   /** Canonical, validated worktree path used for child cwd and client requests. */
   directory: string;
   configHash?: string;
+  /** Private per-process credential; never include in diagnostics or logs. */
+  password?: string;
 }
 
 export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
+  logger?: Logger;
   command?: string;
   hostname?: string;
-  port?: number;
   startupTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   expectedVersion?: string | RegExp;
   /** Immutable, already validated configuration for this server instance. */
-  renderedConfig?: RenderedOpenCodeV1Config;
+  renderedConfig?: RenderedOpenCodeConfig;
   /** Required by start; absolute root containing only approved worktrees. */
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
   workspaceOwnerUid?: number;
-  requiredCapabilities?: readonly string[];
-  /** Probe the process group belonging to the child PID. */
-  processGroupExists?: (pid: number) => boolean;
   /** Bound verification after SIGKILL when a group ignores the grace signal. */
   killVerificationTimeoutMs?: number;
   /** Optional caller-owned state directory; otherwise one is created per start. */
   stateDirectory?: string;
-  readiness?: OpenCodeReadiness;
-  /** Trusted direct-loopback transport override for readiness checks. */
-  fetch?: OpenCodeFetch;
   spawnProcess?: OpenCodeSpawn;
-  signalProcess?: OpenCodeSignalProcess;
-  allocatePort?: () => Promise<number>;
 }
 
 export type OpenCodeSpawn = (
@@ -82,8 +69,6 @@ export type OpenCodeSpawn = (
   options: SpawnOptions,
 ) => ChildProcess;
 
-export type OpenCodeSignalProcess = (pid: number, signal: NodeJS.Signals) => void;
-
 type RequiredOpenCodeSupervisorOption =
   | "command"
   | "hostname"
@@ -91,17 +76,16 @@ type RequiredOpenCodeSupervisorOption =
   | "shutdownTimeoutMs"
   | "killVerificationTimeoutMs";
 
-export class OpenCodeReadinessError extends Error {
-  constructor(
-    message: string,
-    readonly deterministic = false,
-  ) {
+/** The OpenCode process group survived SIGKILL; its processes may leak. */
+export class OpenCodeProcessLeakError extends Error {
+  constructor(message = "OpenCode process group remained alive after SIGKILL") {
     super(message);
-    this.name = "OpenCodeReadinessError";
+    this.name = "OpenCodeProcessLeakError";
   }
 }
 
 export interface OpenCodeServerController {
+  readonly diagnostics?: string;
   readonly info: OpenCodeServerInfo | undefined;
   readonly crashError: Error | undefined;
   readonly crashSignal: AbortSignal;
@@ -116,7 +100,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     OpenCodeSupervisorOptions;
   private child?: ChildProcess;
   private server?: OpenCodeServerInfo;
-  private stopping = false;
   private stopPromise?: Promise<void>;
   private exited = false;
   private termSent = false;
@@ -124,10 +107,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private crashController = new AbortController();
   private outputCleanup?: () => void;
   private startupOutput = "";
-  private startupOutputTruncated = false;
+  private diagnosticCount = 0;
   private stateDirectory?: string;
   private ownsStateDirectory = false;
-  private readonly renderedConfig?: RenderedOpenCodeV1Config;
+  private readonly renderedConfig?: RenderedOpenCodeConfig;
 
   constructor(options: OpenCodeSupervisorOptions = {}) {
     this.renderedConfig = options.renderedConfig;
@@ -170,56 +153,115 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     return this.crashController.signal;
   }
 
+  get diagnostics(): string {
+    return this.startupDiagnostic();
+  }
+
   async start(directory: string, signal: AbortSignal): Promise<OpenCodeServerInfo> {
     if (this.child || this.server) throw new Error("OpenCode server already started");
     if (signal.aborted) throw abortReason(signal);
+    if (this.renderedConfig !== undefined) {
+      await Promise.all(
+        ["opencode.json", "opencode.jsonc"].map((file) =>
+          assertNoSystemManagedOpenCodeConfig(join("/etc/opencode", file)),
+        ),
+      );
+    }
 
     const workspaceDirectory = await resolveApprovedWorkspace(
       directory,
       this.options.workspaceRoot,
       this.options.workspaceOwnerUid,
-    );
+    ).catch((error: unknown) => {
+      if (error instanceof OpenCodeWorkspaceOwnershipError) {
+        (this.options.logger ?? nullLogger).log("ERROR", "OpenCode workspace ownership mismatch", {
+          workspace: safeText(error.directory, this.options.base),
+          actual_uid: error.actualUid,
+          expected_uid: error.expectedUid,
+        });
+      }
+      throw error;
+    });
     if (signal.aborted) throw abortReason(signal);
 
     const configHash = this.renderedConfig?.hash;
 
-    const allocatePortFn = this.options.allocatePort ?? allocatePort;
-    const port = this.options.port ?? (await allocatePortFn());
     const stateDirectory = await this.prepareStateDirectory();
     const environment = buildOpenCodeEnvironment({
       ...this.options,
-      configDirectory: stateDirectory,
+      // GitOps resources live under isolated XDG_CONFIG_HOME/opencode so
+      // checked-out project resources retain their later native precedence.
+      configDirectory: undefined,
       databasePath: join(stateDirectory, "opencode.db"),
     });
-    // These flags are controlled by the runner, not inherited from ambient env.
-    // Project CLAUDE.md and .claude/skills compatibility remain enabled.
-    environment.OPENCODE_DISABLE_AUTOUPDATE = "1";
-    environment.OPENCODE_DISABLE_DEFAULT_PLUGINS = "1";
-    environment.OPENCODE_DISABLE_LSP_DOWNLOAD = "1";
-    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
-    // OpenCode uses this value for its global home while shell tools retain HOME.
+    const originalConfigHome = environment.XDG_CONFIG_HOME;
+    const originalDataHome = environment.XDG_DATA_HOME;
+    environment.XDG_CONFIG_HOME = join(stateDirectory, "xdg-config");
+    // V2 imports legacy auth.json from data home when creating a database.
+    environment.XDG_DATA_HOME = join(stateDirectory, "xdg-data");
+    // Global.home still bounds V2's ambient AGENTS discovery. Keep it outside
+    // the worktree so traversal stops at the project root, while shell HOME
+    // remains the caller's original operational home.
     environment.OPENCODE_TEST_HOME = stateDirectory;
+    const password = randomBytes(32).toString("base64url");
+    // --stdio consumes and deletes this before tool processes inherit the environment.
+    environment.OPENCODE_PASSWORD = password;
+    // These flags are controlled by the runner, not inherited from ambient env.
+    // Native project AGENTS.md and configured skill discovery remain enabled.
+    environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
     environment.NPM_CONFIG_OFFLINE = "true";
     environment.npm_config_offline = "true";
     if (this.renderedConfig !== undefined) {
-      environment.OPENCODE_CONFIG = join(stateDirectory, "opencode.json");
       try {
-        await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
+        const files = await writeOpenCodeConfig(stateDirectory, this.renderedConfig);
+        environment.OPENCODE_CONFIG = files.configPath;
+        // Inherited config content/permissions are excluded by the sanitizer;
+        // these runner-owned values override top-level settings.
+        const enforcement = JSON.parse(this.renderedConfig.enforcementJson) as {
+          permissions: OpenCodePermissionRule[];
+          plugins?: unknown[];
+        };
+        const boundary = enforcement.permissions;
+        const shellPluginDirectory = join(stateDirectory, "rehor-policy");
+        const shellPlugin = join(shellPluginDirectory, "index.js");
+        await mkdir(shellPluginDirectory, { recursive: true });
+        await writeFile(join(shellPluginDirectory, "package.json"), '{"type":"module"}\n');
+        await writeFile(
+          shellPlugin,
+          renderOpenCodePolicyPlugin(originalConfigHome, boundary, originalDataHome),
+        );
+        // Configured local plugins must target directories in V2; a file path
+        // is ignored by the native source scanner even when its module is valid.
+        enforcement.plugins = [
+          ...(enforcement.plugins ?? []),
+          pathToFileURL(shellPluginDirectory).href,
+        ];
+        environment.OPENCODE_CONFIG_CONTENT = stableJson(enforcement);
+        // writeOpenCodeConfig owns the authoritative GLOBAL native policies.
+        // Keep those out of inline content, whose policy authority is lower.
       } catch (error) {
         await this.cleanupStateDirectory();
         throw error;
       }
     }
-    const args = ["serve", `--hostname=${this.options.hostname}`, `--port=${port}`];
-    const spawnProcess = this.options.spawnProcess ?? defaultSpawn;
+    const args = [
+      "serve",
+      "--stdio",
+      `--hostname=${this.options.hostname}`,
+      "--port=0",
+      "--print-logs",
+      `--log-level=${(this.options.base ?? process.env).DEBUG === "true" ? "debug" : "info"}`,
+    ];
+    (this.options.logger ?? nullLogger).log("INFO", "OpenCode server starting");
+    const spawnProcess = this.options.spawnProcess ?? spawn;
     this.startupOutput = "";
-    this.startupOutputTruncated = false;
+    this.diagnosticCount = 0;
     let child: ChildProcess;
     try {
       child = spawnProcess(this.options.command, args, {
         cwd: workspaceDirectory,
         env: environment,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
     } catch (error) {
@@ -236,30 +278,26 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const startupSignal = AbortSignal.any([signal, this.crashSignal]);
     const startupDeadline = Date.now() + this.options.startupTimeoutMs;
     try {
-      const baseUrl = await this.waitForListening(child, startupSignal, port, startupDeadline);
+      const baseUrl = await this.waitForListening(child, startupSignal, startupDeadline);
       const health = await this.waitForReadiness(
         baseUrl,
         workspaceDirectory,
         startupSignal,
         startupDeadline,
+        password,
       );
-      const missingCapabilities = (this.options.requiredCapabilities ?? []).filter(
-        (capability) => !(OPENCODE_V1_CAPABILITIES as readonly string[]).includes(capability),
-      );
-      if (missingCapabilities.length > 0) {
-        throw new OpenCodeReadinessError(
-          `OpenCode readiness missing capabilities: ${missingCapabilities.join(", ")}`,
-        );
-      }
-      const parsed = new URL(baseUrl);
       this.server = {
         ...health,
-        baseUrl: baseUrl.replace(/\/$/, ""),
-        hostname: parsed.hostname,
-        port: Number(parsed.port),
+        baseUrl: baseUrl.toString().replace(/\/$/, ""),
+        hostname: baseUrl.hostname,
+        port: Number(baseUrl.port),
         directory: workspaceDirectory,
+        password,
         ...(configHash ? { configHash } : {}),
       };
+      (this.options.logger ?? nullLogger).log("INFO", "OpenCode server ready", {
+        version: health.version,
+      });
       return this.server;
     } catch (error) {
       const startupError = this.withStartupOutput(error);
@@ -302,13 +340,23 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       await this.cleanupStateDirectory();
       return;
     }
-    if (this.stopping) return;
-
-    this.stopping = true;
     const child = this.child;
     try {
-      const groupExists = (): boolean => this.processGroupExists(child);
+      const groupExists = (): boolean => {
+        if (process.platform === "win32" || !child.pid) return false;
+        try {
+          process.kill(-child.pid, 0);
+          return true;
+        } catch (error) {
+          if (isNoSuchProcess(error)) return false;
+          if (isPermissionDenied(error)) return true;
+          throw error;
+        }
+      };
       if (!this.exited || (groupExists() && !this.termSent)) {
+        // EOF is the native --stdio lease release; retain process-group signaling
+        // and escalation for tool descendants and a stuck server finalizer.
+        child.stdin?.end();
         this.signalChild(child, "SIGTERM");
       }
       await waitForExit(
@@ -323,7 +371,6 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       this.outputCleanup?.();
       this.child = undefined;
       this.server = undefined;
-      this.stopping = false;
       await this.cleanupStateDirectory();
     }
   }
@@ -338,25 +385,20 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
 
   private signalChild(child: ChildProcess, signal: NodeJS.Signals): void {
     if (signal === "SIGTERM") this.termSent = true;
-    signalProcessTree(child, signal, this.options.signalProcess);
-  }
-
-  private processGroupExists(child: ChildProcess): boolean {
-    if (process.platform === "win32" || !child.pid) return false;
-    return (this.options.processGroupExists ?? defaultProcessGroupExists)(child.pid);
+    signalProcessTree(child, signal);
   }
 
   private observeExit(child: ChildProcess): Promise<void> {
     return new Promise((resolve, reject) => {
       const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
         this.exited = true;
-        if (!this.stopping && !this._crashError) {
+        if (!this.termSent && !this._crashError) {
           const error = new Error(
             this.server
               ? `OpenCode server crashed after startup (code=${code ?? "null"}, signal=${signal ?? "none"})`
               : `OpenCode server exited before readiness (code=${code ?? "null"}, signal=${signal ?? "none"})`,
           );
-          this._crashError = this.server ? error : this.withStartupOutput(error);
+          this._crashError = this.withStartupOutput(error);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
@@ -365,8 +407,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onError = (error: Error): void => {
         this.exited = true;
         const safeError = redactError(error);
-        if (!this.stopping) {
-          this._crashError = this.server ? safeError : this.withStartupOutput(safeError);
+        if (!this.termSent && !this._crashError) {
+          this._crashError = this.withStartupOutput(safeError);
           this.crashController.abort(this._crashError);
           this.signalChild(child, "SIGTERM");
         }
@@ -380,29 +422,22 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private withStartupOutput(value: unknown): Error {
     const error = value instanceof Error ? value : new Error(String(value));
     const diagnostic = this.startupDiagnostic();
-    if (diagnostic && !error.message.includes("OpenCode startup output (tail)")) {
-      error.message = `${error.message}\nOpenCode startup output (tail):\n${diagnostic}`;
+    if (diagnostic && !error.message.includes("OpenCode diagnostics (safe tail)")) {
+      error.message = `${error.message}\nOpenCode diagnostics (safe tail):\n${diagnostic}`;
     }
-    error.message = redactSensitiveText(error.message);
+    error.message = safeText(error.message, this.options.base);
     return error;
   }
 
   private startupDiagnostic(): string {
-    let output = this.startupOutput;
-    if (this.startupOutputTruncated) {
-      const firstLineEnd = output.indexOf("\n");
-      if (firstLineEnd === -1) return "";
-      output = output.slice(firstLineEnd + 1);
-    }
-    return redactSensitiveText(output).slice(-STARTUP_DIAGNOSTIC_LIMIT);
+    return safeText(this.startupOutput, this.options.base).slice(-STARTUP_DIAGNOSTIC_LIMIT);
   }
 
   private waitForListening(
     child: ChildProcess,
     signal: AbortSignal,
-    expectedPort: number,
     deadline: number,
-  ): Promise<string> {
+  ): Promise<URL> {
     return new Promise((resolve, reject) => {
       let timer: NodeJS.Timeout | undefined;
       let settled = false;
@@ -413,58 +448,77 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         child.removeListener("error", onError);
         signal.removeEventListener("abort", onAbort);
       };
-      const finish = (error?: Error, url?: string): void => {
+      const finish = (error?: Error, url?: URL): void => {
         if (settled) return;
         settled = true;
         cleanup();
         if (error) reject(error);
-        else resolve(url as string);
+        else resolve(url as URL);
       };
-      const onData = (chunk: Buffer | string): void => {
-        if (settled) return;
-        const text = chunk.toString();
-        if (this.startupOutput.length + text.length > STARTUP_OUTPUT_LIMIT) {
-          this.startupOutputTruncated = true;
-        }
-        this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, text);
-        for (const line of this.startupOutput.split(/\r?\n/)) {
-          const match = line.match(/server listening on (https?:\/\/[^\s]+)/i);
-          if (match) {
-            try {
-              const url = new URL(match[1]);
-              if (url.protocol !== "http:") {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved protocol ${url.protocol}`,
-                  ),
-                );
-                return;
-              }
-              if (url.hostname !== this.options.hostname) {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved host ${url.hostname}`,
-                  ),
-                );
-                return;
-              }
-              if (url.port !== String(expectedPort)) {
-                finish(
-                  new OpenCodeReadinessError(
-                    `OpenCode server advertised unapproved port ${url.port || "default"}; expected ${expectedPort}`,
-                  ),
-                );
-                return;
-              }
-              finish(undefined, url.toString().replace(/\/$/, ""));
-              return;
-            } catch {
-              finish(new OpenCodeReadinessError("OpenCode server advertised an invalid URL"));
-              return;
+      // Separate bounded line buffers prevent stdout/stderr fragments from joining.
+      // Oversized lines are discarded wholesale, not sliced into possible secret tails.
+      const collector = () => {
+        let pending = "";
+        let dropping = false;
+        return (chunk: Buffer | string): void => {
+          for (const fragment of chunk.toString().split(/(?<=\n)/)) {
+            const complete = fragment.endsWith("\n");
+            if (
+              !dropping &&
+              Buffer.byteLength(pending) + Buffer.byteLength(fragment) <= STARTUP_OUTPUT_LIMIT
+            )
+              pending += fragment;
+            else dropping = true;
+            if (complete) {
+              if (!dropping) onLine(pending);
+              pending = "";
+              dropping = false;
             }
           }
-        }
+        };
       };
+      const onLine = (line: string): void => {
+        const diagnostic = classifyDiagnostic(line);
+        if (diagnostic) {
+          const safe = safeText(diagnostic, this.options.base);
+          this.startupOutput = appendBoundedOpenCodeOutput(this.startupOutput, `${safe}\n`);
+          if (this.diagnosticCount++ < 64)
+            (this.options.logger ?? nullLogger).log("WARNING", "OpenCode diagnostic", {
+              diagnostic: safe,
+            });
+        }
+        if (settled) return;
+        let announcement: unknown;
+        try {
+          announcement = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (typeof announcement !== "object" || announcement === null || !("url" in announcement))
+          return;
+        const rawUrl = announcement.url;
+        if (typeof rawUrl !== "string") {
+          finish(new OpenCodeReadinessError("OpenCode server advertised an invalid URL"));
+          return;
+        }
+        const url = URL.canParse(rawUrl) ? new URL(rawUrl) : undefined;
+        const problem = !url
+          ? "OpenCode server advertised an invalid URL"
+          : url.protocol !== "http:"
+            ? `OpenCode server advertised unapproved protocol ${url.protocol}`
+            : url.hostname !== this.options.hostname
+              ? `OpenCode server advertised unapproved host ${url.hostname}`
+              : url.port === "" || url.port === "0"
+                ? `OpenCode server advertised invalid port ${url.port || "default"}`
+                : undefined;
+        if (problem) {
+          finish(new OpenCodeReadinessError(problem));
+          return;
+        }
+        finish(undefined, url);
+      };
+      const onStdout = collector();
+      const onStderr = collector();
       const onExit = (code: number | null, signalName: NodeJS.Signals | null): void => {
         finish(
           this.withStartupOutput(
@@ -477,8 +531,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       const onError = (error: Error): void => finish(error);
       const onAbort = (): void => finish(abortReason(signal));
       const removeOutput = (): void => {
-        child.stdout?.removeListener("data", onData);
-        child.stderr?.removeListener("data", onData);
+        child.stdout?.removeListener("data", onStdout);
+        child.stderr?.removeListener("data", onStderr);
         if (this.outputCleanup === removeOutput) this.outputCleanup = undefined;
       };
       this.outputCleanup = removeOutput;
@@ -494,8 +548,8 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
           ),
         Math.max(0, deadline - Date.now()),
       );
-      child.stdout?.on("data", onData);
-      child.stderr?.on("data", onData);
+      child.stdout?.on("data", onStdout);
+      child.stderr?.on("data", onStderr);
       child.once("exit", onExit);
       child.once("error", onError);
       if (signal.aborted) onAbort();
@@ -504,19 +558,26 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   }
 
   private async waitForReadiness(
-    baseUrl: string,
+    baseUrl: URL,
     directory: string,
     signal: AbortSignal,
     deadline: number,
+    password: string,
   ): Promise<OpenCodeHealth> {
-    const readiness = this.options.readiness ?? new HttpOpenCodeReadiness(this.options.fetch);
+    const readiness = new HttpOpenCodeReadiness();
     let lastError: unknown;
 
     while (Date.now() < deadline) {
       if (signal.aborted) throw abortReason(signal);
       try {
         const health = await boundedOperation(
-          (requestSignal) => readiness.check(baseUrl, directory, requestSignal),
+          (requestSignal) =>
+            readiness.check(
+              baseUrl.toString().replace(/\/$/, ""),
+              directory,
+              requestSignal,
+              password,
+            ),
           signal,
           deadline,
           "OpenCode readiness",
@@ -535,7 +596,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       } catch (error) {
         if (error instanceof OpenCodeReadinessError && error.deterministic) throw error;
         lastError = error;
-        if (Date.now() < deadline) await delay(50, signal);
+        if (signal.aborted) throw abortReason(signal);
+        const remaining = deadline - Date.now();
+        if (remaining > 0) {
+          await delay(Math.min(50, remaining), undefined, { signal }).catch(() => {
+            throw abortReason(signal);
+          });
+        }
       }
     }
 
@@ -546,6 +613,24 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   }
 }
 
+/** Linux managed config loads above OPENCODE_CONFIG_CONTENT and breaks policy ownership. */
+export async function assertNoSystemManagedOpenCodeConfig(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== "linux") return;
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (isMissingPath(error)) return;
+    throw error;
+  }
+  throw new OpenCodeReadinessError(
+    `OpenCode system-managed config at ${path} conflicts with runner-enforced settings`,
+    true,
+  );
+}
+
 function redactError(error: Error): Error {
   error.message = redactSensitiveText(error.message);
   return error;
@@ -554,167 +639,6 @@ function redactError(error: Error): Error {
 /** Keeps startup diagnostics bounded while waiting for the advertised URL. */
 export function appendBoundedOpenCodeOutput(output: string, chunk: Buffer | string): string {
   return `${output}${chunk.toString()}`.slice(-STARTUP_OUTPUT_LIMIT);
-}
-
-export class HttpOpenCodeReadiness implements OpenCodeReadiness {
-  private readonly fetchImpl: OpenCodeFetch;
-
-  constructor(fetchImpl?: OpenCodeFetch) {
-    this.fetchImpl = createOpenCodeFetch(fetchImpl);
-  }
-
-  async check(baseUrl: string, directory: string, signal: AbortSignal): Promise<OpenCodeHealth> {
-    const healthResponse = await this.fetchImpl(`${baseUrl}/global/health`, { signal });
-    if (!healthResponse.ok) {
-      throw new OpenCodeReadinessError(
-        `OpenCode health returned HTTP ${healthResponse.status} at ${baseUrl}/global/health`,
-      );
-    }
-    const health = await readJson(healthResponse, "health");
-    if (
-      health.healthy !== true ||
-      typeof health.version !== "string" ||
-      health.version.length === 0
-    ) {
-      throw new OpenCodeReadinessError(
-        "OpenCode health response must contain healthy=true and version",
-      );
-    }
-
-    const pathUrl = new URL(`${baseUrl}/path`);
-    pathUrl.searchParams.set("directory", directory);
-    const pathResponse = await this.fetchImpl(pathUrl, { signal });
-    if (!pathResponse.ok) {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check returned HTTP ${pathResponse.status} at ${pathUrl}`,
-      );
-    }
-    const path = await readJson(pathResponse, "path");
-    if (typeof path.directory !== "string") {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check resolved ${String(path.directory)} instead of ${directory}`,
-        true,
-      );
-    }
-    const [expectedDirectory, actualDirectory] = await Promise.all([
-      realpathOrOriginal(directory),
-      realpathOrOriginal(path.directory),
-    ]);
-    if (actualDirectory !== expectedDirectory) {
-      throw new OpenCodeReadinessError(
-        `OpenCode path check resolved ${path.directory} instead of ${directory}`,
-        true,
-      );
-    }
-
-    const capabilities = parseCapabilities(health.capabilities);
-    return {
-      healthy: true,
-      version: health.version,
-      ...(capabilities ? { capabilities } : {}),
-    };
-  }
-}
-
-async function resolveApprovedWorkspace(
-  directory: string,
-  workspaceRoot: string | undefined,
-  workspaceOwnerUid: number | undefined,
-): Promise<string> {
-  if (!isAbsolute(directory)) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path must be absolute, got ${directory}`,
-      true,
-    );
-  }
-  if (!workspaceRoot) {
-    throw new OpenCodeReadinessError("OpenCode workspace root is required", true);
-  }
-  if (!isAbsolute(workspaceRoot)) {
-    throw new OpenCodeReadinessError(
-      `OpenCode workspace root must be absolute, got ${workspaceRoot}`,
-      true,
-    );
-  }
-
-  let canonicalRoot: string;
-  let canonicalDirectory: string;
-  try {
-    [canonicalRoot, canonicalDirectory] = await Promise.all([
-      realpath(workspaceRoot),
-      realpath(directory),
-    ]);
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path must resolve to an accessible directory${detail}`,
-      true,
-    );
-  }
-
-  const relativeDirectory = relative(canonicalRoot, canonicalDirectory);
-  if (
-    relativeDirectory !== "" &&
-    (relativeDirectory === ".." ||
-      relativeDirectory.startsWith(`..${pathSeparator()}`) ||
-      isAbsolute(relativeDirectory))
-  ) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path ${canonicalDirectory} is outside approved workspace root ${canonicalRoot}`,
-      true,
-    );
-  }
-
-  let directoryStats: Awaited<ReturnType<typeof stat>>;
-  try {
-    directoryStats = await stat(canonicalDirectory);
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new OpenCodeReadinessError(`OpenCode worktree path must be stat-able${detail}`, true);
-  }
-  if (!directoryStats.isDirectory()) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path is not a directory: ${canonicalDirectory}`,
-      true,
-    );
-  }
-
-  const expectedOwnerUid = workspaceOwnerUid ?? currentUserUid();
-  if (expectedOwnerUid !== undefined && directoryStats.uid !== expectedOwnerUid) {
-    throw new OpenCodeReadinessError(
-      `OpenCode worktree path ${canonicalDirectory} is owned by UID ${directoryStats.uid}, expected ${expectedOwnerUid}`,
-      true,
-    );
-  }
-  return canonicalDirectory;
-}
-
-function currentUserUid(): number | undefined {
-  return typeof process.getuid === "function" ? process.getuid() : undefined;
-}
-
-function pathSeparator(): string {
-  return process.platform === "win32" ? "\\" : "/";
-}
-
-function defaultSpawn(
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-): ChildProcess {
-  return spawn(command, [...args], options);
-}
-
-async function allocatePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const address = server.address();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  if (!address || typeof address === "string") throw new Error("failed to allocate OpenCode port");
-  return address.port;
 }
 
 function assertConfiguredBinary(command: string): void {
@@ -729,36 +653,16 @@ function assertApprovedHostname(hostname: string): void {
   }
 }
 
-function signalProcessTree(
-  child: ChildProcess,
-  signal: NodeJS.Signals,
-  injectedSignal?: OpenCodeSignalProcess,
-): void {
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (child.pid && process.platform !== "win32") {
     try {
-      const signalProcessFn = injectedSignal ?? signalProcess;
-      signalProcessFn(-child.pid, signal);
+      process.kill(-child.pid, signal);
       return;
     } catch (error) {
       if (!isNoSuchProcess(error)) throw error;
     }
   }
   child.kill(signal);
-}
-
-function signalProcess(pid: number, signal: NodeJS.Signals): void {
-  process.kill(pid, signal);
-}
-
-function defaultProcessGroupExists(pid: number): boolean {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    if (isNoSuchProcess(error)) return false;
-    if (isPermissionDenied(error)) return true;
-    throw error;
-  }
 }
 
 function isPermissionDenied(error: unknown): boolean {
@@ -769,79 +673,29 @@ function isNoSuchProcess(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
 }
 
-export function hashOpenCodeConfig(config: Readonly<Record<string, unknown>>): string {
-  return createHash("sha256").update(stableJson(config)).digest("hex");
-}
-
-function parseCapabilities(value: unknown): readonly string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new OpenCodeReadinessError("OpenCode health capabilities must be an array of strings");
-  }
-  return value;
-}
-
-function matchesVersion(version: string, expected: string | RegExp): boolean {
-  if (typeof expected === "string") return version === expected;
-  expected.lastIndex = 0;
-  return expected.test(version);
-}
-
-async function realpathOrOriginal(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
-async function readJson(response: Response, name: string): Promise<Record<string, unknown>> {
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch {
-    throw new OpenCodeReadinessError(`OpenCode ${name} response was not JSON`);
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new OpenCodeReadinessError(`OpenCode ${name} response was not an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.reject(abortReason(signal));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(abortReason(signal));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
+function isMissingPath(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 function waitForExit(
   child: ChildProcess,
   timeoutMs: number,
   onTimeout: () => void,
-  alreadyExited = false,
-  processGroupExists: () => boolean = () => false,
-  killVerificationTimeoutMs = timeoutMs,
+  alreadyExited: boolean,
+  processGroupExists: () => boolean,
+  killVerificationTimeoutMs: number,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let leaderExited = alreadyExited;
     let graceTimer: NodeJS.Timeout | undefined;
     let verificationTimer: NodeJS.Timeout | undefined;
-    let pollTimer: NodeJS.Timeout | undefined;
+    let groupPollTimer: NodeJS.Timeout | undefined;
 
     const cleanup = (): void => {
       if (graceTimer) clearTimeout(graceTimer);
       if (verificationTimer) clearTimeout(verificationTimer);
-      if (pollTimer) clearInterval(pollTimer);
+      if (groupPollTimer) clearInterval(groupPollTimer);
       child.removeListener("close", onExit);
       child.removeListener("exit", onExit);
       child.removeListener("error", onError);
@@ -858,23 +712,25 @@ function waitForExit(
       cleanup();
       reject(error instanceof Error ? error : new Error(String(error)));
     };
-    const groupGone = (): boolean => leaderExited && !processGroupExists();
     const check = (): void => {
-      if (settled) return;
+      if (settled || !leaderExited) return;
       try {
-        if (groupGone()) finish();
+        if (!processGroupExists()) finish();
       } catch (error) {
         fail(error);
       }
     };
+    const startGroupPolling = (): void => {
+      if (!groupPollTimer) groupPollTimer = setInterval(check, 25);
+    };
     const onExit = (): void => {
       leaderExited = true;
+      startGroupPolling();
       check();
     };
     const onError = (error: Error): void => {
       leaderExited = true;
-      // An error means the leader cannot be waited on. Descendants still get
-      // the same group grace period and liveness check.
+      startGroupPolling();
       check();
       if (settled) return;
       try {
@@ -884,6 +740,8 @@ function waitForExit(
       }
     };
     const forceKill = (): void => {
+      if (settled) return;
+      check();
       if (settled) return;
       try {
         onTimeout();
@@ -895,9 +753,7 @@ function waitForExit(
       if (settled) return;
       verificationTimer = setTimeout(() => {
         check();
-        if (!settled) {
-          fail(new Error("OpenCode process group remained alive after SIGKILL"));
-        }
+        if (!settled) fail(new OpenCodeProcessLeakError());
       }, killVerificationTimeoutMs);
     };
 
@@ -905,8 +761,9 @@ function waitForExit(
       child.once("close", onExit);
       child.once("exit", onExit);
       child.once("error", onError);
+    } else {
+      startGroupPolling();
     }
-    pollTimer = setInterval(check, 10);
     graceTimer = setTimeout(forceKill, timeoutMs);
     check();
   });

@@ -1,29 +1,38 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 import {
+  abortCauseFrom,
   createEventFactory,
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
+  type RuntimeTerminalState,
   type TokenCounts,
-  type Usage,
 } from "../domain";
-import type { AgentRuntime, McpServerConfig } from "../ports";
+import type { AgentRuntime, AgentRuntimeRunContext, McpServerConfig } from "../ports";
 import type { AgentRuntimeFactory } from "../runtime-factory";
 import {
-  abortCauseReason,
-  abortKind,
+  abortError,
   abortReasonText,
-  extractTaskResult,
-  extractToolContext,
-  isNoWork,
-  lastMeaningfulLine,
-  abortError as makeAbortError,
+  asObject,
+  buildTerminalPayload,
+  errorMessage,
+  numberValue,
+  stringValue,
 } from "./shared";
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "plan" | "dontAsk" | "auto";
 export type ClaudeSettingSource = "user" | "project" | "local";
 export type ClaudeMcpServer = McpServerConfig;
+
+/**
+ * Minimal shape of the SDK `query()` entry point. Injected by tests and the
+ * runtime contract suite; production uses the Claude Agent SDK.
+ */
+export type ClaudeQueryFunction = (request: {
+  prompt: string;
+  options: Record<string, unknown>;
+}) => AsyncIterable<unknown> & { close(): void };
 
 /** Configuration owned by the adapter; Claude SDK types do not cross this boundary. */
 export interface ClaudeAgentRuntimeOptions {
@@ -37,7 +46,11 @@ export interface ClaudeAgentRuntimeOptions {
   persistSession?: boolean;
   env?: Readonly<Record<string, string | undefined>>;
   additionalDirectories?: readonly string[];
+  /** Replaces the SDK `query()` call; defaults to the Claude Agent SDK. */
+  query?: ClaudeQueryFunction;
 }
+
+const sdkQuery = query as unknown as ClaudeQueryFunction;
 
 const CAPABILITIES: RuntimeCapabilities = {
   runtimeId: "claude-agent-sdk",
@@ -45,6 +58,7 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "claude-agent-sdk-options-v1",
   streaming: true,
   interruption: true,
+  enforcesTurnLimit: true,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -56,10 +70,14 @@ const SANITIZED_ENV_VARS = new Set([
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GITLAB_TOKEN",
+  "JIRA_API_TOKEN",
+  "JIRA_MCP_TOKEN",
+  "JIRA_USERNAME",
   "GPG_PRIVATE_KEY_B64",
   "GPG_SIGNING_KEY",
   "SSO_USERNAME",
   "SSO_PASSWORD",
+  "REHOR_MODEL_PROXY_TOKEN",
   "GIT_AUTHOR_NAME",
   "GIT_AUTHOR_EMAIL",
   "GIT_COMMITTER_NAME",
@@ -74,19 +92,42 @@ type RuntimeState = {
   stopped: boolean;
 };
 
-type WorkContext = {
-  taskId?: number;
-  externalKey?: string;
-  repository?: string;
-  workType?: string;
-  summary?: string;
-};
-
 type UsageSnapshot = {
   model: string;
   counts: TokenCounts;
   cost?: number;
 };
+
+/**
+ * Per-model usage built from assistant messages, for runs that end without a
+ * result message. Each API response reports only its own tokens, so responses
+ * are summed. The SDK repeats a response's usage on every content-block
+ * message it streams, so messages sharing an id replace one another.
+ */
+class AssistantUsage {
+  private readonly byModel = new Map<string, Map<string, TokenCounts>>();
+  private anonymous = 0;
+
+  record(model: string, messageId: string | undefined, counts: TokenCounts): void {
+    const responses = this.byModel.get(model) ?? new Map<string, TokenCounts>();
+    responses.set(messageId ?? `anonymous-${++this.anonymous}`, counts);
+    this.byModel.set(model, responses);
+  }
+
+  snapshots(): UsageSnapshot[] {
+    return [...this.byModel].map(([model, responses]) => {
+      const counts: TokenCounts = {};
+      for (const response of responses.values()) {
+        for (const [key, value] of Object.entries(response) as Array<
+          [keyof TokenCounts, number | undefined]
+        >) {
+          if (value !== undefined) counts[key] = (counts[key] ?? 0) + value;
+        }
+      }
+      return { model, counts };
+    });
+  }
+}
 
 /** Claude Agent SDK implementation of the provider-neutral AgentRuntime port. */
 export class ClaudeAgentRuntime implements AgentRuntime {
@@ -110,7 +151,11 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     };
   }
 
-  run(input: RehorRun, signal: AbortSignal): AsyncIterable<RehorEvent> {
+  run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
     const runtime = this;
 
     return (async function* stream(): AsyncGenerator<RehorEvent> {
@@ -126,17 +171,13 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         input,
         runtime.options.policyVersion ?? "claude-agent-sdk-v1",
       );
-      const context: WorkContext = {};
-      const usage = new Map<string, UsageSnapshot>();
+      const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
-      const pendingPolicyEvents: RehorEvent[] = [];
       let sessionRef: string | undefined;
       let turns = 0;
       let terminalEmitted = false;
 
-      const onAbort = (): void => {
-        if (!controller.signal.aborted) controller.abort(signal.reason);
-      };
+      const onAbort = (): void => controller.abort(abortCauseFrom(signal.reason, "cancelled"));
       signal.addEventListener("abort", onAbort, { once: true });
 
       const refFor = (message: unknown): string | undefined => {
@@ -163,16 +204,12 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         });
       };
 
-      const drainPolicyEvents = function* (): Generator<RehorEvent> {
-        while (pendingPolicyEvents.length > 0) yield pendingPolicyEvents.shift() as RehorEvent;
-      };
-
       const emitUsage = (
         snapshot: UsageSnapshot,
         partial: boolean,
         incomplete: boolean,
       ): RehorEvent => {
-        const payload: Usage = {
+        const payload = {
           requestedModel: input.provider.requestedModel,
           ...(snapshot.model ? { returnedModel: snapshot.model } : {}),
           tokenCounts: snapshot.counts,
@@ -186,7 +223,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
                 cost: {
                   amount: Math.max(0, snapshot.cost),
                   currency: "USD",
-                  source: "estimated" as const,
+                  source: "estimated",
                 },
               }),
         };
@@ -199,21 +236,19 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       };
 
       const terminal = (
-        stateName: "completed" | "failed" | "interrupted" | "cancelled" | "timed_out",
+        stateName: RuntimeTerminalState,
         resultText?: string,
         reason?: string,
         durationMs = Date.now() - startedAt,
       ): RehorEvent => {
         terminalEmitted = true;
-        const payload: JsonObject = {
+        const payload = buildTerminalPayload({
           state: stateName,
-          ...(reason ? { reason } : {}),
-          ...(resultText ? { resultText } : {}),
-          ...(resultText ? { noWork: isNoWork(resultText) } : {}),
+          reason,
+          resultText,
           turns,
           durationMs: Math.max(0, durationMs),
-          ...(Object.keys(context).length > 0 ? { context } : {}),
-        };
+        });
         return makeSdkEvent("terminal", payload, undefined);
       };
 
@@ -221,11 +256,11 @@ export class ClaudeAgentRuntime implements AgentRuntime {
         yield createEvent("run", { state: "started" });
 
         if (signal.aborted) {
-          yield terminal(abortState(signal.reason), undefined, abortReason(signal.reason));
+          yield terminal("failed", undefined, abortReasonText(signal.reason));
           return;
         }
 
-        const sdkQuery = query({
+        const activeQuery = (runtime.options.query ?? sdkQuery)({
           prompt: input.prompt,
           options: {
             abortController: controller,
@@ -243,38 +278,23 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
-            hooks: createHooks(
-              input.limits.maxTurns,
-              input.label,
-              pendingPolicyEvents,
-              createEvent,
-              toolStarts,
-            ),
+            hooks: createHooks(context, toolStarts),
           },
         });
-        state.query = sdkQuery;
+        state.query = activeQuery;
 
-        for await (const message of sdkQuery) {
+        for await (const message of activeQuery) {
           const reference = refFor(message);
 
           if (isResultMessage(message)) {
-            for (const event of drainPolicyEvents()) yield event;
             const result = asObject(message);
             const resultUsage = collectResultUsage(result, input.provider.requestedModel);
-            for (const snapshot of resultUsage) {
-              usage.set(snapshot.model, snapshot);
+            for (const snapshot of resultUsage.length > 0 ? resultUsage : usage.snapshots()) {
               yield emitUsage(snapshot, false, result?.is_error === true);
-            }
-            if (resultUsage.length === 0) {
-              for (const snapshot of usage.values())
-                yield emitUsage(snapshot, false, result?.is_error === true);
             }
 
             turns = numberValue(result?.num_turns) ?? turns;
             const resultText = stringValue(result?.result);
-            if (!context.summary && resultText) {
-              context.summary = lastMeaningfulLine(resultText);
-            }
             const successful = result?.subtype === "success" && result?.is_error !== true;
             yield terminal(
               successful ? "completed" : "failed",
@@ -288,44 +308,34 @@ export class ClaudeAgentRuntime implements AgentRuntime {
           for (const event of translateMessage(message, {
             makeEvent: (kind, payload, model) => makeSdkEvent(kind, payload, message, model),
             reference,
-            context,
             toolStarts,
             usage,
             requestedModel: input.provider.requestedModel,
           })) {
             yield event;
           }
-          for (const event of drainPolicyEvents()) yield event;
         }
 
         if (!terminalEmitted) {
           const wasAborted = signal.aborted || controller.signal.aborted;
+          for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
           yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
+            "failed",
             undefined,
             wasAborted
-              ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+              ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
               : "agent runtime ended without a result",
           );
         }
       } catch (error) {
-        for (const event of drainPolicyEvents()) yield event;
-        for (const snapshot of usage.values()) yield emitUsage(snapshot, true, true);
+        for (const snapshot of usage.snapshots()) yield emitUsage(snapshot, true, true);
         if (!terminalEmitted) {
-          const errorReason = errorMessage(error);
+          const errorReason = errorMessage(error, { serializeUnknown: true }) ?? "";
           const wasAborted = signal.aborted || controller.signal.aborted || isAbortError(error);
           const reason = wasAborted
-            ? abortReason(signal.aborted ? signal.reason : controller.signal.reason)
+            ? abortReasonText(signal.aborted ? signal.reason : controller.signal.reason)
             : errorReason;
-          yield terminal(
-            wasAborted
-              ? abortState(signal.aborted ? signal.reason : controller.signal.reason)
-              : "failed",
-            undefined,
-            reason,
-          );
+          yield terminal("failed", undefined, reason);
         }
       } finally {
         signal.removeEventListener("abort", onAbort);
@@ -348,7 +358,9 @@ export class ClaudeAgentRuntime implements AgentRuntime {
     this.stopped = true;
     if (!this.active) return;
     this.active.stopped = true;
-    if (!this.active.controller.signal.aborted) this.active.controller.abort("runtime stopped");
+    if (!this.active.controller.signal.aborted) {
+      this.active.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
+    }
     const query = this.active.query;
     this.active.query = undefined;
     try {
@@ -372,68 +384,21 @@ export function createClaudeAgentRuntimeFactory(
 }
 
 function createHooks(
-  maxTurns: number,
-  label: string,
-  pendingEvents: RehorEvent[],
-  createEvent: ReturnType<typeof createEventFactory>,
+  context: AgentRuntimeRunContext | undefined,
   toolStarts: Map<string, number>,
 ): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
-  let count = 0;
-  let warned = false;
-  let critical = false;
-  const warningAt = Math.max(1, Math.floor(maxTurns * 0.75));
-  const criticalAt = Math.max(1, Math.floor(maxTurns * 0.9));
+  const postToolUse = async (...args: unknown[]): Promise<JsonObject> => {
+    const input = asObject(args[0]);
+    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
+    if (!toolUseId || !context?.onSuccessfulToolCall) return {};
 
-  const hook = async (): Promise<JsonObject> => {
-    count += 1;
-    const remaining = Math.max(0, maxTurns - count);
-    if (count >= criticalAt && !critical) {
-      critical = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "critical",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. You MUST save progress NOW via ` +
-            "task_update with current summary, last_step, files_changed, and next_step. " +
-            "Then wrap up or stop.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET CRITICAL: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. You MUST save progress NOW via ` +
-          "task_update with current summary, last_step, files_changed, and next_step. " +
-          "Then wrap up or stop.",
-      };
-    }
-    if (count >= warningAt && !warned) {
-      warned = true;
-      pendingEvents.push(
-        createEvent("policy", {
-          state: "warning",
-          label,
-          usedTurns: count,
-          maxTurns,
-          message:
-            `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-            `~${remaining} remaining. Save progress via task_update soon ` +
-            "(summary + metadata with last_step, files_changed, next_step). " +
-            "Prioritize completing current step and saving state.",
-        }),
-      );
-      return {
-        systemMessage:
-          `TURN BUDGET WARNING: ~${count}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. Save progress via task_update soon ` +
-          "(summary + metadata with last_step, files_changed, next_step). " +
-          "Prioritize completing current step and saving state.",
-      };
-    }
-    return {};
+    let systemMessage: string | undefined;
+    context.onSuccessfulToolCall(toolUseId, {
+      deliverNotice(text) {
+        systemMessage = text;
+      },
+    });
+    return systemMessage === undefined ? {} : { systemMessage };
   };
 
   const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {
@@ -444,9 +409,7 @@ function createHooks(
   };
 
   return {
-    // Match Python: failed tool calls clean up timing state but do not consume
-    // a turn-budget count.
-    PostToolUse: [{ hooks: [hook] }],
+    PostToolUse: [{ hooks: [postToolUse] }],
     PostToolUseFailure: [{ hooks: [failedToolCleanup] }],
   };
 }
@@ -456,9 +419,8 @@ function translateMessage(
   state: {
     makeEvent: (kind: string, payload: JsonObject, model?: string) => RehorEvent;
     reference?: string;
-    context: WorkContext;
     toolStarts: Map<string, number>;
-    usage: Map<string, UsageSnapshot>;
+    usage: AssistantUsage;
     requestedModel: string;
   },
 ): RehorEvent[] {
@@ -501,8 +463,8 @@ function translateMessage(
     const model = stringValue(assistant?.model) ?? state.requestedModel;
     const blocks = Array.isArray(assistant?.content) ? assistant.content : [];
     const events: RehorEvent[] = [];
-    const partialUsage = usageFromRecord(model, asObject(assistant?.usage));
-    if (partialUsage) state.usage.set(model, partialUsage);
+    const responseUsage = usageFromRecord(model, asObject(assistant?.usage));
+    if (responseUsage) state.usage.record(model, stringValue(assistant?.id), responseUsage.counts);
 
     for (const block of blocks) {
       const value = asObject(block);
@@ -517,7 +479,6 @@ function translateMessage(
         const id = stringValue(value?.id);
         const name = stringValue(value?.name) ?? blockType;
         if (id) state.toolStarts.set(id, Date.now());
-        extractToolContext(name, asObject(value?.input), state.context);
         events.push(
           state.makeEvent(
             "tool",
@@ -548,7 +509,6 @@ function translateMessage(
       const id = stringValue(value?.tool_use_id);
       const started = id ? state.toolStarts.get(id) : undefined;
       if (id) state.toolStarts.delete(id);
-      extractTaskResult(value?.content, state.context);
       events.push(
         state.makeEvent("tool", {
           state: "completed",
@@ -667,51 +627,6 @@ function isResultMessage(message: unknown): boolean {
 
 function isAbortError(value: unknown): boolean {
   return value instanceof Error && value.name === "AbortError";
-}
-
-function abortState(reason: unknown): "interrupted" | "cancelled" | "timed_out" {
-  const kind = abortKind(reason);
-  if (kind === "timeout" || kind === "timed_out" || kind === "max_turns") return "timed_out";
-  if (kind === "interrupt" || kind === "interrupted") return "interrupted";
-  const text = abortReasonText(abortCauseReason(reason)).toLowerCase();
-  if (text.includes("timeout") || text.includes("timed_out") || text.includes("timed out")) {
-    return "timed_out";
-  }
-  if (text.includes("interrupt")) return "interrupted";
-  return "cancelled";
-}
-
-function abortReason(reason: unknown): string {
-  return abortReasonText(abortCauseReason(reason));
-}
-
-function abortError(reason: unknown): Error {
-  return makeAbortError(abortCauseReason(reason));
-}
-
-function errorMessage(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  if (typeof value === "string") return value;
-  if (value === undefined) return "";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function asObject(value: unknown): JsonObject | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as JsonObject)
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function arrayOfStrings(value: unknown): string[] {

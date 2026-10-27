@@ -4,8 +4,36 @@
 # Konflux with dockerfile: dev-bot/Dockerfile.runner and context: .
 #
 # Extension points:
-#   setup.sh   — (required) custom build steps (dnf install, config, etc.)
+#   setup.sh   — (required) root-run custom build steps (dnf install, config, etc.)
+#                DNF installs must use: --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'
 #   instance/  — (optional) extra files, COPYed to /home/botuser/app/instance/
+
+# Build the coordinator bundle and the pinned OpenCode executable. The runtime
+# image remains UBI-based; the Node executable, its shared runtime libraries,
+# coordinator bundle/dependencies, and OpenCode installation cross the stage boundary.
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS coordinator-builder
+USER 0
+WORKDIR /build/coordinator
+COPY dev-bot/coordinator/package.json dev-bot/coordinator/package-lock.json ./
+COPY dev-bot/coordinator/ ./
+# The source checkout may carry a host node_modules/ or dist/ directory; never
+# copy those artifacts into the image or let them replace this platform's npm
+# install.
+RUN rm -rf node_modules dist \
+    && npm ci --no-audit --no-fund \
+    && npm run build \
+    && npm prune --omit=dev \
+    && cp -L /usr/bin/node /tmp/node-runtime \
+    && mkdir -p /tmp/node-runtime-libs \
+    && cp -L /lib64/libnode.so.127 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlidec.so.1 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlienc.so.1 /tmp/node-runtime-libs/ \
+    && cp -L /lib64/libbrotlicommon.so.1 /tmp/node-runtime-libs/
+# Native OpenAI providers are bundled in the pinned OpenCode executable.
+# The custom Vertex adapter is part of the coordinator bundle/dependencies.
+RUN npm install --global --prefix /opt/opencode --omit=dev --no-audit --no-fund \
+    @opencode/cli@2.1.2 \
+    && /opt/opencode/bin/opencode --version | tr -d '\r' | grep -Eq '^(opencode v|v)?2\.1\.2$'
 
 # Build executor thin client (gh/glab shim that forwards via UDS to proxy sidecar)
 FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:15c3098dc4639e8a0e6a1bc77b50964513a1d76dccae4b07b9808101c5addd04 AS executor-client-builder
@@ -17,12 +45,13 @@ RUN go mod download \
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
 # Core system deps + Python 3.12 (env-specific deps installed via presets)
-RUN dnf install -y --nodocs --allowerasing \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
     python3.12 python3.12-pip python3.12-devel \
     git \
     curl \
     jq \
     socat \
+    zstd \
     gcc \
     make \
     sqlite-devel \
@@ -39,7 +68,7 @@ RUN ln /usr/local/bin/executor-client /usr/local/bin/gh \
     && ln /usr/local/bin/executor-client /usr/local/bin/gpg
 
 # bubblewrap (sandbox runtime for Claude Code)
-RUN dnf install -y --nodocs libcap-devel \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs libcap-devel \
     && pip3.12 install meson ninja \
     && git clone --depth 1 --branch v0.11.1 https://github.com/containers/bubblewrap.git /tmp/bwrap \
     && cd /tmp/bwrap \
@@ -77,8 +106,22 @@ ENV GOPATH="/home/botuser/go"
 ENV CLAUDE_CODE_USE_VERTEX=1
 ENV CLOUD_ML_REGION=global
 
+# Coordinator production bundle and Node runtime. Python remains the default
+# execution engine until BOT_EXECUTION_ENGINE=coordinator is explicitly set.
+COPY --from=coordinator-builder /tmp/node-runtime /usr/local/bin/node
+COPY --from=coordinator-builder /tmp/node-runtime-libs/ /usr/lib64/
+RUN ldconfig
+COPY --from=coordinator-builder /build/coordinator/dist /home/botuser/app/coordinator/dist
+COPY --from=coordinator-builder /build/coordinator/node_modules /home/botuser/app/coordinator/node_modules
+COPY --from=coordinator-builder /build/coordinator/opencode-deployment.default.json /home/botuser/app/coordinator/opencode-deployment.default.json
+COPY --from=coordinator-builder /opt/opencode /opt/opencode
+RUN ln -sf /opt/opencode/bin/opencode /usr/local/bin/opencode
+ENV OPENCODE_EXPECTED_VERSION=2.1.2
+ENV COORDINATOR_METRICS_PORT=9091
+EXPOSE 9091
+
 # Copy bot config files
-COPY dev-bot/config.json dev-bot/CLAUDE.md dev-bot/.mcp.json dev-bot/entrypoint.sh ./
+COPY dev-bot/config.json dev-bot/.mcp.json dev-bot/entrypoint.sh ./
 COPY dev-bot/.claude/ .claude/
 
 # Dev-proxy source (used by dev-proxy preset to build Caddy from source)
@@ -99,7 +142,8 @@ ENV HOME=/home/botuser
 USER botuser
 
 # === INSTANCE CUSTOMIZATION ===
-# Runner repos extend the base image here via setup.sh and instance/ files.
+# Runner repos extend base image here via setup.sh and instance/ files. setup.sh runs as root
+# after preset installs; each custom DNF install must explicitly use the UBI-only repo flags above.
 USER 0
 
 # Run instance-specific build steps

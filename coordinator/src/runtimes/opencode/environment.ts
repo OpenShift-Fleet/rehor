@@ -1,4 +1,5 @@
 export const OPENCODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL" as const;
+export const OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT = "REHOR_VERTEX_PROXY_URL" as const;
 
 export const OPENCODE_BLOCKED_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
@@ -9,6 +10,7 @@ export const OPENCODE_BLOCKED_PASSTHROUGH = [
   "GPG_SIGNING_KEY",
   "JIRA_API_TOKEN",
   "JIRA_MCP_TOKEN",
+  // Legacy direct Jira auth identity; BOT_JIRA_EMAIL is only a bot identity.
   "JIRA_USERNAME",
   "OPENAI_API_KEY",
   "OPENCODE_CONFIG",
@@ -26,10 +28,15 @@ export const OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES = [
 ] as const;
 
 /** Additional provider/plugin variables permitted to pass through when referenced. */
-export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = ["REHOR_MODEL_PROXY_TOKEN"] as const;
+export const OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST = [
+  "REHOR_MODEL_PROXY_TOKEN",
+  "REHOR_MODEL_PROXY_URL",
+  OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT,
+] as const;
 
 export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "HOME",
+  "GIT_CONFIG_GLOBAL",
   OPENCODE_MCP_URL_ENVIRONMENT,
   "LANG",
   "LC_ALL",
@@ -44,9 +51,34 @@ export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
   "XDG_STATE_HOME",
 ] as const;
 
+/**
+ * Trusted operational values copied automatically when present, exactly
+ * like the baseline allowlist: service coordinates, bot/fork identities, board
+ * and config selection, and notification settings. SLACK_WEBHOOK_URL is an
+ * intentional configured-credential exception preserving the existing
+ * agent -> helper -> MCP webhook payload contract. They never require passthrough
+ * opt-in, and absent values stay absent. This is an exact-name allowlist;
+ * it does not widen the provider allowlist or admit prefix matches.
+ */
+export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
+  "BOT_BOARD_ID",
+  "BOT_BOARD_NAME",
+  "BOT_CONFIG_PATH",
+  "BOT_INSTANCE_ID",
+  "BOT_JIRA_EMAIL",
+  "BOT_MEMORY_URL",
+  "EXECUTOR_ADDR",
+  "GH_RELEASE_UPLOAD_URL",
+  "GH_USER_NAME",
+  "GL_USER_NAME",
+  "SLACK_NOTIFY_MODE",
+  "SLACK_WEBHOOK_URL",
+] as const;
+
 const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 const BLOCKED_PASSTHROUGH_PREFIXES = OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES;
 const ENVIRONMENT_ALLOWLIST = OPENCODE_ENVIRONMENT_ALLOWLIST;
+const OPERATIONAL_ENVIRONMENT_ALLOWLIST = OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST;
 const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
   OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
 );
@@ -81,6 +113,17 @@ export interface OpenCodeEnvironmentOptions {
   databasePath?: string;
 }
 
+/** Resolve the existing Vertex auth proxy, keeping Google credentials off the agent. */
+export function resolveVertexProxyUrl(environment: NodeJS.ProcessEnv): string {
+  const explicit =
+    environment[OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT]?.trim() ||
+    environment.ANTHROPIC_VERTEX_BASE_URL?.trim();
+  if (explicit) return explicit;
+
+  const host = environment.PROXY_HOST?.trim() || environment.PROXY_NAME?.trim() || "devbot-proxy";
+  return /^https?:\/\//i.test(host) ? host : `http://${host}:8443`;
+}
+
 export type OpenCodeFetch = (request: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 /**
@@ -98,13 +141,18 @@ export function buildOpenCodeEnvironment(
   const environment: Record<string, string> = {};
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
+  for (const name of OPERATIONAL_ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
   for (const name of options.passthrough ?? []) {
     if (
       PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&
       !BLOCKED_PASSTHROUGH.has(name) &&
       !BLOCKED_PASSTHROUGH_PREFIXES.some((prefix) => name.startsWith(prefix))
     ) {
-      copyIfPresent(environment, base, name);
+      if (name === OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT) {
+        environment[name] = resolveVertexProxyUrl(base);
+      } else {
+        copyIfPresent(environment, base, name);
+      }
     }
   }
 
@@ -117,10 +165,16 @@ export function buildOpenCodeEnvironment(
   setProxyAlias(environment, "HTTPS_PROXY", "https_proxy", proxy.httpsProxy);
 
   const inheritedNoProxy = normalizeHosts(proxy.noProxy);
+  const vertexProxyHost = (options.passthrough ?? []).includes(
+    OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT,
+  )
+    ? getHostname(resolveVertexProxyUrl(base))
+    : undefined;
   const noProxyHosts = [
     ...DEFAULT_NO_PROXY_HOSTS,
     ...(options.noProxyHosts ?? []),
     ...inheritedNoProxy,
+    ...(vertexProxyHost === undefined ? [] : [vertexProxyHost]),
   ];
   const noProxy = [...new Set(noProxyHosts.filter(Boolean))].join(",");
   environment.NO_PROXY = noProxy;
@@ -155,6 +209,14 @@ function setProxyAlias(
   }
   target[upper] = value;
   target[lower] = value;
+}
+
+function getHostname(value: string): string | undefined {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeHosts(value: string | readonly string[] | undefined): string[] {

@@ -59,6 +59,10 @@ paths:
         - name: repo
           in: query
           schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to summarize all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
         - name: decision
           in: query
           schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
@@ -84,6 +88,50 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /api/task-outcomes/trends:
+    get:
+      operationId: getTaskOutcomeTrends
+      summary: Get task outcome counts grouped by UTC calendar month
+      parameters:
+        - name: from
+          in: query
+          description: Inclusive UTC YYYY-MM-DD start date.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive UTC YYYY-MM-DD end date.
+          schema: { type: string, format: date }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Chronological monthly task and outcome counts, including zero-filled months.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeTrends' }
+        '400':
+          description: Invalid filter or date range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   /api/task-outcomes/tasks:
     get:
       operationId: listTaskOutcomes
@@ -92,6 +140,10 @@ paths:
         - name: repo
           in: query
           schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include delivery, monitoring, and grooming tasks.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
         - name: decision
           in: query
           schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
@@ -821,7 +873,7 @@ components:
 
     TaskOutcomeTask:
       type: object
-      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
+      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, category, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
       properties:
         taskId: { type: integer }
         externalKey: { type: string }
@@ -837,6 +889,12 @@ components:
             archivedAt: { type: string, format: date-time, nullable: true }
           additionalProperties: false
         state: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: >-
+            Work category. Monitoring is watch-duty work; grooming is ticket assessment/preparation.
+            Both are shown separately and excluded from delivery acceptance rate and outcome coverage.
         repo: { type: string, nullable: true }
         canonicalRepositories: { type: array, items: { type: string } }
         title: { type: string, nullable: true }
@@ -882,14 +940,44 @@ components:
         offset: { type: integer, minimum: 0 }
       additionalProperties: false
 
+    GroomingOutcomes:
+      type: object
+      description: Grooming-category states only; acceptance requires evidence, never task existence or done status alone.
+      required: [acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+      properties:
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+      additionalProperties: false
+
     TaskOutcomeRepositorySummary:
       type: object
-      required: [repo, acceptanceRate, taskCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
+      required: [repo, acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
       properties:
         repo: { type: string }
-        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        acceptanceRate:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+        outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
         taskCount: { type: integer, minimum: 0 }
+        deliveryTaskCount: { type: integer, minimum: 0 }
+        monitoringCount:
+          type: integer
+          minimum: 0
+          description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+        groomingCount:
+          type: integer
+          minimum: 0
+          description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+        groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
         acceptedCount: { type: integer, minimum: 0 }
+        acceptedNoOpCount: { type: integer, minimum: 0 }
         rejectedCount: { type: integer, minimum: 0 }
         obsoleteCount: { type: integer, minimum: 0 }
         inconclusiveCount: { type: integer, minimum: 0 }
@@ -901,7 +989,7 @@ components:
 
     TaskOutcomeSummary:
       type: object
-      required: [period, summary, repositories, freshness, backfill]
+      required: [period, summary, repositories, metricDefinitions, freshness, backfill]
       properties:
         period:
           type: object
@@ -912,12 +1000,29 @@ components:
           additionalProperties: false
         summary:
           type: object
-          required: [acceptanceRate, taskCount, repositoryCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+          required: [acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, repositoryCount, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
           properties:
-            acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+            acceptanceRate:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 1
+              description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+            outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
             taskCount: { type: integer, minimum: 0 }
+            deliveryTaskCount: { type: integer, minimum: 0 }
+            monitoringCount:
+              type: integer
+              minimum: 0
+              description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+            groomingCount:
+              type: integer
+              minimum: 0
+              description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+            groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
             repositoryCount: { type: integer, minimum: 0 }
             acceptedCount: { type: integer, minimum: 0 }
+            acceptedNoOpCount: { type: integer, minimum: 0 }
             rejectedCount: { type: integer, minimum: 0 }
             obsoleteCount: { type: integer, minimum: 0 }
             inconclusiveCount: { type: integer, minimum: 0 }
@@ -925,6 +1030,15 @@ components:
             wipCount: { type: integer, minimum: 0 }
           additionalProperties: false
         repositories: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeRepositorySummary' } }
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, outcomeCoverage, monitoring, grooming]
+          properties:
+            acceptanceRate: { type: string }
+            outcomeCoverage: { type: string }
+            monitoring: { type: string }
+            grooming: { type: string }
+          additionalProperties: false
         freshness:
           type: object
           required: [generatedAt]
@@ -940,6 +1054,53 @@ components:
           additionalProperties: false
       additionalProperties: false
 
+    TaskOutcomeTrendMonth:
+      type: object
+      required: [month, taskCount, deliveryCount, monitoringCount, groomingCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, acceptanceRate]
+      properties:
+        month: { type: string, pattern: '^\d{4}-\d{2}$' }
+        taskCount: { type: integer, minimum: 0 }
+        deliveryCount: { type: integer, minimum: 0 }
+        monitoringCount: { type: integer, minimum: 0 }
+        groomingCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+      additionalProperties: false
+
+    TaskOutcomeTrends:
+      type: object
+      required: [period, months, freshness, metricDefinitions]
+      properties:
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+          additionalProperties: false
+        months:
+          type: array
+          items: { $ref: '#/components/schemas/TaskOutcomeTrendMonth' }
+        freshness:
+          type: object
+          required: [generatedAt]
+          properties:
+            generatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, month]
+          properties:
+            acceptanceRate: { type: string }
+            month: { type: string }
+          additionalProperties: false
+      additionalProperties: false
+
     TaskItem:
       type: object
       required:
@@ -949,6 +1110,7 @@ components:
         - source_type
         - artifacts
         - status
+        - category
         - repo
         - branch
         - created_at
@@ -970,6 +1132,10 @@ components:
               url: { type: string }
               type: { type: string }
         status: { type: string }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: Monitoring watch-duty and grooming ticket assessment/preparation are excluded from delivery outcome metrics.
         repo: { type: string }
         branch: { type: string }
         title: { type: string, nullable: true }
@@ -1031,6 +1197,8 @@ components:
         num_turns: { type: integer }
         duration_ms: { type: integer }
         cost_usd: { type: number }
+        cost_status: { type: string, nullable: true, enum: [provider, estimated, unknown, null] }
+        cost_incomplete: { type: boolean }
         input_tokens: { type: integer }
         output_tokens: { type: integer }
         cache_read_tokens: { type: integer }
@@ -1104,6 +1272,8 @@ components:
         total_turns: { type: integer }
         idle_cycles: { type: integer }
         error_cycles: { type: integer }
+        estimated_cycles: { type: integer }
+        incomplete_cycles: { type: integer }
 
     BotStatus:
       type: object

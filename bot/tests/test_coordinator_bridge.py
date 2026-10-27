@@ -1,6 +1,53 @@
 """Tests for the JSON bridge used by the TypeScript coordinator."""
 
+import json
+
+import pytest
+
 from bot.coordinator_bridge import handle
+
+
+def test_bridge_main_logs_info_to_stderr_without_corrupting_stdout(tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow" / "preflight"
+    workflow_dir.mkdir(parents=True)
+    _write_script(workflow_dir / "01-test.py", "skip", "nothing to do")
+    result = subprocess.run(
+        [sys.executable, "-m", "bot.coordinator_bridge"],
+        input=json.dumps({"operation": "preflight", "scriptDir": str(tmp_path), "workflow": "test-workflow"}),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout)["result"]["action"] == "skip"
+    records = [json.loads(line) for line in result.stderr.splitlines()]
+    assert any(record["level"] == "INFO" and record["logger"] == "bot.preflight" for record in records)
+    messages = [record["message"] for record in records if record["logger"] == "bot.preflight"]
+    assert "Preflight 01-test.py starting" in messages
+    assert any(message.startswith("Preflight 01-test.py → skip (13 chars) in ") for message in messages)
+
+
+def test_bridge_main_logs_own_errors_as_json():
+    import json
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "bot.coordinator_bridge"],
+        input=json.dumps({"operation": "unsupported"}),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    record = json.loads(result.stderr)
+    assert record["level"] == "ERROR"
+    assert record["logger"] == "bot.coordinator_bridge"
+    assert record["message"].startswith("coordinator bridge failed: operation must be")
 
 
 def _write_script(path, status, content):
@@ -61,7 +108,21 @@ def test_preflight_bridge_returns_null_when_no_scripts(tmp_path):
     assert result is None
 
 
-def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "runtime, provider, json_budget, env_budget, expected_budget",
+    [
+        ("opencode", "rehor-openai", None, None, 200),
+        ("opencode", "rehor-openai", 275, None, 275),
+        ("opencode", "rehor-openai", 275, "450", 450),
+        ("opencode", "vertex", None, None, 200),
+        ("opencode", "vertex", 275, "450", 450),
+        ("claude", "vertex", None, None, 10),
+        ("claude", "vertex", 275, "450", 10),
+    ],
+)
+def test_prepare_bridge_reuses_runner_config_sequence(
+    tmp_path, monkeypatch, caplog, runtime, provider, json_budget, env_budget, expected_budget
+):
     import bot.merge as merge
     import bot.run as runner
 
@@ -70,7 +131,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     profile_dir.mkdir(parents=True)
     shared_dir.mkdir(parents=True)
     (profile_dir / "instance.yaml").write_text(
-        "workflow: test-workflow\nsource: github\nenvs: [github]\nclaude_md:\n  strategy: append\n"
+        "workflow: test-workflow\nsource: github\nenvs: [github]\n"
+        f"runtime: {runtime}\nprovider: {provider}\n"
+        "claude_md:\n  strategy: append\n"
     )
     workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
     workflow_dir.mkdir(parents=True)
@@ -91,14 +154,42 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         '"chrome-devtools": {"command": "chrome-devtools-mcp"}}}'
     )
     (tmp_path / "config.json").write_text(
-        '{"claude": {"model": "test-model", "maxTurns": 10}, '
+        '{"claude": {"model": "claude-test-model", "maxTurns": 10}, '
+        '"opencode": {"model": "test-model"}, '
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )
+    if json_budget is not None:
+        config_path = tmp_path / "config.json"
+        raw = json.loads(config_path.read_text())
+        raw["opencode"]["maxToolCalls"] = json_budget
+        config_path.write_text(json.dumps(raw))
+    monkeypatch.delenv("REHOR_OPENCODE_MAX_TOOL_CALLS", raising=False)
+    if env_budget is not None:
+        monkeypatch.setenv("REHOR_OPENCODE_MAX_TOOL_CALLS", env_budget)
 
+    calls = []
+    git_config_global = str(tmp_path / ".gitconfig")
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
     monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
-    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, shared_dir))
-    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
+
+    def setup_git(script_dir):
+        calls.append(("setup_git", script_dir))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", git_config_global)
+
+    monkeypatch.setattr(runner, "setup_git", setup_git)
+
+    def sync_config_repo(label):
+        calls.append(("sync", label))
+        return profile_dir, shared_dir
+
+    monkeypatch.setattr(runner, "sync_config_repo", sync_config_repo)
+    assembled_claude_instructions = []
+    monkeypatch.setattr(
+        runner,
+        "assemble_claude_md",
+        lambda *args: assembled_claude_instructions.append(args),
+    )
     monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
     monkeypatch.setattr(merge, "install_skills", lambda *args: [])
 
@@ -111,8 +202,9 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
         }
     )
 
-    assert result["model"] == "test-model"
-    assert result["maxTurns"] == 10
+    assert calls[:2] == [("setup_git", tmp_path), ("sync", "hcc-ai-framework")]
+    assert result["model"] == ("test-model" if provider == "rehor-openai" else "claude-test-model")
+    assert result["maxTurns"] == expected_budget
     assert result["intervalSeconds"] == 300
     assert result["idleIntervalSeconds"] == 60
     assert result["cycleTimeoutSeconds"] == 1800
@@ -120,6 +212,10 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     assert result["workflow"] == "test-workflow"
     assert result["source"] == "github"
     assert result["envs"] == ["github"]
+    assert result["gitConfigGlobal"] == git_config_global
+    assert result["runtimeId"] == runtime
+    assert len(assembled_claude_instructions) == (1 if runtime == "claude" else 0)
+    assert result["providerId"] == provider
     assert result["activeEnvs"] == ["github"]
     assert result["claudeMdStrategy"] == "append"
     assert result["remoteAgentDir"] == str(profile_dir)
@@ -144,6 +240,24 @@ def test_prepare_bridge_reuses_runner_config_sequence(tmp_path, monkeypatch):
     }
     assert result["optionalMcpServers"] == ["hcc-patternfly-data-view"]
     assert "Bash" in result["allowedTools"]
+    from bot.config import ALLOWED_TOOLS
+
+    assert "LSP" in ALLOWED_TOOLS
+    if runtime == "opencode":
+        assert result["allowedTools"] == [tool for tool in ALLOWED_TOOLS if tool != "LSP"]
+        assert "OpenCode V2.1.2 does not support LSP" in caplog.text
+    else:
+        assert result["allowedTools"] == ALLOWED_TOOLS
+        assert "does not support LSP" not in caplog.text
+
+
+def test_runtime_allowlist_only_omits_known_unsupported_tool(monkeypatch):
+    import bot.config as config
+    from bot.coordinator_bridge import _allowed_tools_for_runtime
+
+    monkeypatch.setattr(config, "ALLOWED_TOOLS", ["Read", "LSP", "UnknownFutureTool"])
+    assert _allowed_tools_for_runtime("opencode") == ["Read", "UnknownFutureTool"]
+    assert _allowed_tools_for_runtime("claude") == ["Read", "LSP", "UnknownFutureTool"]
 
 
 def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
@@ -166,6 +280,8 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
 
     monkeypatch.delenv("BOT_MODEL", raising=False)
     monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    # The real setup_git exports GIT_CONFIG_GLOBAL for the whole test process.
+    monkeypatch.setattr(runner, "setup_git", lambda script_dir: None)
     monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, None))
     monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
     monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
@@ -185,6 +301,41 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
 
     (profile_dir / "instance.yaml").write_text("workflow: test-workflow\nmodel: pinned-model\n")
     assert handle(request)["model"] == "pinned-model"
+
+
+def test_prepare_bridge_validates_before_installing_skills(tmp_path, monkeypatch):
+    """A missing workflow is a structured bridge error and leaves skills untouched."""
+    import pytest
+
+    import bot.merge as merge
+    import bot.run as runner
+    from bot.coordinator_bridge import BridgeError
+
+    profile_dir = tmp_path / "profile" / "agent"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "instance.yaml").write_text("workflow: missing-workflow\n")
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "global-model", "maxTurns": 10}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60}, "jira": {"boardKey": "TEST"}}'
+    )
+    installed = []
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(runner, "setup_git", lambda script_dir: None)
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, None))
+    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: installed.append("claude_md"))
+    monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
+    monkeypatch.setattr(merge, "install_skills", lambda *args: installed.append("skills") or [])
+
+    with pytest.raises(BridgeError, match="validate_instance_config failed"):
+        handle(
+            {
+                "protocolVersion": 1,
+                "operation": "prepare",
+                "scriptDir": str(tmp_path),
+                "label": "hcc-ai-framework",
+            }
+        )
+    assert installed == []
 
 
 def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
@@ -208,7 +359,7 @@ def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypa
     assert references["jira"]["headers"]["Authorization"] == "Bearer ${JIRA_TOKEN}"
 
 
-def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_path):
+def test_optional_mcp_servers_come_from_persona_and_all_env_manifests(tmp_path):
     from pathlib import Path
 
     from bot.config import discover_optional_mcp_servers
@@ -217,20 +368,132 @@ def test_optional_mcp_servers_come_from_persona_and_active_env_manifests(tmp_pat
     (tmp_path / "personas" / "frontend" / "mcp.json").write_text(
         '{"mcpServers": {"persona-mcp": {"command": "persona-mcp"}}}'
     )
-    env_dir = tmp_path / "presets" / "envs" / "browser"
-    env_dir.mkdir(parents=True)
-    (env_dir / "manifest.yaml").write_text("provides:\n  mcp_servers:\n    browser-mcp:\n      type: stdio\n")
+    for env, server in (("browser", "browser-mcp"), ("patternfly", "patternfly-mcp")):
+        env_dir = tmp_path / "presets" / "envs" / env
+        env_dir.mkdir(parents=True)
+        (env_dir / "manifest.yaml").write_text(f"provides:\n  mcp_servers:\n    {server}:\n      type: stdio\n")
 
-    assert discover_optional_mcp_servers(tmp_path, ["browser"]) == ["browser-mcp", "persona-mcp"]
+    assert discover_optional_mcp_servers(tmp_path) == ["browser-mcp", "patternfly-mcp", "persona-mcp"]
 
     repository_root = Path(__file__).resolve().parents[2]
-    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root, ["browser"])
+    assert "chrome-devtools" in discover_optional_mcp_servers(repository_root)
+
+
+def test_allowed_mcp_wildcards_are_configured_or_optional_without_envs():
+    """An instance with no envs (onboarding runs envs: [_none]) must still render
+    an OpenCode config: every MCP server named in ALLOWED_TOOLS has to be either
+    configured by the project .mcp.json or optional (REHOR-167)."""
+    from pathlib import Path
+
+    from bot.config import ALLOWED_TOOLS, discover_optional_mcp_servers, load_mcp_servers
+
+    repository_root = Path(__file__).resolve().parents[2]
+    configured = set(load_mcp_servers(repository_root, resolve_env=False, include_project=True))
+    optional = set(discover_optional_mcp_servers(repository_root))
+    referenced = {tool.split("__")[1] for tool in ALLOWED_TOOLS if tool.startswith("mcp__")}
+
+    assert referenced - configured - optional == set()
+
+
+def test_bridge_maintenance_operations_preserve_idle_and_cleanup_hooks(tmp_path, monkeypatch):
+    import bot.idle_reminder as idle_reminder
+    import bot.run as runner
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    calls = []
+    monkeypatch.setattr(runner, "_try_slack_digest", lambda: calls.append(("digest",)))
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_skip",
+        lambda *args, **kwargs: calls.append(("skip", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        idle_reminder,
+        "on_preflight_start",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+
+    def cleanup_between_cycles(script_dir):
+        calls.append(("cleanup", script_dir))
+        return 4096
+
+    monkeypatch.setattr(runner, "cleanup_between_cycles", cleanup_between_cycles)
+
+    request_base = {"protocolVersion": 1, "scriptDir": str(tmp_path), "instanceId": "instance-1"}
+    handle({"protocolVersion": 1, "scriptDir": str(tmp_path), "operation": "scheduled_maintenance"})
+    handle(
+        {
+            **request_base,
+            "operation": "idle_skip",
+            "idleCycleLimit": 4,
+            "cooldownSeconds": 3600,
+        }
+    )
+    handle({**request_base, "operation": "idle_start"})
+    cleanup = handle({"protocolVersion": 1, "operation": "cleanup", "scriptDir": str(tmp_path)})
+
+    assert cleanup == {"diskFreeMb": 4096}
+    assert calls == [
+        ("digest",),
+        ("skip", ("instance-1",), {"idle_cycle_limit": 4, "cooldown_seconds": 3600}),
+        ("start", ("instance-1",), {}),
+        ("cleanup", tmp_path),
+    ]
 
 
 def test_bridge_rejects_unknown_operation():
     try:
         handle({"protocolVersion": 1, "operation": "unknown"})
     except ValueError as exc:
-        assert str(exc) == "operation must be 'preflight' or 'prepare'"
+        assert (
+            str(exc) == "operation must be preflight, prepare, scheduled_maintenance, idle_skip, idle_start, or cleanup"
+        )
     else:
         raise AssertionError("unknown operation should fail")
+
+
+def test_scheduled_maintenance_keeps_bridge_stdout_machine_readable(tmp_path, monkeypatch, capsys):
+    import io
+    import json
+    import sys
+
+    import bot.run as runner
+    from bot import coordinator_bridge
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://example.invalid/slack")
+    monkeypatch.setenv("SLACK_DIGEST_HOUR", "99")
+    request = {
+        "protocolVersion": 1,
+        "operation": "scheduled_maintenance",
+        "scriptDir": str(tmp_path),
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request)))
+
+    assert coordinator_bridge.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "protocolVersion": 1,
+        "ok": True,
+        "result": None,
+    }
+
+
+def test_bridge_drops_httpx_request_logs_but_keeps_warnings(monkeypatch, capsys):
+    import io
+    import json
+    import logging
+    import sys
+
+    from bot import coordinator_bridge
+
+    def fake_handle(_request):
+        logging.getLogger("httpx").info('HTTP Request: GET http://memory/instances/x "HTTP/1.1 200 OK"')
+        logging.getLogger("httpx").warning("httpx warning")
+        return None
+
+    monkeypatch.setattr(coordinator_bridge, "handle", fake_handle)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"protocolVersion": 1})))
+
+    assert coordinator_bridge.main() == 0
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert [r["message"] for r in records if r["logger"] == "httpx"] == ["httpx warning"]

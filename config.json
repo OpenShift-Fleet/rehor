@@ -6,6 +6,10 @@
     "maxTurns": 100,
     "model": "claude-opus-4-6"
   },
+  "opencode": {
+    "maxToolCalls": 200,
+    "model": "gpt-6-luna"
+  },
   "polling": {
     "intervalSeconds": 300,
     "idleIntervalSeconds": 300,

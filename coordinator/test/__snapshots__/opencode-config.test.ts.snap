@@ -1,0 +1,140 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`native OpenCode V2 config > matches native deployment snapshots and identical default/example inputs 1`] = `
+{
+  "config": {
+    "$schema": "https://opencode.ai/config.json",
+    "agents": {
+      "title": {
+        "model": "rehor-openai/gpt-6-luna",
+      },
+    },
+    "mcp": {
+      "servers": {},
+    },
+    "model": "rehor-openai/gpt-6-luna",
+    "permissions": [
+      {
+        "action": "*",
+        "effect": "deny",
+        "resource": "*",
+      },
+      {
+        "action": "read",
+        "effect": "allow",
+        "resource": "*",
+      },
+      {
+        "action": "external_directory",
+        "effect": "deny",
+        "resource": "*",
+      },
+    ],
+    "plugins": [
+      "-opencode.tools",
+      "-opencode.tools.mcp-resources",
+    ],
+    "policies": [
+      {
+        "action": "provider.use",
+        "effect": "deny",
+        "resource": "*",
+      },
+      {
+        "action": "provider.use",
+        "effect": "allow",
+        "resource": "rehor-openai",
+      },
+      {
+        "action": "tool.use",
+        "effect": "deny",
+        "resource": "external_directory:*",
+      },
+    ],
+    "providers": {
+      "rehor-openai": {
+        "models": {
+          "gpt-6-luna": {
+            "capabilities": {
+              "reasoning": {
+                "supported": true,
+              },
+            },
+            "name": "GPT-6 Luna",
+          },
+        },
+        "name": "Rehor OpenAI Responses",
+        "package": "@opencode/ai/providers/openai/responses",
+        "settings": {
+          "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
+          "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        },
+      },
+      "rehor-openai-chat": {
+        "models": {
+          "gpt-4.1": {
+            "name": "GPT-4.1",
+          },
+          "gpt-4.1-mini": {
+            "name": "GPT-4.1 Mini",
+          },
+          "gpt-4o": {
+            "capabilities": {
+              "reasoning": {
+                "supported": false,
+              },
+            },
+            "limit": {
+              "context": 128000,
+              "output": 16384,
+            },
+            "name": "GPT-4o",
+          },
+        },
+        "name": "Rehor OpenAI Chat Completions",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+          "apiKey": "{env:REHOR_MODEL_PROXY_TOKEN}",
+          "baseURL": "{env:REHOR_MODEL_PROXY_URL}",
+        },
+      },
+      "vertex": {
+        "models": {
+          "claude-haiku-4-5@20251001": {
+            "limit": {
+              "context": 200000,
+              "output": 32000,
+            },
+            "name": "Claude Haiku 4.5",
+          },
+          "claude-opus-4-6": {
+            "limit": {
+              "context": 200000,
+              "output": 32000,
+            },
+            "name": "Claude Opus 4.6",
+          },
+          "claude-sonnet-4-6": {
+            "limit": {
+              "context": 200000,
+              "output": 32000,
+            },
+            "name": "Claude Sonnet 4.6",
+          },
+        },
+        "name": "Claude on Vertex via Rehor proxy",
+        "package": "aisdk:<coordinator-vertex-provider>",
+        "settings": {
+          "baseURL": "{env:REHOR_VERTEX_PROXY_URL}",
+        },
+      },
+    },
+    "share": "disabled",
+    "update": "disable",
+  },
+  "packageLock": {
+    "lockfileVersion": 1,
+    "packages": {},
+  },
+}
+`;

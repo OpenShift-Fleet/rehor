@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     source_url      TEXT,
     artifacts       JSONB DEFAULT '[]',
     status          task_status NOT NULL DEFAULT 'in_progress',
+    category        TEXT NOT NULL DEFAULT 'delivery' CHECK (category IN ('delivery', 'monitoring', 'grooming')),
     repo            TEXT,
     branch          TEXT,
     title           TEXT,
@@ -175,6 +176,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS outcome_report_id BIGINT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'delivery'
+    CHECK (category IN ('delivery', 'monitoring', 'grooming'));
+-- ADD COLUMN IF NOT EXISTS cannot widen the CHECK on deployed two-category schemas.
+-- Replace the original named constraint atomically; repeated installations are safe.
+DO $$ BEGIN
+    ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_category_check;
+    ALTER TABLE tasks ADD CONSTRAINT tasks_category_check
+        CHECK (category IN ('delivery', 'monitoring', 'grooming'));
+END $$;
+COMMENT ON COLUMN tasks.category IS
+    'Reporting category: delivery contributes to delivery metrics; monitoring watch-duty and grooming ticket preparation are reported separately.';
 
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
 UPDATE tasks
@@ -322,6 +334,22 @@ DO $$ BEGIN
     ALTER TABLE cycles ADD COLUMN IF NOT EXISTS instance_id TEXT;
 EXCEPTION
     WHEN duplicate_column THEN NULL;
+END $$;
+
+-- Nullable status preserves legacy records without inventing billing provenance.
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS cost_status TEXT;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS cost_incomplete BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Unknown amounts are excluded from every existing SUM/AVG without changing
+-- analytics queries. Repair earlier inconsistent rows before enforcing the invariant.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                   WHERE conrelid = 'cycles'::regclass AND conname = 'cycles_unknown_cost_zero') THEN
+        UPDATE cycles SET cost_usd = 0, cost_incomplete = TRUE
+        WHERE cost_status = 'unknown' AND (cost_usd <> 0 OR NOT cost_incomplete);
+        ALTER TABLE cycles ADD CONSTRAINT cycles_unknown_cost_zero
+            CHECK (cost_status IS DISTINCT FROM 'unknown' OR cost_usd = 0);
+    END IF;
 END $$;
 
 CREATE TABLE IF NOT EXISTS slack_notifications (

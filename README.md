@@ -5,7 +5,7 @@ implement code changes, open PRs/MRs, and maintain them through review. The
 default `jira-sprint` workflow uses groomed Jira tickets; custom workflows can
 use other sources and decision loops. Řehoř runs in a polling loop using the
 Claude Agent SDK (Python), with optional Jira, GitHub/GitLab, and persistent
-memory integrations.
+memory integrations. The opt-in TypeScript coordinator supports OpenCode V2 through the single runtime ID `opencode`, with client and CLI pinned to `2.1.2`. Migrate Claude SDK instances directly to V2 using the [migration guide](docs/migrations/opencode-migration.md); retain the previous Claude image/config for rollback.
 
 ## Documentation
 
@@ -15,14 +15,17 @@ memory integrations.
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | Current system, coordinator migration boundary, credential isolation |
 | [Coordinator](coordinator/README.md) | Provider-neutral runtime contract, invariants, and Python compatibility |
+| [Nx workspace foundation](docs/nx-workspace.md) | Opt-in Nx tooling for future projects; existing projects remain unmanaged |
+| [OpenCode V2 Migration](docs/migrations/opencode-migration.md) | Direct Claude SDK migration, native profiles/policies, validation, and rollback |
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
 | [Onboarding a New Instance](docs/onboarding-new-instance.md) | Step-by-step guide for adding a new bot instance |
+| [OpenShell deployment](deploy/sandbox-template.example.yaml) | OpenShell Sandbox template and filesystem/network boundaries |
 | [Instance Configuration](docs/presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Presets](docs/presets/README.md) | Preset system — env presets (node, go, browser...) and workflow presets |
 | [Custom Workflows](docs/presets/custom-workflows.md) | Guide to building custom workflows for your instance |
 | [Custom Preflight Scripts](docs/presets/custom-preflight.md) | Guide to writing pre-session data-gathering scripts |
-| [Scheduling](docs/scheduling.md) | KEDA cron scaling for bot instances (business hours only) |
+| [Scheduling](docs/scheduling.md) | OpenShell scheduling and legacy KEDA cron scaling |
 
 ## Prerequisites
 
@@ -55,7 +58,7 @@ JIRA_API_TOKEN=your-jira-api-token
 # Use personal application-default credentials locally, or a service account
 # key for deployments. See SETUP.md for both flows.
 GOOGLE_SA_KEY_B64=$(base64 < sa-key.json)
-VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
+VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5,claude-haiku-4-5@20251001
 
 # GitHub — bot PAT for gh CLI
 GH_TOKEN=ghp_...
@@ -222,7 +225,7 @@ For creating **new bot instances** with custom personas and config, the repo inc
 
 Runner repos add dev-bot as a submodule and build from `Dockerfile.runner`, which provides two extension points:
 
-- **`setup.sh`** (required) — custom build steps (install packages, write config, etc.)
+- **`setup.sh`** (required) — custom build steps; runs as root after preset installs. Every custom DNF install must explicitly use `--disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'`; Dockerfile repo flags do not carry into this script.
 - **`instance/`** (optional) — extra files COPYed to `/home/botuser/app/instance/`
 
 ### Setting up a runner repo
@@ -240,7 +243,9 @@ cat > setup.sh << 'EOF'
 #!/bin/bash
 set -e
 echo "my-bot-instance" > /home/botuser/app/.instance-id
-# Add custom build steps here (dnf install, config, etc.)
+# Custom DNF installs must use UBI-only repos:
+# dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs <package>
+# Add other custom build steps here (config, etc.)
 EOF
 
 # 4. Create instance/ directory (optional)
@@ -254,9 +259,9 @@ To update to the latest dev-bot: `git submodule update --remote dev-bot`
 
 ## Running the services
 
-### Option A: OpenShift (recommended)
+### Option A: OpenShift with OpenShell (recommended)
 
-The production deployment. Bot, proxy, and memory server run as separate pods with full credential isolation and network policies. See `deploy/template.yaml` and `OPERATIONS.md` for details.
+The production deployment. Shared proxy and memory server run as services; each bot runs through OpenShell `SandboxTemplate` + `SandboxWarmPool`, scheduled by KEDA. See `deploy/template.yaml`, `deploy/sandbox-template.example.yaml`, and `OPERATIONS.md`.
 
 ### Option B: Bot on host (advanced)
 
@@ -283,6 +288,7 @@ make memory-server-stop         # Stop
 ```
 
 Dashboard at **http://localhost:8080** — tasks, memories, semantic search, 3D embedding map. Live WebSocket updates.
+
 
 ### Browser for visual verification
 
@@ -360,6 +366,10 @@ The bot has persistent memory via MCP:
 
 - **Task tracking** — structured records of active work with status, PR links, and progress metadata. Hard cap of 10 concurrent active tasks. When interrupted mid-cycle, the bot saves progress (`last_step`, `next_step`, `files_changed`) so the next cycle resumes seamlessly.
 - **RAG memory** — vector-searchable knowledge base of learnings from completed tickets, PR review feedback, and codebase patterns. The bot searches this before starting any new ticket, so it improves over time.
+
+### Team memory (human Claude Code)
+
+A separate read-only MCP endpoint (`:8081`) exposes only `memory_search` and `memory_list` so local CLI, IDE extensions, and Claude can query the same Postgres/pgvector store without write or task tools.
 
 ### Exporting and importing memory
 
@@ -475,7 +485,9 @@ dev-bot/
     costs.py             # Cost tracking
     merge.py             # Remote config merge engine (protected-key registry)
   config.json            # Model, polling intervals, Jira config
-  CLAUDE.md              # Full agent instructions (the bot's brain)
+  presets/core/AGENTS.md # Canonical bot guidance; CLAUDE.md symlink for Claude
+  presets/workflows/     # Canonical workflow AGENTS.md files + Claude aliases
+  CLAUDE.md              # Local dev notes; Claude runtime overwrites with assembled guidance
   .mcp.json              # Project MCP servers (memory, browser)
   bot/mcp.json           # Jira MCP server definition
   .env                   # Credentials (not committed)

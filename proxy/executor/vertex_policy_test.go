@@ -65,9 +65,13 @@ func TestExtractModelInvalid(t *testing.T) {
 }
 
 func TestVertexPolicyCheck(t *testing.T) {
-	p := NewVertexPolicy([]string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"})
+	p := NewVertexPolicy([]string{
+		"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-haiku-4-5@20251001",
+	})
 
-	allowed := []string{"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"}
+	allowed := []string{
+		"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-haiku-4-5@20251001",
+	}
 	for _, m := range allowed {
 		if err := p.Check(m); err != nil {
 			t.Errorf("Check(%q) unexpected error: %v", m, err)
