@@ -1,0 +1,21 @@
+{
+  "name": "agent-dispatcher",
+  "projectType": "application",
+  "sourceRoot": "packages/agent-dispatcher/src",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm run build --workspace=@rehor/agent-dispatcher"
+      }
+    },
+    "run": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["build"],
+      "cache": false,
+      "options": {
+        "command": "npm run start --workspace=@rehor/agent-dispatcher"
+      }
+    }
+  }
+}
