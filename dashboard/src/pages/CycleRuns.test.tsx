@@ -76,6 +76,58 @@ async function openTranscript(transcript: string) {
   return id;
 }
 
+function mockCycleWithFilesChanged(filesChanged: unknown) {
+  mockFetchCycleRunsByTask.mockResolvedValue({
+    items: [
+      {
+        task_id: 1,
+        external_key: "RHCLOUD-001",
+        title: "Fix login bug",
+        task_status: "in_progress",
+        repo: "dashboard",
+        cycle_count: 1,
+        transcript_count: 0,
+        total_tool_calls: 1,
+        total_tokens: 100,
+        first_cycle: "2026-07-24T10:00:00Z",
+        last_cycle: "2026-07-24T10:00:00Z",
+      },
+    ],
+    total: 1,
+    limit: 20,
+    offset: 0,
+  });
+  mockFetchCycleRuns.mockResolvedValue({
+    items: [
+      {
+        id: 42,
+        task_id: 1,
+        cycle_type: "task_work",
+        instance_id: "dev-bot",
+        started_at: "2026-07-24T10:00:00Z",
+        finished_at: null,
+        tool_calls: 1,
+        tokens_used: 100,
+        progress: { last_step: "implemented", files_changed: filesChanged },
+        input_prompt: null,
+        created_at: "2026-07-24T10:00:00Z",
+        has_transcript: false,
+      },
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+  });
+
+  render(
+    <MemoryRouter initialEntries={["/instances/dev-bot/cycles?cycle=42&task_id=1"]}>
+      <Routes>
+        <Route path="/instances/:instanceId/cycles" element={<CycleRuns />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
 describe("CycleRuns page", () => {
   it("handles empty cycle runs response correctly", async () => {
     // Mock API returns paginated response with items array
@@ -145,6 +197,21 @@ describe("CycleRuns page", () => {
       expect(screen.getByText("RHCLOUD-001")).toBeInTheDocument();
       expect(screen.getByText("RHCLOUD-002")).toBeInTheDocument();
     });
+  });
+
+  it("renders a cycle with a scalar files_changed value", async () => {
+    mockCycleWithFilesChanged("src/login.ts");
+
+    await screen.findByText("Cycle #42");
+    expect(screen.getByText("src/login.ts")).toBeInTheDocument();
+    expect(screen.queryByText(/files changed$/)).not.toBeInTheDocument();
+  });
+
+  it("renders a cycle when files_changed is a count instead of a list", async () => {
+    mockCycleWithFilesChanged(20);
+
+    await screen.findByText("Cycle #42");
+    expect(screen.getByText("20 files changed")).toBeInTheDocument();
   });
 });
 
