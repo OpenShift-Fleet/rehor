@@ -15,6 +15,7 @@ memory integrations. The opt-in TypeScript coordinator supports OpenCode V2 thro
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | Current system, coordinator migration boundary, credential isolation |
 | [Coordinator](coordinator/README.md) | Provider-neutral runtime contract, invariants, and Python compatibility |
+| [Nx workspace foundation](docs/nx-workspace.md) | Opt-in Nx tooling for future projects; existing projects remain unmanaged |
 | [OpenCode V2 Migration](docs/migrations/opencode-migration.md) | Direct Claude SDK migration, native profiles/policies, validation, and rollback |
 | [Setup](SETUP.md) | Local development setup and configuration |
 | [Operations](OPERATIONS.md) | Production operations, monitoring, troubleshooting |
