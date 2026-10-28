@@ -1,6 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 
 import type { ContentHash } from "./domain/run";
+import { isOpenCodeRuntime } from "./domain/runtime-selection";
 import {
   type AssembledInstructions,
   assembleInstructions,
@@ -15,6 +16,11 @@ import {
   type PreflightResult,
   type PythonBridge,
 } from "./ports/python-bridge";
+import {
+  loadOpenCodeProjectConfig,
+  type OpenCodeProjectConfiguration,
+} from "./runtimes/opencode/project-config";
+import { stableJson } from "./runtimes/shared";
 
 export interface PrepareCycleInputOptions {
   scriptDir: string;
@@ -26,7 +32,8 @@ export interface PrepareCycleInputOptions {
 
 export interface PreparedCycleInput {
   config: ConfigPreparationResult;
-  instructions: AssembledInstructions;
+  instructions?: AssembledInstructions;
+  nativeConfig?: OpenCodeProjectConfiguration;
   preflight: PreflightResult | null;
   prompt?: string;
   instructionHash: ContentHash;
@@ -48,16 +55,29 @@ export async function prepareCycleInput(
     { scriptDir: options.scriptDir, label: options.label },
     options.signal,
   );
-  const instructions = await assembleInstructions({
-    scriptDir: options.scriptDir,
-    workflow: config.workflow,
-    strategy: options.strategy ?? config.claudeMdStrategy,
-    remoteAgentDir: config.remoteAgentDir,
-    sharedAgentDir: config.sharedAgentDir,
-  });
-  // Python assembles the default strategy; persist the final TS-selected layers
-  // so CLAUDE.md and instructionHash always describe the same content.
-  await writeFile(config.claudeMdPath, instructions.content);
+  const nativeConfig = isOpenCodeRuntime(config.runtimeId)
+    ? await loadOpenCodeProjectConfig(config.remoteAgentDir, {
+        scriptDir: options.scriptDir,
+        workflow: config.workflow,
+        sharedAgentDir: config.sharedAgentDir,
+      })
+    : undefined;
+  const instructions =
+    nativeConfig === undefined
+      ? await assembleInstructions({
+          scriptDir: options.scriptDir,
+          workflow: config.workflow,
+          strategy: options.strategy ?? config.claudeMdStrategy,
+          remoteAgentDir: config.remoteAgentDir,
+          sharedAgentDir: config.sharedAgentDir,
+        })
+      : undefined;
+  const instructionHash = instructions?.hash ?? sha256Hash(stableJson(nativeConfig));
+  if (instructions) {
+    await writeFile(config.claudeMdPath, instructions.content);
+  } else {
+    await rm(config.claudeMdPath, { force: true });
+  }
 
   const preflightRequest: PreflightRequest = {
     scriptDir: options.scriptDir,
@@ -72,6 +92,7 @@ export async function prepareCycleInput(
           label: options.label,
           instanceId: options.instanceId,
           preflightPrompt: preflight?.prompt,
+          runtimeId: config.runtimeId,
         })
       : undefined;
 
@@ -82,6 +103,8 @@ export async function prepareCycleInput(
   const configHash = sha256Hash(
     JSON.stringify({
       model: config.model,
+      runtimeId: config.runtimeId,
+      providerId: config.providerId,
       maxTurns: config.maxTurns,
       intervalSeconds: config.intervalSeconds,
       idleIntervalSeconds: config.idleIntervalSeconds,
@@ -91,21 +114,22 @@ export async function prepareCycleInput(
       source: config.source,
       envs: config.envs,
       activeEnvs: config.activeEnvs,
-      claudeMdStrategy: config.claudeMdStrategy,
+      ...(instructions ? { claudeMdStrategy: config.claudeMdStrategy } : {}),
       idleCycleLimit: config.idleCycleLimit,
       mcpServers: config.openCodeMcpServers,
       allowedTools: config.allowedTools ?? [],
       optionalMcpServers: config.optionalMcpServers ?? [],
-      instructionHash: instructions.hash.value,
+      instructionHash: instructionHash.value,
     }),
   );
 
   return {
     config,
     instructions,
+    nativeConfig,
     preflight,
     ...(prompt === undefined ? {} : { prompt }),
-    instructionHash: instructions.hash,
+    instructionHash,
     configHash,
     preflightPayloadRef,
   };

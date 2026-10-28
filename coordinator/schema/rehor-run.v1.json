@@ -74,6 +74,7 @@
     "instructionHash": { "$ref": "#/$defs/hash" },
     "configHash": { "$ref": "#/$defs/hash" },
     "policyHash": { "$ref": "#/$defs/hash" },
+    "runtimeId": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
     "provider": {
       "type": "object",
       "additionalProperties": false,

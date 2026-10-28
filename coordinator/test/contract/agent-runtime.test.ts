@@ -405,6 +405,8 @@ describe("RehorEvent contract", () => {
     (buffer.nested as Record<string, unknown>).turn = 2;
 
     expect(ledger.events[0]?.payload).toEqual({ state: "started", nested: { turn: 1 } });
+    expect(Object.isFrozen(ledger.events[0]?.payload)).toBe(true);
+    expect(Object.isFrozen(ledger.events[0]?.payload.nested)).toBe(true);
     expect(
       ledger.ingest(event({ payload: { state: "started", nested: { turn: 1 } } })).duplicate,
     ).toBe(true);
@@ -431,15 +433,18 @@ describe("RehorEvent contract", () => {
 
   it("rejects malformed terminal payloads", () => {
     expect(() => parseRehorEvent(event({ kind: "terminal", payload: {} }))).toThrow(
-      "event.payload.state must be a terminal state",
+      /\/payload must have required property 'state'/,
     );
     expect(() =>
       parseRehorEvent(event({ kind: "terminal", payload: { state: "unknown" } })),
-    ).toThrow("event.payload.state must be a terminal state");
+    ).toThrow(/\/payload\/state must be equal to one of the allowed values/);
+    expect(() =>
+      parseRehorEvent(event({ kind: "terminal", payload: { state: "completed", turns: -1 } })),
+    ).toThrow(/\/payload\/turns must be >= 0/);
 
     const ledger = new EventLedger(run);
     expect(() => ledger.ingest(event({ kind: "terminal", payload: {} }))).toThrow(
-      "event.payload.state must be a terminal state",
+      /\/payload must have required property 'state'/,
     );
   });
 
@@ -529,13 +534,28 @@ describe("RehorEvent contract", () => {
         ...usage,
         payload: { ...usage.payload, tokenCounts: { input: -1 } },
       }),
-    ).toThrow("event.payload.tokenCounts.input must be a non-negative safe integer");
+    ).toThrow(/\/payload\/tokenCounts\/input must be >= 0/);
     expect(() =>
       parseRehorEvent({
         ...usage,
         payload: { ...usage.payload, attemptId: run.attemptId, provider: run.provider.id },
       }),
     ).toThrow("event does not match schema");
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      for (const input of [
+        {
+          ...usage,
+          payload: {
+            ...usage.payload,
+            cost: { amount: value, currency: "USD", source: "provider" },
+          },
+        },
+        { ...usage, payload: { ...usage.payload, tokenCounts: { input: value } } },
+        event({ kind: "terminal", payload: { state: "completed", turns: value } }),
+      ]) {
+        expect(() => parseRehorEvent(input)).toThrow(/^event does not match schema: (?!.*"then")/);
+      }
+    }
   });
 
   it("preserves unknown event kinds and redacted references", () => {

@@ -120,6 +120,9 @@ log "Building proxy and memory-server images"
 log "Building runner image from Dockerfile.runner"
 "$RUNTIME" build -t "$IMAGE_TAG" -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
 
+log "Checking packaged OpenCode deployment defaults"
+bash "$SCRIPT_DIR/checks/verify-opencode-image.sh" "$RUNTIME" "$IMAGE_TAG"
+
 log "Creating network and shared socket volume"
 "$RUNTIME" network create "$NETWORK_NAME" >/dev/null
 "$RUNTIME" volume create "$SOCK_VOLUME" >/dev/null

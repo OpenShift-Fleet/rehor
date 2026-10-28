@@ -303,6 +303,45 @@ TASK_OUTCOME_SUMMARY = {
     "backfill": {"state": "not_started", "unknownCount": 0},
 }
 
+TASK_OUTCOME_TRENDS = {
+    "period": {"from": "2026-06-01", "to": "2026-07-07"},
+    "months": [
+        {
+            "month": "2026-06",
+            "taskCount": 1,
+            "deliveryCount": 1,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "acceptedCount": 1,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+            "acceptanceRate": 1.0,
+        },
+        {
+            "month": "2026-07",
+            "taskCount": 0,
+            "deliveryCount": 0,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "acceptedCount": 0,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+            "acceptanceRate": None,
+        },
+    ],
+    "freshness": {"generatedAt": "2026-07-07T15:30:00Z"},
+    "metricDefinitions": {
+        "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+        "month": "UTC calendar month derived from the task event timestamp",
+    },
+}
+
 MEMORIES = [
     memory(
         1,

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import { createEventFactory, parseRehorRun } from "../src/domain";
 import type { TerminalWorkContext } from "../src/domain/terminal-state";
-import { extractTaskResult, extractToolContext } from "../src/runtimes/shared";
+import {
+  extractTaskResult,
+  extractToolContext,
+  WorkContextTracker,
+} from "../src/domain/work-context";
+import fixture from "./fixtures/rehor-run.v1.json";
 
 describe.each(["mcp__bot-memory__", "bot-memory_"])("work context (%s)", (prefix) => {
   it("keeps status-selected work across unrelated lookup, notification, and memory calls", () => {
@@ -108,7 +114,64 @@ describe.each(["mcp__bot-memory__", "bot-memory_"])("work context (%s)", (prefix
   });
 });
 
+describe.each(["Bash", "bash", "shell"])("shell work context (%s)", (name) => {
+  it.each([
+    ["gh pr checks 582", "ci_fix"],
+    ["gh pr view 582 --comments", "pr_review"],
+    ["glab ci view", "ci_fix"],
+    ["glab mr view 582", "pr_review"],
+  ])("attributes %s to terminal %s", (command, workType) => {
+    const run = parseRehorRun({ ...fixture, task: null });
+    const factory = createEventFactory(run, "shell-context");
+    const tracker = new WorkContextTracker(run);
+    tracker.observe(factory("tool", { name, state: "started", input: { command } }));
+    expect(
+      tracker.enrichTerminal(factory("terminal", { state: "completed" })).payload.context,
+    ).toEqual({ workType });
+  });
+});
+
 describe("task result correlation", () => {
+  it("takes raw bridge results, ignoring script output, unknown fallback and failed operations", () => {
+    const run = parseRehorRun({ ...fixture, task: null });
+    const factory = createEventFactory(run, "work-context");
+    const tracker = new WorkContextTracker(run);
+    for (const fields of [
+      { budgetUnit: "container" },
+      { workContextAvailable: false },
+      { codeMode: true, isError: true },
+    ])
+      tracker.observe(
+        factory("tool", {
+          name: "execute",
+          state: "completed",
+          content: '{"task_id":999}',
+          ...fields,
+        }),
+      );
+    expect(
+      tracker.enrichTerminal(factory("terminal", { state: "completed" })).payload.context,
+    ).toBeUndefined();
+    tracker.observe(
+      factory("tool", {
+        toolUseId: "nested",
+        name: "bot-memory_task_add",
+        state: "started",
+        input: { external_key: "ACTIVE", repo: "rehor" },
+      }),
+    );
+    tracker.observe(
+      factory("tool", {
+        toolUseId: "nested",
+        name: "bot-memory_task_add",
+        state: "completed",
+        content: { id: 143, external_key: "ACTIVE" },
+      }),
+    );
+    expect(
+      tracker.enrichTerminal(factory("terminal", { state: "completed" })).payload.context,
+    ).toMatchObject({ taskId: 143, externalKey: "ACTIVE", repository: "rehor" });
+  });
   it.each(["external_key", "jira_key"])("correlates %s for resume lookups", (keyField) => {
     const context: TerminalWorkContext = { externalKey: "ACTIVE", taskId: 7 };
     for (const idField of ["id", "task_id"]) {

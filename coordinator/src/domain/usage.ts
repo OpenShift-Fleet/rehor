@@ -8,12 +8,15 @@ export interface UsageCost {
   amount: number;
   currency: string;
   source: "provider" | "estimated" | "unknown";
+  pricing?: string;
 }
 
 /** Usage can be emitted incrementally and may remain incomplete after interruption. */
 export interface Usage extends Readonly<Record<string, unknown>> {
   requestedModel: string;
   returnedModel?: string;
+  /** Provider-qualified snapshot key; legacy runtimes may omit it. */
+  modelKey?: string;
   tokenCounts: TokenCounts;
   partial: boolean;
   final: boolean;

@@ -20,6 +20,7 @@ RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi
     curl \
     jq \
     socat \
+    zstd \
     gcc \
     make \
     sqlite-devel \
@@ -143,8 +144,28 @@ ENV CLAUDE_CODE_USE_VERTEX=1
 ENV CLOUD_ML_REGION=global
 ENV BUILDAH_ISOLATION=chroot
 
+# Build the coordinator locally as well as in Dockerfile.runner so Compose can
+# exercise the same explicit engine switch before deployment packaging.
+COPY coordinator/package.json coordinator/package-lock.json ./coordinator/
+COPY coordinator/ ./coordinator/
+# Ignore any host node_modules/ or dist/ that may be present in the build
+# context; install dependencies for the image platform from the lockfile.
+RUN rm -rf coordinator/node_modules coordinator/dist \
+    && cd coordinator \
+    && npm ci --no-audit --no-fund \
+    && npm run build \
+    && npm prune --omit=dev
+# Native OpenAI providers are bundled in the pinned OpenCode executable.
+# The custom Vertex adapter is part of the coordinator bundle/dependencies.
+RUN npm install --global --omit=dev --no-audit --no-fund \
+    @opencode/cli@2.1.2 \
+    && opencode --version | tr -d '\r' | grep -Eq '^(opencode v|v)?2\.1\.2$'
+ENV OPENCODE_EXPECTED_VERSION=2.1.2
+ENV COORDINATOR_METRICS_PORT=9091
+EXPOSE 9091
+
 # Copy bot config files
-COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./
+COPY config.json .mcp.json entrypoint.sh ./
 COPY .claude/ .claude/
 COPY presets/ presets/
 

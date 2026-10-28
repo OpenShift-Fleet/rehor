@@ -1,9 +1,4 @@
-import {
-  assertTerminalEvent,
-  assertUsagePayload,
-  type RehorEvent,
-  type RehorTerminalEvent,
-} from "../domain/event";
+import { assertTerminalEvent, type RehorEvent, type RehorTerminalEvent } from "../domain/event";
 import type { RehorRun } from "../domain/run";
 import type { TerminalWorkContext } from "../domain/terminal-state";
 import type { Usage } from "../domain/usage";
@@ -16,9 +11,13 @@ import type {
 } from "../ports/compatibility";
 import type { CoordinatorProjection } from "../ports/projection";
 
+const DURATION_BUCKETS = [30, 60, 120, 300, 600, 900, 1200, 1800] as const;
+
 interface ProjectionState {
   startedAt: string;
   runtimeSessionRef: string | null;
+  runtimeReadyObserved: boolean;
+  runtimeSessionObserved: boolean;
   usages: Map<string, Usage>;
 }
 
@@ -28,6 +27,8 @@ interface UsageTotals {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   costUsd: number;
+  costStatus: "provider" | "estimated" | "unknown";
+  costIncomplete: boolean;
   modelUsage: Readonly<Record<string, Readonly<Record<string, number>>>>;
   model: string;
 }
@@ -43,7 +44,13 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const key = attemptKey(event, run);
     if (this.completedAttempts.has(key)) return;
     const state = this.stateFor(event, run);
-    if (event.runtimeSessionRef) state.runtimeSessionRef = event.runtimeSessionRef;
+    if (event.runtimeSessionRef) {
+      state.runtimeSessionRef = event.runtimeSessionRef;
+      if (!state.runtimeSessionObserved) {
+        state.runtimeSessionObserved = true;
+        await observeRuntimeSessionMetric(this.writers.metrics, run);
+      }
+    }
     if (event.kind === "usage") this.recordUsage(state, event);
 
     await this.writers.transcripts?.append({
@@ -55,6 +62,10 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       event,
       run,
     });
+    if (event.kind === "run" && !state.runtimeReadyObserved) {
+      state.runtimeReadyObserved = true;
+      await observeRuntimeHealthMetric(this.writers.metrics, run, "ready");
+    }
     await observePolicyMetric(this.writers.metrics, event, run);
     const status = statusForEvent(event, run);
     if (status) await this.writers.status?.write(status);
@@ -69,7 +80,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const payload = event.payload;
     const context = payload.context;
     const totals = aggregateUsage(state.usages, run);
-    const noWork = payload.noWork === true || containsNoWork(payload.resultText ?? "");
+    const noWork = payload.noWork === true;
     const isError = payload.state !== "completed";
     const durationMs = payload.durationMs ?? elapsedMs(state.startedAt, event.occurredAt);
     const cycleType = resolveCycleType(context?.workType, isError);
@@ -91,6 +102,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
         totals,
         durationMs,
         noWork,
+        payload.resourceLeak === true,
       );
     } finally {
       this.state.delete(key);
@@ -105,6 +117,8 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const state: ProjectionState = {
       startedAt: event.occurredAt,
       runtimeSessionRef: null,
+      runtimeReadyObserved: false,
+      runtimeSessionObserved: false,
       usages: new Map(),
     };
     this.state.set(key, state);
@@ -120,14 +134,13 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
   }
 
   private recordUsage(state: ProjectionState, event: RehorEvent): void {
-    assertUsagePayload(event.payload);
     const usage = event.payload as Usage;
-    const model = usage.returnedModel ?? usage.requestedModel;
+    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
     const previous = state.usages.get(model);
-    // Usage events are snapshots per returned model: final wins over partial,
-    // latest partial replaces old partial. Returned model keeps subagent and
-    // compaction usage from collapsing into the requested model entry.
-    if (!previous || usage.final || !previous.final) {
+    // Legacy snapshots prefer final over partial. OpenCode modelKey snapshots
+    // already include all root/child messages, so a later partial snapshot can
+    // legitimately add a new step/message after an earlier final snapshot.
+    if (usage.modelKey || !previous || usage.final || !previous.final) {
       state.usages.set(model, usage);
     }
   }
@@ -142,10 +155,42 @@ async function observePolicyMetric(
   const level = stringPayload(event.payload, "state");
   if (level !== "warning" && level !== "critical") return;
   await writer.observe({
+    type: "counter",
     name: "devbot_turn_budget_event_total",
     value: 1,
     labels: { label: run.label, level },
   });
+}
+
+async function observeRuntimeSessionMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    type: "counter",
+    name: "devbot_runtime_sessions_total",
+    value: 1,
+    labels: runtimeMetricLabels(run),
+  });
+}
+
+async function observeRuntimeHealthMetric(
+  writer: CompatibilityWriters["metrics"],
+  run: RehorRun,
+  status: "ready" | "healthy" | "failed",
+): Promise<void> {
+  if (!writer) return;
+  await writer.observe({
+    type: "counter",
+    name: "devbot_runtime_health_total",
+    value: 1,
+    labels: { ...runtimeMetricLabels(run), status },
+  });
+}
+
+function runtimeMetricLabels(run: RehorRun): { runtime: string; provider: string } {
+  return { runtime: run.runtimeId ?? "unknown", provider: run.provider.id };
 }
 
 function statusForEvent(event: RehorEvent, run: RehorRun): StatusUpdate | null {
@@ -212,6 +257,8 @@ function buildCostRecord(
     numTurns: event.payload.turns ?? 0,
     durationMs,
     costUsd: totals.costUsd,
+    costStatus: totals.costStatus,
+    costIncomplete: totals.costIncomplete,
     inputTokens: totals.inputTokens,
     outputTokens: totals.outputTokens,
     cacheReadTokens: totals.cacheReadTokens,
@@ -224,6 +271,8 @@ function buildCostRecord(
     repository: context?.repository ?? null,
     workType: context?.workType ?? null,
     summary: context?.summary ?? null,
+    runtimeId: run.runtimeId,
+    providerId: run.provider.id,
   };
 }
 
@@ -263,6 +312,7 @@ async function observeTerminalMetrics(
   totals: UsageTotals,
   durationMs: number,
   noWork: boolean,
+  resourceLeak: boolean,
 ): Promise<void> {
   if (!writer) return;
   const labels = { model: totals.model, label: run.label, workflow: run.workflowId };
@@ -271,23 +321,95 @@ async function observeTerminalMetrics(
   // empty string falls back too, and a no-work cycle is not relabelled "idle".
   const durationLabels = { label: run.label, work_type: workType || "unknown" };
   const points: MetricPoint[] = [
-    { name: "devbot_cycles_total", value: 1, labels: { ...labels, status: metricStatus } },
     {
+      type: "counter",
+      name: "devbot_cycles_total",
+      value: 1,
+      labels: { ...labels, status: metricStatus },
+    },
+    {
+      type: "histogram",
       name: "devbot_cycle_duration_seconds",
       value: durationMs / 1000,
       labels: durationLabels,
+      buckets: DURATION_BUCKETS,
     },
-    { name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
-    { name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
-    { name: "devbot_cycle_output_tokens_total", value: totals.outputTokens, labels },
-    { name: "devbot_cycle_cache_read_tokens_total", value: totals.cacheReadTokens, labels },
-    { name: "devbot_cycle_cache_write_tokens_total", value: totals.cacheWriteTokens, labels },
+    { type: "counter", name: "devbot_cycle_cost_usd_total", value: totals.costUsd, labels },
+    { type: "counter", name: "devbot_cycle_input_tokens_total", value: totals.inputTokens, labels },
+    {
+      type: "counter",
+      name: "devbot_cycle_output_tokens_total",
+      value: totals.outputTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_read_tokens_total",
+      value: totals.cacheReadTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_cycle_cache_write_tokens_total",
+      value: totals.cacheWriteTokens,
+      labels,
+    },
+    {
+      type: "counter",
+      name: "devbot_runtime_health_total",
+      value: 1,
+      labels: {
+        ...runtimeMetricLabels(run),
+        status: state === "completed" ? "healthy" : "failed",
+      },
+    },
+    {
+      type: "histogram",
+      name: "devbot_runtime_duration_seconds",
+      value: durationMs / 1000,
+      labels: { ...runtimeMetricLabels(run), state },
+      buckets: DURATION_BUCKETS,
+    },
   ];
+  // bot/agent.py counts every completed session as `ctx.work_type or "triage_only"`;
+  // a timed-out Python cycle never reaches it and bumps the timeout counter instead.
+  if (state === "timed_out") {
+    points.push({
+      type: "counter",
+      name: "devbot_cycle_timeout_total",
+      value: 1,
+      labels: { label: run.label },
+    });
+  } else {
+    points.push({
+      type: "counter",
+      name: "devbot_work_type_total",
+      value: 1,
+      labels: { label: run.label, work_type: workType || "triage_only" },
+    });
+  }
+  if (state === "interrupted" || state === "cancelled" || state === "timed_out") {
+    points.push({
+      type: "counter",
+      name: "devbot_runtime_interruptions_total",
+      value: 1,
+      labels: { ...runtimeMetricLabels(run), state },
+    });
+  }
+  if (resourceLeak) {
+    points.push({
+      type: "counter",
+      name: "devbot_runtime_resource_leaks_total",
+      value: 1,
+      labels: runtimeMetricLabels(run),
+    });
+  }
   if (
     metricStatus === "idle" &&
     totals.inputTokens + totals.outputTokens + totals.cacheReadTokens + totals.cacheWriteTokens > 0
   ) {
     points.push({
+      type: "counter",
       name: "devbot_idle_with_tokens_total",
       value: 1,
       labels: { label: run.label, workflow: run.workflowId },
@@ -302,20 +424,34 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
   let costUsd = 0;
+  let hasCost = false;
+  let estimated = false;
+  let costIncomplete = false;
   const modelUsage: Record<string, Record<string, number>> = {};
 
   for (const usage of usages.values()) {
-    const model = usage.returnedModel ?? usage.requestedModel;
-    const { input = 0, output = 0, cacheRead = 0, cacheWrite = 0 } = usage.tokenCounts;
+    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
+    const {
+      input = 0,
+      output = 0,
+      reasoning = 0,
+      cacheRead = 0,
+      cacheWrite = 0,
+    } = usage.tokenCounts;
+    // OpenCode separates visible output and reasoning; preserve legacy Claude totals.
+    const billedOutput = output + (usage.modelKey ? reasoning : 0);
     const modelCounts = modelUsage[model] ?? {};
     modelUsage[model] = modelCounts;
     inputTokens += input;
-    outputTokens += output;
+    outputTokens += billedOutput;
     cacheReadTokens += cacheRead;
     cacheWriteTokens += cacheWrite;
-    costUsd += usage.cost?.amount ?? 0;
+    costUsd += usage.cost?.source === "unknown" ? 0 : (usage.cost?.amount ?? 0);
+    hasCost ||= usage.cost !== undefined && usage.cost.source !== "unknown";
+    estimated ||= usage.estimated || usage.cost?.source === "estimated";
+    costIncomplete ||= usage.incomplete || !usage.cost || usage.cost.source === "unknown";
     modelCounts.input_tokens = (modelCounts.input_tokens ?? 0) + input;
-    modelCounts.output_tokens = (modelCounts.output_tokens ?? 0) + output;
+    modelCounts.output_tokens = (modelCounts.output_tokens ?? 0) + billedOutput;
     modelCounts.cache_read_input_tokens = (modelCounts.cache_read_input_tokens ?? 0) + cacheRead;
     modelCounts.cache_creation_input_tokens =
       (modelCounts.cache_creation_input_tokens ?? 0) + cacheWrite;
@@ -327,6 +463,8 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
     cacheReadTokens,
     cacheWriteTokens,
     costUsd,
+    costStatus: !hasCost ? "unknown" : estimated ? "estimated" : "provider",
+    costIncomplete: costIncomplete || !hasCost,
     modelUsage,
     model: Object.keys(modelUsage)[0] ?? run.provider.requestedModel,
   };
@@ -351,21 +489,6 @@ function resolveCycleType(workType: string | undefined, isError: boolean): strin
   if (isError) return "error";
   if (workType) return WORK_TYPE_TO_CYCLE_TYPE.get(workType) ?? "task_work";
   return "triage_only";
-}
-
-function containsNoWork(text: string): boolean {
-  const lower = text.toLowerCase();
-  return [
-    "no_work_found",
-    "no work found",
-    "no work available",
-    "nothing to do",
-    "nothing to pick up",
-    "no tickets",
-    "no unassigned",
-    "no assigned tickets",
-    "0 unassigned",
-  ].some((pattern) => lower.includes(pattern));
 }
 
 function attemptKey(event: RehorEvent, run: RehorRun): string {

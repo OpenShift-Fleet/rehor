@@ -1,5 +1,10 @@
-import { type CoordinatorOptions, type CoordinatorResult, executeRun } from "./coordinator";
-import { parseRehorRun, type RehorRun } from "./domain";
+import {
+  type CoordinatorOptions,
+  type CoordinatorResult,
+  executeRunWithValidatedInput,
+} from "./coordinator";
+import { parseRehorRun, type RehorRun, type ValidatedRehorRun } from "./domain";
+import { OPENCODE_RUNTIME_ID } from "./domain/runtime-selection";
 import type { AgentRuntime } from "./ports/agent-runtime";
 import type { ConfigPreparationResult } from "./ports/python-bridge";
 import {
@@ -7,12 +12,14 @@ import {
   createClaudeAgentRuntimeFactory,
 } from "./runtimes/claude-agent";
 import {
-  type OpenCodeV1DeploymentConfig,
-  OpenCodeV1Runtime,
-  type OpenCodeV1RuntimeOptions,
-  renderOpenCodeV1Config,
-  renderOpenCodeV1ConfigForCycle,
-} from "./runtimes/opencode-v1";
+  type OpenCodeDeploymentConfig,
+  type OpenCodeProjectConfiguration,
+  OpenCodeRuntime,
+  type OpenCodeRuntimeOptions,
+  type RenderedOpenCodeConfig,
+  renderOpenCodeConfigForCycle,
+} from "./runtimes/opencode";
+import { parseVertexAllowedModels } from "./runtimes/opencode/model-defaults";
 
 export const DEFAULT_RUNTIME_ID = "claude";
 
@@ -26,6 +33,7 @@ export interface RuntimeFactoryContext {
   selection: RuntimeSelection;
   /** Python-prepared cycle policy and reference-only OpenCode MCP view. */
   preparedConfig?: ConfigPreparationResult;
+  nativeConfig?: OpenCodeProjectConfiguration;
 }
 
 /** Factory boundary for provider-specific runtime adapters. */
@@ -51,10 +59,11 @@ export class RuntimeFactoryRegistry {
 
   register(factory: AgentRuntimeFactory): this {
     if (!factory.runtimeId) throw new RuntimeFactoryError("runtime factory must have a runtimeId");
-    if (this.factories.has(factory.runtimeId)) {
+    const runtimeId = factory.runtimeId;
+    if (this.factories.has(runtimeId)) {
       throw new RuntimeFactoryError(`runtime factory already registered: ${factory.runtimeId}`);
     }
-    this.factories.set(factory.runtimeId, factory);
+    this.factories.set(runtimeId, factory);
     return this;
   }
 
@@ -70,7 +79,9 @@ export class RuntimeFactoryRegistry {
     selection: RuntimeSelection,
     run: RehorRun,
     preparedConfig?: ConfigPreparationResult,
+    nativeConfig?: OpenCodeProjectConfiguration,
   ): Promise<AgentRuntime> {
+    selection = resolveRuntimeSelection(selection.runtimeId);
     const factory = this.factories.get(selection.runtimeId);
     if (!factory) {
       const available = this.runtimeIds.length > 0 ? this.runtimeIds.join(", ") : "none";
@@ -78,7 +89,7 @@ export class RuntimeFactoryRegistry {
         `no runtime factory registered for '${selection.runtimeId}' (available: ${available})`,
       );
     }
-    const runtime = await factory.create({ run, selection, preparedConfig });
+    const runtime = await factory.create({ run, selection, preparedConfig, nativeConfig });
     if (!runtime)
       throw new RuntimeFactoryError(`runtime factory returned no runtime: ${selection.runtimeId}`);
     return runtime;
@@ -93,40 +104,39 @@ export function createDefaultRuntimeRegistry(
 }
 
 /** Registers OpenCode without changing the default production runtime selection. */
-export type OpenCodeV1RuntimeFactoryOptions = Omit<
-  OpenCodeV1RuntimeOptions,
+export type OpenCodeRuntimeFactoryOptions = Omit<
+  OpenCodeRuntimeOptions,
   "renderedConfig" | "renderError"
 > & {
-  config?: OpenCodeV1DeploymentConfig;
+  config?: OpenCodeDeploymentConfig;
 };
 
-export function createOpenCodeV1RuntimeFactory(
-  options: OpenCodeV1RuntimeFactoryOptions = {},
+export function createOpenCodeRuntimeFactory(
+  options: OpenCodeRuntimeFactoryOptions = {},
 ): AgentRuntimeFactory {
   return {
-    runtimeId: "opencode-v1",
-    create(context) {
+    runtimeId: OPENCODE_RUNTIME_ID,
+    async create(context) {
       const configured = options.config ?? {};
-      let renderedConfig: ReturnType<typeof renderOpenCodeV1Config> | undefined;
+      let renderedConfig: RenderedOpenCodeConfig | undefined;
       let renderError: unknown;
       try {
-        renderedConfig = context.preparedConfig
-          ? renderOpenCodeV1ConfigForCycle(
-              context.preparedConfig,
-              context.run.provider.id,
-              configured,
-            )
-          : renderOpenCodeV1Config({
-              ...configured,
-              model: configured.model ?? context.run.provider.requestedModel,
-              providerId: configured.providerId ?? context.run.provider.id,
-            });
+        if (context.nativeConfig === undefined) {
+          throw new RuntimeFactoryError("OpenCode requires a prepared nativeConfig snapshot");
+        }
+        renderedConfig = renderOpenCodeConfigForCycle(
+          context.preparedConfig ?? { model: context.run.provider.requestedModel },
+          context.run.provider.id,
+          configured,
+          context.nativeConfig,
+          parseVertexAllowedModels((options.base ?? process.env).VERTEX_ALLOWED_MODELS),
+        );
       } catch (error) {
         renderError = error;
       }
 
       const { config: _config, ...runtimeOptions } = options;
-      return new OpenCodeV1Runtime({
+      return new OpenCodeRuntime({
         ...runtimeOptions,
         renderedConfig,
         renderError,
@@ -146,6 +156,7 @@ export function resolveRuntimeSelection(runtimeId?: string | null): RuntimeSelec
 export type RuntimeExecutionOptions = CoordinatorOptions & {
   /** Cycle preparation to apply when constructing the selected runtime. */
   preparedConfig?: ConfigPreparationResult;
+  nativeConfig?: OpenCodeProjectConfiguration;
 };
 
 /** Select an adapter, then run it through the same coordinator lifecycle. */
@@ -155,8 +166,31 @@ export async function executeSelectedRun(
   input: RehorRun,
   options: RuntimeExecutionOptions = {},
 ): Promise<CoordinatorResult> {
+  return executeValidatedSelectedRun(registry, selection, parseRehorRun(input), options);
+}
+
+/** Run the adapter selected on the normalized per-instance run. */
+export async function executeConfiguredRun(
+  registry: RuntimeFactoryRegistry,
+  input: RehorRun,
+  options: RuntimeExecutionOptions = {},
+): Promise<CoordinatorResult> {
   const run = parseRehorRun(input);
-  const { preparedConfig, ...coordinatorOptions } = options;
-  const runtime = await registry.create(selection, run, preparedConfig);
-  return executeRun(runtime, run, coordinatorOptions);
+  const selection = resolveRuntimeSelection(run.runtimeId);
+  return executeValidatedSelectedRun(registry, selection, run, options);
+}
+
+async function executeValidatedSelectedRun(
+  registry: RuntimeFactoryRegistry,
+  selection: RuntimeSelection,
+  run: ValidatedRehorRun,
+  options: RuntimeExecutionOptions,
+): Promise<CoordinatorResult> {
+  selection = resolveRuntimeSelection(selection.runtimeId);
+  // This is a new attempt, not a historical record projection. Do not mutate
+  // the caller's input or normalize parseRehorRun's storage/read contract.
+  run = { ...run, runtimeId: selection.runtimeId };
+  const { preparedConfig, nativeConfig, ...coordinatorOptions } = options;
+  const runtime = await registry.create(selection, run, preparedConfig, nativeConfig);
+  return executeRunWithValidatedInput(runtime, run, coordinatorOptions);
 }

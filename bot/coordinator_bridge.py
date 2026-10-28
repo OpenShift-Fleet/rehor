@@ -9,7 +9,10 @@ stderr so stdout remains machine-readable.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +61,7 @@ def _run_preflight(request: dict[str, Any]) -> dict[str, Any] | None:
     from .preflight import run_preflight
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
     workflow = _required_string(request, "workflow")
     remote_agent_dir = _optional_string(request, "remoteAgentDir")
     instance_id = _optional_string(request, "instanceId")
@@ -80,7 +84,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     from . import run as runner
     from .config import (
-        ALLOWED_TOOLS,
+        OPENCODE_RUNTIME_ID,
         discover_optional_mcp_servers,
         load_config,
         load_instance_config,
@@ -88,10 +92,13 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         resolve_active_envs,
         resolve_cycle_model,
         resolve_workflow_dir,
+        validate_instance_config,
+        validate_manifest,
     )
     from .merge import apply_merged_config, install_skills
 
     script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
     if script_dir != runner.SCRIPT_DIR.resolve():
         raise BridgeError(
             f"scriptDir must be the bot repository root ({runner.SCRIPT_DIR}), got {script_dir}",
@@ -99,6 +106,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     label = _required_string(request, "label")
     runtime_config = load_config(script_dir)
+    runner.setup_git(script_dir)
     profile_dir, shared_dir = runner.sync_config_repo(label)
 
     if shared_dir:
@@ -107,14 +115,31 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         apply_merged_config(script_dir, profile_dir)
 
     instance_config = load_instance_config(profile_dir)
-    workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
-    active_envs = resolve_active_envs(script_dir, instance_config)
-    install_skills(script_dir, workflow_dir, active_envs)
-    runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
-    cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
     # Preserve the legacy Claude view: resolved MCP values and no project
     # servers, because Claude discovers .mcp.json through setting_sources.
     mcp_servers = load_mcp_servers(script_dir)
+    # Validate before installing skills or assembling CLAUDE.md so an invalid
+    # selection, workflow, or manifest leaves the checkout untouched.
+    _validate_or_raise(
+        validate_instance_config,
+        script_dir,
+        instance_config,
+        profile_dir,
+    )
+    _validate_or_raise(
+        validate_manifest,
+        script_dir,
+        instance_config.workflow,
+        mcp_servers,
+        profile_dir,
+        model_tiers=runtime_config.model_tiers,
+    )
+    workflow_dir = resolve_workflow_dir(script_dir, instance_config.workflow, profile_dir)
+    active_envs = resolve_active_envs(script_dir, instance_config)
+    install_skills(script_dir, workflow_dir, active_envs)
+    if instance_config.runtime != OPENCODE_RUNTIME_ID:
+        runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
+    cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
     # Keep a separate reference-only view for OpenCode. It owns project-server
     # discovery; the TypeScript renderer validates its untrusted references.
     opencode_mcp_servers = load_mcp_servers(
@@ -125,7 +150,13 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "model": cycle_model,
-        "maxTurns": runtime_config.max_turns,
+        "runtimeId": instance_config.runtime,
+        "providerId": instance_config.provider,
+        "maxTurns": (
+            runtime_config.opencode_max_tool_calls
+            if instance_config.runtime == OPENCODE_RUNTIME_ID
+            else runtime_config.max_turns
+        ),
         "intervalSeconds": runtime_config.interval,
         "idleIntervalSeconds": runtime_config.idle_interval,
         "cycleTimeoutSeconds": runtime_config.cycle_timeout,
@@ -139,11 +170,104 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "remoteAgentDir": str(profile_dir) if profile_dir else None,
         "sharedAgentDir": str(shared_dir) if shared_dir else None,
         "claudeMdPath": str(script_dir / "CLAUDE.md"),
+        "gitConfigGlobal": os.environ.get("GIT_CONFIG_GLOBAL"),
         "mcpServers": mcp_servers,
         "openCodeMcpServers": opencode_mcp_servers,
-        "allowedTools": ALLOWED_TOOLS,
-        "optionalMcpServers": discover_optional_mcp_servers(script_dir, active_envs),
+        "allowedTools": _allowed_tools_for_runtime(instance_config.runtime),
+        "optionalMcpServers": discover_optional_mcp_servers(script_dir),
     }
+
+
+def _allowed_tools_for_runtime(runtime: str) -> list[str]:
+    """Adapt the shared grant list at the runtime boundary, without widening it."""
+    from .config import ALLOWED_TOOLS, OPENCODE_RUNTIME_ID
+
+    if runtime != OPENCODE_RUNTIME_ID:
+        return list(ALLOWED_TOOLS)
+    # Pinned V2.1.2 preserves lsp config but has no LSP runtime or native tool.
+    # Do not invent a permission alias; unknown grants still fail in the renderer.
+    tools = []
+    for tool in ALLOWED_TOOLS:
+        if tool == "LSP":
+            logging.getLogger(__name__).warning(
+                "OpenCode V2.1.2 does not support LSP; omitting shared ALLOWED_TOOLS grant "
+                "(no language servers, LSP tools, or diagnostics; use lint/typecheck commands)",
+            )
+        else:
+            tools.append(tool)
+    return tools
+
+
+def _validate_or_raise(validate: Any, *args: Any, **kwargs: Any) -> None:
+    """Run a legacy validator that exits the process and surface it as a BridgeError.
+
+    The Python runner's validators log FATAL details and call ``sys.exit``.
+    ``SystemExit`` bypasses ``main``'s structured error handling, so convert it
+    into a bridge failure the TypeScript side can report.
+    """
+    try:
+        validate(*args, **kwargs)
+    except SystemExit as exc:
+        raise BridgeError(f"{validate.__name__} failed (see bridge stderr for details)") from exc
+
+
+def _load_dotenv(script_dir: Path) -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(script_dir / ".env", override=False)
+
+
+def _maintenance_script_dir(request: dict[str, Any]):
+    from . import run as runner
+
+    script_dir = Path(_required_string(request, "scriptDir")).resolve()
+    _load_dotenv(script_dir)
+    if script_dir != runner.SCRIPT_DIR.resolve():
+        raise BridgeError(
+            f"scriptDir must be the bot repository root ({runner.SCRIPT_DIR}), got {script_dir}",
+        )
+    return script_dir, runner
+
+
+def _idle_skip(request: dict[str, Any]) -> None:
+    script_dir, _runner = _maintenance_script_dir(request)
+    from . import idle_reminder
+
+    instance_id = _required_string(request, "instanceId")
+    idle_cycle_limit = request.get("idleCycleLimit")
+    cooldown_seconds = request.get("cooldownSeconds")
+    if not isinstance(idle_cycle_limit, int) or idle_cycle_limit < 0:
+        raise BridgeError("idleCycleLimit must be a non-negative integer")
+    if not isinstance(cooldown_seconds, (int, float)) or cooldown_seconds < 0:
+        raise BridgeError("cooldownSeconds must be non-negative")
+    idle_reminder.on_preflight_skip(
+        instance_id,
+        idle_cycle_limit=idle_cycle_limit,
+        cooldown_seconds=int(cooldown_seconds),
+    )
+
+
+def _idle_start(request: dict[str, Any]) -> None:
+    _script_dir, _runner = _maintenance_script_dir(request)
+    from . import idle_reminder
+
+    idle_reminder.on_preflight_start(_required_string(request, "instanceId"))
+
+
+def _cleanup(request: dict[str, Any]) -> dict[str, Any]:
+    script_dir, runner = _maintenance_script_dir(request)
+    # The Prometheus gauge set inside this short-lived process is lost on exit;
+    # return the reading so the coordinator can export it.
+    return {"diskFreeMb": runner.cleanup_between_cycles(script_dir)}
+
+
+def _scheduled_maintenance(request: dict[str, Any]) -> None:
+    _script_dir, runner = _maintenance_script_dir(request)
+    # Digest helpers print JSON; reserve bridge stdout for its response object.
+    with redirect_stdout(sys.stderr):
+        runner._try_slack_digest()
 
 
 def handle(request: dict[str, Any]) -> Any:
@@ -155,10 +279,35 @@ def handle(request: dict[str, Any]) -> Any:
         return _run_preflight(request)
     if operation == "prepare":
         return _prepare_config(request)
-    raise BridgeError("operation must be 'preflight' or 'prepare'")
+    if operation == "scheduled_maintenance":
+        _scheduled_maintenance(request)
+        return None
+    if operation == "idle_skip":
+        _idle_skip(request)
+        return None
+    if operation == "idle_start":
+        _idle_start(request)
+        return None
+    if operation == "cleanup":
+        return _cleanup(request)
+    raise BridgeError("operation must be preflight, prepare, scheduled_maintenance, idle_skip, idle_start, or cleanup")
 
 
 def main() -> int:
+    # Bridge-only setup: legacy runner keeps its own stdout/file configuration.
+    # Do not call setup_logging(), which would corrupt the JSON stdout protocol.
+    from .log import JsonFormatter
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    logging.basicConfig(
+        level=logging.DEBUG if os.environ.get("DEBUG") == "true" else logging.INFO,
+        handlers=[handler],
+        force=True,
+    )
+    # httpx logs every request at INFO under a logger the coordinator does not
+    # allowlist, so each one surfaced as an "unclassified runtime error".
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         request = json.load(sys.stdin)
         if not isinstance(request, dict):
@@ -168,10 +317,10 @@ def main() -> int:
         sys.stdout.write("\n")
         return 0
     except (BridgeError, json.JSONDecodeError, OSError) as exc:
-        print(f"coordinator bridge failed: {exc}", file=sys.stderr)
+        logging.getLogger("bot.coordinator_bridge").error("coordinator bridge failed: %s", exc)
         return 2
     except Exception as exc:  # pragma: no cover - defensive process boundary
-        print(f"coordinator bridge crashed: {exc}", file=sys.stderr)
+        logging.getLogger("bot.coordinator_bridge").error("coordinator bridge crashed: %s", exc)
         return 1
 
 

@@ -2,7 +2,7 @@
 
 This guide is for the Fleet / Org Pulse dashboard developer integrating the Memory Server task-outcome APIs. Use the server's category-aware rollups for delivery metrics and show monitoring and grooming separately. A task's category, lifecycle, effective state, and selected outcome report answer different questions.
 
-The implementation contract is [task_outcomes.py](../memory-server/bot_memory_server/task_outcomes.py), with response shapes in [shared/openapi.yaml](../shared/openapi.yaml). The [task outcomes spike](task-outcomes-spike.md) covers evidence reduction, archival, and design history. This document describes adoption of the current implementation rather than asserting that it is already deployed.
+The implementation contract is [`task_outcomes.py`](https://github.com/OpenShift-Fleet/rehor/blob/master/memory-server/bot_memory_server/task_outcomes.py), with response shapes in [`shared/openapi.yaml`](https://github.com/OpenShift-Fleet/rehor/blob/master/shared/openapi.yaml). The [task outcomes spike](task-outcomes-spike.md) covers evidence reduction, archival, and design history. This document describes adoption of the current implementation rather than asserting that it is already deployed.
 
 ## Ownership and integration surface
 
@@ -13,8 +13,15 @@ Memory Server owns task identity, evidence, outcome reports, effective states, a
 | `GET /api/task-outcomes/summary` | Global metrics and canonical repository rows. |
 | `GET /api/task-outcomes/tasks` | Filtered task table, with `items`, `total`, `limit`, and `offset`. |
 | `GET /api/task-outcomes/tasks/{task_id}` | Task detail, selected report, append-only `outcomeHistory`, and linked `taskCycles`. |
+| `GET /api/task-outcomes/trends` | Monthly category counts and delivery acceptance-rate trend for charts. |
 
 This change supplies the Memory Server contract and adoption documentation. It does not change instance configurations or the Fleet UI; those require separate integration and rollout work.
+
+## Monthly trend integration
+
+Use `/api/task-outcomes/trends?from=YYYY-MM-DD&to=YYYY-MM-DD` for the progressive month-by-month chart. The endpoint applies the same repository, category, decision, confidence, reason, and source filters as the summary endpoint, groups matching tasks by UTC calendar month, and returns zero-filled months so the chart has a continuous time axis.
+
+Each `months` entry contains total, delivery, monitoring, and grooming counts plus delivery-only outcome counts. `acceptanceRate` is `accepted / (accepted + rejected + obsolete)` and is `null` when there is no delivery denominator. The response also includes `freshness.generatedAt` and `metricDefinitions` for display/tooltips. The EPD adapter should request an explicit date window and preserve the returned month rows rather than reconstructing rates from a paginated task table.
 
 ## Keep four concepts independent
 

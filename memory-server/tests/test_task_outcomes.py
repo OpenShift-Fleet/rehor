@@ -14,9 +14,11 @@ from bot_memory_server.models import OutcomeArtifact, OutcomeEvidence
 from bot_memory_server.outcome_classifier import classify_task_outcome
 from bot_memory_server.task_outcomes import (
     ARCHIVE_RECOVERY,
+    _filtered_cte,
     api_task_outcome_detail,
     api_task_outcomes,
     api_task_outcomes_summary,
+    api_task_outcomes_trends,
     canonical_repositories,
 )
 from bot_memory_server.tools.tasks import register_task_tools
@@ -25,12 +27,14 @@ from fastmcp import Client, FastMCP
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from starlette.applications import Starlette
+from starlette.requests import Request
 from starlette.routing import Route
 from test_api_schemas import _validate
 
 app = Starlette(
     routes=[
         Route("/api/task-outcomes/summary", api_task_outcomes_summary, methods=["GET"]),
+        Route("/api/task-outcomes/trends", api_task_outcomes_trends, methods=["GET"]),
         Route("/api/task-outcomes/tasks", api_task_outcomes, methods=["GET"]),
         Route("/api/task-outcomes/tasks/{task_id}", api_task_outcome_detail, methods=["GET"]),
     ]
@@ -119,6 +123,38 @@ class FakePool:
         return self.rows
 
 
+def test_filtered_cte_supports_repeated_repository_filters_and_preserves_single_repo_compatibility():
+    """Use one PostgreSQL array filter for both single and repeated repo params."""
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/task-outcomes/summary",
+            "query_string": b"repo=org%2Frepo-a&repo=org%2Frepo-b",
+            "headers": [],
+        }
+    )
+
+    query, params = _filtered_cte(request)
+
+    assert "canonical_repositories ?| $1::text[]" in query
+    assert params == [["org/repo-a", "org/repo-b"]]
+
+    single_request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/task-outcomes/summary",
+            "query_string": b"repo=org%2Frepo-a",
+            "headers": [],
+        }
+    )
+    single_query, single_params = _filtered_cte(single_request)
+
+    assert "canonical_repositories ?| $1::text[]" in single_query
+    assert single_params == [["org/repo-a"]]
+
+
 def _grooming_counts(**states):
     counts = {
         f"grooming_{state}_count": states.get(state, 0)
@@ -143,7 +179,6 @@ async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_covera
             "unreported_count": 1,
             "wip_count": 1,
         },
-        scalar=4,
         fetch_rows=[
             [
                 {
@@ -235,7 +270,7 @@ async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_covera
             "unreportedCount": 2,
             "wipCount": 1,
         },
-        "repositoryCount": 4,
+        "repositoryCount": 2,
         "acceptedCount": 1,
         "acceptedNoOpCount": 1,
         "rejectedCount": 1,
@@ -278,7 +313,7 @@ async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_covera
     assert body["repositories"][0]["providers"] == {"github": 2}
     assert body["backfill"] == {"state": "not_started", "unknownCount": 1}
     assert body["period"] == {"from": "2026-10-01", "to": "2026-10-01"}
-    assert len(pool.calls) == 5
+    assert len(pool.calls) == 4
     assert all("WITH task_outcomes AS" in query for _, query, _ in pool.calls)
     assert all("category = 'delivery'" in query for _, query, _ in pool.calls if "accepted_count" in query)
     for _, query, _ in pool.calls:
@@ -287,6 +322,64 @@ async def test_summary_includes_obsolete_in_acceptance_and_tracks_outcome_covera
                 assert re.search(rf"category = 'grooming' AND (?:f\.)?state = '{state}'", query)
         if "GROUP BY repositories.repo, f." in query:
             assert "f.category = 'delivery'" in query
+
+
+@pytest.mark.asyncio
+async def test_trends_fills_missing_months_and_calculates_acceptance_rate():
+    pool = FakePool(
+        fetch_rows=[
+            [
+                {
+                    "month": "2026-08",
+                    "task_count": 4,
+                    "delivery_count": 3,
+                    "monitoring_count": 1,
+                    "grooming_count": 0,
+                    "accepted_count": 1,
+                    "rejected_count": 1,
+                    "obsolete_count": 1,
+                    "inconclusive_count": 0,
+                    "unreported_count": 0,
+                    "wip_count": 0,
+                },
+                {
+                    "month": "2026-10",
+                    "task_count": 2,
+                    "delivery_count": 0,
+                    "monitoring_count": 0,
+                    "grooming_count": 2,
+                    "accepted_count": 0,
+                    "rejected_count": 0,
+                    "obsolete_count": 0,
+                    "inconclusive_count": 0,
+                    "unreported_count": 1,
+                    "wip_count": 1,
+                },
+            ]
+        ]
+    )
+    with patch("bot_memory_server.task_outcomes.get_pool", return_value=pool):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/task-outcomes/trends?from=2026-08-01&to=2026-10-13")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [month["month"] for month in body["months"]] == ["2026-08", "2026-09", "2026-10"]
+    assert body["months"][0]["acceptanceRate"] == pytest.approx(1 / 3)
+    assert body["months"][1]["taskCount"] == 0
+    assert body["months"][1]["acceptanceRate"] is None
+    assert body["months"][2]["groomingCount"] == 2
+
+
+@pytest.mark.asyncio
+async def test_trends_rejects_invalid_date_range():
+    with patch("bot_memory_server.task_outcomes.get_pool") as get_pool:
+        async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as client:
+            response = await client.get("/api/task-outcomes/trends?from=2026-10-02&to=2026-10-01")
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "from must be on or before to"
+    get_pool.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 site_name: Řehoř
 site_description: Workflow-driven autonomous developer tool documentation
+site_url: https://openshift-fleet.github.io/rehor/
 theme:
   name: material
   logo: assets/images/icon.png
@@ -58,6 +59,7 @@ nav:
   - Home: index.md
   - Getting Started:
     - Onboarding a New Instance: onboarding-new-instance.md
+    - OpenShell Deployment: openshell-deployment.md
     - Instance Configuration: presets/instance-config.md
     - Scheduling: scheduling.md
   - Architecture:
