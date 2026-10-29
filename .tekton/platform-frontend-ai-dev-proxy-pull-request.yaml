@@ -186,6 +186,11 @@ spec:
         operator: notin
         values:
         - ""
+      when:
+      - input: $(params.prefetch-input)
+        operator: notin
+        values:
+        - ""
       taskRef:
         params:
         - name: name
