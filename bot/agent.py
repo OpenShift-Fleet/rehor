@@ -452,7 +452,7 @@ async def run_cycle(
             await _push_status(http, "error", "Cycle failed — check bot.log", instance_id=instance_id)
         finally:
             try:
-                await stream.aclose()
+                await stream.aclose()  # type: ignore[attr-defined]  # query() is AsyncGenerator at runtime
             except Exception:
                 logger.debug("SDK stream aclose failed", exc_info=True)
             _terminate_orphaned_claude_children()
@@ -485,7 +485,7 @@ async def run_cycle(
 def _terminate_orphaned_claude_children() -> None:
     """Best-effort SIGTERM for CLI children the SDK still tracks after aclose."""
     try:
-        from claude_agent_sdk._internal.transport.subprocess_cli import _ACTIVE_CHILDREN
+        from claude_agent_sdk._internal.transport.subprocess_cli import _ACTIVE_CHILDREN  # type: ignore[attr-defined]
     except Exception:
         return
     for proc in list(_ACTIVE_CHILDREN):
