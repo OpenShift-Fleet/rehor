@@ -144,21 +144,120 @@ async def test_status_push_failure_now_logged(caplog):
     assert len(warning_logs) == 0
 
 
-# --- Test 3: Timeout loses all cost data ---
+# --- Test 3: Timeout posts incomplete cost + error cycle_run ---
 
 
-def test_timeout_logs_cost_data_loss_warning(caplog):
-    """FIXED: Timeout path now warns that cost data is lost."""
+def test_timeout_records_incomplete_cost(tmp_path, caplog):
+    """Timeout path posts cost (unknown/incomplete) and an error cycle_run with transcript.
+
+    Also verifies run_cycle times out in-stream (sets ctx.timed_out) and acloses
+    the SDK session instead of relying on outer asyncio.wait_for cancellation.
+    """
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from claude_agent_sdk import SystemMessage
+
+    from bot.agent import CycleContext, run_cycle
+    from bot.config import Config
     from bot.run import handle_cycle_timeout
 
     caplog.set_level(logging.WARNING)
+    session_id = "timeout-sess"
+    cwd = "/tmp/bot-cwd"
+    project_dir = tmp_path / ".claude" / "projects" / "-tmp-bot-cwd"
+    project_dir.mkdir(parents=True)
+    (project_dir / f"{session_id}.jsonl").write_text('{"type":"assistant","message":"partial"}\n')
 
-    result, ctx = handle_cycle_timeout(timeout_seconds=600, label="test-label")
+    async def hanging_query(*, prompt, options):
+        yield SystemMessage(
+            subtype="init",
+            data={"session_id": session_id, "mcp_servers": []},
+        )
+        await asyncio.sleep(10)
+
+    short_config = Config(
+        model="claude-opus-4",
+        max_turns=10,
+        interval=60,
+        idle_interval=300,
+        cycle_timeout=1,
+        board_key="TEST",
+    )
+    stream_ctx = CycleContext()
+    with (
+        patch("bot.agent.query", hanging_query),
+        patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._terminate_orphaned_claude_children") as mock_kill,
+    ):
+        result_from_cycle, stream_ctx = asyncio.run(
+            run_cycle("test-label", short_config, {}, [], cwd=cwd, ctx=stream_ctx)
+        )
+
+    assert result_from_cycle is None
+    assert stream_ctx.timed_out is True
+    assert stream_ctx.session_id == session_id
+    assert stream_ctx.started_at is not None
+    mock_kill.assert_called()
+
+    costs_file = tmp_path / "costs.jsonl"
+    started = datetime.now(UTC) - timedelta(minutes=10)
+    ctx = CycleContext(
+        session_id=session_id,
+        started_at=started,
+        jira_key="RHCLOUD-1",
+        partial_usage={"input_tokens": 100, "output_tokens": 20},
+        model_usage={"claude-opus-4": {"input_tokens": 100, "output_tokens": 20}},
+        num_turns=3,
+        timed_out=True,
+    )
+
+    with (
+        patch("bot.transcripts.Path.home", return_value=tmp_path),
+        patch("httpx.post") as mock_post,
+        patch("bot.run.push_status") as mock_status,
+        patch("bot.run.CYCLE_TIMEOUT_TOTAL"),
+    ):
+        mock_post.return_value.json.return_value = {"id": 1}
+        mock_post.return_value.is_success = True
+        result, out_ctx = handle_cycle_timeout(
+            timeout_seconds=600,
+            label="test-label",
+            ctx=ctx,
+            cwd=cwd,
+            instance_id="test",
+            costs_file=costs_file,
+        )
 
     assert result is None
-    assert ctx is None
-    assert any("Cost data for timed-out cycle lost" in r.message for r in caplog.records)
-    assert any(r.levelname == "WARNING" for r in caplog.records)
+    assert out_ctx is ctx
+    assert ctx.summary == "Cycle timed out after 600s"
+    assert ctx.notes == "Cycle timed out after 600s"
+    mock_status.assert_called_once()
+    assert mock_status.call_args.args[0] == "error"
+
+    cycle_calls = [c for c in mock_post.call_args_list if "cycle-runs" in str(c.args[0] if c.args else "")]
+    cost_calls = [c for c in mock_post.call_args_list if "costs" in str(c.args[0] if c.args else "")]
+    assert len(cycle_calls) == 1
+    assert len(cost_calls) == 1
+
+    cycle_body = cycle_calls[0].kwargs.get("json") or cycle_calls[0][1]["json"]
+    assert cycle_body["cycle_type"] == "error"
+    assert cycle_body["progress"]["notes"] == "Cycle timed out after 600s"
+    assert cycle_body["progress"]["jira_key"] == "RHCLOUD-1"
+    assert cycle_body["started_at"] == started.isoformat()
+    assert "transcript_b64" in cycle_body
+    # Non-zero counts are sent; zeros would be omitted so merge keeps progress_store.
+    assert cycle_body["tool_calls"] == 3
+    assert cycle_body["tokens_used"] == 120
+
+    assert costs_file.exists()
+    entry = json.loads(costs_file.read_text().strip())
+    assert entry["cost_status"] == "unknown"
+    assert entry["cost_incomplete"] is True
+    assert entry["is_error"] is True
+    assert entry["input_tokens"] == 100
+    assert entry["output_tokens"] == 20
 
 
 # --- Test 4: Local file write is resilient ---

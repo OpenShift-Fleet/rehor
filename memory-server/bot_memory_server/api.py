@@ -1144,10 +1144,23 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
             UPDATE cycle_runs
             SET transcript = COALESCE($1, transcript),
                 finished_at = COALESCE($2, finished_at, NOW()),
-                tool_calls = COALESCE($3, tool_calls),
-                tokens_used = COALESCE($4, tokens_used),
+                tool_calls = COALESCE(NULLIF($3, 0), tool_calls),
+                tokens_used = COALESCE(NULLIF($4, 0), tokens_used),
                 task_id = COALESCE(task_id, $5),
-                input_prompt = COALESCE($7, input_prompt)
+                input_prompt = COALESCE($7, input_prompt),
+                started_at = CASE
+                    WHEN $8::timestamptz IS NULL THEN started_at
+                    WHEN started_at IS NULL THEN $8
+                    WHEN $8 < started_at THEN $8
+                    ELSE started_at
+                END,
+                cycle_type = CASE
+                    WHEN $9::text IS NULL THEN cycle_type
+                    WHEN $9::text = 'error' THEN 'error'
+                    ELSE COALESCE(cycle_type, $9)
+                END,
+                progress = COALESCE(progress, '{{}}'::jsonb)
+                           || COALESCE($10::jsonb, '{{}}'::jsonb)
             WHERE id = (
                 SELECT id FROM cycle_runs
                 WHERE instance_id = $6
@@ -1165,6 +1178,9 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
             task_id,
             instance_id_val,
             input_prompt,
+            parsed_started,
+            body.get("cycle_type"),
+            json.dumps(progress) if progress is not None else None,
         )
 
     if row is None:

@@ -267,7 +267,7 @@ def load_config(script_dir: Path) -> Config:
         max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
-        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 1800),
+        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 3600),
         board_key=raw["jira"]["boardKey"],
         idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
         model_tiers=_load_model_tiers(claude_cfg.get("modelTiers")),

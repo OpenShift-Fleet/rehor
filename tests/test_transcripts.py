@@ -3,6 +3,7 @@
 import base64
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from bot.agent import CycleContext, _extract_task_id_from_result
@@ -184,7 +185,14 @@ class TestRecordTranscript:
         transcript.write_text('{"role": "assistant", "content": "hello"}\n')
 
         result = FakeResult()
-        ctx = CycleContext(jira_key="RHCLOUD-123", task_id=42, work_type="new_ticket")
+        started = datetime(2026, 6, 10, 15, 16, 14, tzinfo=UTC)
+        ctx = CycleContext(
+            jira_key="RHCLOUD-123",
+            task_id=42,
+            work_type="new_ticket",
+            started_at=started,
+            notes="wrap-up note",
+        )
 
         with (
             patch("bot.transcripts.Path.home", return_value=tmp_path),
@@ -196,6 +204,7 @@ class TestRecordTranscript:
                 ctx=ctx,
                 cwd="/test/cwd",
                 instance_id="test-instance",
+                started_at=started,
             )
 
         mock_post.assert_called_once()
@@ -208,6 +217,8 @@ class TestRecordTranscript:
         assert body["tool_calls"] == 10
         assert body["tokens_used"] == 60000
         assert body["progress"]["jira_key"] == "RHCLOUD-123"
+        assert body["progress"]["notes"] == "wrap-up note"
+        assert body["started_at"] == started.isoformat()
         assert "transcript_b64" in body
 
         # Verify transcript round-trips

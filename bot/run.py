@@ -15,14 +15,16 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 from prometheus_client import start_http_server
 
 from . import idle_reminder
-from .agent import push_status, run_cycle
+from .agent import CycleContext, push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
     DEFAULT_PROVIDER_ID,
@@ -374,16 +376,92 @@ def cleanup_between_cycles(script_dir: Path) -> int | None:
     return free_mb
 
 
-def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:
-    """Log timeout and warn about lost cost data. Returns (None, None) for result, ctx."""
-    logger = logging.getLogger(__name__)
-    logger.error(
-        "Cycle timed out after %ds — skipping to next cycle",
-        timeout_seconds,
+def _timeout_result(ctx: CycleContext, timeout_seconds: int) -> SimpleNamespace:
+    """Synthetic ResultMessage-like object for timed-out cycles."""
+    now = datetime.now(UTC)
+    if ctx.started_at is not None:
+        duration_ms = max(0, int((now - ctx.started_at).total_seconds() * 1000))
+    else:
+        duration_ms = timeout_seconds * 1000
+
+    usage = (
+        dict(ctx.partial_usage)
+        if ctx.partial_usage
+        else {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
     )
-    logger.warning("Cost data for timed-out cycle lost (SDK does not expose partial usage)")
+    return SimpleNamespace(
+        session_id=ctx.session_id or "",
+        subtype="error",
+        duration_ms=duration_ms,
+        num_turns=ctx.num_turns,
+        usage=usage,
+        model_usage=dict(ctx.model_usage) if ctx.model_usage else {},
+        total_cost_usd=0,
+        result="",
+        cost_status="unknown",
+        cost_incomplete=True,
+    )
+
+
+def handle_cycle_timeout(
+    timeout_seconds: int,
+    label: str,
+    *,
+    ctx: CycleContext | None = None,
+    cwd: str = "",
+    instance_id: str | None = None,
+    input_prompt: str | None = None,
+    costs_file: Path | None = None,
+    workflow: str = "unknown",
+) -> tuple[None, CycleContext | None]:
+    """Log timeout, post error cycle_run + best-effort cost, return (None, ctx)."""
+    logger = logging.getLogger(__name__)
+    reason = f"Cycle timed out after {timeout_seconds}s"
+    logger.error("%s — skipping to next cycle", reason)
     CYCLE_TIMEOUT_TOTAL.labels(label).inc()
-    return None, None
+
+    if ctx is None:
+        ctx = CycleContext()
+
+    ctx.work_type = ctx.work_type or "error"
+    ctx.summary = reason
+    ctx.notes = reason
+
+    synthetic = _timeout_result(ctx, timeout_seconds)
+    if not synthetic.session_id:
+        logger.warning("Timed-out cycle has no session_id — cycle_run/transcript cannot be recovered")
+    else:
+        record_transcript(
+            label=label,
+            result=synthetic,
+            ctx=ctx,
+            cwd=cwd,
+            instance_id=instance_id,
+            input_prompt=input_prompt,
+            started_at=ctx.started_at,
+        )
+
+    if costs_file is not None:
+        if not ctx.partial_usage:
+            logger.warning("Cost data for timed-out cycle incomplete (no partial usage from stream)")
+        record_cost(
+            costs_file=costs_file,
+            label=label,
+            result=synthetic,
+            ctx=ctx,
+            instance_id=instance_id,
+            workflow=workflow,
+        )
+    else:
+        logger.warning("Cost data for timed-out cycle lost (no costs file configured)")
+
+    push_status("error", reason, instance_id=instance_id, jira_key=ctx.jira_key, repo=ctx.repo)
+    return None, ctx
 
 
 def validate_python_runner_selection(instance_config: InstanceConfig) -> None:
@@ -589,24 +667,31 @@ def main() -> None:
                     logger.info("Running agent cycle with model %s...", cycle_model)
 
                     cycle_start = time.monotonic()
-                    try:
-                        result, ctx = asyncio.run(
-                            asyncio.wait_for(
-                                run_cycle(
-                                    label=args.label,
-                                    config=config,
-                                    mcp_servers=mcp_servers,
-                                    allowed_tools=ALLOWED_TOOLS,
-                                    cwd=str(SCRIPT_DIR),
-                                    instance_id=instance_id,
-                                    preflight_prompt=preflight_prompt,
-                                    model=cycle_model,
-                                ),
-                                timeout=config.cycle_timeout,
-                            )
+                    ctx = CycleContext()
+                    result, ctx = asyncio.run(
+                        run_cycle(
+                            label=args.label,
+                            config=config,
+                            mcp_servers=mcp_servers,
+                            allowed_tools=ALLOWED_TOOLS,
+                            cwd=str(SCRIPT_DIR),
+                            instance_id=instance_id,
+                            preflight_prompt=preflight_prompt,
+                            model=cycle_model,
+                            ctx=ctx,
                         )
-                    except TimeoutError:
-                        result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
+                    )
+                    if ctx.timed_out:
+                        result, ctx = handle_cycle_timeout(
+                            config.cycle_timeout,
+                            args.label,
+                            ctx=ctx,
+                            cwd=str(SCRIPT_DIR),
+                            instance_id=instance_id,
+                            input_prompt=preflight_prompt,
+                            costs_file=DATA_DIR / "costs.jsonl",
+                            workflow=instance_config.workflow,
+                        )
                     cycle_duration = time.monotonic() - cycle_start
                     work_type = (ctx.work_type if ctx else None) or "unknown"
                     CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
@@ -631,9 +716,10 @@ def main() -> None:
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
                             input_prompt=preflight_prompt,
+                            started_at=ctx.started_at if ctx else None,
                         )
-                    else:
-                        if ctx and ctx.jira_key:
+                    elif not ctx.timed_out:
+                        if ctx.jira_key:
                             bind(task_key=ctx.jira_key)
                         logger.warning("Cycle produced no result")
 
