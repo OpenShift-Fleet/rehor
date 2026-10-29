@@ -89,6 +89,23 @@ function tool(
   });
 }
 
+function sessionTool(
+  sequence: number,
+  state: "started" | "completed",
+  id: string,
+  name: string,
+  runtimeSessionRef: string,
+  extra: Record<string, unknown> = {},
+): RehorEvent {
+  return event({
+    eventId: `${id}-${state}`,
+    sequence,
+    kind: "tool",
+    runtimeSessionRef,
+    payload: { state, toolUseId: id, name, ...extra } as RehorEvent["payload"],
+  });
+}
+
 function terminal(sequence = 2): RehorEvent {
   return event({
     eventId: "terminal-01",
@@ -131,6 +148,122 @@ class HangingRuntime implements AgentRuntime {
 }
 
 describe("coordinator execution", () => {
+  it("logs root and child-session progress with generic scope and private payloads omitted", async () => {
+    const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
+    const childSessionRef = "opaque-child-session-id";
+    const events = [
+      event({
+        eventId: "root-assistant-text",
+        kind: "model",
+        runtimeSessionRef: "root-session-id",
+        payload: { role: "assistant", text: `Root reply ${"x".repeat(400)}` },
+      }),
+      event({
+        eventId: "child-session-started",
+        sequence: 2,
+        kind: "run",
+        runtimeSessionRef: childSessionRef,
+        payload: { state: "child_session_started" },
+      }),
+      event({
+        eventId: "child-assistant-text",
+        sequence: 3,
+        kind: "model",
+        runtimeSessionRef: childSessionRef,
+        payload: {
+          phase: "text",
+          delta: "Child progress visible",
+          text: "CHILD_CUMULATIVE_TEXT_SENTINEL",
+        },
+      }),
+      event({
+        eventId: "child-reasoning",
+        sequence: 4,
+        kind: "model",
+        runtimeSessionRef: childSessionRef,
+        payload: { phase: "reasoning", text: "REASONING_SENTINEL" },
+      }),
+      sessionTool(5, "started", "child-tool", "read_file", childSessionRef, {
+        input: "CHILD_TOOL_INPUT_SENTINEL",
+      }),
+      sessionTool(6, "completed", "child-tool", "read_file", childSessionRef, {
+        durationMs: 42,
+        input: "CHILD_TOOL_INPUT_SENTINEL",
+        content: "CHILD_TOOL_CONTENT_SENTINEL",
+      }),
+      sessionTool(7, "started", "root-tool", "write_file", "root-session-id"),
+      sessionTool(8, "completed", "root-tool", "write_file", "root-session-id", {
+        durationMs: 13,
+        isError: true,
+        content: "ROOT_TOOL_CONTENT_SENTINEL",
+      }),
+      terminal(9),
+    ];
+
+    const result = await executeRun(
+      new FakeAgentRuntime({ events }),
+      { ...run, prompt: "PROMPT_SENTINEL" },
+      {
+        logger: {
+          log(level, message, fields) {
+            logs.push({ level, message, fields });
+          },
+        },
+      },
+    );
+
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(logs.map(({ message }) => message)).toEqual([
+      "Assistant text",
+      "Subagent session started",
+      "Assistant text",
+      "Tool started",
+      "Tool completed",
+      "Tool started",
+      "Tool failed",
+    ]);
+    expect(logs[0]).toMatchObject({
+      fields: { activity_scope: "root", text_preview: expect.any(String) },
+    });
+    expect(logs[0]?.fields?.text_preview).toHaveLength(301);
+    expect(logs[1]).toMatchObject({ fields: { activity_scope: "subagent" } });
+    expect(logs[2]).toMatchObject({
+      fields: { activity_scope: "subagent", text_preview: "Child progress visible" },
+    });
+    expect(logs[4]).toMatchObject({
+      fields: { activity_scope: "subagent", state: "completed", duration_ms: 42 },
+    });
+    expect(logs[6]).toMatchObject({
+      level: "WARNING",
+      fields: { activity_scope: "root", state: "failed", duration_ms: 13, failed: true },
+    });
+    expect(JSON.stringify(logs)).not.toMatch(
+      /opaque-child-session-id|PROMPT_SENTINEL|CHILD_CUMULATIVE_TEXT_SENTINEL|REASONING_SENTINEL|CHILD_TOOL_INPUT_SENTINEL|CHILD_TOOL_CONTENT_SENTINEL|ROOT_TOOL_CONTENT_SENTINEL/,
+    );
+  });
+
+  it("continues execution when progress logger throws", async () => {
+    const result = await executeRun(
+      new FakeAgentRuntime({
+        events: [
+          event({ kind: "model", payload: { role: "assistant", text: "visible text" } }),
+          terminal(2),
+        ],
+      }),
+      run,
+      {
+        logger: {
+          log: () => {
+            throw new Error("logging sink failed");
+          },
+        },
+      },
+    );
+
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
+  });
+
   it("starts, projects, and stops a successful runtime", async () => {
     const projection: CoordinatorProjection & { events: RehorEvent[]; terminals: RehorEvent[] } = {
       events: [],

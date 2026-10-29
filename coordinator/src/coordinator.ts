@@ -11,6 +11,7 @@ import {
   type ValidatedRehorRun,
   WorkContextTracker,
 } from "./domain";
+import { type Logger, safeText } from "./log";
 import type { AgentRuntime, AgentRuntimeRunContext } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
 import { type CombinedAbortSignals, combineAbortSignals, isRecord } from "./utils";
@@ -29,6 +30,8 @@ export interface CoordinatorOptions {
   /** Aborts the attempt as interrupted, normally for SIGTERM/SIGINT. */
   shutdownSignal?: AbortSignal;
   projection?: CoordinatorProjection;
+  /** Best-effort progress output for accepted normalized runtime events. */
+  logger?: Pick<Logger, "log">;
   /** Legacy clock override; also used for elapsed time when monotonicNow is absent. */
   now?: () => number;
   /** Monotonic clock in milliseconds for duration/timeout accounting. */
@@ -184,6 +187,7 @@ export async function executeRunWithValidatedInput(
           abortState,
           ledger,
           options.projection,
+          options.logger,
           workContext,
           capabilities,
           () => acceptingEvents,
@@ -275,6 +279,7 @@ async function consumeEvents(
   abortState: CombinedAbortSignals,
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
+  logger: Pick<Logger, "log"> | undefined,
   workContext: WorkContextTracker,
   capabilities: RuntimeCapabilities,
   isAccepting: () => boolean,
@@ -282,6 +287,7 @@ async function consumeEvents(
   const turnBudget = new TurnBudgetPolicy(run);
   const pendingPolicyUpdates = new Map<string, TurnPolicyEvent>();
   const toolStarts = new Map<string, RehorEvent>();
+  const childSessionRefs = new Set<string>();
   const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
@@ -352,6 +358,14 @@ async function consumeEvents(
       const event = accept(sequencedEvent);
       if (!event) continue;
       workContext.observe(event);
+      if (
+        event.kind === "run" &&
+        event.payload.state === "child_session_started" &&
+        typeof event.runtimeSessionRef === "string"
+      ) {
+        childSessionRefs.add(event.runtimeSessionRef);
+      }
+      logProgress(logger, event, childSessionRefs);
       await projectEvent(event, run, projection);
 
       if (event.kind === "tool" && event.payload.budgetUnit !== "container") {
@@ -378,6 +392,84 @@ async function consumeEvents(
     }
   } finally {
     await iterator.return?.();
+  }
+}
+
+const MAX_ASSISTANT_PREVIEW_LENGTH = 300;
+
+/** Logs safe, provider-neutral progress without allowing logging to affect a run. */
+function logProgress(
+  logger: Pick<Logger, "log"> | undefined,
+  event: RehorEvent,
+  childSessionRefs: ReadonlySet<string>,
+): void {
+  if (!logger) return;
+  try {
+    const activityScope =
+      event.runtimeSessionRef && childSessionRefs.has(event.runtimeSessionRef)
+        ? "subagent"
+        : "root";
+
+    if (event.kind === "run" && event.payload.state === "child_session_started") {
+      logger.log("INFO", "Subagent session started", { activity_scope: "subagent" });
+      return;
+    }
+
+    if (event.kind === "model") {
+      const phase = event.payload.phase;
+      if (phase === "reasoning") return;
+
+      let text: string | undefined;
+      if (event.payload.role === "assistant" && typeof event.payload.text === "string") {
+        text = event.payload.text;
+      } else if (phase === "text") {
+        text =
+          typeof event.payload.delta === "string"
+            ? event.payload.delta
+            : typeof event.payload.text === "string"
+              ? event.payload.text
+              : undefined;
+      }
+      if (text) {
+        const redacted = safeText(text);
+        const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
+        logger.log("INFO", "Assistant text", {
+          activity_scope: activityScope,
+          text_preview: `${preview}${redacted.length > preview.length ? "…" : ""}`,
+        });
+      }
+      return;
+    }
+
+    if (event.kind === "tool") {
+      const rawState = event.payload.state;
+      const isError =
+        event.payload.isError === true || rawState === "failed" || rawState === "error";
+      const state = rawState === "started" ? "started" : isError ? "failed" : "completed";
+      const duration = event.payload.durationMs;
+      const rawName =
+        typeof event.payload.name === "string"
+          ? event.payload.name
+          : typeof event.payload.toolName === "string"
+            ? event.payload.toolName
+            : "unknown";
+      logger.log(isError ? "WARNING" : "INFO", isError ? "Tool failed" : `Tool ${state}`, {
+        activity_scope: activityScope,
+        tool_name: safeText(rawName).slice(0, 200),
+        state,
+        ...(typeof duration === "number" && Number.isFinite(duration)
+          ? { duration_ms: duration }
+          : {}),
+        ...(isError ? { failed: true } : {}),
+      });
+      return;
+    }
+
+    if (event.kind === "run" && event.payload.state === "turn_started") {
+      logger.log("INFO", "Turn started", { activity_scope: activityScope });
+    }
+  } catch {
+    // Event logging is diagnostic only and must never interrupt execution.
   }
 }
 

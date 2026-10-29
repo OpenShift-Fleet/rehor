@@ -40,7 +40,7 @@ function event(
     runId: run.runId,
     attemptId: run.attemptId,
     sequence,
-    occurredAt: `2026-09-07T12:00:0${sequence}.000Z`,
+    occurredAt: `2026-09-07T12:00:${String(sequence).padStart(2, "0")}.000Z`,
     kind,
     ...(runtimeSessionRef ? { runtimeSessionRef } : {}),
     workspace: {
@@ -89,6 +89,194 @@ const terminal = event("terminal-01", 4, "terminal", {
 });
 
 describe("legacy compatibility projection", () => {
+  it("projects meaningful root and generic subagent progress without lifecycle noise or private payloads", async () => {
+    const statuses: unknown[] = [];
+    const childSessionRef = "opaque-child-session-id";
+    const longRootText = `Root assistant progress ${"x".repeat(600)}`;
+    const projection = new LegacyCompatibilityProjection({
+      status: {
+        write: (record) => {
+          statuses.push(record);
+        },
+      },
+    });
+    const childStarted = event(
+      "child-started",
+      10,
+      "run",
+      { state: "child_session_started" },
+      childSessionRef,
+    );
+
+    const result = await executeRun(
+      new FakeAgentRuntime({
+        events: [
+          start,
+          event("running", 2, "run", { state: "running" }, "session-01"),
+          event("turn-started", 3, "run", { state: "turn_started" }, "session-01"),
+          event("root-text", 4, "model", { role: "assistant", text: longRootText }, "session-01"),
+          event(
+            "reasoning",
+            5,
+            "model",
+            { phase: "reasoning", text: "REASONING_PRIVATE_SENTINEL" },
+            "session-01",
+          ),
+          event(
+            "model-metadata",
+            6,
+            "model",
+            { phase: "updated", text: "MODEL_METADATA_SENTINEL" },
+            "session-01",
+          ),
+          event("step-started", 7, "run", { state: "step_started" }, "session-01"),
+          event("step-finished", 8, "run", { state: "step_finished" }, "session-01"),
+          event("idle", 9, "run", { state: "idle" }, "session-01"),
+          childStarted,
+          event("child-running", 11, "run", { state: "running" }, childSessionRef),
+          event("child-turn-started", 12, "run", { state: "turn_started" }, childSessionRef),
+          event(
+            "child-text",
+            13,
+            "model",
+            { phase: "text", delta: "Checking dependencies", text: "Checking dependencies" },
+            childSessionRef,
+          ),
+          event(
+            "child-tool-started",
+            14,
+            "tool",
+            { state: "started", name: "read_file", input: "TOOL_INPUT_PRIVATE_SENTINEL" },
+            childSessionRef,
+          ),
+          event(
+            "child-tool-completed",
+            15,
+            "tool",
+            {
+              state: "completed",
+              name: "read_file",
+              input: "TOOL_INPUT_PRIVATE_SENTINEL",
+              content: "TOOL_RESULT_PRIVATE_SENTINEL",
+            },
+            childSessionRef,
+          ),
+          event(
+            "child-tool-failed",
+            16,
+            "tool",
+            {
+              state: "completed",
+              name: "write_file",
+              isError: true,
+              content: "TOOL_RESULT_PRIVATE_SENTINEL",
+            },
+            childSessionRef,
+          ),
+          event("routine-status", 17, "run", { state: "status" }, childSessionRef),
+          event("late-step-ended", 18, "run", { state: "step_finished" }, childSessionRef),
+          event("terminal-progress", 19, "terminal", {
+            state: "completed",
+            resultText: "Done.",
+            turns: 2,
+          }),
+        ],
+      }),
+      { ...run, prompt: "PROMPT_PRIVATE_SENTINEL" },
+      { projection },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(statuses).toHaveLength(12);
+    expect(statuses.map((value) => (value as { message: string }).message)).toEqual([
+      "Starting cycle...",
+      "Working...",
+      "Working...",
+      longRootText.slice(0, 500),
+      "Subagent: session started",
+      "Subagent: Working...",
+      "Subagent: Working...",
+      "Subagent: Checking dependencies",
+      "Subagent: Tool started: read_file",
+      "Subagent: Tool completed: read_file",
+      "Subagent: Tool failed: write_file",
+      "Cycle complete. Sleeping...",
+    ]);
+    expect(JSON.stringify(statuses)).not.toMatch(
+      /opaque-child-session-id|REASONING_PRIVATE_SENTINEL|MODEL_METADATA_SENTINEL|TOOL_INPUT_PRIVATE_SENTINEL|TOOL_RESULT_PRIVATE_SENTINEL|PROMPT_PRIVATE_SENTINEL/,
+    );
+  });
+
+  it("isolates status writer failures and still writes terminal cost and cycle records", async () => {
+    const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
+    const costs: unknown[] = [];
+    const cycleRuns: unknown[] = [];
+    const transcripts: unknown[] = [];
+    const projection = new LegacyCompatibilityProjection(
+      {
+        status: {
+          write: () => {
+            throw new Error("STATUS_FAILURE_PRIVATE_SENTINEL");
+          },
+        },
+        costs: {
+          write: (record) => {
+            costs.push(record);
+          },
+        },
+        cycleRuns: {
+          write: (record) => {
+            cycleRuns.push(record);
+          },
+        },
+        transcripts: {
+          append: (record) => {
+            transcripts.push(record);
+          },
+        },
+      },
+      {
+        log(level, message, fields) {
+          logs.push({ level, message, fields });
+        },
+      },
+    );
+
+    const result = await executeRun(
+      new FakeAgentRuntime({
+        events: [
+          start,
+          event("status-failure-terminal", 2, "terminal", {
+            state: "completed",
+            resultText: "Done.",
+            turns: 1,
+          }),
+        ],
+      }),
+      run,
+      { projection },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(costs).toHaveLength(1);
+    expect(cycleRuns).toHaveLength(1);
+    expect(transcripts).toHaveLength(2);
+    expect(logs).toEqual([
+      {
+        level: "WARNING",
+        message: "Compatibility status update failed",
+        fields: { instance_id: run.instanceId },
+      },
+      {
+        level: "WARNING",
+        message: "Compatibility status update failed",
+        fields: { instance_id: run.instanceId },
+      },
+    ]);
+    expect(JSON.stringify(logs)).not.toContain("STATUS_FAILURE_PRIVATE_SENTINEL");
+  });
+
   it("writes status, transcript, cost, cycle-run, and metric records", async () => {
     const statuses: unknown[] = [];
     const transcripts: unknown[] = [];
