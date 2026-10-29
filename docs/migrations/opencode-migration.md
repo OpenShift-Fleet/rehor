@@ -488,6 +488,7 @@ This is a provider and credential migration, not only a URL change.
 - `OPENAI_ALLOWED_MODELS` or provider-neutral model allowlist.
 - `OPENAI_BASE_URL` with default `https://api.openai.com/v1`.
 - `REHOR_MODEL_PROXY_URL` for the internal gateway and `REHOR_MODEL_PROXY_TOKEN` as the provider client's placeholder API key. The proxy overwrites the latter; NetworkPolicy controls reachability.
+- `REHOR_WORKSPACE_OWNER_UID` set to the image's `/home/botuser/app` owner UID (normally `1000`). OpenShift Sandbox pods run under a random namespace UID, and the coordinator fails every OpenCode run before the first model call with `workspace ownership mismatch` when this override is missing.
 - OpenAI request ID and usage metrics.
 - OpenAI rate-limit and retry handling.
 
@@ -944,6 +945,7 @@ Native Code Mode bridge and configuration tests, including root/child execution 
 Canary acceptance criteria:
 
 - One ticket completes from preflight through PR.
+- First OpenCode cycle starts without a `workspace ownership mismatch` failure (`REHOR_WORKSPACE_OWNER_UID` configured).
 - Jira, GitHub/GitLab, memory, browser, and Slack paths work.
 - Tool calls execute with equivalent permissions.
 - OpenAI proxy never exposes API key to bot.

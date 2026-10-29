@@ -22,6 +22,9 @@ parameters:
 - name: REHOR_OPENCODE_MAX_TOOL_CALLS
   description: Optional OpenCode tool-call budget override; empty preserves the image configuration.
   value: ""
+- name: REHOR_WORKSPACE_OWNER_UID
+  description: Numeric UID owning /home/botuser/app in the image; the coordinator compares the workspace owner against it instead of the pod's runtime UID.
+  value: "1000"
 - name: BOT_BOARD_NAME
   value: ""
 - name: BOT_SPRINT_PREFIX
@@ -178,6 +181,8 @@ objects:
             value: ${BOT_CONFIG_PATH}
           - name: REHOR_OPENCODE_MAX_TOOL_CALLS
             value: ${REHOR_OPENCODE_MAX_TOOL_CALLS}
+          - name: REHOR_WORKSPACE_OWNER_UID
+            value: ${REHOR_WORKSPACE_OWNER_UID}
           - name: BOT_DASHBOARD_URL
             value: http://devbot-memory-server:8080/api/bot-status
           - name: COSTS_API_URL
