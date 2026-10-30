@@ -377,7 +377,7 @@ for (const [cycle, expectedPath, expectedAuthorization] of [
   }
 }
 
-async function verifyCodeModeImage(maxTurns) {
+async function verifyCodeModeImage(budgetUsd, expectExceeded) {
   const directory = await mkdtemp(join(tmpdir(), "rehor-codemode-image-"));
   const worktree = join(directory, "worktree");
   await mkdir(worktree);
@@ -443,9 +443,14 @@ async function verifyCodeModeImage(maxTurns) {
         assert.ok(!JSON.stringify(toolMessages).includes('"id":143'), "task id leaked through filtered execute output");
       }
       const delta = first ? { tool_calls: [{ index: 0, id: "call_image_execute", type: "function", function: { name: "execute", arguments: JSON.stringify({ code }) } }] } : { content: "Image Code Mode complete." };
-      const chunk = (value, finish_reason) => `data: ${JSON.stringify({ id: "chatcmpl_bridge", object: "chat.completion.chunk", created: 1, model: "gpt-4.1", choices: [{ index: 0, delta: value, finish_reason }] })}\n\n`;
+      // Mirrors the offline fixtures: every Code Mode model step carries priced
+      // tokens so the coordinator cost budget observes a positive amount. The
+      // usage-only chunk must carry an empty choices array, exactly like the
+      // OpenAI stream-options shape the other fixtures use.
+      const chunk = (choices, usage) => `data: ${JSON.stringify({ id: "chatcmpl_bridge", object: "chat.completion.chunk", created: 1, model: "gpt-4.1", choices, ...(usage ? { usage } : {}) })}\n\n`;
+      const usage = { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_tokens: 800 }, completion_tokens_details: { reasoning_tokens: 20 } };
       response.writeHead(200, { "content-type": "text/event-stream" });
-      response.end(`${chunk(delta, null)}${chunk({}, first ? "tool_calls" : "stop")}data: [DONE]\n\n`);
+      response.end(`${chunk([{ index: 0, delta, finish_reason: null }])}${chunk([{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }])}${chunk([], usage)}data: [DONE]\n\n`);
     } catch (error) {
       fixtureErrors.push(error.message);
       if (!response.headersSent) response.writeHead(400, { "content-type": "application/json" });
@@ -498,13 +503,23 @@ async function verifyCodeModeImage(maxTurns) {
         },
       }),
     });
-    const input = { schemaVersion: "1", runId: `image-codemode-${maxTurns}`, attemptId: `image-codemode-${maxTurns}`, instanceId: "image-fixture", label: "image-smoke", workflowId: "image-smoke", prompt: "Execute the scripted Code Mode fixture.", task: null, runtimeId: "opencode", worktree: { path: worktree, repository: "https://example.invalid/image-fixture", snapshot: { ref: "fixture", commitSha: "fixture", dirty: false } }, instructionHash: { algorithm: "sha256", value: "1".repeat(64) }, configHash: { algorithm: "sha256", value: rendered.hash }, policyHash: { algorithm: "sha256", value: "3".repeat(64) }, provider: { id: "rehor-openai-chat", requestedModel: "rehor-openai-chat/gpt-4.1" }, limits: { timeoutMs: 45000, maxTurns }, preflightPayloadRef: null };
+    const input = { schemaVersion: "1", runId: `image-codemode-${expectExceeded ? "exhausted" : "generous"}`, attemptId: `image-codemode-${expectExceeded ? "exhausted" : "generous"}`, instanceId: "image-fixture", label: "image-smoke", workflowId: "image-smoke", prompt: "Execute the scripted Code Mode fixture.", task: null, runtimeId: "opencode", worktree: { path: worktree, repository: "https://example.invalid/image-fixture", snapshot: { ref: "fixture", commitSha: "fixture", dirty: false } }, instructionHash: { algorithm: "sha256", value: "1".repeat(64) }, configHash: { algorithm: "sha256", value: rendered.hash }, policyHash: { algorithm: "sha256", value: "3".repeat(64) }, provider: { id: "rehor-openai-chat", requestedModel: "rehor-openai-chat/gpt-4.1" }, limits: { timeoutMs: 45000, budgetUsd }, preflightPayloadRef: null };
     const result = await executeRun(runtime, input, { signal: controller.signal });
     assert.equal(result.error, undefined);
     assert.deepEqual(fixtureErrors, []);
-    assert.equal(result.terminal.payload.state, maxTurns === 3 ? "completed" : "failed", JSON.stringify(result.terminal));
-    if (maxTurns === 2) assert.equal(result.terminal.payload.reason, "max_turns");
-    else assert.equal(modelSteps, 2, "wrapper or denied call incorrectly exhausted budget before final response");
+    const budgetEvents = result.events.filter((event) => event.kind === "policy");
+    if (expectExceeded) {
+      // The first priced usage snapshot already crosses the hard limit, so the
+      // run aborts with budget_exceeded after emitting the exhausted notice.
+      assert.equal(result.terminal.payload.state, "failed", JSON.stringify(result.terminal));
+      assert.equal(result.terminal.payload.reason, "budget_exceeded", JSON.stringify(result.terminal));
+      assert.ok(budgetEvents.some((event) => event.payload.state === "exhausted" && typeof event.payload.usedUsd === "number" && event.payload.usedUsd > 0), "exhausted cost policy event missing");
+      console.log(`Code Mode budgetUsd=${budgetUsd}: exhausted policy emitted, run aborted with budget_exceeded`);
+      return;
+    }
+    assert.equal(result.terminal.payload.state, "completed", JSON.stringify(result.terminal));
+    assert.equal(budgetEvents.length, 0, "generous budget must not emit cost policy events");
+    assert.equal(modelSteps, 2, "wrapper or denied call incorrectly exhausted budget before final response");
     assert.equal(calls.length, 2, "both repeated nested calls must reach MCP separately");
     assert.ok(calls.every((call) => call.name === "task_add"));
     assert.deepEqual(calls.map((call) => call.input.index).sort(), [0, 1]);
@@ -530,10 +545,7 @@ async function verifyCodeModeImage(maxTurns) {
     assert.equal(result.terminal.payload.context.repository, taskInput.repo);
     assert.equal(result.terminal.payload.context.summary, taskInput.summary);
     assert.equal(result.terminal.payload.context.workType, "new_ticket");
-    const budget = result.events.filter((event) => event.kind === "policy" && typeof event.payload.usedTurns === "number");
-    assert.ok(budget.length > 0);
-    assert.equal(Math.max(...budget.map((event) => event.payload.usedTurns)), 2, "budget must count nested successes, not execute or denied calls");
-    console.log(`Code Mode maxTurns=${maxTurns}: 2 nested successes, denied MCP blocked, filtered task 143 captured, wrapper unbudgeted; ${result.terminal.payload.state}`);
+    console.log(`Code Mode budgetUsd=${budgetUsd}: 2 nested successes, denied MCP blocked, filtered task 143 captured, wrapper unbudgeted; ${result.terminal.payload.state}`);
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -545,6 +557,6 @@ async function verifyCodeModeImage(maxTurns) {
   }
 }
 
-await verifyCodeModeImage(3);
-await verifyCodeModeImage(2);
+await verifyCodeModeImage(10, false);
+await verifyCodeModeImage(0.000001, true);
 console.log("runner image OpenCode V2 API, active policy plugin, Responses, Chat, Vertex, tools, usage and Code Mode bridge verified");

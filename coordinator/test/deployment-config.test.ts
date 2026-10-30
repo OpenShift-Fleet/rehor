@@ -17,7 +17,7 @@ const prepared: PreparedCycleInput = {
     model: "gpt-6-luna",
     runtimeId: "opencode",
     providerId: "rehor-openai",
-    maxTurns: 10,
+    budgetUsd: 5,
     intervalSeconds: 60,
     idleIntervalSeconds: 60,
     cycleTimeoutSeconds: 1800,

@@ -30,7 +30,7 @@ const run: RehorRun = {
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
-  limits: { timeoutMs: 60_000, maxTurns: 20 },
+  limits: { timeoutMs: 60_000, budgetUsd: 5 },
   preflightPayloadRef: "memory://preflight/run-01",
 };
 
@@ -340,8 +340,7 @@ describe("ClaudeAgentRuntime", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("delivers coordinator budget notices in the matching PostToolUse hook and restores SDK maxTurns", async () => {
-    const budgetRun = { ...run, limits: { ...run.limits, maxTurns: 8 } };
+  it("queues coordinator policy notices and flushes them through the PostToolUse hook", async () => {
     let captured: Record<string, unknown> | undefined;
     const hookResults: Record<string, unknown>[] = [];
     queryMock.mockImplementation(({ options }: { options: Record<string, unknown> }) => {
@@ -349,12 +348,12 @@ describe("ClaudeAgentRuntime", () => {
       const postToolUse = postToolUseHook(options);
       return Object.assign(
         (async function* (): AsyncGenerator<unknown> {
-          for (let index = 1; index <= budgetRun.limits.maxTurns; index += 1) {
+          for (let index = 1; index <= 3; index += 1) {
             const toolUseId = `budget-tool-${index}`;
             yield {
               type: "assistant",
               message: {
-                model: budgetRun.provider.requestedModel,
+                model: run.provider.requestedModel,
                 content: [
                   { type: "tool_use", id: toolUseId, name: "Bash", input: { command: "true" } },
                 ],
@@ -373,10 +372,10 @@ describe("ClaudeAgentRuntime", () => {
           }
           yield {
             type: "result",
-            subtype: "error_max_turns",
-            is_error: true,
-            result: "Turn limit reached",
-            num_turns: budgetRun.limits.maxTurns,
+            subtype: "success",
+            is_error: false,
+            result: "done",
+            num_turns: 3,
             session_id: "session-budget",
           };
         })(),
@@ -384,30 +383,52 @@ describe("ClaudeAgentRuntime", () => {
       );
     });
 
+    const warning =
+      "COST BUDGET WARNING: $3.75/5 used (~$1.25 remaining). Save progress soon via task_update " +
+      "(summary + metadata with last_step, files_changed, next_step). Prioritize completing the current step.";
+    const critical =
+      "COST BUDGET CRITICAL: $4.5/5 used (~$0.5 remaining). Save progress NOW via task_update with " +
+      "current summary, last_step, files_changed, and next_step. Then wrap up or stop.";
+
+    const runtime = new ClaudeAgentRuntime();
+    await runtime.start(new AbortController().signal);
+    const context: { onPolicyNotice?: (text: string) => void } = {};
+    const iterator = runtime
+      .run(run, new AbortController().signal, context)
+      [Symbol.asyncIterator]();
+
+    await iterator.next(); // run started
+    await iterator.next(); // first tool_use: generator suspends before its hook runs
+    context.onPolicyNotice?.(warning);
+    await iterator.next(); // hook flushes the queued warning with the tool result
+    await iterator.next(); // second tool_use
+    context.onPolicyNotice?.(critical);
+    context.onPolicyNotice?.(warning);
+    await iterator.next(); // hook flushes both queued notices joined together
+    await iterator.next(); // third tool_use with an empty queue
+    const done = await iterator.next(); // tool result, then the SDK result message
+    await iterator.next();
+    expect(done.done ?? false).toBe(false);
+
+    expect(captured?.maxTurns).toBeUndefined();
+    expect(hookResults.map((hook) => hook.systemMessage ?? null)).toEqual([
+      warning,
+      `${critical}\n\n${warning}`,
+      null,
+    ]);
+  });
+
+  it("reports no SDK-level turn enforcement", async () => {
+    queryMock.mockReturnValue(sdkQuery(sdkMessages()));
+
     const result = await executeSelectedRun(
       createDefaultRuntimeRegistry(),
       { runtimeId: "claude" },
-      budgetRun,
+      run,
     );
-    const warning =
-      "TURN BUDGET WARNING: ~6/8 tool calls used, ~2 remaining. Save progress via task_update soon " +
-      "(summary + metadata with last_step, files_changed, next_step). Prioritize completing current step and saving state.";
-    const critical =
-      "TURN BUDGET CRITICAL: ~7/8 tool calls used, ~1 remaining. You MUST save progress NOW via " +
-      "task_update with current summary, last_step, files_changed, and next_step. Then wrap up or stop.";
 
-    expect(captured?.maxTurns).toBe(8);
-    expect(hookResults.map((hook) => hook.systemMessage ?? null)).toEqual([
-      null,
-      null,
-      null,
-      null,
-      null,
-      warning,
-      critical,
-      null,
-    ]);
-    expect(result.capabilities?.enforcesTurnLimit).toBe(true);
+    expect(result.capabilities?.enforcesTurnLimit).toBe(false);
+    expect(result.terminal.payload.state).toBe("completed");
   });
 
   it("preserves partial usage through coordinator timeout handling", async () => {

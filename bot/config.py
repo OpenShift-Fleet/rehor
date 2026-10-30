@@ -34,6 +34,8 @@ def default_provider_for_runtime(runtime: str) -> str:
 @dataclass
 class Config:
     model: str
+    # max_turns is only used by the legacy bot/agent.py direct-agent path; the
+    # coordinator enforces a per-cycle USD cost budget instead (budget_usd).
     max_turns: int
     interval: int
     idle_interval: int
@@ -43,6 +45,7 @@ class Config:
     opencode_model: str = DEFAULT_OPENCODE_MODEL
     model_tiers: dict[str, str] = field(default_factory=dict)
     opencode_max_tool_calls: int = 200
+    budget_usd: float = 5.0
 
 
 def _nonempty_model(value: object) -> str | None:
@@ -268,6 +271,7 @@ def load_config(script_dir: Path) -> Config:
         board_key=raw["jira"]["boardKey"],
         idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
         model_tiers=_load_model_tiers(claude_cfg.get("modelTiers")),
+        budget_usd=float(claude_cfg.get("budgetUsd", 5.0)),
     )
 
 

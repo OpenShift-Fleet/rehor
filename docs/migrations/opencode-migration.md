@@ -107,29 +107,26 @@ The provider-neutral Rehor contract preserves current Python behavior; its schem
 See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 for invariants, compatibility mapping, and development commands.
 
-### Runtime-specific budgets (REHOR-198)
+### Cycle cost budget (REHOR-211)
 
-Claude and OpenCode use different budget units. Configure them independently in the runner's `config.json`:
+The turn-based budget is replaced by a per-cycle-run USD cost budget, shared by both runtimes. Configure it in the runner's `config.json`:
 
 ```json
 {
-  "claude": { "maxTurns": 100 },
-  "opencode": { "maxToolCalls": 200 }
+  "claude": { "budgetUsd": 5 }
 }
 ```
 
-This fragment shows budget fields only; retain the other runner settings. `Config.opencode_max_tool_calls` defaults to `200` when `opencode.maxToolCalls` is absent. The JSON value must be a positive integer, not a string, boolean, or fractional number.
+This fragment shows the budget field only; retain the other runner settings. `claude.budgetUsd` defaults to `5` when absent and is sent to the coordinator as `limits.budgetUsd` for every runtime.
 
-`REHOR_OPENCODE_MAX_TOOL_CALLS` overrides the JSON/default value when nonempty. It accepts only ASCII decimal digits with a value greater than zero; leading zeros are accepted. Empty means unset. Signs, whitespace, zero, and other formats fail configuration loading. An override does not bypass validation of the JSON value.
+The coordinator observes usage events and emits cost-budget policy notices at 50% (`info`), 75% (`warning`), 90% (`critical`), and 100% (`exhausted`) of the budget, each once. The exhausted notice opens a grace window so the agent can save state via `task_update`; at 115% of the budget the run hard-aborts with terminal `failed` and reason `budget_exceeded`, which is treated as an expected outcome. When usage reports affirmatively unknown pricing (`cost.source === "unknown"`) and no known cost has been recorded, the budget fails open with a one-time warning policy event and the cycle timeout remains the only backstop. The legacy `opencode.maxToolCalls` / `REHOR_OPENCODE_MAX_TOOL_CALLS` settings and `claude.maxTurns` are no longer used by the coordinator; `claude.maxTurns` is still read by the legacy Python direct-agent path (`bot/agent.py`), whose turn hook remains until that path is retired.
 
-The Python bridge still calls the coordinator field `maxTurns`: it carries the OpenCode tool-call budget only for runtime `opencode`, regardless of provider. Runtime `claude` retains `claude.maxTurns`, whose repository default remains `100`.
-
-| Runtime | Budget unit and enforcement |
+| Runtime | Budget enforcement |
 |---------|-----------------------------|
-| Claude Agent SDK | SDK hard limit on agentic roundtrips via `maxTurns` |
-| OpenCode | Coordinator counts successful, unique completed tool operations across root and child sessions, including normalized nested Code Mode calls and successful native fetch rows. Failed calls and visible `execute` containers do not count. After exhaustion, it aborts at the next root model-turn boundary with reason `max_turns`. |
+| Claude Agent SDK | Coordinator cost budget; notices are flushed to the agent as `PostToolUse` hook system messages |
+| OpenCode | Coordinator cost budget; notices are delivered by prompting the root session (the OpenCode server queues prompts sent while the session is busy) |
 
-OpenCode's budget is not an atomic per-operation ceiling: a single Code Mode batch can contain many calls, and child work can continue and overshoot before the next root model turn. The coordinator counts completed operations but does not stop a batch between nested calls when the budget is crossed. Legacy displayed `turns` count completed root assistant messages, not budget consumption, so a `max_turns` result with far fewer displayed turns is possible. Thresholds at 75% and 90% emit policy telemetry; OpenCode receives no injected warning notice. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
+The cost budget is not an atomic per-operation ceiling: a single Code Mode batch or an in-flight model step can push spend past a threshold before the next usage snapshot arrives, and the hard abort lands on the usage event that crosses 115%. Legacy displayed `turns` counts completed root assistant messages, not budget consumption. Threshold events emit policy telemetry (`devbot_cost_budget_event_total`); both runtimes now receive injected warning notices. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
 
 ## OpenCode Server Lifecycle
 

@@ -91,7 +91,7 @@ presets/
 │       └── manifest.yaml
 │
 └── core/                              # Always included — the "kernel"
-    ├── CLAUDE.md                      # Security rules, memory system, output mode, turn budget
+    ├── CLAUDE.md                      # Security rules, memory system, output mode, cost budget
     ├── skills/                        # Core shared skills (if any)
     ├── hooks/                         # Security hooks (validate-bash, block-secrets, scan-secrets)
     ├── settings.json                  # Base sandbox + permissions
@@ -914,7 +914,7 @@ Incremental delivery — each phase is independently shippable and non-breaking.
 
 Split the monolithic CLAUDE.md and add validation infrastructure so the decomposition gains safety, not just file reorganization.
 
-1. Create `presets/core/CLAUDE.md` with security rules, memory system, output mode, turn budget, general rules
+1. Create `presets/core/CLAUDE.md` with security rules, memory system, output mode, cost budget, general rules
 2. Create `presets/workflows/jira-sprint/CLAUDE.md` with the workflow loop (triage, priorities, implement)
 3. Add `assemble_claude_md()` to `run.py` that concatenates core + workflow into the existing CLAUDE.md location
 4. Add `manifest.yaml` for the jira-sprint workflow with `requires` validation (MCP servers, env vars)

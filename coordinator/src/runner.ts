@@ -139,7 +139,7 @@ export async function buildRehorRun(
     },
     limits: {
       timeoutMs: Math.max(1, Math.floor(prepared.config.cycleTimeoutSeconds * 1000)),
-      maxTurns: prepared.config.maxTurns,
+      budgetUsd: prepared.config.budgetUsd,
     },
     preflightPayloadRef: prepared.preflightPayloadRef,
   };
@@ -476,7 +476,10 @@ export async function runCoordinator(
           const { state, reason } = result.terminal.payload;
           if (
             state === "timed_out" ||
-            (state === "failed" && reason !== "max_turns" && reason !== "error_max_turns")
+            (state === "failed" &&
+              reason !== "budget_exceeded" &&
+              reason !== "max_turns" &&
+              reason !== "error_max_turns")
           ) {
             throw new Error(
               `runtime returned a ${state} terminal state: ${providerDiagnostic(reason)}`,

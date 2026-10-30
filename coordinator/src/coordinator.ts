@@ -8,6 +8,8 @@ import {
   type RuntimeCapabilities,
   RuntimeContractError,
   type TerminalEventPayload,
+  type Usage,
+  UsageLedger,
   type ValidatedRehorRun,
   WorkContextTracker,
 } from "./domain";
@@ -60,62 +62,109 @@ class CoordinatorAbort extends Error {
   }
 }
 
-interface TurnPolicyEvent extends Record<string, unknown> {
-  state: "warning" | "critical";
+interface CostPolicyEvent extends Record<string, unknown> {
+  state: "info" | "warning" | "critical" | "exhausted";
   label: string;
-  usedTurns: number;
-  maxTurns: number;
+  usedUsd: number;
+  budgetUsd: number;
   message: string;
 }
 
-class TurnBudgetPolicy {
-  private readonly countedToolCalls = new Set<string>();
-  private usedTurns = 0;
-  private warned = false;
-  private critical = false;
-  limitReached = false;
+export type { CostPolicyEvent };
+
+const UNKNOWN_PRICING_MESSAGE =
+  "COST BUDGET INACTIVE: model pricing is unknown for this run, so the cost cap " +
+  "is not enforced. The cycle timeout still applies.";
+
+/** Grace window: the run hard-aborts once spend reaches this multiple of the budget. */
+const HARD_LIMIT_MULTIPLIER = 1.15;
+
+const roundUsd = (value: number): number => Math.round(value * 10_000) / 10_000;
+
+/**
+ * Per-cycle-run USD cost budget. Threshold notices let the agent save state via
+ * task_update; the 115% hard limit aborts the run with reason budget_exceeded.
+ * Runs whose usage never reports known pricing fail open on a one-time notice.
+ */
+export class CostBudgetPolicy {
+  private readonly ledger = new UsageLedger();
+  private readonly emitted = new Set<CostPolicyEvent["state"]>();
+  private unknownPricingNotified = false;
 
   constructor(private readonly run: RehorRun) {}
 
-  complete(toolUseId: string): TurnPolicyEvent | undefined {
-    if (this.limitReached || this.countedToolCalls.has(toolUseId)) return undefined;
-    this.countedToolCalls.add(toolUseId);
-    this.usedTurns += 1;
-
-    const maxTurns = this.run.limits.maxTurns;
-    const warningAt = Math.floor(maxTurns * 0.75);
-    const criticalAt = Math.floor(maxTurns * 0.9);
-    const remaining = Math.max(0, maxTurns - this.usedTurns);
-    const at = (state: TurnPolicyEvent["state"], message: string): TurnPolicyEvent => ({
-      state,
-      label: this.run.label,
-      usedTurns: this.usedTurns,
-      maxTurns,
-      message,
-    });
-    let event: TurnPolicyEvent | undefined;
-    if (this.usedTurns >= criticalAt && !this.critical) {
-      this.critical = true;
-      event = at(
-        "critical",
-        `TURN BUDGET CRITICAL: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. You MUST save progress NOW via ` +
-          "task_update with current summary, last_step, files_changed, and next_step. " +
-          "Then wrap up or stop.",
-      );
-    } else if (this.usedTurns >= warningAt && !this.warned) {
-      this.warned = true;
-      event = at(
-        "warning",
-        `TURN BUDGET WARNING: ~${this.usedTurns}/${maxTurns} tool calls used, ` +
-          `~${remaining} remaining. Save progress via task_update soon ` +
-          "(summary + metadata with last_step, files_changed, next_step). " +
-          "Prioritize completing current step and saving state.",
-      );
+  observe(usage: Usage): CostPolicyEvent | undefined {
+    this.ledger.record(usage);
+    if (!this.ledger.hasKnownCost()) {
+      // Fail open only when pricing is affirmatively unknown. An in-flight
+      // snapshot may simply not have settled its cost yet, so a missing cost
+      // alone must not disable the budget; the cycle timeout still applies.
+      if (usage.cost?.source !== "unknown" || this.unknownPricingNotified) return undefined;
+      this.unknownPricingNotified = true;
+      return this.event("warning", UNKNOWN_PRICING_MESSAGE);
     }
 
-    this.limitReached = this.usedTurns >= maxTurns;
-    return event;
+    const budgetUsd = this.run.limits.budgetUsd;
+    const ratio = this.ledger.totalCostUsd() / budgetUsd;
+    const state =
+      ratio >= 1
+        ? "exhausted"
+        : ratio >= 0.9
+          ? "critical"
+          : ratio >= 0.75
+            ? "warning"
+            : ratio >= 0.5
+              ? "info"
+              : undefined;
+    if (state === undefined || this.emitted.has(state)) return undefined;
+    this.emitted.add(state);
+    return this.event(state, budgetMessage(state, this.ledger.totalCostUsd(), budgetUsd));
+  }
+
+  hardLimitReached(): boolean {
+    return this.ledger.totalCostUsd() >= this.run.limits.budgetUsd * HARD_LIMIT_MULTIPLIER;
+  }
+
+  private event(state: CostPolicyEvent["state"], message: string): CostPolicyEvent {
+    return {
+      state,
+      label: this.run.label,
+      usedUsd: roundUsd(this.ledger.totalCostUsd()),
+      budgetUsd: roundUsd(this.run.limits.budgetUsd),
+      message,
+    };
+  }
+}
+
+function budgetMessage(
+  state: CostPolicyEvent["state"],
+  usedUsd: number,
+  budgetUsd: number,
+): string {
+  const used = roundUsd(usedUsd);
+  const budget = roundUsd(budgetUsd);
+  const remaining = roundUsd(Math.max(0, budgetUsd - usedUsd));
+  switch (state) {
+    case "info":
+      return `COST BUDGET: $${used} of $${budget} used. Plan remaining work accordingly.`;
+    case "warning":
+      return (
+        `COST BUDGET WARNING: $${used}/${budget} used (~$${remaining} remaining). ` +
+        "Save progress soon via task_update (summary + metadata with last_step, " +
+        "files_changed, next_step). Prioritize completing the current step."
+      );
+    case "critical":
+      return (
+        `COST BUDGET CRITICAL: $${used}/${budget} used (~$${remaining} remaining). ` +
+        "Save progress NOW via task_update with current summary, last_step, " +
+        "files_changed, and next_step. Then wrap up or stop."
+      );
+    case "exhausted":
+      return (
+        `COST BUDGET EXHAUSTED: $${used}/${budget} used. Wrap up now: save state ` +
+        "via task_update and finish only essential bookkeeping. The run will be " +
+        "stopped if cost reaches the hard limit."
+      );
   }
 }
 
@@ -185,7 +234,6 @@ export async function executeRunWithValidatedInput(
           ledger,
           options.projection,
           workContext,
-          capabilities,
           () => acceptingEvents,
         );
         try {
@@ -276,12 +324,9 @@ async function consumeEvents(
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
   workContext: WorkContextTracker,
-  capabilities: RuntimeCapabilities,
   isAccepting: () => boolean,
 ): Promise<void> {
-  const turnBudget = new TurnBudgetPolicy(run);
-  const pendingPolicyUpdates = new Map<string, TurnPolicyEvent>();
-  const toolStarts = new Map<string, RehorEvent>();
+  const costBudget = new CostBudgetPolicy(run);
   const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
@@ -294,7 +339,7 @@ async function consumeEvents(
     return retained;
   };
 
-  const emitPolicy = async (policy: TurnPolicyEvent, parent?: RehorEvent): Promise<void> => {
+  const emitPolicy = async (policy: CostPolicyEvent, parent?: RehorEvent): Promise<void> => {
     const createEvent = createEventFactory(run, run.policyHash.value, {
       startSequence: nextSequence(ledger.events) - 1,
     });
@@ -308,38 +353,21 @@ async function consumeEvents(
     await projectEvent(acceptedPolicyEvent, run, projection);
   };
 
-  const flushPendingPolicyUpdates = async (): Promise<void> => {
-    for (const [toolUseId, policy] of pendingPolicyUpdates) {
-      await emitPolicy(policy, toolStarts.get(toolUseId));
-      pendingPolicyUpdates.delete(toolUseId);
-    }
-  };
-
   const context: AgentRuntimeRunContext = {
     onAbortCause(cause) {
       abortState.abort(cause);
-    },
-    onSuccessfulToolCall(toolUseId, notices) {
-      const policy = turnBudget.complete(toolUseId);
-      if (!policy) return;
-      pendingPolicyUpdates.set(toolUseId, policy);
-      notices.deliverNotice(policy.message);
     },
   };
   const iterator = runtime.run(run, abortState.signal, context)[Symbol.asyncIterator]();
   try {
     while (true) {
       const next = await iterator.next();
-      if (next.done) {
-        await flushPendingPolicyUpdates();
-        return;
-      }
+      if (next.done) return;
       // Runtime adapters may emit a final partial usage snapshot and terminal
       // event while draining an SDK query after cancellation or timeout.
       // Keep accepting that bounded drain; stop accepting only once the
       // coordinator cleanup has completed.
       if (!isAccepting()) return;
-      if (next.value.kind === "terminal") await flushPendingPolicyUpdates();
 
       const normalizedEvent = workContext.enrichTerminal(
         mapRuntimeTerminal(next.value, abortState.cause),
@@ -354,26 +382,15 @@ async function consumeEvents(
       workContext.observe(event);
       await projectEvent(event, run, projection);
 
-      if (event.kind === "tool" && event.payload.budgetUnit !== "container") {
-        const toolUseId =
-          typeof event.payload.toolUseId === "string" ? event.payload.toolUseId : event.eventId;
-        if (event.payload.state === "started") toolStarts.set(toolUseId, event);
-        if (event.payload.state === "completed") {
-          const policy =
-            pendingPolicyUpdates.get(toolUseId) ??
-            (event.payload.isError === true ? undefined : turnBudget.complete(toolUseId));
-          pendingPolicyUpdates.delete(toolUseId);
-          if (policy) await emitPolicy(policy, event);
+      if (event.kind === "usage") {
+        const policy = costBudget.observe(event.payload as Usage);
+        if (policy) {
+          await emitPolicy(policy, event);
+          context.onPolicyNotice?.(policy.message);
         }
-      }
-
-      if (
-        !capabilities.enforcesTurnLimit &&
-        event.kind === "run" &&
-        event.payload.state === "turn_started" &&
-        turnBudget.limitReached
-      ) {
-        abortState.abort({ kind: CoordinatorAbortKind.Failed, reason: "max_turns" });
+        if (costBudget.hardLimitReached()) {
+          abortState.abort({ kind: CoordinatorAbortKind.Failed, reason: "budget_exceeded" });
+        }
       }
     }
   } finally {
@@ -529,7 +546,9 @@ function describeError(error: unknown): string {
 
 function shouldSurface(error: unknown, cause: AbortCause | undefined): boolean {
   if (error === undefined) return false;
-  if (cause?.kind === CoordinatorAbortKind.Failed && cause.reason === "max_turns") return false;
+  if (cause?.kind === CoordinatorAbortKind.Failed && cause.reason === "budget_exceeded") {
+    return false;
+  }
   // Runtime adapters commonly reject with their own abort-shaped error after
   // the coordinator has already classified the external cancellation.
   if (cause && cause.kind !== CoordinatorAbortKind.Failed) return false;

@@ -32,7 +32,8 @@ export interface ProviderSelection {
 
 export interface RunLimits {
   timeoutMs: number;
-  maxTurns: number;
+  /** Per-cycle-run USD cost budget; the run hard-aborts past its grace window. */
+  budgetUsd: number;
   maxOutputTokens?: number;
 }
 

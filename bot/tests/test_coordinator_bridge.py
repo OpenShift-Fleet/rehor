@@ -109,19 +109,17 @@ def test_preflight_bridge_returns_null_when_no_scripts(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "runtime, provider, json_budget, env_budget, expected_budget",
+    "runtime, provider, json_budget_usd, expected_budget_usd",
     [
-        ("opencode", "rehor-openai", None, None, 200),
-        ("opencode", "rehor-openai", 275, None, 275),
-        ("opencode", "rehor-openai", 275, "450", 450),
-        ("opencode", "vertex", None, None, 200),
-        ("opencode", "vertex", 275, "450", 450),
-        ("claude", "vertex", None, None, 10),
-        ("claude", "vertex", 275, "450", 10),
+        ("opencode", "rehor-openai", None, 5.0),
+        ("opencode", "rehor-openai", 7.5, 7.5),
+        ("opencode", "vertex", None, 5.0),
+        ("claude", "vertex", None, 5.0),
+        ("claude", "vertex", 7.5, 7.5),
     ],
 )
 def test_prepare_bridge_reuses_runner_config_sequence(
-    tmp_path, monkeypatch, caplog, runtime, provider, json_budget, env_budget, expected_budget
+    tmp_path, monkeypatch, caplog, runtime, provider, json_budget_usd, expected_budget_usd
 ):
     import bot.merge as merge
     import bot.run as runner
@@ -159,14 +157,12 @@ def test_prepare_bridge_reuses_runner_config_sequence(
         '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60, '
         '"idleReminderCooldownSeconds": 3600}, "jira": {"boardKey": "TEST"}}'
     )
-    if json_budget is not None:
+    if json_budget_usd is not None:
         config_path = tmp_path / "config.json"
         raw = json.loads(config_path.read_text())
-        raw["opencode"]["maxToolCalls"] = json_budget
+        raw["claude"]["budgetUsd"] = json_budget_usd
         config_path.write_text(json.dumps(raw))
     monkeypatch.delenv("REHOR_OPENCODE_MAX_TOOL_CALLS", raising=False)
-    if env_budget is not None:
-        monkeypatch.setenv("REHOR_OPENCODE_MAX_TOOL_CALLS", env_budget)
 
     calls = []
     git_config_global = str(tmp_path / ".gitconfig")
@@ -204,7 +200,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(
 
     assert calls[:2] == [("setup_git", tmp_path), ("sync", "hcc-ai-framework")]
     assert result["model"] == ("test-model" if provider == "rehor-openai" else "claude-test-model")
-    assert result["maxTurns"] == expected_budget
+    assert result["budgetUsd"] == expected_budget_usd
     assert result["intervalSeconds"] == 300
     assert result["idleIntervalSeconds"] == 60
     assert result["cycleTimeoutSeconds"] == 1800

@@ -307,7 +307,7 @@ This launches Chrome on port 9222 with a separate profile. Edit the script to us
 ```json
 {
   "claude": {
-    "maxTurns": 100,
+    "budgetUsd": 5,
     "model": "claude-opus-4-6"
   },
   "polling": {

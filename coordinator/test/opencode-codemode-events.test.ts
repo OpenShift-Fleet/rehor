@@ -370,15 +370,13 @@ function runtimeFor(
 
 describe("Code Mode executeRun accounting and boundaries", () => {
   it.each([
-    [1, false, "root", "failed", false],
-    [2, false, "root", "failed", false],
-    [3, false, "root", "completed", false],
-    [3, true, "root", "failed", false],
-    [2, false, "child", "failed", false],
-    [3, false, "root", "completed", true],
+    [false, "root", false],
+    [true, "root", false],
+    [false, "child", false],
+    [false, "root", true],
   ] as const)(
-    "counts nested successes at next model boundary (max=%s fetch=%s session=%s)",
-    async (maxTurns, fetch, sessionID, expected, nativeFirst) => {
+    "counts nested successes at next model boundary (fetch=%s session=%s nativeFirst=%s)",
+    async (fetch, sessionID, nativeFirst) => {
       const calls = [
         call(0, "completed", { content: resultContent }),
         call(1, "completed", {
@@ -424,10 +422,9 @@ describe("Code Mode executeRun accounting and boundaries", () => {
         event("session.execution.succeeded", { sessionID: "root" }),
       );
       const { runtime } = runtimeFor(events);
-      const result = await executeRun(runtime, { ...run, limits: { ...run.limits, maxTurns } });
+      const result = await executeRun(runtime, run);
       expect(result.error).toBeUndefined();
-      expect(result.terminal.payload.state).toBe(expected);
-      if (expected === "failed") expect(result.terminal.payload.reason).toBe("max_turns");
+      expect(result.terminal.payload.state).toBe("completed");
       expect(result.terminal.payload.context).toMatchObject({
         taskId: 143,
         externalKey: "REHOR-143",
@@ -470,7 +467,7 @@ describe("Code Mode executeRun accounting and boundaries", () => {
       ],
       new Error("stream disconnected"),
     );
-    const result = await executeRun(runtime, { ...run, limits: { ...run.limits, maxTurns: 2 } });
+    const result = await executeRun(runtime, run);
     expect(result.terminal.payload).toMatchObject({ state: "completed", context: { taskId: 143 } });
     expect(completed(result.events)).toHaveLength(2);
     expect(new Set(completed(result.events).map((e) => e.payload.toolUseId)).size).toBe(2);

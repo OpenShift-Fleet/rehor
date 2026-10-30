@@ -53,7 +53,7 @@ Rollback restores the **previous Claude image and matching config/template/engin
 
 ## OpenCode Budget and Workspace Rollout (REHOR-198)
 
-`deploy/sandbox-template.example.yaml` exposes optional `REHOR_OPENCODE_MAX_TOOL_CALLS` with an empty default. Empty preserves the image's `opencode.maxToolCalls` setting (default `200`). The onboarding repository's `deploy/template.yaml` instead requires this parameter without a default; its app-interface target must supply the string `"200"`. Claude's `claude.maxTurns` default remains `100`.
+`deploy/sandbox-template.example.yaml` exposes optional `REHOR_OPENCODE_MAX_TOOL_CALLS` with an empty default. Empty preserves the image's `opencode.maxToolCalls` setting (default `200`). The onboarding repository's `deploy/template.yaml` instead requires this parameter without a default; its app-interface target must supply the string `"200"`. Since REHOR-211 the coordinator enforces a per-cycle-run USD cost budget (`claude.budgetUsd`, default `5`) instead of a turn/tool-call budget: `REHOR_OPENCODE_MAX_TOOL_CALLS`, `opencode.maxToolCalls`, and `claude.maxTurns` no longer limit coordinator cycles, and `claude.maxTurns` is only read by the legacy Python direct-agent path until its retirement.
 
 Apply changes in this order:
 

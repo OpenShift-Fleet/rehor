@@ -34,7 +34,6 @@ export function metricsProjection(metrics: unknown[]): LegacyCompatibilityProjec
  */
 export interface RuntimeContractHarness {
   name: string;
-  enforcesTurnLimit: boolean;
   run: RehorRun;
   /** The provider session finishes successfully. */
   completed(): AgentRuntime;
@@ -46,6 +45,11 @@ export interface RuntimeContractHarness {
   blocksUntilAborted(): { runtime: AgentRuntime; waiting: Promise<void> };
   /** A session reports this many successful normalized tool completions. */
   toolCalls(count: number): AgentRuntime;
+  /**
+   * A session reports usage snapshots whose USD costs add up cumulatively to
+   * the given increments, exercising the coordinator cost budget policy.
+   */
+  budgetUsage(increments: number[]): AgentRuntime;
   /** The session finishes, then releasing its resources fails. */
   completedWithCleanupFailure?(): AgentRuntime;
 }
@@ -65,7 +69,6 @@ export function fakeHarness(): RuntimeContractHarness {
 
   return {
     name: "fake",
-    enforcesTurnLimit: false,
     run,
     completed: () => new FakeAgentRuntime({ events: eventsFor() }),
     noWork: () => new FakeAgentRuntime({ events: eventsFor(NO_WORK_TEXT) }),
@@ -106,6 +109,29 @@ export function fakeHarness(): RuntimeContractHarness {
         ],
       });
     },
+    budgetUsage: (increments) => {
+      const createEvent = createEventFactory(run, "fake-runtime-v1");
+      let cumulative = 0;
+      return new FakeAgentRuntime({
+        events: [
+          createEvent("run", { state: "started" }),
+          ...increments.map((increment) => {
+            cumulative += increment;
+            return createEvent("usage", {
+              requestedModel: run.provider.requestedModel,
+              modelKey: "fake-provider/fake-model",
+              tokenCounts: { input: 100, output: 20 },
+              partial: false,
+              final: true,
+              estimated: true,
+              incomplete: false,
+              cost: { amount: cumulative, currency: "USD", source: "estimated" },
+            });
+          }),
+          createEvent("terminal", { state: "completed", resultText: "Contract cycle finished" }),
+        ],
+      });
+    },
   };
 }
 
@@ -126,7 +152,7 @@ const baseRun: Omit<RehorRun, "provider"> = {
   instructionHash: { algorithm: "sha256", value: "1".repeat(64) },
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
-  limits: { timeoutMs: 5_000, maxTurns: 20 },
+  limits: { timeoutMs: 5_000, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 
@@ -163,7 +189,6 @@ export function claudeHarness(): RuntimeContractHarness {
 
   return {
     name: "claude",
-    enforcesTurnLimit: true,
     run,
     completed: () =>
       new ClaudeAgentRuntime({
@@ -254,7 +279,7 @@ export function claudeHarness(): RuntimeContractHarness {
               }
               yield {
                 type: "result",
-                subtype: count >= Number(options.maxTurns) ? "error_max_turns" : "success",
+                subtype: "success",
                 result: "Contract cycle finished",
                 num_turns: count,
                 session_id: "session-budget",
@@ -264,6 +289,28 @@ export function claudeHarness(): RuntimeContractHarness {
             { close: () => undefined },
           );
         },
+      }),
+    budgetUsage: (increments) =>
+      new ClaudeAgentRuntime({
+        query: scripted(async function* () {
+          yield { type: "system", subtype: "init", session_id: "session-budget", uuid: "init" };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "Contract cycle finished",
+            num_turns: 1,
+            duration_ms: 5,
+            session_id: "session-budget",
+            uuid: "budget-result",
+            modelUsage: Object.fromEntries(
+              increments.map((increment, index) => [
+                `claude-budget-model-${index}`,
+                { inputTokens: 10, outputTokens: 5, costUSD: increment },
+              ]),
+            ),
+          };
+        }),
       }),
   };
 }
@@ -419,7 +466,6 @@ export function openCodeHarness(): RuntimeContractHarness {
 
   return {
     name: "opencode",
-    enforcesTurnLimit: false,
     run,
     completed: () => create({}),
     noWork: () =>
@@ -481,6 +527,27 @@ export function openCodeHarness(): RuntimeContractHarness {
           }).flat(),
           assistantMessage("budget-next-turn", count + 1),
         ],
+      }),
+    budgetUsage: (increments) =>
+      create({
+        events: increments.flatMap((increment, index) => {
+          const id = `budget-message-${index}`;
+          return [
+            assistantMessage(id, index + 1),
+            {
+              ...envelope(),
+              type: "session.step.ended",
+              durable: { aggregateID: "session-contract", seq: sequence, version: 1 },
+              data: {
+                sessionID: "session-contract",
+                assistantMessageID: id,
+                finish: "stop",
+                cost: increment,
+                tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
+              },
+            },
+          ];
+        }),
       }),
     completedWithCleanupFailure: () =>
       create({ deleteError: new Error("session delete rejected") }),

@@ -23,7 +23,7 @@ const run: RehorRun = {
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   runtimeId: "opencode",
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
-  limits: { timeoutMs: 1_000, maxTurns: 20 },
+  limits: { timeoutMs: 1_000, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 

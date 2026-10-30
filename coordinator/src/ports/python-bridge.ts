@@ -73,7 +73,8 @@ export interface ConfigPreparationResult {
   runtimeId: string;
   /** Provider route selected independently from the runtime adapter. */
   providerId: string;
-  maxTurns: number;
+  /** Per-cycle-run USD cost budget enforced by the coordinator. */
+  budgetUsd: number;
   intervalSeconds: number;
   idleIntervalSeconds: number;
   cycleTimeoutSeconds: number;
