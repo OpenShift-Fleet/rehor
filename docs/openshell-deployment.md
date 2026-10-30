@@ -47,7 +47,7 @@ Native Code Mode bridge/configuration tests, including root and child execution,
 
 Each cycle owns an authenticated loopback `opencode serve --stdio` child, private config/data homes and database, and isolated instruction discovery. Private data home prevents ambient saved-auth import. A runner-owned native V2 Effect plugin restores original shell `XDG_CONFIG_HOME` and `XDG_DATA_HOME` for root and child tools through an Effect-returning shell hook; server credentials must not reach those tools. External V2 plugins may use native Effect or supported Promise APIs. Core/shared/workflow native `AGENTS.md` instruction layers remain intact.
 
-The pricing fallback still records frozen catalog provenance **1.18.35** independently of CLI **2.1.2**. Do not replace pricing metadata as a side effect of deployment version changes. Positive V2 native costs are catalog estimates, not billed provider amounts; compare usage and incomplete subtotals accordingly.
+Positive V2 native costs are catalog estimates, not billed provider amounts; compare usage and incomplete subtotals accordingly.
 
 Rollback restores the **previous Claude image and matching config/template/engine**, then creates a fresh Sandbox and verifies Claude cycles and projections. Switching OpenCode's provider to Vertex alone is not runtime rollback. Follow the [rollback procedure](migrations/opencode-migration.md#rollback-to-the-previous-claude-imageconfig).
 
