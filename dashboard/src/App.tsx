@@ -29,6 +29,7 @@ import {
 } from "react-router-dom";
 import { fetchInstances, fetchStats } from "./api";
 import BotBanner from "./components/BotBanner";
+import ErrorBoundary from "./components/ErrorBoundary";
 import ThemeSelector from "./components/ThemeSelector";
 import Toasts from "./components/Toasts";
 import { useWS, WSProvider } from "./hooks/useWebSocket";
@@ -300,20 +301,22 @@ function AppInner() {
               </NavList>
             </Nav>
           )}
-          <Suspense fallback={null}>
-            <Routes>
-              <Route path="/instances/:id/*" element={<InstanceScoped />} />
-              <Route path="/instances" element={<Instances />} />
-              <Route path="/tasks" element={<Tasks />} />
-              <Route path="/archived" element={<ArchivedTasks />} />
-              <Route path="/cycles" element={<CycleRuns />} />
-              <Route path="/memories" element={<Memories />} />
-              <Route path="/search" element={<Search />} />
-              <Route path="/costs" element={<Costs />} />
-              <Route path="/viz" element={<EmbeddingMap />} />
-              <Route path="/" element={<Navigate to="/instances" replace />} />
-            </Routes>
-          </Suspense>
+          <ErrorBoundary key={location.pathname}>
+            <Suspense fallback={null}>
+              <Routes>
+                <Route path="/instances/:id/*" element={<InstanceScoped />} />
+                <Route path="/instances" element={<Instances />} />
+                <Route path="/tasks" element={<Tasks />} />
+                <Route path="/archived" element={<ArchivedTasks />} />
+                <Route path="/cycles" element={<CycleRuns />} />
+                <Route path="/memories" element={<Memories />} />
+                <Route path="/search" element={<Search />} />
+                <Route path="/costs" element={<Costs />} />
+                <Route path="/viz" element={<EmbeddingMap />} />
+                <Route path="/" element={<Navigate to="/instances" replace />} />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </>

@@ -5,6 +5,7 @@ import {
   formatDuration,
   formatTokens,
   sourceUrl,
+  stringList,
   timeAgo,
 } from "./utils";
 
@@ -97,6 +98,34 @@ describe("displayKey", () => {
 
   it("returns empty string when no external_key", () => {
     expect(displayKey({ external_key: null })).toBe("");
+  });
+});
+
+describe("stringList", () => {
+  it("returns an array of strings unchanged", () => {
+    expect(stringList(["src/a.ts", "src/b.ts"])).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("wraps a single string in an array", () => {
+    expect(stringList("src/login.ts")).toEqual(["src/login.ts"]);
+  });
+
+  it("returns an empty array for an empty string", () => {
+    expect(stringList("")).toEqual([]);
+  });
+
+  it("returns an empty array for null and undefined", () => {
+    expect(stringList(null)).toEqual([]);
+    expect(stringList(undefined)).toEqual([]);
+  });
+
+  it("returns an empty array for non-list values", () => {
+    expect(stringList(42)).toEqual([]);
+    expect(stringList({ path: "src/a.ts" })).toEqual([]);
+  });
+
+  it("filters out non-string entries", () => {
+    expect(stringList(["src/a.ts", 42, null, { path: "src/b.ts" }])).toEqual(["src/a.ts"]);
   });
 });
 
