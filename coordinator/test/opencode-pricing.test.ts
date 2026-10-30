@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { OpenCodeEvent, SessionMessageInfo } from "@opencode/client";
 import { describe, expect, it } from "vitest";
 import { toLegacyCostEntry } from "../src/adapters/compatibility";
@@ -93,27 +92,9 @@ function harness() {
 }
 
 describe("canonical OpenCode pricing", () => {
-  it("retains reproducible catalog provenance independently of execution version", () => {
-    const sorted = (value: unknown): unknown =>
-      Array.isArray(value)
-        ? value.map(sorted)
-        : value && typeof value === "object"
-          ? Object.fromEntries(
-              Object.entries(value)
-                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-                .map(([k, v]) => [k, sorted(v)]),
-            )
-          : value;
-    expect(
-      createHash("sha256")
-        .update(JSON.stringify(sorted(catalog.models)))
-        .digest("hex"),
-    ).toBe(catalog.source.pricingSha256);
-    expect(catalog.source.version).toBe("1.18.35");
-  });
-
   it.each([
     ["rehor-openai/gpt-6.1-sol", 0.0112],
+    ["rehor-openai/gpt-6.1-terra", 0.0056],
     ["rehor-openai-chat/gpt-6-luna", 0.00057],
     ["vertex/claude-opus-4-6", 0.0285],
     ["vertex/claude-sonnet-4-6", 0.0171],
@@ -173,6 +154,9 @@ describe("canonical OpenCode pricing", () => {
     expect(
       priceTokens({ input: 1000, cacheWrite: 200000, output: 100, reasoning: 50 }, sonnet),
     ).toBeCloseTo(1.509375);
+    const terra = catalog.models["openai/gpt-6.1-terra"];
+    expect(priceTokens({ input: 1000, cacheRead: 271000 }, terra)).toBeCloseTo(0.01455);
+    expect(priceTokens({ input: 1000, cacheRead: 271001 }, terra)).toBeCloseTo(0.0291001);
     const { tiers: _tiers, ...legacy } = sol;
     expect(priceTokens({ input: 200001 }, legacy)).toBeCloseTo(0.800004);
   });

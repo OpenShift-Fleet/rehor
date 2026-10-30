@@ -62,6 +62,14 @@ exports[`native OpenCode V2 config > matches native deployment snapshots and ide
             },
             "name": "GPT-6 Luna",
           },
+          "gpt-6.1-terra": {
+            "capabilities": {
+              "reasoning": {
+                "supported": true,
+              },
+            },
+            "name": "GPT-6.1 Terra",
+          },
         },
         "name": "Rehor OpenAI Responses",
         "package": "@opencode/ai/providers/openai/responses",

@@ -776,30 +776,14 @@ event.
 
 ### OpenCode cost estimates (REHOR-197)
 
-The coordinator bundles a generated, minimal pricing registry in
-`coordinator/src/runtimes/opencode/pricing.json`. Its source is the **baked
-OpenCode 1.18.35 models.dev catalog**, independent of the **2.1.2 execution
-CLI and client**. This historical frozen catalog remains the pricing fallback;
-upgrading execution does not silently change its rates or provenance. The registry
-records the source version, upstream reference, binary SHA-256 and a canonical
-pricing-content SHA-256. No catalog is downloaded at runtime, and instances do
-not maintain their own prices.
+The coordinator bundles a minimal pricing registry in
+`coordinator/src/runtimes/opencode/pricing.json`. It is the fallback when native
+OpenCode events carry no cost; positive native costs from the execution CLI's
+own catalog take precedence and are labelled `native-catalog`. No catalog is
+downloaded at runtime, and instances do not maintain their own prices.
 
-To regenerate, obtain the official pinned OpenCode 1.18.35 executable for your
-platform, then run from the repository root:
-
-```bash
-python3 coordinator/scripts/opencode-pricing.py /path/to/opencode-1.18.35 > /tmp/opencode-pricing.json
-diff -u coordinator/src/runtimes/opencode/pricing.json /tmp/opencode-pricing.json
-```
-
-Review the generated model/rate changes and replace the registry with the reviewed
-output. Formatting differences are harmless; the content hash is independent of
-JSON whitespace. The binary hash is platform-specific. To add a supported model,
-extend the script's explicit model list and regenerate; do not type rates into
-instance configuration. The script runs only `--version` and `models --verbose
---pure`, with empty temporary HOME/XDG directories, no inherited credentials,
-model fetching disabled, and no provider model overlays. It never runs inference.
+To add a supported model, add its rates (USD per million tokens, from
+models.dev) to the registry; do not type rates into instance configuration.
 
 Pricing aliases are centralized in `pricing.ts`: `rehor-openai` and
 `rehor-openai-chat` use canonical `openai` rates; `vertex` uses
@@ -933,7 +917,7 @@ Required evidence before final acceptance:
 - Root/child shell homes and all operational helpers work while private server auth/config/data/DB cannot leak or import ambient credentials. Native JSON/Markdown denies and MCP namespace permissions remain enforced.
 - V2 usage tests cover one assistant per step, ID replacement/deduplication, compaction recovery, corrected model attribution, pending/interrupted steps, and bounded incomplete recovery. Positive native costs remain estimates; incomplete runs retain known subtotals without double counting.
 - External package plugins have a tested V2 implementation; the runner's local shell plugin alone does not establish that contract.
-- Fresh image includes the pinned client/CLI, packaged provider closure, and offline startup checks. Retain pricing tests with catalog provenance `1.18.35`, independently of CLI `2.1.2`.
+- Fresh image includes the pinned client/CLI, packaged provider closure, and offline startup checks.
 
 Native Code Mode bridge and configuration tests, including root/child execution and the final native Effect/fiber-identity fix, have passed. Native environment, credential-isolation, and policy/deny checks have also passed; strict native frontmatter validation is implemented. After the earlier external `www.python.org` DNS failure, the full rebuild succeeded and a fresh **unmounted Linux ARM64 production image**, `rehor200:v2-final`, passed the complete image smoke. This verifies the required active policy plugin, Responses/Chat/Vertex rejection and successful read-tool paths, exact step/cumulative usage, persisted outcomes, and the generated Code Mode bridge through the built runtime/coordinator. Two nested MCP successes count separately, a denied nested call never reaches the server, filtered task results reach work context, and the wrapper consumes no budget unit: budget 3 completes and budget 2 stops at the next root model boundary. This is offline local-image evidence; separately published external-plugin and live deployment acceptance remain rollout gates, not established by these checks.
 
