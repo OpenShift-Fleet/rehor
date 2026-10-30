@@ -9,7 +9,13 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    SystemMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 from bot.agent import CycleContext, _extract_context, _extract_task_id_from_result, run_cycle
 from bot.config import Config
@@ -53,7 +59,7 @@ def _result(
     )
 
 
-async def _run(messages):
+async def _run(messages, ctx: CycleContext | None = None):
     async def fake_query(*, prompt, options):
         for message in messages:
             yield message
@@ -61,8 +67,9 @@ async def _run(messages):
     with (
         patch("bot.agent.query", fake_query),
         patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._terminate_orphaned_claude_children"),
     ):
-        return await run_cycle("test-label", _config(), {}, [], cwd=".")
+        return await run_cycle("test-label", _config(), {}, [], cwd=".", ctx=ctx)
 
 
 def test_summarize_result_ratio():
@@ -95,15 +102,25 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     caplog.set_level(logging.INFO)
     tool = ToolUseBlock(id="tool_1", name="Bash", input={"command": "gh pr checks 123"})
     tool_result = ToolResultBlock(tool_use_id="tool_1", content="ok")
-    asyncio.run(
+    ctx = CycleContext()
+    result, out_ctx = asyncio.run(
         _run(
             [
+                SystemMessage(
+                    subtype="init",
+                    data={"session_id": "sess-from-init", "mcp_servers": []},
+                ),
                 AssistantMessage(content=[tool], model="claude-opus-4"),
                 AssistantMessage(content=[tool_result], model="claude-opus-4"),
                 _result(),
-            ]
+            ],
+            ctx=ctx,
         )
     )
+    assert result is not None
+    assert out_ctx is ctx
+    assert ctx.session_id == "sess-from-init"
+    assert ctx.started_at is not None
     assert "[tool] Bash: gh pr checks 123" in caplog.text
     assert "[tool] Bash: gh pr checks 123 completed in" in caplog.text
     assert "ms" in caplog.text

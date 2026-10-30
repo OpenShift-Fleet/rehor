@@ -7,7 +7,9 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from claude_agent_sdk import (
@@ -38,16 +40,35 @@ DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", f"{MEMORY_API_BASE}/bot-stat
 _status_fail_count = 0
 _STATUS_FAIL_WARNING_THRESHOLD = 5
 
+_USAGE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
 
 @dataclass
 class CycleContext:
-    """Tracks what work was done during a cycle."""
+    """Tracks what work was done during a cycle.
+
+    Mutable fields like session_id / started_at / partial_usage are updated
+    during the SDK stream so they survive asyncio.wait_for cancellation.
+    """
 
     jira_key: str | None = None
     repo: str | None = None
     work_type: str | None = None
     summary: str | None = None
     task_id: int | None = None
+    session_id: str | None = None
+    started_at: datetime | None = None
+    partial_usage: dict[str, int] = field(default_factory=dict)
+    model_usage: dict[str, Any] = field(default_factory=dict)
+    num_turns: int = 0
+    notes: str | None = None
+    timed_out: bool = False
+    _usage_by_response: dict[str, tuple[str, dict[str, int]]] = field(default_factory=dict, repr=False)
 
 
 async def _push_status(
@@ -195,6 +216,60 @@ def _make_turn_budget_hook(max_turns: int, label: str):
     return hook
 
 
+def _capture_stream_meta(message: object, ctx: CycleContext) -> None:
+    """Capture session_id and first-message started_at from any SDK message."""
+    if ctx.started_at is None:
+        ctx.started_at = datetime.now(UTC)
+
+    sid = getattr(message, "session_id", None)
+    if not sid and isinstance(message, SystemMessage):
+        data = getattr(message, "data", None) or {}
+        if isinstance(data, dict):
+            sid = data.get("session_id")
+    if sid and not ctx.session_id:
+        ctx.session_id = str(sid)
+
+
+def _usage_counts(raw: object) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    counts: dict[str, int] = {}
+    for key in _USAGE_TOKEN_KEYS:
+        value = raw.get(key)
+        if value is not None:
+            counts[key] = int(value or 0)
+    return counts or None
+
+
+def _record_assistant_usage(message: AssistantMessage, ctx: CycleContext) -> None:
+    """Accumulate per-response usage from assistant messages (best-effort)."""
+    usage = _usage_counts(getattr(message, "usage", None))
+    if not usage:
+        return
+
+    model = str(getattr(message, "model", None) or "unknown")
+    # Prefer message_id so repeated content-block streams replace, not sum.
+    message_id = getattr(message, "message_id", None)
+    if message_id:
+        key = str(message_id)
+    else:
+        # Without an id, keep one slot per model so streaming duplicates replace.
+        key = f"anonymous:{model}"
+    ctx._usage_by_response[key] = (model, usage)
+
+    totals: dict[str, int] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    for response_model, response_usage in ctx._usage_by_response.values():
+        model_totals = by_model.setdefault(response_model, {})
+        for token_key, value in response_usage.items():
+            totals[token_key] = totals.get(token_key, 0) + value
+            model_totals[token_key] = model_totals.get(token_key, 0) + value
+    ctx.partial_usage = totals
+    ctx.model_usage = by_model
+
+    ctx.num_turns = max(ctx.num_turns, len(ctx._usage_by_response))
+
+
 async def run_cycle(
     label: str,
     config: Config,
@@ -204,6 +279,7 @@ async def run_cycle(
     instance_id: str | None = None,
     preflight_prompt: str | None = None,
     model: str | None = None,
+    ctx: CycleContext | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     if model:
@@ -264,14 +340,42 @@ async def run_cycle(
         )
 
     result = None
-    ctx = CycleContext()
+    if ctx is None:
+        ctx = CycleContext()
+
+    cycle_timeout = max(1, int(config.cycle_timeout))
+    deadline = time.monotonic() + cycle_timeout
 
     async with httpx.AsyncClient() as http:
         # Signal cycle start to dashboard
         await _push_status(http, "working", "Starting cycle...", instance_id=instance_id)
 
+        stream = query(prompt=prompt, options=options)
         try:
-            async for message in query(prompt=prompt, options=options):
+            while True:
+                if result is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        ctx.timed_out = True
+                        logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                        break
+                else:
+                    remaining = None
+
+                try:
+                    if remaining is not None:
+                        message = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
+                    else:
+                        message = await stream.__anext__()
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    ctx.timed_out = True
+                    logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                    break
+
+                _capture_stream_meta(message, ctx)
+
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     mcp_status = message.data.get("mcp_servers", [])
                     connected = []
@@ -285,8 +389,11 @@ async def run_cycle(
                             connected.append(name)
                     if connected:
                         logger.info("MCP connected: %s", ", ".join(connected))
+                    if ctx.session_id:
+                        logger.info("Session started: %s", ctx.session_id)
 
                 elif isinstance(message, AssistantMessage):
+                    _record_assistant_usage(message, ctx)
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text = block.text.strip()
@@ -308,6 +415,10 @@ async def run_cycle(
 
                 elif isinstance(message, ResultMessage):
                     result = message
+                    if getattr(message, "session_id", None) and not ctx.session_id:
+                        ctx.session_id = str(message.session_id)
+                    if getattr(message, "num_turns", None) is not None:
+                        ctx.num_turns = int(message.num_turns)
                     cost = f"${message.total_cost_usd:.4f}" if message.total_cost_usd is not None else "N/A"
                     summary = summarize_result(message)
                     model_name = summary.get("model") or getattr(result, "model", None)
@@ -339,6 +450,15 @@ async def run_cycle(
         except Exception:
             logger.exception("Agent cycle failed")
             await _push_status(http, "error", "Cycle failed — check bot.log", instance_id=instance_id)
+        finally:
+            try:
+                await stream.aclose()  # type: ignore[attr-defined]  # query() is AsyncGenerator at runtime
+            except Exception:
+                logger.debug("SDK stream aclose failed", exc_info=True)
+            _terminate_orphaned_claude_children()
+
+        if ctx.timed_out:
+            return None, ctx
 
         # Determine work type from context
         result_text = getattr(result, "result", "") or ""
@@ -360,6 +480,20 @@ async def run_cycle(
 
     WORK_TYPE_TOTAL.labels(label, ctx.work_type or "triage_only").inc()
     return result, ctx
+
+
+def _terminate_orphaned_claude_children() -> None:
+    """Best-effort SIGTERM for CLI children the SDK still tracks after aclose."""
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import _ACTIVE_CHILDREN  # type: ignore[attr-defined]
+    except Exception:
+        return
+    for proc in list(_ACTIVE_CHILDREN):
+        try:
+            if getattr(proc, "returncode", None) is None:
+                proc.terminate()
+        except Exception:
+            logger.debug("Failed to terminate Claude CLI child", exc_info=True)
 
 
 def _extract_context(block, ctx: CycleContext) -> None:
