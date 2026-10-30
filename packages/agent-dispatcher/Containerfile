@@ -1,28 +1,36 @@
-# Agent Dispatcher — minimal TypeScript Node process (REHOR-204)
+# Agent Dispatcher (REHOR-204)
 #
 # Built by the Konflux platform-frontend-ai-dev-agent-dispatcher component
 # (dockerfile: packages/agent-dispatcher/Containerfile, path-context: ./).
-# The Nx workspace build requires the repository root as build context.
-#
-# The process logs a hello-world line on startup, stays alive as a long-lived
-# process, and exits 0 on SIGTERM/SIGINT. It exposes no HTTP listener, port,
-# or REST API by design.
+# The npm workspace build requires the repository root as build context.
+# The process exposes no HTTP listener, port, or REST API.
+# Compile on the builder's native architecture, regardless of target platform.
+# Supply a GitHub Packages npm auth file with --secret id=npmrc,src=<path>.
 
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS builder
+FROM --platform=${BUILDPLATFORM} registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS builder
 USER 0
 WORKDIR /app
 
-# Root Nx workspace manifest, lockfile, and package configuration first so
+# Root workspace manifest, lockfile, and package configuration first so
 # dependency installation is layer-cached independently of source changes.
-COPY package.json package-lock.json nx.json ./
+COPY package.json package-lock.json nx.json .npmrc ./
 COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/tsconfig.json packages/agent-dispatcher/project.json packages/agent-dispatcher/
-RUN npm ci --ignore-scripts
+RUN --mount=type=secret,id=npmrc,required=true NPM_CONFIG_USERCONFIG=/run/secrets/npmrc npm ci --ignore-scripts
 
 COPY packages/agent-dispatcher/src packages/agent-dispatcher/src
-RUN npx nx build @rehor/agent-dispatcher
+RUN npm run build --workspace=@rehor/agent-dispatcher
+
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS dependencies
+USER 0
+WORKDIR /app
+COPY package.json package-lock.json .npmrc ./
+COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/
+RUN --mount=type=secret,id=npmrc,required=true NPM_CONFIG_USERCONFIG=/run/secrets/npmrc npm ci --workspace=@rehor/agent-dispatcher --omit=dev --ignore-scripts
 
 FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
 WORKDIR /app
-COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/dist ./dist
+COPY --from=dependencies --chown=1001:0 /app/node_modules ./node_modules
+COPY --from=dependencies --chown=1001:0 /app/packages/agent-dispatcher ./packages/agent-dispatcher
+COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/dist ./packages/agent-dispatcher/dist
 USER 1001
-CMD ["node", "dist/index.js"]
+CMD ["node", "packages/agent-dispatcher/dist/index.js"]
