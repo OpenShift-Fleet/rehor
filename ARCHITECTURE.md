@@ -355,7 +355,9 @@ the proxy:
 | `GOOGLE_SA_KEY_B64` | Proxy | Vertex auth proxy injects OAuth2 tokens transparently |
 | `JIRA_API_TOKEN` | Proxy | mcp-atlassian runs in proxy container on port 8444; bot connects via streamable HTTP |
 
-No secrets enter the bot container. All git operations use HTTPS with credential helpers that route through the proxy — no SSH keys are used.
+Git-provider credentials remain behind the proxy. All git operations use HTTPS with credential helpers that route through the proxy — no SSH keys are used. The optional `UPLOAD_MEMORY_PASSWORD` shared credential does enter the trusted runner for PR/MR-label snapshot ingestion; it also authorizes existing memory uploads. It is reserved for trusted preflight subprocesses, removed from agent environments, and forbidden in MCP configuration (including arguments, env values and headers) before interpolation. It must not be provisioned through instance/model configuration or exposed to agent tools.
+
+**Release blocker:** environment/configuration filtering is not a process-isolation boundary. In the current shared-UID container, a sanitized child can read a parent's initial environment through `/proc`; removing the variable does not erase that copy. Do not provision this credential to a runner that executes model/tool subprocesses. The ingestion writer needs a separate trusted runner/proxy boundary before enabling it; the unsafe sandbox secret example has been removed.
 
 ### Layer 4: Network Firewall (Squid Proxy)
 

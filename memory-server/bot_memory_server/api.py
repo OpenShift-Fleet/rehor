@@ -47,13 +47,100 @@ def _restore_status_from_row(row) -> str:
 async def api_tasks(request: Request) -> JSONResponse:
     pool = get_pool()
     status = request.query_params.get("status")
-    limit = int(request.query_params.get("limit", "20"))
-    offset = int(request.query_params.get("offset", "0"))
+    try:
+        limit = int(request.query_params.get("limit", "20"))
+        offset = int(request.query_params.get("offset", "0"))
+        if limit < 1 or offset < 0:
+            raise ValueError
+    except ValueError:
+        return JSONResponse({"error": "limit must be positive and offset nonnegative integers"}, status_code=400)
     instance_id = request.query_params.get("instance_id")
+    query = request.query_params.get("q")
+    if query is not None:
+        query = query.strip()
+        if not 2 <= len(query) <= 200 or "\x00" in query:
+            return JSONResponse({"error": "q must contain 2 to 200 characters and no NUL"}, status_code=400)
 
     exclude = request.query_params.get("exclude_status")
+    allowed_statuses = (*ACTIVE_STATUSES, "paused", "done", "archived")
+    if any(value and value not in allowed_statuses for value in (status, exclude)):
+        return JSONResponse({"error": "unsupported task status"}, status_code=400)
+    task_id = request.query_params.get("task_id")
 
-    if status:
+    if task_id is not None:
+        try:
+            task_id = int(task_id)
+            if task_id < 1 or task_id > 2147483647:
+                raise ValueError
+        except ValueError:
+            return JSONResponse({"error": "task_id must be a positive task ID"}, status_code=400)
+    if query is not None:
+        # Use the same Unicode mapping as indexed fields and stored bigrams.
+        # Normalize before choosing the two-character search path as well.
+        query = await pool.fetchval("SELECT lower($1::text)", query)
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        base_params = [query if len(query) == 2 else "%" + escaped + "%"]
+
+        label_match = "labels.search_bigrams ? $1" if len(query) == 2 else "lower(labels.label) LIKE $1"
+
+        fields = (
+            "search_bigrams ? $1"
+            if len(query) == 2
+            else " OR ".join(
+                f"lower({field}) LIKE $1" for field in ("external_key", "title", "summary", "repo", "instance_id")
+            )
+        )
+        conditions = [
+            f"({fields} OR id = ANY(ARRAY(SELECT pr.task_id FROM pull_request_labels labels "
+            f"JOIN pull_requests pr ON pr.id = labels.pull_request_id WHERE {label_match})))"
+        ]
+        for column, value, operator in (
+            ("id", task_id, "="),
+            ("status", status, "="),
+            ("status", exclude, "!="),
+            ("instance_id", instance_id, "="),
+        ):
+            if value is not None and value != "":
+                base_params.append(value)
+                cast = "::task_status" if column == "status" else ""
+                conditions.append(f"{column} {operator} ${len(base_params)}{cast}")
+        where = "WHERE " + " AND ".join(conditions)
+        base_params.extend([limit, offset])
+        order_col = "last_addressed" if status == "archived" else "created_at"
+        # Match once, before count/page, without materializing rich task rows.
+        # Paging the matched IDs avoids generic ordered scans with large label
+        # arrays and keeps total/page on the same database snapshot.
+        result = await pool.fetch(
+            f"WITH matches AS MATERIALIZED (SELECT id, {order_col} FROM tasks {where}), "
+            f"page AS (SELECT id FROM matches ORDER BY {order_col} DESC, id DESC "
+            f"LIMIT ${len(base_params) - 1} OFFSET ${len(base_params)}) "
+            f"SELECT totals.matched_count, task.* FROM "
+            f"(SELECT COUNT(*) AS matched_count FROM matches) totals LEFT JOIN "
+            f"(SELECT tasks.* FROM tasks JOIN page ON tasks.id = page.id) task ON TRUE "
+            f"ORDER BY task.{order_col} DESC, task.id DESC",
+            *base_params,
+        )
+        total = result[0]["matched_count"]
+        rows = [row for row in result if row["id"] is not None]
+    elif task_id is not None:
+        base_params = [task_id]
+        conditions = ["id = $1"]
+        for column, value, operator in (
+            ("status", status, "="),
+            ("status", exclude if not status else None, "!="),
+            ("instance_id", instance_id, "="),
+        ):
+            if value:
+                base_params.append(value)
+                cast = "::task_status" if column == "status" else ""
+                conditions.append(f"{column} {operator} ${len(base_params)}{cast}")
+        where = "WHERE " + " AND ".join(conditions)
+        total = await pool.fetchval(f"SELECT COUNT(*) FROM tasks {where}", *base_params)
+        base_params.extend([limit, offset])
+        rows = await pool.fetch(
+            f"SELECT * FROM tasks {where} LIMIT ${len(base_params) - 1} OFFSET ${len(base_params)}", *base_params
+        )
+    elif status:
         base_params = [status]
         where = "WHERE status = $1::task_status"
         if instance_id:
@@ -67,7 +154,7 @@ async def api_tasks(request: Request) -> JSONResponse:
         lim_idx = len(base_params) - 1
         off_idx = len(base_params)
         rows = await pool.fetch(
-            f"SELECT * FROM tasks {where} ORDER BY {order_col} DESC LIMIT ${lim_idx} OFFSET ${off_idx}",
+            f"SELECT * FROM tasks {where} ORDER BY {order_col} DESC, id DESC LIMIT ${lim_idx} OFFSET ${off_idx}",
             *base_params,
         )
     elif exclude:
@@ -1045,8 +1132,20 @@ async def api_cycle_runs(request: Request) -> JSONResponse:
 
     pool = get_pool()
     task_id = request.query_params.get("task_id")
+    run_id = request.query_params.get("run_id")
+    external_key = request.query_params.get("external_key")
     instance_id = request.query_params.get("instance_id")
     cycle_type = request.query_params.get("cycle_type")
+    try:
+        parsed_run_id = int(run_id) if run_id is not None else None
+        if parsed_run_id is not None and not 1 <= parsed_run_id <= 2147483647:
+            raise ValueError
+        if task_id is not None and task_id != "none" and not 1 <= int(task_id) <= 2147483647:
+            raise ValueError
+    except ValueError:
+        return JSONResponse(
+            {"error": "task_id and run_id must be positive integers (task_id also accepts none)"}, status_code=400
+        )
     limit = int(request.query_params.get("limit", "50"))
     offset = int(request.query_params.get("offset", "0"))
 
@@ -1055,8 +1154,19 @@ async def api_cycle_runs(request: Request) -> JSONResponse:
         conditions.append("task_id IS NULL")
     elif task_id:
         idx += 1
-        conditions.append(f"task_id = ${idx}")
+        conditions.append(
+            f"(task_id = ${idx} OR (task_id IS NULL AND progress->>'external_key' = "
+            f"(SELECT external_key FROM tasks WHERE id = ${idx} AND source_type = 'jira')))"
+        )
         params.append(int(task_id))
+    if parsed_run_id is not None:
+        idx += 1
+        conditions.append(f"id = ${idx}")
+        params.append(parsed_run_id)
+    if external_key is not None:
+        idx += 1
+        conditions.append(f"COALESCE(progress->>'external_key', '') = ${idx}")
+        params.append(external_key)
     if instance_id:
         idx += 1
         conditions.append(f"instance_id = ${idx}")
@@ -1081,7 +1191,7 @@ async def api_cycle_runs(request: Request) -> JSONResponse:
         f"""
         SELECT {_CYCLE_RUN_LIST_COLUMNS}
         FROM cycle_runs {where}
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id DESC
         LIMIT ${limit_idx} OFFSET ${offset_idx}
         """,
         *params,
@@ -1298,7 +1408,7 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
             MIN(started_at) AS first_cycle,
             MAX(started_at) AS last_cycle
         FROM resolved
-        GROUP BY resolved_key
+        GROUP BY resolved_task_id, resolved_key
         ORDER BY MAX(started_at) DESC
         """,
         *params,

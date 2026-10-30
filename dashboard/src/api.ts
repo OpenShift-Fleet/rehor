@@ -12,20 +12,30 @@ export async function fetchInstances(): Promise<BotInstance[]> {
   return (await fetch("/api/instances")).json();
 }
 
-export async function fetchTasks(params: {
-  status?: string;
-  exclude_status?: string;
-  limit?: number;
-  offset?: number;
-  instance_id?: string;
-}) {
+export async function fetchTasks(
+  params: {
+    q?: string;
+    task_id?: number;
+    status?: string;
+    exclude_status?: string;
+    limit?: number;
+    offset?: number;
+    instance_id?: string;
+  },
+  signal?: AbortSignal,
+) {
   const qs = new URLSearchParams();
+  if (params.q !== undefined) qs.set("q", params.q.trim());
+  if (params.task_id !== undefined) qs.set("task_id", String(params.task_id));
   if (params.status) qs.set("status", params.status);
   if (params.exclude_status) qs.set("exclude_status", params.exclude_status);
   if (params.instance_id) qs.set("instance_id", params.instance_id);
   qs.set("limit", String(params.limit ?? 20));
   qs.set("offset", String(params.offset ?? 0));
-  return (await fetch("/api/tasks?" + qs)).json();
+  const url = `/api/tasks?${qs}`;
+  const response = signal ? await fetch(url, { signal }) : await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch tasks: ${response.status}`);
+  return response.json();
 }
 
 export async function deleteTask(key: string, sourceType?: string) {
@@ -110,6 +120,8 @@ export async function fetchCosts(
 }
 
 export async function fetchCycleRuns(params: {
+  run_id?: number;
+  external_key?: string;
   task_id?: number | "none";
   instance_id?: string;
   cycle_type?: string;
@@ -117,18 +129,24 @@ export async function fetchCycleRuns(params: {
   offset?: number;
 }) {
   const qs = new URLSearchParams();
+  if (params.run_id !== undefined) qs.set("run_id", String(params.run_id));
+  if (params.external_key !== undefined) qs.set("external_key", params.external_key);
   if (params.task_id != null) qs.set("task_id", String(params.task_id));
   if (params.instance_id) qs.set("instance_id", params.instance_id);
   if (params.cycle_type) qs.set("cycle_type", params.cycle_type);
   qs.set("limit", String(params.limit ?? 50));
   qs.set("offset", String(params.offset ?? 0));
-  return (await fetch("/api/cycle-runs?" + qs)).json();
+  const response = await fetch(`/api/cycle-runs?${qs}`);
+  if (!response.ok) throw new Error(`Failed to fetch cycles: ${response.status}`);
+  return response.json();
 }
 
 export async function fetchCycleRunsByTask(params: { instance_id?: string }) {
   const qs = new URLSearchParams();
   if (params.instance_id) qs.set("instance_id", params.instance_id);
-  return (await fetch("/api/cycle-runs/by-task?" + qs)).json();
+  const response = await fetch(`/api/cycle-runs/by-task?${qs}`);
+  if (!response.ok) throw new Error(`Failed to fetch cycle groups: ${response.status}`);
+  return response.json();
 }
 
 export async function fetchCycleRunTranscript(id: number): Promise<string> {

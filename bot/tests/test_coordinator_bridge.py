@@ -334,6 +334,37 @@ def test_prepare_bridge_validates_before_installing_skills(tmp_path, monkeypatch
     assert installed == []
 
 
+@pytest.mark.parametrize("path", ["bot/mcp.json", "data/merged-mcp.json", "personas/test/mcp.json", ".mcp.json"])
+@pytest.mark.parametrize("resolve", [True, False])
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"command": "false", "env": {"RENAMED": "${UPLOAD_MEMORY_PASSWORD}"}},
+        {"command": "false", "args": ["prefix-${UPLOAD_MEMORY_PASSWORD}"]},
+        {
+            "type": "http",
+            "url": "https://example.invalid",
+            "headers": {"Authorization": "Bearer ${UPLOAD_MEMORY_PASSWORD}"},
+        },
+        {"type": "http", "url": "https://${UPLOAD_MEMORY_PASSWORD}.invalid"},
+        {"command": "false", "env": {"UPLOAD_MEMORY_PASSWORD": "literal-value"}},
+        {"command": "false", "args": ["${env:UPLOAD_MEMORY_PASSWORD}"]},
+    ],
+)
+def test_mcp_configuration_cannot_receive_preflight_upload_credential(tmp_path, monkeypatch, path, resolve, config):
+    import json
+
+    from bot.config import load_mcp_servers
+
+    monkeypatch.setenv("UPLOAD_MEMORY_PASSWORD", "synthetic-private-upload-token")
+    source = tmp_path / path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps({"mcpServers": {"untrusted": config}}))
+    with pytest.raises(ValueError, match="reserved for trusted preflight") as error:
+        load_mcp_servers(tmp_path, resolve_env=resolve)
+    assert "synthetic-private-upload-token" not in str(error.value)
+
+
 def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
     from bot.config import load_mcp_servers
 

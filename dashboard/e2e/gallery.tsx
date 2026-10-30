@@ -2,8 +2,10 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import "@patternfly/patternfly/patternfly.css";
 import "@patternfly/patternfly/patternfly-addons.css";
-import "../src/App.css";
 
+import App from "../src/App";
+// Match main.tsx's CSS order so gallery tests reproduce the packaged app's cascade.
+import "../src/App.css";
 import BotBanner from "../src/components/BotBanner";
 import ConfirmDialog from "../src/components/ConfirmDialog";
 import CycleRunCard from "../src/components/CycleRunCard";
@@ -33,6 +35,7 @@ function record(id: string, value: string) {
 // --- Scenario registry ---
 
 const scenarios: Record<string, () => JSX.Element> = {
+  "App/GlobalSearch": () => <App />,
   // ── TaskCard ──
   "TaskCard/JiraLink": () => (
     <TaskCard
@@ -211,6 +214,13 @@ const scenarios: Record<string, () => JSX.Element> = {
   ),
 
   // ── DetailPanel ──
+  "DetailPanel/HistoryTask": () => (
+    <DetailPanel
+      type="task"
+      task={makeTask({ id: 42, title: "History target" })}
+      onClose={() => {}}
+    />
+  ),
   "DetailPanel/PauseVisible": () => (
     <>
       <RecordInput id="action" />
@@ -323,6 +333,11 @@ const scenarios: Record<string, () => JSX.Element> = {
       <Costs />
     </div>
   ),
+  "CycleRuns/ScopedTask": () => (
+    <MemoryRouter initialEntries={["/cycles?task_id=42"]}>
+      <CycleRuns />
+    </MemoryRouter>
+  ),
   "CycleRuns/Default": () => (
     <MemoryRouter>
       <CycleRuns />
@@ -347,7 +362,8 @@ const root = createRoot(document.getElementById("root")!);
 (window as any).mount = (scenarioId: string) => {
   const scenario = scenarios[scenarioId];
   if (!scenario) throw new Error(`Unknown scenario: ${scenarioId}`);
-  root.render(<>{scenario()}</>);
+  const needsRouter = /^(TaskCard|CycleRunCard|DetailPanel)\//.test(scenarioId);
+  root.render(needsRouter ? <MemoryRouter>{scenario()}</MemoryRouter> : scenario());
 };
 
 (window as any).unmount = () => {
