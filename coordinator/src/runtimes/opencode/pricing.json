@@ -1,13 +1,4 @@
 {
-  "source": {
-    "name": "OpenCode baked models.dev catalog",
-    "version": "1.18.35",
-    "binarySha256": "8c3c351b138cfe35905ab11846a1373f1beea590aee7eda412fb765b72c79d82",
-    "pricingSha256": "6a479280eb8e4a0863db4317a232615c192446b4eff88a2b1098f37b2ae16a5b",
-    "upstream": "https://github.com/anomalyco/opencode/tree/v1.18.35",
-    "command": "models --verbose --pure (isolated HOME/XDG; model fetch disabled)",
-    "units": "USD per million tokens"
-  },
   "models": {
     "google-vertex-anthropic/claude-haiku-4-5@20251001": {
       "input": 1,
@@ -155,6 +146,24 @@
         "cache": { "read": 0.2, "write": 5 },
         "input": 4,
         "output": 15
+      }
+    },
+    "openai/gpt-6.1-terra": {
+      "input": 1,
+      "output": 5,
+      "cache": { "read": 0.05, "write": 1.25 },
+      "tiers": [
+        {
+          "input": 2,
+          "output": 7.5,
+          "cache": { "read": 0.1, "write": 2.5 },
+          "tier": { "type": "context", "size": 272000 }
+        }
+      ],
+      "experimentalOver200K": {
+        "cache": { "read": 0.1, "write": 2.5 },
+        "input": 2,
+        "output": 7.5
       }
     }
   }

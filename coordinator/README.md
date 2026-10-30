@@ -429,9 +429,9 @@ Vertex is coordinator-managed as `aisdk:file://.../vertex-provider.js`; profiles
 cannot replace its provider package. No singular deployment `provider`, deployment
 `packageLock`, provider `npm`/`options`, or other legacy aliases are accepted.
 
-Execution and pricing pins are independent: the frozen pricing fallback retains
-OpenCode **1.18.35** catalog provenance; it does not select or downgrade CLI
-**2.1.2**. See [pricing provenance](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
+Pricing estimates come from the hand-maintained catalog in
+`coordinator/src/runtimes/opencode/pricing.json`; see
+[cost estimates](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
 
 ## Cycle scheduling and idle state
 

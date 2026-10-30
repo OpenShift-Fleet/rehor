@@ -477,6 +477,8 @@ The `dev-proxy/` directory contains a custom Caddy build for local UI verificati
 ```
 dev-bot/
   pyproject.toml         # Python project config (uv workspace root)
+  uv.lock                # Resolved Python lockfile (source of truth)
+  requirements.txt       # Hashed export of uv.lock for cachi2/Hermeto (make requirements)
   Makefile               # Common commands
   bot/                   # Agent runner (Python package)
     run.py               # Main loop + remote config sync

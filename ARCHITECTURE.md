@@ -131,7 +131,7 @@ remain outside `AgentRuntime` and create no model session.
 
 See [the coordinator contract](coordinator/README.md) and the
 [OpenCode migration design](docs/migrations/opencode-migration.md) for detailed
-invariants, parity mapping, and rollout steps. OpenCode V2 uses only runtime ID `opencode`, `@opencode/client@2.1.2`, and `@opencode/cli@2.1.2`; versioned runtime aliases are unsupported. Each cycle owns an authenticated loopback child with private config/data homes, database, and instruction discovery. A V2 plugin restores original shell XDG homes, while native core/shared/workflow instructions and profile resources remain distinct. Explicit global native policies impose the external-directory ceiling above project/agent grants. Claude instances migrate directly to V2; the prior Claude image/config remains rollback. The frozen pricing fallback retains independent catalog provenance `1.18.35`.
+invariants, parity mapping, and rollout steps. OpenCode V2 uses only runtime ID `opencode`, `@opencode/client@2.1.2`, and `@opencode/cli@2.1.2`; versioned runtime aliases are unsupported. Each cycle owns an authenticated loopback child with private config/data homes, database, and instruction discovery. A V2 plugin restores original shell XDG homes, while native core/shared/workflow instructions and profile resources remain distinct. Explicit global native policies impose the external-directory ceiling above project/agent grants. Claude instances migrate directly to V2; the prior Claude image/config remains rollback.
 
 ### Claude Code (Agent)
 

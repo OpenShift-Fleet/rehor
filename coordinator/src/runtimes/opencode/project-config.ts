@@ -131,6 +131,7 @@ async function loadProfileConfig(
     }
     if (stats.isDirectory()) {
       for (const name of (await readdir(source)).sort()) {
+        if (isGeneratedPythonArtifact(name)) continue;
         await visit(join(source, name), path ? `${path}/${name}` : name);
       }
     } else {
@@ -151,6 +152,16 @@ async function loadProfileConfig(
     settings: settings as JsonObject,
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+/**
+ * CPython writes bytecode caches (e.g. `__pycache__/<module>.cpython-312.pyc`)
+ * next to executed skill helpers, including inside synced instance profiles.
+ * They are never legitimate OpenCode project config files, so skip them during
+ * directory traversal instead of failing the prepare phase on binary content.
+ */
+function isGeneratedPythonArtifact(name: string): boolean {
+  return name === "__pycache__" || name.endsWith(".pyc") || name.endsWith(".pyo");
 }
 
 async function readOptionalTextFile(path: string): Promise<string | undefined> {
