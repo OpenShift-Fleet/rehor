@@ -87,13 +87,13 @@ cffi==2.0.0 ; platform_python_implementation != 'PyPy' \
     --hash=sha256:f93fd8e5c8c0a4aa1f424d6173f14a892044054871c771f8566e4008eaa359d2 \
     --hash=sha256:fc33c5141b55ed366cfaad382df24fe7dcbc686de5be719b207bb248e3053dc5
     # via cryptography
-claude-agent-sdk==0.1.58 \
-    --hash=sha256:2c2130a7ffe06ed4f88d56b217a5091c91c9bcb1a69cfd94d5dcf0d2946d8c55 \
-    --hash=sha256:650d298a3d3c0dcdde4b5f1dbf52f472ff0b0ec82987b27ffa2a4e0e72928408 \
-    --hash=sha256:69197950809754c4f06bba8261f2d99c3f9605b6cc1c13d3409d0eb82fb4ee64 \
-    --hash=sha256:75d60883fc5e2070bccd8d9b19505fe16af8e049120c03821e9dc8c826cca434 \
-    --hash=sha256:77bee8fd60be033cb870def46c2ab1625a512fa8a3de4ff8d766664ffb16d6a6 \
-    --hash=sha256:7bf4eb0f00ec944a7b63eb94788f120dfb0460c348a525235c7d6641805acc1d
+claude-agent-sdk==0.2.174 \
+    --hash=sha256:0d46be4e858418227d1d455c7787335f4bed073899f48b657c01cc210683803f \
+    --hash=sha256:2380f28ad19c9f95d2de01d75ad4eeffa1ec2008cb4e35e5bc569de6279d85f9 \
+    --hash=sha256:368699227f4ccb6fff541f4add983854fdd6e95fed5e509264cb079316ae234b \
+    --hash=sha256:728592effdfe63e96fbad7ba3b2ddf642e3aad344e73692b429898fbfcb33f12 \
+    --hash=sha256:7729458ca2e0031e6d67452dd8fdda4ff07b4fcf40c4bfed867c78ae963bdbdd \
+    --hash=sha256:8be611533b7be210791a39716479d7d692e5e3afe8798529b5262db00f470165
     # via dev-bot
 click==8.3.2 ; sys_platform != 'emscripten' \
     --hash=sha256:14162b8b3b3550a7d479eafa77dfd3c38d9dc8951f6f69c78913a8f9a7540fd5 \
