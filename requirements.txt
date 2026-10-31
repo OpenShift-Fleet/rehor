@@ -595,9 +595,9 @@ typing-inspection==0.4.2 \
     #   mcp
     #   pydantic
     #   pydantic-settings
-uvicorn==0.44.0 ; sys_platform != 'emscripten' \
-    --hash=sha256:6c942071b68f07e178264b9152f1f16dfac5da85880c4ce06366a96d70d4f31e \
-    --hash=sha256:ce937c99a2cc70279556967274414c087888e8cec9f9c94644dfca11bd3ced89
+uvicorn==0.54.0; sys_platform != 'emscripten' \
+    --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
+    --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
     # via mcp
 zstandard==0.25.0 \
     --hash=sha256:011d388c76b11a0c165374ce660ce2c8efa8e5d87f34996aa80f9c0816698b64 \
