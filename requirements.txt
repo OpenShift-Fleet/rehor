@@ -388,9 +388,9 @@ python-dotenv==1.2.2 \
     # via
     #   dev-bot
     #   pydantic-settings
-python-multipart==0.0.24 \
-    --hash=sha256:9574c97e1c026e00bc30340ef7c7d76739512ab4dfd428fec8c330fa6a5cc3c8 \
-    --hash=sha256:9b110a98db707df01a53c194f0af075e736a770dc5058089650d70b4a182f950
+python-multipart==0.0.32 \
+    --hash=sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e \
+    --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23
     # via mcp
 pywin32==311 ; sys_platform == 'win32' \
     --hash=sha256:184eb5e436dea364dcd3d2316d577d625c0351bf237c4e9a5fabbcfa5a58b151 \
