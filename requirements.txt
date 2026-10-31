@@ -567,9 +567,9 @@ rpds-py==0.30.0 \
     # via
     #   jsonschema
     #   referencing
-sse-starlette==3.3.4 \
-    --hash=sha256:84bb06e58939a8b38d8341f1bc9792f06c2b53f48c608dd207582b664fc8f3c1 \
-    --hash=sha256:aaf92fc067af8a5427192895ac028e947b484ac01edbc3caf00e7e7137c7bef1
+sse-starlette==3.6.0 \
+    --hash=sha256:623151d6c20dc0eebf1b3379c27faae91fff883bac7ab6665f16f46440a88b3a \
+    --hash=sha256:e4dfa4d237d2712cb2b4d4918eda9b457cd6b44bbecdc838af75de836565bafd
     # via mcp
 starlette==1.0.0 \
     --hash=sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149 \
