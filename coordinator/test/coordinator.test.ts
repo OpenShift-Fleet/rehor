@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   type AgentRuntime,
@@ -147,6 +147,8 @@ class HangingRuntime implements AgentRuntime {
   }
 }
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("coordinator execution", () => {
   it("logs root and child-session progress with generic scope and private payloads omitted", async () => {
     const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
@@ -240,6 +242,58 @@ describe("coordinator execution", () => {
     expect(JSON.stringify(logs)).not.toMatch(
       /opaque-child-session-id|PROMPT_SENTINEL|CHILD_CUMULATIVE_TEXT_SENTINEL|REASONING_SENTINEL|CHILD_TOOL_INPUT_SENTINEL|CHILD_TOOL_CONTENT_SENTINEL|ROOT_TOOL_CONTENT_SENTINEL/,
     );
+  });
+
+  it("redacts assistant text secrets split across streaming text deltas", async () => {
+    vi.stubEnv("REVIEW_SECRET", "review-sensitive-value-123456");
+    const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
+    const result = await executeRun(
+      new FakeAgentRuntime({
+        events: [
+          event({
+            eventId: "root-text-delta-1",
+            kind: "model",
+            runtimeSessionRef: "root-session-id",
+            payload: {
+              phase: "text",
+              partId: "root-session-id:assistant-1:text:0",
+              delta: "review-sensitive-",
+            },
+          }),
+          event({
+            eventId: "root-text-delta-2",
+            sequence: 2,
+            kind: "model",
+            runtimeSessionRef: "root-session-id",
+            payload: {
+              phase: "text",
+              partId: "root-session-id:assistant-1:text:0",
+              delta: "value-123456",
+            },
+          }),
+          terminal(3),
+        ],
+      }),
+      run,
+      {
+        logger: {
+          log(level, message, fields) {
+            logs.push({ level, message, fields });
+          },
+        },
+      },
+    );
+
+    expect(result.terminal.payload.state).toBe("completed");
+    const previews = logs
+      .filter((entry) => entry.message === "Assistant text")
+      .map((entry) => String(entry.fields?.text_preview ?? ""));
+    expect(previews).toHaveLength(1);
+    // Concatenated previews must not reconstruct the split secret.
+    expect(previews.join("")).not.toContain("review-sensitive-value-123456");
+    expect(JSON.stringify(logs)).not.toContain("review-sensitive-");
+    expect(JSON.stringify(logs)).not.toContain("value-123456");
+    expect(previews[0]).toContain("[REDACTED]");
   });
 
   it("continues execution when progress logger throws", async () => {

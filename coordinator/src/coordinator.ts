@@ -288,6 +288,7 @@ async function consumeEvents(
   const pendingPolicyUpdates = new Map<string, TurnPolicyEvent>();
   const toolStarts = new Map<string, RehorEvent>();
   const childSessionRefs = new Set<string>();
+  const assistantTextBuffer = logger ? new AssistantTextPreviewBuffer(logger) : undefined;
   const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
@@ -365,7 +366,7 @@ async function consumeEvents(
       ) {
         childSessionRefs.add(event.runtimeSessionRef);
       }
-      logProgress(logger, event, childSessionRefs);
+      logProgress(logger, event, childSessionRefs, assistantTextBuffer);
       await projectEvent(event, run, projection);
 
       if (event.kind === "tool" && event.payload.budgetUnit !== "container") {
@@ -396,22 +397,105 @@ async function consumeEvents(
 }
 
 const MAX_ASSISTANT_PREVIEW_LENGTH = 300;
+// Streaming deltas are buffered until a redaction-safe boundary so a secret
+// split across deltas cannot evade environment-value and pattern redaction.
+const MAX_ASSISTANT_TEXT_BUFFER = 16 * 1024;
+// A secret spanning the buffer cap boundary must stay within one buffer for
+// whole-value redaction, so the last slice is retained after a cap flush.
+const ASSISTANT_TEXT_BUFFER_RETAINED_TAIL = 2048;
+
+type ActivityScope = "root" | "subagent";
+
+interface BufferedAssistantText {
+  scope: ActivityScope;
+  text: string;
+}
+
+/** Buffers streaming assistant text so previews are only redacted as a whole. */
+class AssistantTextPreviewBuffer {
+  private readonly pending = new Map<string, BufferedAssistantText>();
+  private readonly seenParts = new Set<string>();
+
+  constructor(private readonly logger: Pick<Logger, "log">) {}
+
+  appendDelta(scopeKey: string, scope: ActivityScope, text: string, partId?: string): void {
+    if (partId !== undefined) this.seenParts.add(partId);
+    this.extend(scopeKey, scope, text);
+  }
+
+  appendPart(scopeKey: string, scope: ActivityScope, text: string, partId?: string): void {
+    // Completed-message parts repeat text already streamed for the part.
+    if (partId !== undefined) {
+      if (this.seenParts.has(partId)) return;
+      this.seenParts.add(partId);
+    }
+    this.extend(scopeKey, scope, text);
+  }
+
+  private extend(scopeKey: string, scope: ActivityScope, text: string): void {
+    const current = this.pending.get(scopeKey);
+    let buffered = current?.text ?? "";
+    const bufferedScope = current?.scope ?? scope;
+    if (buffered.length + text.length > MAX_ASSISTANT_TEXT_BUFFER) {
+      const split = Math.max(0, buffered.length - ASSISTANT_TEXT_BUFFER_RETAINED_TAIL);
+      this.emit(bufferedScope, buffered.slice(0, split));
+      buffered = buffered.slice(split);
+    }
+    this.pending.set(scopeKey, { scope: bufferedScope, text: buffered + text });
+  }
+
+  flush(scopeKey: string): void {
+    const buffered = this.pending.get(scopeKey);
+    if (!buffered) return;
+    this.pending.delete(scopeKey);
+    this.emit(buffered.scope, buffered.text);
+  }
+
+  flushAll(): void {
+    for (const scopeKey of [...this.pending.keys()]) this.flush(scopeKey);
+  }
+
+  private emit(scope: ActivityScope, text: string): void {
+    if (!text) return;
+    const redacted = safeText(text);
+    const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
+    this.logger.log("INFO", "Assistant text", {
+      activity_scope: scope,
+      text_preview: `${preview}${redacted.length > preview.length ? "…" : ""}`,
+    });
+  }
+}
 
 /** Logs safe, provider-neutral progress without allowing logging to affect a run. */
 function logProgress(
   logger: Pick<Logger, "log"> | undefined,
   event: RehorEvent,
   childSessionRefs: ReadonlySet<string>,
+  textBuffer: AssistantTextPreviewBuffer | undefined,
 ): void {
-  if (!logger) return;
+  if (!logger || !textBuffer) return;
   try {
-    const activityScope =
+    const scopeKey = event.runtimeSessionRef ?? "";
+    const activityScope: ActivityScope =
       event.runtimeSessionRef && childSessionRefs.has(event.runtimeSessionRef)
         ? "subagent"
         : "root";
 
-    if (event.kind === "run" && event.payload.state === "child_session_started") {
-      logger.log("INFO", "Subagent session started", { activity_scope: "subagent" });
+    if (event.kind === "terminal") {
+      textBuffer.flushAll();
+      return;
+    }
+
+    if (event.kind === "run") {
+      // Every run state change ends any pending assistant text part.
+      textBuffer.flush(scopeKey);
+      if (event.payload.state === "child_session_started") {
+        logger.log("INFO", "Subagent session started", { activity_scope: "subagent" });
+        return;
+      }
+      if (event.payload.state === "turn_started") {
+        logger.log("INFO", "Turn started", { activity_scope: activityScope });
+      }
       return;
     }
 
@@ -419,29 +503,32 @@ function logProgress(
       const phase = event.payload.phase;
       if (phase === "reasoning") return;
 
-      let text: string | undefined;
       if (event.payload.role === "assistant" && typeof event.payload.text === "string") {
-        text = event.payload.text;
-      } else if (phase === "text") {
-        text =
-          typeof event.payload.delta === "string"
-            ? event.payload.delta
-            : typeof event.payload.text === "string"
-              ? event.payload.text
-              : undefined;
-      }
-      if (text) {
-        const redacted = safeText(text);
+        // Complete assistant messages already carry whole text.
+        textBuffer.flush(scopeKey);
+        const redacted = safeText(event.payload.text);
         const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
         logger.log("INFO", "Assistant text", {
           activity_scope: activityScope,
           text_preview: `${preview}${redacted.length > preview.length ? "…" : ""}`,
         });
+        return;
+      }
+      if (phase === "text") {
+        const partId = typeof event.payload.partId === "string" ? event.payload.partId : undefined;
+        // Per-delta redaction would let a secret split across streaming deltas
+        // reach the log, so text is buffered until a redaction-safe boundary.
+        if (typeof event.payload.delta === "string") {
+          textBuffer.appendDelta(scopeKey, activityScope, event.payload.delta, partId);
+        } else if (typeof event.payload.text === "string") {
+          textBuffer.appendPart(scopeKey, activityScope, event.payload.text, partId);
+        }
       }
       return;
     }
 
     if (event.kind === "tool") {
+      textBuffer.flush(scopeKey);
       const rawState = event.payload.state;
       const isError =
         event.payload.isError === true || rawState === "failed" || rawState === "error";
@@ -463,10 +550,6 @@ function logProgress(
         ...(isError ? { failed: true } : {}),
       });
       return;
-    }
-
-    if (event.kind === "run" && event.payload.state === "turn_started") {
-      logger.log("INFO", "Turn started", { activity_scope: activityScope });
     }
   } catch {
     // Event logging is diagnostic only and must never interrupt execution.
