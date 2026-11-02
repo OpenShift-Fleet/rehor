@@ -209,6 +209,10 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     // These flags are controlled by the runner, not inherited from ambient env.
     // Native project AGENTS.md and configured skill discovery remain enabled.
     environment.OPENCODE_DISABLE_MODELS_FETCH = "1";
+    // Offline covers only the server's own in-process npm package resolution so
+    // the image's pre-baked closure is the sole install source. The rehor-policy
+    // shell hook strips both aliases for shell tools, restoring proxy-based
+    // dependency installs in checked-out repositories (REHOR-220).
     environment.NPM_CONFIG_OFFLINE = "true";
     environment.npm_config_offline = "true";
     if (this.renderedConfig !== undefined) {
