@@ -67,7 +67,7 @@ async def _run(messages, ctx: CycleContext | None = None):
     with (
         patch("bot.agent.query", fake_query),
         patch("bot.agent._push_status", AsyncMock()),
-        patch("bot.agent._terminate_orphaned_claude_children"),
+        patch("bot.agent._make_sdk_transport", return_value=None),
     ):
         return await run_cycle("test-label", _config(), {}, [], cwd=".", ctx=ctx)
 
@@ -130,6 +130,29 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     assert "cache_write=100" in caplog.text
     assert "ratio=2.00" in caplog.text
     assert "tokens in=1000 out=500" in caplog.text
+
+
+def test_stream_hang_after_result_still_returns_result(caplog):
+    """A stream that never closes after ResultMessage must not stall the cycle."""
+    caplog.set_level(logging.WARNING)
+    result_msg = _result()
+
+    async def hanging_after_result(*, prompt, options):
+        yield SystemMessage(subtype="init", data={"session_id": "sess-hang", "mcp_servers": []})
+        yield result_msg
+        await asyncio.sleep(30)
+
+    with (
+        patch("bot.agent.query", hanging_after_result),
+        patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._make_sdk_transport", return_value=None),
+        patch("bot.agent._POST_RESULT_GRACE_SECONDS", 0.2),
+    ):
+        result, ctx = asyncio.run(run_cycle("test-label", _config(), {}, [], cwd="."))
+
+    assert result is result_msg
+    assert ctx.timed_out is False
+    assert "did not close" in caplog.text
 
 
 def test_cycle_logs_ratio_na_when_no_cache_write(caplog):
