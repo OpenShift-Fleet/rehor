@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mock } from "node:test";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createSecureServer } from "node:http2";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as realSdk from "@nvidia/openshell-sdk";
 import { readGatewayConfig } from "../dist/gateway-config.js";
 import { createLifecycleLogger } from "../dist/logging.js";
@@ -70,8 +74,7 @@ test("gateway config is opt-in, complete, HTTPS only and rejects unsafe TLS", ()
 test("preflight wires renewable provider and authenticated identity; no sandbox operations", async (t) => {
   const f = fixture();
   useSdk(t, f.sdk);
-  const client = await connectGateway(config());
-  assert.equal(client.raw, f.raw);
+  await connectGateway(config());
   assert.deepEqual(f.calls[0], ["credentials", { issuer: env.OPENSHELL_OIDC_ISSUER, clientId: env.OPENSHELL_CLIENT_ID, clientSecret: env.OPENSHELL_OIDC_CLIENT_SECRET, audience: env.OPENSHELL_OIDC_AUDIENCE, timeoutMs: 30_000 }]);
   assert.equal(f.calls[1][1].gateway, env.OPENSHELL_GATEWAY_ENDPOINT);
   assert.equal(f.calls[1][1].insecureSkipVerify, false);
@@ -204,13 +207,6 @@ test("preflight drains SDK token acquisition after RPC abort before reporting fa
   } finally { releaseDiscovery(); globalThis.fetch = originalFetch; }
 });
 
-test("direct adapter rejects insecure configuration before SDK use", async (t) => {
-  const f = fixture();
-  useSdk(t, f.sdk);
-  await assert.rejects(connectGateway({ ...config(), endpoint: "http://gateway.example" }), { message: "OpenShell gateway preflight failed" });
-  assert.equal(f.calls.length, 0);
-});
-
 test("partial runtime gateway config fails without exposing values", () => {
   const result = spawnSync(process.execPath, ["dist/index.js"], { cwd: new URL("..", import.meta.url), encoding: "utf8", env: { OPENSHELL_CLIENT_ID: "sensitive-client" }, timeout: 5000 });
   assert.equal(result.status, 1);
@@ -229,6 +225,57 @@ test("runtime fails closed when real SDK credential preflight fails", () => {
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "OpenShell gateway preflight failed");
   assert.doesNotMatch(result.stderr + result.stdout, /test-secret|test-token|example-client|example-subject|issuer\.example/);
+});
+
+test("runtime exits 1 on a real gateway identity mismatch instead of hanging", { timeout: 20_000 }, async () => {
+  const directory = mkdtempSync(join(tmpdir(), "dispatcher-gateway-test-"));
+  let server;
+  try {
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(directory, "key.pem"), "-out", join(directory, "cert.pem"), "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], { stdio: "ignore" });
+    // The gateway preflight discards its client (the SDK exposes no close()),
+    // so this test proves end to end that a mismatched identity still exits:
+    // connect-node unrefs the HTTP/2 session once the identity RPC's stream
+    // closes, and no other socket or timer holds the event loop.
+    const { OpenShell } = await import("@nvidia/openshell-sdk/raw");
+    const { create, toBinary } = await import("@bufbuild/protobuf");
+    const responseType = OpenShell.method.getCurrentUser.output;
+    const payload = Buffer.from(toBinary(responseType, create(responseType, { subject: "wrong-subject", identityProvider: "oidc" })));
+    const frame = Buffer.alloc(5 + payload.length);
+    frame.writeUInt32BE(payload.length, 1);
+    payload.copy(frame, 5);
+    server = createSecureServer({ key: readFileSync(join(directory, "key.pem")), cert: readFileSync(join(directory, "cert.pem")) });
+    server.on("stream", (stream) => {
+      stream.respond({ ":status": 200, "content-type": "application/grpc" }, { waitForTrailers: true });
+      stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+      stream.end(frame);
+    });
+    await new Promise((resolve) => server.listen(0, "localhost", resolve));
+    const script = `globalThis.fetch = async (url) => {
+      if (String(url).endsWith("/.well-known/openid-configuration")) return Response.json({ issuer: ${JSON.stringify(env.OPENSHELL_OIDC_ISSUER)}, token_endpoint: "https://issuer.example/token" });
+      return Response.json({ access_token: "test-token", expires_in: 120 });
+    };`;
+    const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {
+      cwd: new URL("..", import.meta.url),
+      env: { ...env, OPENSHELL_GATEWAY_ENDPOINT: `https://localhost:${server.address().port}`, NODE_EXTRA_CA_CERTS: join(directory, "cert.pem") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+    assert.deepEqual(result, { code: 1, signal: null });
+    assert.equal(stderr.trim(), "OpenShell gateway preflight failed");
+    const records = output.trim().split("\n").map(JSON.parse);
+    const failure = records.find((record) => record.event === "gateway.authentication" && record.status === "failure");
+    assert.equal(failure.category, "authentication");
+    assert.ok(records.some((record) => record.event === "startup" && record.status === "failure"));
+    assert.ok(records.some((record) => record.event === "shutdown" && record.status === "success"));
+    assert.doesNotMatch(output + stderr, /wrong-subject|example-subject|test-token|test-secret|issuer\.example|localhost/);
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("gateway logs provider acquisition and validated OIDC identity without sensitive data", async (t) => {

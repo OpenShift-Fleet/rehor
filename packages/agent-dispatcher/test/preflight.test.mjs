@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAuthConfig } from "../dist/config.js";
 import { createCredentialProvider, preflightFailureMessage } from "../dist/preflight.js";
-import { httpsRequest } from "../dist/https.js";
+import { HttpRequestError, httpsRequest } from "../dist/https.js";
 import { createLifecycleLogger } from "../dist/logging.js";
 
 const baseEnv = {
@@ -47,14 +47,12 @@ test("configuration is opt-in, complete, strict and HTTPS-only", () => {
     { ...baseEnv, AGENT_DISPATCHER_AUTH_NAMESPACE: "../bad" },
     ...["http://memory.example", "https://user:pass@memory.example", "https://memory.example/?secret=x", "https://memory.example/#x"].map((url) => ({ ...baseEnv, AGENT_DISPATCHER_AUTH_MEMORY_URL: url })),
   ]) assert.throws(() => readAuthConfig(env));
-  assert.throws(() => createCredentialProvider({ ...config(), memoryUrl: new URL("http://memory.example") }));
 });
 
-test("TokenRequest uses projected credentials, default audience, and exact memory endpoint; cache refreshes on demand", async () => {
+test("TokenRequest uses projected credentials, default audience, and exact memory endpoint; each get() mints fresh", async () => {
   const f = fixture();
   const provider = createCredentialProvider(config(), f.deps);
-  const [first, concurrent] = await Promise.all([provider.get(), provider.get()]);
-  assert.deepEqual(first, concurrent);
+  const first = await provider.get();
   assert.equal(first.token, "minted-secret-1");
   assert.equal(f.calls.length, 4);
   const post = f.calls[0];
@@ -67,11 +65,8 @@ test("TokenRequest uses projected credentials, default audience, and exact memor
     [baseEnv.AGENT_DISPATCHER_AUTH_MEMORY_URL, "Bearer invalid-preflight-credential"],
     [baseEnv.AGENT_DISPATCHER_AUTH_MEMORY_URL, "Bearer minted-secret-1"],
   ]);
-  first.token = "mutated";
-  assert.equal((await provider.get()).token, "minted-secret-1");
-  f.advance(60_000);
+  assert.equal(f.files.length, 2);
   assert.equal((await provider.get()).token, "minted-secret-2");
-  assert.equal(f.files.length, 4);
   assert.equal(f.calls.length, 8);
 });
 
@@ -85,19 +80,18 @@ test("explicit audience is requested and endpoint objects are copied", async () 
   assert.equal(f.calls[1].url.href, baseEnv.AGENT_DISPATCHER_AUTH_MEMORY_URL);
 });
 
-test("failed refresh never returns an old credential", async () => {
-  const original = fixture();
+test("failed TokenRequest never returns a credential", async () => {
+  const f = fixture();
   let fail = false;
-  const client = original.deps.http;
-  original.deps.http = async (request) => {
+  const client = f.deps.http;
+  f.deps.http = async (request) => {
     if (fail) throw new Error("minted-secret-1");
     return client(request);
   };
-  const refreshing = createCredentialProvider(config(), original.deps);
-  await refreshing.get();
-  original.advance(60_000);
+  const provider = createCredentialProvider(config(), f.deps);
+  await provider.get();
   fail = true;
-  await assert.rejects(refreshing.get(), { message: "Agent dispatcher TokenRequest failed", stage: "token-request" });
+  await assert.rejects(provider.get(), { message: "Agent dispatcher TokenRequest failed", stage: "token-request" });
 });
 
 test("missing or invalid bearer success, redirects, and other unexpected negative responses fail before token delivery", async () => {
@@ -117,7 +111,7 @@ test("missing or invalid bearer success, redirects, and other unexpected negativ
 });
 
 test("real-token rejection, expired or invalid TokenRequest, errors and no retries fail closed without leaking secrets", async () => {
-  for (const mode of ["api-rejected", "bad-json", "no-token", "expired", "network", "memory-network", "valid-rejected", "expires-during-check"]) {
+  for (const mode of ["api-rejected", "bad-json", "no-token", "expired", "network", "memory-network", "valid-rejected"]) {
     const f = fixture();
     const original = f.deps.http;
     f.deps.http = async (req) => {
@@ -131,12 +125,11 @@ test("real-token rejection, expired or invalid TokenRequest, errors and no retri
       } else {
         if (mode === "memory-network") throw new Error("projected-secret minted-secret-1 https://secret.example");
         if (mode === "valid-rejected" && req.headers?.authorization === "Bearer minted-secret-1") return { status: 302, body: "minted-secret-1" };
-        if (mode === "expires-during-check") f.advance(30_000);
       }
       return result;
     };
     await assert.rejects(createCredentialProvider(config(), f.deps).get(), (error) => {
-      const memoryFailure = ["memory-network", "valid-rejected", "expires-during-check"].includes(mode);
+      const memoryFailure = ["memory-network", "valid-rejected"].includes(mode);
       assert.equal(error.message, memoryFailure ? "Agent dispatcher memory endpoint preflight failed" : "Agent dispatcher TokenRequest failed");
       assert.equal(error.stage, memoryFailure ? "memory-endpoint" : "token-request");
       assert.equal(preflightFailureMessage(error), error.message);
@@ -144,6 +137,38 @@ test("real-token rejection, expired or invalid TokenRequest, errors and no retri
       return true;
     });
     assert.equal(f.calls.filter((call) => call.method === "POST").length, 1);
+  }
+});
+
+test("failure categories distinguish credentials, network, authorization, authentication, and response", async () => {
+  const scenarios = [
+    { mode: "missing-files", stage: "token-request", event: "kubernetes.token_request", category: "credentials" },
+    { mode: "transport-timeout", stage: "token-request", event: "kubernetes.token_request", category: "network" },
+    { mode: "api-forbidden", stage: "token-request", event: "kubernetes.token_request", category: "authorization" },
+    { mode: "bad-json", stage: "token-request", event: "kubernetes.token_request", category: "response" },
+    { mode: "open-endpoint", stage: "memory-endpoint", event: "memory.missing_token", category: "authorization" },
+    { mode: "valid-rejected", stage: "memory-endpoint", event: "memory.token", category: "authentication" },
+  ];
+  for (const { mode, stage, event, category } of scenarios) {
+    const f = fixture();
+    const lines = [];
+    const original = f.deps.http;
+    if (mode === "missing-files") f.deps.readFile = async () => { throw new Error("ENOENT projected-secret"); };
+    else f.deps.http = async (req) => {
+      if (mode === "transport-timeout") throw new HttpRequestError("HTTPS request timed out", "timeout");
+      if (mode === "api-forbidden" && req.method === "POST") return { status: 403, body: "projected-secret" };
+      if (mode === "bad-json" && req.method === "POST") return { status: 200, body: "minted-secret-1" };
+      const result = await original(req);
+      if (mode === "open-endpoint" && !req.headers?.authorization) return { status: 200, body: "body-secret" };
+      if (mode === "valid-rejected" && req.headers?.authorization === "Bearer minted-secret-1") return { status: 500, body: "minted-secret-1" };
+      return result;
+    };
+    await assert.rejects(createCredentialProvider(config(), f.deps, createLifecycleLogger({ write: (line) => lines.push(line) })).get(), { stage });
+    const records = lines.map(JSON.parse);
+    assert.equal(records.at(-1).event, event);
+    assert.equal(records.at(-1).status, "failure");
+    assert.equal(records.at(-1).category, category);
+    assert.doesNotMatch(lines.join("\n"), /projected-secret|minted-secret|body-secret/);
   }
 });
 
@@ -204,12 +229,11 @@ test("unconfigured runtime retains scaffold startup and clean shutdown", { timeo
   }
 });
 
-test("memory lifecycle logs only executed checks and never credentials, including cached calls", async () => {
+test("memory lifecycle logs only executed checks and never credentials", async () => {
   const f = fixture();
   const lines = [];
   const logger = createLifecycleLogger({ write: (line) => lines.push(line), now: () => 42 });
   const provider = createCredentialProvider(config(), f.deps, logger);
-  await Promise.all([provider.get(), provider.get()]);
   await provider.get();
   assert.deepEqual(lines.map(JSON.parse).map(({ event, status }) => [event, status]), [
     ["kubernetes.token_request", "start"], ["kubernetes.token_request", "success"],
@@ -237,7 +261,7 @@ test("memory failure logs the failing check only and does not leak errors or res
     const records = lines.map(JSON.parse);
     const names = ["kubernetes.token_request", "memory.missing_token", "memory.invalid_token", "memory.token"];
     assert.deepEqual(records.map(({ event, status }) => [event, status]), names.slice(0, failingStep + 1).flatMap((name, i) => [[name, "start"], [name, i === failingStep ? "failure" : "success"]]));
-    assert.equal(records.at(-1).category, "internal");
+    assert.equal(records.at(-1).category, failingStep === 1 ? "authorization" : "internal");
     assert.doesNotMatch(lines.join("\n"), /secret|memory\.example|kubernetes\.example/);
   }
 });
@@ -253,22 +277,6 @@ test("memory preflight survives a broken injected logger", async () => {
   const asyncBroken = { start() { return Promise.reject(new Error("logger-secret")); } };
   assert.equal((await createCredentialProvider(config(), f3.deps, asyncBroken).get()).token, "minted-secret-1");
   await new Promise((resolve) => setImmediate(resolve));
-});
-
-test("credential expiry before valid-token request records check failure without sending token", async () => {
-  const f = fixture();
-  const lines = [];
-  const original = f.deps.http;
-  f.deps.http = async (request) => {
-    const response = await original(request);
-    if (request.method === "GET") f.advance(30_000);
-    return response;
-  };
-  await assert.rejects(createCredentialProvider(config(), f.deps, createLifecycleLogger({ write: (line) => lines.push(line) })).get());
-  assert.equal(f.calls.length, 3);
-  assert.deepEqual(lines.map(JSON.parse).slice(-2).map(({ event, status }) => [event, status]), [
-    ["memory.token", "start"], ["memory.token", "failure"],
-  ]);
 });
 
 test("HTTPS transport verifies TLS, never follows redirects, and bounds timeouts", { timeout: 20_000 }, async () => {

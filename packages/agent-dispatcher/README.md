@@ -27,7 +27,7 @@ Configure the full externally reachable memory endpoint including the path, not 
 
 The dispatcher mints the token through the Kubernetes TokenRequest API using the standard in-cluster host and the projected service-account token and CA files. The dispatcher's own service account needs `create` permission on the target `serviceaccounts/token` resource; the two service accounts need not be the same. The requested token lifetime is one hour; the API server may return a different expiry.
 
-A preflight passes only when the endpoint rejects a request without credentials and a request with a deliberately invalid bearer token with 401 or 403, and returns 2xx for the minted token. Requests have a five-second deadline, verify TLS, never follow redirects or retry, and never log credentials or response bodies. `createCredentialProvider` refreshes and revalidates the credential on each `get()` when it is within 60 seconds of expiry.
+A preflight passes only when the endpoint rejects a request without credentials and a request with a deliberately invalid bearer token with 401 or 403, and returns 2xx for the minted token. Requests have a five-second deadline, verify TLS, never follow redirects or retry, and never log credentials or response bodies. `createCredentialProvider` mints and revalidates a fresh credential on each `get()`; startup calls it once.
 
 ## OpenShell Gateway preflight
 
@@ -69,7 +69,7 @@ Failures at any stage report a fixed message naming the stage, never SDK error d
 
 ## Lifecycle logs
 
-The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose destination handles non-blocking, EPIPE-safe writes. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), and an optional fixed `category` on failure. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
+The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose default stdout destination is synchronous (sonic-boom `sync: true`) and EPIPE-safe. Synchronous writes are what is wanted before the `process.exit(1)` at the shutdown deadline: no record is lost. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), and an optional fixed `category` on failure. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
 
 | Event | Meaning |
 | --- | --- |
@@ -83,6 +83,8 @@ The dispatcher writes one JSON object per lifecycle event to stdout through [pin
 | `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
 | `ready` | Startup completed. |
 | `shutdown` | Shutdown after a signal or startup failure. |
+
+Failure records carry a fixed `category` from a closed set, assigned at the failure site so startup problems are diagnosable without exposing details: `configuration` (invalid variables), `credentials` (missing projected service-account files), `network` (connect or timeout failures), `authorization` (TokenRequest or endpoint rejection of a missing/invalid credential), `authentication` (endpoint rejection of a valid credential, or a Gateway identity mismatch), `response` (unparseable TokenRequest response), and `internal` (anything else).
 
 Only attempted steps are logged: disabled preflights produce no events, and a failure prevents later checks. On SIGTERM or SIGINT during startup, the dispatcher cancels the Gateway RPC, drains in-flight memory and SDK token work, and reports shutdown. If startup has not stopped within 25 seconds of the signal, shutdown fails and the process exits with code 1.
 
@@ -110,6 +112,8 @@ tar -cf - package.json package-lock.json nx.json \
 The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher and production dependencies only. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
 
 ## Development
+
+The dispatcher depends on `@nvidia/openshell-sdk`, which is hosted on GitHub Packages. Because the root manifest is an npm workspace, a root-level `npm ci` now authenticates to `npm.pkg.github.com` for the `@nvidia` scope: the repository `.npmrc` pins the registry, and every developer (and automation) installing from the root lockfile needs a token with `read:packages` for that scope — for example via `NPM_TOKEN` and an `~/.npmrc` entry, or a CI-provided npmrc. Dependency-update bots that refresh the root `package-lock.json` need the same credentials or their pull requests will fail to install.
 
 Run the test suite from the repository root:
 

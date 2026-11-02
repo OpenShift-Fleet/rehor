@@ -67,8 +67,10 @@ export function isolateLifecycleLogger(logger?: LifecycleLogger): LifecycleLogge
 
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
-// pino writes JSON lines to stdout with a non-blocking, EPIPE-safe
-// destination. Base fields and timestamps are disabled so a record carries
+// pino writes JSON lines to stdout through a synchronous (sonic-boom
+// `sync: true`), EPIPE-safe destination. Synchronous writes are what is wanted
+// before the `process.exit(1)` at the shutdown deadline: no record is lost.
+// Base fields and timestamps are disabled so a record carries
 // only the lifecycle fields plus pino's level.
 const stdout = pino({ base: undefined, timestamp: false });
 
