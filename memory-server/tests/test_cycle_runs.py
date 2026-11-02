@@ -2,7 +2,8 @@
 
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -220,6 +221,65 @@ async def test_post_cycle_run_with_timestamps(mock_pool):
     call_args = mock_pool.fetchrow.call_args[0]
     assert call_args[6] == 87  # tool_calls ($6 in INSERT)
     assert call_args[7] == 150000  # tokens_used ($7 in INSERT)
+
+
+# --- Real-database coverage for the UPDATE merge semantics (REHOR-207) ---
+# The mock tests above only assert SQL substrings; this test executes the
+# actual UPDATE (NULLIF keeps existing counts, started_at min, cycle_type
+# error override, progress jsonb merge) against a real PostgreSQL.
+
+SCHEMA_PATH = Path(__file__).parent.parent / "bot_memory_server" / "schema.sql"
+
+
+@pytest.mark.asyncio
+async def test_post_cycle_run_merge_semantics_through_real_database(db):
+    await db.execute(SCHEMA_PATH.read_text())
+
+    # Seed an orphan row the way progress_store creates one mid-cycle:
+    # progress + counts present, no transcript yet.
+    orphan_id = await db.fetchval(
+        """
+        INSERT INTO cycle_runs (cycle_type, instance_id, started_at, tool_calls, tokens_used, progress)
+        VALUES ('task_work', 'merge-instance', NOW() - INTERVAL '10 minutes', 7, 4000,
+                '{"last_step": "editing files", "repo": "org/repo"}'::jsonb)
+        RETURNING id
+        """
+    )
+
+    early_start = datetime.now(UTC) - timedelta(minutes=30)
+    transcript_bytes = b'{"role": "assistant", "content": "partial"}\n'
+    body = {
+        "cycle_type": "error",
+        "instance_id": "merge-instance",
+        "started_at": early_start.isoformat(),
+        "finished_at": datetime.now(UTC).isoformat(),
+        "tool_calls": None,
+        "tokens_used": 0,
+        "progress": {"summary": "Cycle timed out after 3600s"},
+        "transcript_b64": base64.b64encode(transcript_bytes).decode(),
+    }
+
+    with patch("bot_memory_server.api.get_pool", return_value=db):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/cycle-runs", json=body)
+
+    assert resp.status_code == 201
+    assert resp.json()["id"] == orphan_id
+
+    row = await db.fetchrow("SELECT * FROM cycle_runs WHERE id = $1", orphan_id)
+    assert row["transcript"] == transcript_bytes
+    # NULLIF: zero/None counts must not clobber the progress_store values
+    assert row["tool_calls"] == 7
+    assert row["tokens_used"] == 4000
+    # cycle_type error override
+    assert row["cycle_type"] == "error"
+    # earlier started_at wins
+    assert row["started_at"] <= datetime.now(UTC) - timedelta(minutes=29)
+    # progress merged: old keys survive, new keys applied
+    progress = json.loads(row["progress"])
+    assert progress["last_step"] == "editing files"
+    assert progress["repo"] == "org/repo"
+    assert progress["summary"] == "Cycle timed out after 3600s"
 
 
 # --- REST API: POST /api/cycle-runs — merge without transcript (REHOR-102) ---

@@ -169,7 +169,7 @@ def test_timeout_records_incomplete_cost(tmp_path, caplog):
     project_dir.mkdir(parents=True)
     (project_dir / f"{session_id}.jsonl").write_text('{"type":"assistant","message":"partial"}\n')
 
-    async def hanging_query(*, prompt, options):
+    async def hanging_query(*, prompt, options, transport=None):
         yield SystemMessage(
             subtype="init",
             data={"session_id": session_id, "mcp_servers": []},
@@ -184,11 +184,20 @@ def test_timeout_records_incomplete_cost(tmp_path, caplog):
         cycle_timeout=1,
         board_key="TEST",
     )
+
+    class _FakeTransport:
+        def __init__(self):
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    fake_transport = _FakeTransport()
     stream_ctx = CycleContext()
     with (
         patch("bot.agent.query", hanging_query),
         patch("bot.agent._push_status", AsyncMock()),
-        patch("bot.agent._terminate_orphaned_claude_children") as mock_kill,
+        patch("bot.agent._make_sdk_transport", return_value=fake_transport),
     ):
         result_from_cycle, stream_ctx = asyncio.run(
             run_cycle("test-label", short_config, {}, [], cwd=cwd, ctx=stream_ctx)
@@ -198,7 +207,7 @@ def test_timeout_records_incomplete_cost(tmp_path, caplog):
     assert stream_ctx.timed_out is True
     assert stream_ctx.session_id == session_id
     assert stream_ctx.started_at is not None
-    mock_kill.assert_called()
+    assert fake_transport.close_calls == 1
 
     costs_file = tmp_path / "costs.jsonl"
     started = datetime.now(UTC) - timedelta(minutes=10)

@@ -47,6 +47,10 @@ _USAGE_TOKEN_KEYS = (
     "cache_creation_input_tokens",
 )
 
+# Grace period for the SDK stream to close after the ResultMessage arrives;
+# bounds the post-result wait so a hung stream can't stall the runner forever.
+_POST_RESULT_GRACE_SECONDS = 60.0
+
 
 @dataclass
 class CycleContext:
@@ -350,7 +354,11 @@ async def run_cycle(
         # Signal cycle start to dashboard
         await _push_status(http, "working", "Starting cycle...", instance_id=instance_id)
 
-        stream = query(prompt=prompt, options=options)
+        transport = _make_sdk_transport(prompt, options)
+        if transport is not None:
+            stream = query(prompt=prompt, options=options, transport=transport)
+        else:
+            stream = query(prompt=prompt, options=options)
         try:
             while True:
                 if result is None:
@@ -360,18 +368,24 @@ async def run_cycle(
                         logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
                         break
                 else:
-                    remaining = None
+                    # Result received — the SDK should close the stream right
+                    # after, but bound the wait so a hung stream can't stall
+                    # the runner forever.
+                    remaining = _POST_RESULT_GRACE_SECONDS
 
                 try:
-                    if remaining is not None:
-                        message = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
-                    else:
-                        message = await stream.__anext__()
+                    message = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
                 except StopAsyncIteration:
                     break
                 except TimeoutError:
-                    ctx.timed_out = True
-                    logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                    if result is None:
+                        ctx.timed_out = True
+                        logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                    else:
+                        logger.warning(
+                            "SDK stream did not close within %.0fs after result — abandoning it",
+                            _POST_RESULT_GRACE_SECONDS,
+                        )
                     break
 
                 _capture_stream_meta(message, ctx)
@@ -455,7 +469,14 @@ async def run_cycle(
                 await stream.aclose()  # type: ignore[attr-defined]  # query() is AsyncGenerator at runtime
             except Exception:
                 logger.debug("SDK stream aclose failed", exc_info=True)
-            _terminate_orphaned_claude_children()
+            if transport is not None:
+                # aclose() can be a no-op when the stream was cancelled
+                # mid-read (cycle timeout). transport.close() is idempotent
+                # and performs session flush → SIGTERM → SIGKILL escalation.
+                try:
+                    await transport.close()  # type: ignore[attr-defined]
+                except Exception:
+                    logger.debug("SDK transport close failed", exc_info=True)
 
         if ctx.timed_out:
             return None, ctx
@@ -482,18 +503,27 @@ async def run_cycle(
     return result, ctx
 
 
-def _terminate_orphaned_claude_children() -> None:
-    """Best-effort SIGTERM for CLI children the SDK still tracks after aclose."""
+def _make_sdk_transport(prompt: str, options: ClaudeAgentOptions):
+    """Create the subprocess CLI transport ourselves so run_cycle owns it.
+
+    The SDK only cleans the CLI process up when the query generator unwinds
+    normally. A stream cancelled mid-read (cycle timeout via asyncio.wait_for)
+    can skip that cleanup and leak the CLI process, which keeps consuming
+    tokens in the background. Holding the transport lets the finally block
+    call close() explicitly — the SDK close() lets the CLI flush its session
+    file, then escalates SIGTERM → SIGKILL, and is a safe no-op when called
+    twice. Falls back to the SDK default transport if the internal import
+    moves in a future SDK release.
+    """
     try:
-        from claude_agent_sdk._internal.transport.subprocess_cli import _ACTIVE_CHILDREN  # type: ignore[attr-defined]
+        from claude_agent_sdk._internal.transport.subprocess_cli import (  # type: ignore[attr-defined]
+            SubprocessCLITransport,
+        )
+
+        return SubprocessCLITransport(prompt=prompt, options=options)
     except Exception:
-        return
-    for proc in list(_ACTIVE_CHILDREN):
-        try:
-            if getattr(proc, "returncode", None) is None:
-                proc.terminate()
-        except Exception:
-            logger.debug("Failed to terminate Claude CLI child", exc_info=True)
+        logger.warning("Cannot construct SubprocessCLITransport — relying on SDK default cleanup")
+        return None
 
 
 def _extract_context(block, ctx: CycleContext) -> None:
