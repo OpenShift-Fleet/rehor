@@ -22,6 +22,9 @@ import { abortError, isRecord } from "../utils";
 
 const PROTOCOL_VERSION = 1;
 
+/** Default per-cycle-run USD cost budget when the bridge omits budgetUsd. */
+export const DEFAULT_BUDGET_USD = 5;
+
 // These modules implement bridge preparation/maintenance, never model execution.
 // A bot.* prefix alone must not grant trust to arbitrary subprocess output.
 const BRIDGE_LOG_SOURCES = new Set([
@@ -213,7 +216,7 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     model: stringValue(object.model, "config.model"),
     runtimeId: selectionId(object.runtimeId, "config.runtimeId"),
     providerId: selectionId(object.providerId, "config.providerId"),
-    maxTurns: positiveInteger(object.maxTurns, "config.maxTurns"),
+    budgetUsd: positiveNumber(object.budgetUsd ?? DEFAULT_BUDGET_USD, "config.budgetUsd"),
     intervalSeconds: nonNegativeNumber(object.intervalSeconds, "config.intervalSeconds"),
     idleIntervalSeconds: nonNegativeNumber(
       object.idleIntervalSeconds,
@@ -354,13 +357,6 @@ function selectionId(value: unknown, path: string): string {
 function nullableString(value: unknown, path: string): string | null {
   if (value === null) return null;
   return stringValue(value, path);
-}
-
-function positiveInteger(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
-    throw new PythonBridgeError(`${path} must be a positive safe integer`);
-  }
-  return value as number;
 }
 
 function nonNegativeInteger(value: unknown, path: string): number {

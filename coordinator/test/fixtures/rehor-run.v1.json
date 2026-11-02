@@ -37,7 +37,7 @@
   },
   "limits": {
     "timeoutMs": 60000,
-    "maxTurns": 20
+    "budgetUsd": 5
   },
   "preflightPayloadRef": "memory://preflight/run-fixture-01"
 }

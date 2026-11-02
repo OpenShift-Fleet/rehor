@@ -307,7 +307,7 @@ This launches Chrome on port 9222 with a separate profile. Edit the script to us
 ```json
 {
   "claude": {
-    "maxTurns": 100,
+    "budgetUsd": 5,
     "model": "claude-opus-4-6"
   },
   "polling": {
@@ -321,7 +321,7 @@ This launches Chrome on port 9222 with a separate profile. Edit the script to us
 `intervalSeconds` is the default post-work sleep. Preflight skips use
 `idleIntervalSeconds`; skills can write `data/cycle-sleep.json` to request a
 different delay for the next cycle. `claude.cycleTimeoutSeconds` defaults to
-1800 when omitted.
+3600 when omitted (per-instance config can still override).
 
 MCP servers are configured in `.mcp.json` (project-level). Remote config repos can provide additional MCP servers via `agent/mcp.json`.
 
@@ -477,6 +477,8 @@ The `dev-proxy/` directory contains a custom Caddy build for local UI verificati
 ```
 dev-bot/
   pyproject.toml         # Python project config (uv workspace root)
+  uv.lock                # Resolved Python lockfile (source of truth)
+  requirements.txt       # Hashed export of uv.lock for cachi2/Hermeto (make requirements)
   Makefile               # Common commands
   bot/                   # Agent runner (Python package)
     run.py               # Main loop + remote config sync

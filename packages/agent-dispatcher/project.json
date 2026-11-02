@@ -1,5 +1,5 @@
 {
-  "name": "agent-dispatcher",
+  "name": "@rehor/agent-dispatcher",
   "projectType": "application",
   "sourceRoot": "packages/agent-dispatcher/src",
   "targets": {

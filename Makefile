@@ -1,4 +1,4 @@
-.PHONY: install run run-coordinator init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-install coordinator-build coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration
+.PHONY: install run run-coordinator init dashboard costs costs-today costs-week seed-costs stop logs help memory-server memory-server-stop memory-dump memory-import memory-reset verify ts-verify ts-format coordinator-install coordinator-build coordinator-verify memory-verify precommit-install precommit-run prepush-install prepush-check verify-required-checks check-branch-protection container-verify container-e2e container-e2e-browser test-unit test-integration requirements requirements-check
 
 LABEL ?= hcc-ai-framework
 BIOME_VERSION ?= 2.5.12
@@ -13,8 +13,18 @@ ts-format: ## Format TypeScript files with Biome (local fix)
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
+requirements: ## Export hashed requirements.txt from uv.lock (cachi2 / Hermeto pip prefetch)
+	uv export --frozen --no-dev --no-emit-project -o requirements.txt
+
+requirements-check: ## Fail if requirements.txt drifts from uv.lock
+	@$(MAKE) --no-print-directory requirements
+	@git diff --exit-code HEAD -- requirements.txt \
+		|| { echo "requirements.txt is out of date; run: make requirements"; exit 1; }
+
 verify: ## Run all checks (same as CI)
 	uv sync --frozen --extra dev
+	@echo "=== Python: requirements.txt drift ==="
+	$(MAKE) requirements-check
 	@echo "=== Python: format ==="
 	uv run ruff format --check .
 	@echo "=== Python: lint ==="

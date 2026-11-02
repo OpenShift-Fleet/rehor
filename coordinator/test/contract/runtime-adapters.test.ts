@@ -131,33 +131,43 @@ describe.each(harnesses)("AgentRuntime contract: $name adapter", (harness) => {
     });
   });
 
-  it("enforces max turns from successful normalized tool events", async () => {
-    const maxTurns = 8;
+  it("enforces the cost budget from usage events", async () => {
+    const budgetUsd = 1;
     const metrics: Array<Record<string, unknown>> = [];
     const projection = metricsProjection(metrics);
     const result = await executeRun(
-      harness.toolCalls(maxTurns),
-      { ...harness.run, limits: { ...harness.run.limits, maxTurns } },
+      harness.budgetUsage([0.5, 0.25, 0.15, 0.1, 0.15]),
+      { ...harness.run, limits: { ...harness.run.limits, budgetUsd } },
       { projection },
     );
     const policies = result.events.filter(({ kind }) => kind === "policy");
 
-    expect(policies.map(({ payload }) => payload.state)).toEqual(["warning", "critical"]);
-    expect(policies.map(({ payload }) => payload.usedTurns)).toEqual([6, 7]);
-    expect(result.terminal.payload).toMatchObject({
-      state: "failed",
-      reason: harness.enforcesTurnLimit ? "error_max_turns" : "max_turns",
-    });
+    expect(policies.map(({ payload }) => payload.state)).toEqual([
+      "info",
+      "warning",
+      "critical",
+      "exhausted",
+    ]);
     expect(result.error).toBeUndefined();
     const sequences = result.events.map(({ sequence }) => sequence);
     expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
     expect(new Set(sequences).size).toBe(sequences.length);
-    for (const level of ["warning", "critical"] as const) {
+    for (const level of ["info", "warning", "critical", "exhausted"] as const) {
       expect(metrics).toContainEqual({
         type: "counter",
-        name: "devbot_turn_budget_event_total",
+        name: "devbot_cost_budget_event_total",
         value: 1,
         labels: { label: harness.run.label, level },
+      });
+    }
+    if (harness.name === "claude") {
+      // The Claude SDK drains the final result message — usage plus terminal —
+      // before the abort takes effect, so the attempt still records completed.
+      expect(result.terminal.payload.state).toBe("completed");
+    } else {
+      expect(result.terminal.payload).toMatchObject({
+        state: "failed",
+        reason: "budget_exceeded",
       });
     }
   });

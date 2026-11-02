@@ -123,12 +123,22 @@ payload shapes cannot drift from TypeScript validation.
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
 terminal event after preserving all accepted partial events. The coordinator
-owns run timeouts, successful tool-call budgets, and terminal mapping. It emits
-turn-budget warnings at 75%, critical events at 90%, then aborts at `maxTurns`
-with `failed/max_turns`. Typed abort causes map to terminal states: shutdown to
-`interrupted`, caller cancellation to `cancelled`, timeout to `timed_out`, and
-failed policy aborts to `failed`. Runtime adapters report only `completed` or
-`failed` terminals and do not enforce turn budgets. `WorkContextTracker` derives
+owns run timeouts and the per-cycle-run USD cost budget. It observes usage
+events and emits cost-budget policy notices at 50% (`info`), 75% (`warning`),
+90% (`critical`), and 100% (`exhausted`) of `limits.budgetUsd`, each once. The
+exhausted notice opens a grace window — the run may continue so the agent can
+save state via `task_update` — until spend reaches 115% of the budget, where
+the coordinator aborts with `failed/budget_exceeded`. When usage reports
+affirmatively unknown pricing (`cost.source === "unknown"`) and no known cost
+has been seen, the budget fails open with a one-time warning policy event and
+the cycle timeout remains the only backstop. Policy notices reach the agent
+through the runtime: the Claude adapter flushes them as `PostToolUse` hook
+system messages, and the OpenCode adapter prompts the root session (the
+OpenCode server queues prompts sent while the session is busy). Typed abort
+causes map to terminal states: shutdown to `interrupted`, caller cancellation
+to `cancelled`, timeout to `timed_out`, and failed policy aborts to `failed`.
+Runtime adapters report only `completed` or `failed` terminals and do not
+enforce any turn or tool-call budget. `WorkContextTracker` derives
 terminal task context and no-work state from normalized tool and result events
 before projection.
 Projection hooks receive normalized events for the existing status, transcript,
@@ -419,9 +429,9 @@ Vertex is coordinator-managed as `aisdk:file://.../vertex-provider.js`; profiles
 cannot replace its provider package. No singular deployment `provider`, deployment
 `packageLock`, provider `npm`/`options`, or other legacy aliases are accepted.
 
-Execution and pricing pins are independent: the frozen pricing fallback retains
-OpenCode **1.18.35** catalog provenance; it does not select or downgrade CLI
-**2.1.2**. See [pricing provenance](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
+Pricing estimates come from the hand-maintained catalog in
+`coordinator/src/runtimes/opencode/pricing.json`; see
+[cost estimates](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
 
 ## Cycle scheduling and idle state
 
@@ -463,7 +473,7 @@ sleep through one `AbortSignal`.
 
 | Current Python behavior | Coordinator representation |
 |---|---|
-| `label`, workflow, model, `max_turns`, cycle timeout | `RehorRun.label`, `workflowId`, `provider`, and `limits` |
+| `label`, workflow, model, cost budget (`budgetUsd`), cycle timeout | `RehorRun.label`, `workflowId`, `provider`, and `limits` |
 | Instance runtime/provider selection | `RehorRun.runtimeId` and `RehorRun.provider.id` |
 | Dynamic prompt plus optional preflight content | `RehorRun.prompt` plus optional `preflightPayloadRef` for audit linkage |
 | Cycle starts before a task is selected | `RehorRun.task` may be `null` |

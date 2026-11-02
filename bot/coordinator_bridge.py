@@ -152,11 +152,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "model": cycle_model,
         "runtimeId": instance_config.runtime,
         "providerId": instance_config.provider,
-        "maxTurns": (
-            runtime_config.opencode_max_tool_calls
-            if instance_config.runtime == OPENCODE_RUNTIME_ID
-            else runtime_config.max_turns
-        ),
+        "budgetUsd": runtime_config.budget_usd,
         "intervalSeconds": runtime_config.interval,
         "idleIntervalSeconds": runtime_config.idle_interval,
         "cycleTimeoutSeconds": runtime_config.cycle_timeout,
