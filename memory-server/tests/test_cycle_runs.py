@@ -133,6 +133,7 @@ async def test_post_cycle_run_with_transcript(mock_pool):
 async def test_post_cycle_run_transcript_links_to_orphan(mock_pool):
     """When a progress_store record exists, the transcript UPDATE should find and attach to it."""
     transcript_data = b'{"role": "assistant", "content": "hello"}\n'
+    early_start = datetime(2026, 6, 10, 15, 16, 14, tzinfo=UTC)
 
     import zstandard as zstd
 
@@ -144,8 +145,16 @@ async def test_post_cycle_run_transcript_links_to_orphan(mock_pool):
 
     body = {
         "task_id": 42,
-        "cycle_type": "task_work",
+        "cycle_type": "error",
         "instance_id": "test-instance",
+        "started_at": early_start.isoformat(),
+        "finished_at": "2026-06-10T15:26:35+00:00",
+        "tool_calls": 40,
+        "tokens_used": 12000,
+        "progress": {
+            "summary": "Cycle timed out after 1800s",
+            "notes": "Cycle timed out after 1800s",
+        },
         "transcript_b64": base64.b64encode(compressed).decode(),
     }
 
@@ -158,8 +167,18 @@ async def test_post_cycle_run_transcript_links_to_orphan(mock_pool):
     assert data["id"] == 99
     # Only one fetchrow call — the UPDATE succeeded, no INSERT needed
     assert mock_pool.fetchrow.call_count == 1
-    query = mock_pool.fetchrow.call_args[0][0]
+    args = mock_pool.fetchrow.call_args[0]
+    query = args[0]
     assert "UPDATE cycle_runs" in query
+    assert "NULLIF($3, 0)" in query
+    assert "NULLIF($4, 0)" in query
+    assert "$8 < started_at" in query
+    assert "$9::text = 'error'" in query
+    assert "|| COALESCE($10::jsonb" in query
+    # Accurate started_at / cycle_type / progress from the final payload are applied
+    assert args[8] == early_start
+    assert args[9] == "error"
+    assert "timed out" in args[10]
 
 
 @pytest.mark.asyncio
