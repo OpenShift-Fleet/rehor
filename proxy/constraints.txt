@@ -1,0 +1,12 @@
+# Security floors from the November 2026 ACS report. These constrain
+# mcp-atlassian's dependency resolution without adding unused packages.
+anyio>=4.14.2
+authlib>=1.9.1
+certifi>=2026.10.19
+cryptography>=50.0.0
+fastmcp>=3.4.10
+filelock>=4.2.1
+mcp>=1.30.0,<2
+pyjwt>=2.15.0
+python-multipart>=0.0.31
+starlette>=1.3.1
