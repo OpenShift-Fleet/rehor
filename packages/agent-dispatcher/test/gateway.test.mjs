@@ -1,31 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mock } from "node:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createSecureServer } from "node:http2";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import * as realSdk from "@nvidia/openshell-sdk";
 import { readGatewayConfig } from "../dist/gateway-config.js";
 import { createLifecycleLogger } from "../dist/logging.js";
 
-// dist/gateway.js statically imports the SDK, so its functions are replaced
-// with a module mock before the module under test loads. The mock delegates
-// to a per-test override; anything unset falls through to the real SDK, so
-// the client-credentials flow is still exercised against a mocked fetch.
-let sdkOverride;
-mock.module("@nvidia/openshell-sdk", {
-  exports: {
-    clientCredentials: (options) => (sdkOverride?.clientCredentials ?? realSdk.clientCredentials)(options),
-    OpenShellClient: { connect: (options) => (sdkOverride?.connect ?? realSdk.OpenShellClient.connect)(options) },
-  },
-});
-const { connectGateway } = await import("../dist/gateway.js");
+// dist/gateway.js statically imports the SDK, whose functions are intercepted
+// by the module hooks registered through --import (test/register-sdk-hook.mjs);
+// node:test's mock.module cannot provide named ESM exports on Node 22. The
+// interception delegates to a per-test override installed on
+// globalThis.__rehorSdkOverride; anything unset falls through to the real SDK,
+// so the client-credentials flow is still exercised against a mocked fetch.
 const useSdk = (t, implementation) => {
-  sdkOverride = implementation;
-  t.after(() => { sdkOverride = undefined; });
+  globalThis.__rehorSdkOverride = implementation;
+  t.after(() => { globalThis.__rehorSdkOverride = undefined; });
 };
+const { connectGateway } = await import("../dist/gateway.js");
 
 const env = {
   OPENSHELL_GATEWAY_ENDPOINT: "https://gateway.example:8443",

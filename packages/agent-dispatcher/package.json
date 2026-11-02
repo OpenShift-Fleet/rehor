@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --experimental-test-module-mocks --test test/*.test.mjs",
+    "test": "npm run build && node --import ./test/register-sdk-hook.mjs --test test/*.test.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {
