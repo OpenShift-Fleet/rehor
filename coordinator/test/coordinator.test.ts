@@ -339,8 +339,7 @@ describe("coordinator execution", () => {
   it("redacts secrets intersecting the assistant text buffer cap boundary", async () => {
     vi.stubEnv("REVIEW_SECRET", "review-sensitive-value-123456");
     const secret = "review-sensitive-value-123456";
-    const firstDelta =
-      "a".repeat(240) + secret + "b".repeat(2300 - 240 - secret.length);
+    const firstDelta = "a".repeat(240) + secret + "b".repeat(2300 - 240 - secret.length);
     const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
     const result = await executeRun(
       new FakeAgentRuntime({
