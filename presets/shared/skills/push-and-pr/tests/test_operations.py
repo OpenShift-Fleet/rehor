@@ -107,6 +107,34 @@ class TestDetectRepository:
         assert operations.repo_config.repo_type == "gitlab"
         assert operations.repo_config.is_fork is True
 
+    @patch("scripts.push_and_pr_operations.Path.cwd")
+    def test_detect_from_config_gitlab_url_nested_group(self, mock_cwd, operations, temp_dir):
+        """Test detecting GitLab fork with nested-group URLs from project-repos.json."""
+        mock_cwd.return_value = temp_dir / "nested-fork"
+        config_file = temp_dir / "project-repos.json"
+
+        config_data = {
+            "nested-fork": {
+                "type": "gitlab",
+                "url": "https://gitlab.cee.redhat.com/user/nested-fork.git",
+                "upstream": "https://gitlab.cee.redhat.com/group/subgroup/nested-fork.git",
+            }
+        }
+        with open(config_file, "w") as f:
+            json.dump(config_data, f)
+
+        with patch.object(operations, "_run_command") as mock_run:
+            mock_run.return_value = CompletedProcess([], 0, stdout="feature\n", stderr="")
+
+            result = operations.detect_repository()
+
+        assert result.success is True
+        assert operations.repo_config.repo_type == "gitlab"
+        assert operations.repo_config.is_fork is True
+        assert operations.repo_config.upstream == "group/subgroup/nested-fork"
+        assert operations.repo_config.fork == "user/nested-fork"
+        assert operations.repo_config.origin == "user/nested-fork"
+
     def test_detect_from_remotes_github_fork(self, operations):
         """Test detecting GitHub fork from git remotes."""
         remote_output = (
@@ -502,8 +530,8 @@ class TestCreatePR:
         assert "head=main" in create_cmd
         assert "base=main" in create_cmd
 
-    def test_create_gitlab_mr(self, operations):
-        """Test creating GitLab MR via glab api."""
+    def test_create_gitlab_mr_fork(self, operations):
+        """Test creating GitLab MR for fork via glab api."""
         operations.repo_config = RepositoryConfig(
             repo_type="gitlab", is_fork=True, upstream="team/project", fork="user/project", origin="user/project"
         )
@@ -511,7 +539,7 @@ class TestCreatePR:
 
         with patch.object(operations, "_run_command") as mock_run:
             mock_run.side_effect = [
-                CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr=""),
+                CompletedProcess([], 0, stdout='{"default_branch": "main", "id": 987}', stderr=""),
                 CompletedProcess(
                     [],
                     0,
@@ -527,8 +555,47 @@ class TestCreatePR:
         assert result.data["pr_number"] == "42"
 
         assert mock_run.call_count == 2
-        default_branch_cmd = mock_run.call_args_list[0][0][0]
-        assert default_branch_cmd == [
+        lookup_cmd = mock_run.call_args_list[0][0][0]
+        assert lookup_cmd == [
+            "glab",
+            "api",
+            "projects/team%2Fproject",
+            "--hostname",
+            "gitlab.cee.redhat.com",
+        ]
+
+        create_cmd = mock_run.call_args_list[1][0][0]
+        assert create_cmd[0:3] == ["glab", "api", "projects/user%2Fproject/merge_requests"]
+        assert "target_project_id=987" in create_cmd
+        assert "source_branch=feature" in create_cmd
+        assert "target_branch=main" in create_cmd
+        assert "title=Test PR" in create_cmd
+        assert "description=Test description" in create_cmd
+
+    def test_create_gitlab_mr_direct(self, operations):
+        """Test creating GitLab MR for direct push via glab api."""
+        operations.repo_config = RepositoryConfig(repo_type="gitlab", is_fork=False, origin="team/project")
+        operations.current_branch = "feature"
+
+        with patch.object(operations, "_run_command") as mock_run:
+            mock_run.side_effect = [
+                CompletedProcess([], 0, stdout='{"default_branch": "main", "id": 321}', stderr=""),
+                CompletedProcess(
+                    [],
+                    0,
+                    stdout='{"web_url": "https://gitlab.cee.redhat.com/team/project/-/merge_requests/43", "iid": 43}',
+                    stderr="",
+                ),
+            ]
+
+            result = operations.create_pr()
+
+        assert result.success is True
+        assert result.data["pr_number"] == "43"
+
+        assert mock_run.call_count == 2
+        lookup_cmd = mock_run.call_args_list[0][0][0]
+        assert lookup_cmd == [
             "glab",
             "api",
             "projects/team%2Fproject",
@@ -538,10 +605,22 @@ class TestCreatePR:
 
         create_cmd = mock_run.call_args_list[1][0][0]
         assert create_cmd[0:3] == ["glab", "api", "projects/team%2Fproject/merge_requests"]
-        assert "source_branch=feature" in create_cmd
-        assert "target_branch=main" in create_cmd
-        assert "title=Test PR" in create_cmd
-        assert "description=Test description" in create_cmd
+        assert "target_project_id" not in " ".join(create_cmd)
+
+    def test_create_gitlab_mr_fork_missing_project_id(self, operations):
+        """Test creating GitLab fork MR fails when upstream project id is missing."""
+        operations.repo_config = RepositoryConfig(
+            repo_type="gitlab", is_fork=True, upstream="team/project", fork="user/project", origin="user/project"
+        )
+        operations.current_branch = "feature"
+
+        with patch.object(operations, "_run_command") as mock_run:
+            mock_run.return_value = CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr="")
+
+            result = operations.create_pr()
+
+        assert result.success is False
+        assert "project id" in result.message
 
     def test_create_pr_error(self, operations):
         """Test creating PR with error."""
@@ -643,6 +722,18 @@ class TestExtractOwnerRepo:
         url = "https://gitlab.cee.redhat.com/team/project.git"
         result = operations._extract_owner_repo(url)
         assert result == "team/project"
+
+    def test_extract_gitlab_https_nested_group_url(self, operations):
+        """Test extracting full namespace from GitLab HTTPS URL with nested groups."""
+        url = "https://gitlab.cee.redhat.com/group/subgroup/project.git"
+        result = operations._extract_owner_repo(url)
+        assert result == "group/subgroup/project"
+
+    def test_extract_gitlab_ssh_nested_group_url(self, operations):
+        """Test extracting full namespace from GitLab SSH URL with nested groups."""
+        url = "git@gitlab.cee.redhat.com:group/subgroup/project.git"
+        result = operations._extract_owner_repo(url)
+        assert result == "group/subgroup/project"
 
     def test_extract_invalid_url(self, operations):
         """Test extracting owner/repo from invalid URL returns original."""

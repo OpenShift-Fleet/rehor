@@ -228,11 +228,12 @@ class PushAndPROperations:
                 owner_repo = parts[1].replace(".git", "")
                 return owner_repo
         elif url.startswith("http"):
-            # HTTPS format
-            parts = url.split("/")
-            if len(parts) >= 2:
-                owner_repo = "/".join(parts[-2:]).replace(".git", "")
-                return owner_repo
+            # HTTPS format. Preserve the full path after the host so nested
+            # GitLab namespaces (group/subgroup/project) are not truncated.
+            rest = url.split("://", 1)[1]
+            path = rest.split("/", 1)[1] if "/" in rest else ""
+            if path:
+                return path.rstrip("/").replace(".git", "")
 
         return url  # Fallback to original URL
 
@@ -510,27 +511,49 @@ class PushAndPROperations:
 
         `glab mr create` cannot be used: glab is a thin client executing in
         the remote executor container with no access to the sandbox repo.
+
+        For forks the MR is created in the fork (source) project with
+        `target_project_id` pointing at the upstream project, matching where
+        push_branch pushed the branch.
         """
-        target = self.repo_config.upstream if self.repo_config.is_fork else self.repo_config.origin
-        if not target:
-            if self.dry_run:
-                target = "<owner/repo>"
-            else:
-                return OperationResult(False, "Target project not detected")
+        if self.repo_config.is_fork:
+            source = self.repo_config.fork or self.repo_config.origin
+            upstream = self.repo_config.upstream
+            if not source or not upstream:
+                if self.dry_run:
+                    source = source or "<owner/repo>"
+                    upstream = upstream or "<owner/repo>"
+                else:
+                    return OperationResult(False, "Fork and upstream projects required for fork MR workflow")
+        else:
+            source = self.repo_config.origin or self.repo_config.upstream
+            upstream = None
+            if not source:
+                if self.dry_run:
+                    source = "<owner/repo>"
+                else:
+                    return OperationResult(False, "Target project not detected")
 
-        encoded = target.replace("/", "%2F")
-
-        # Resolve default branch for the target ref.
+        # Resolve default branch for the target ref (and the upstream project
+        # id for forks) against the upstream project when forking, the source
+        # project otherwise.
+        target = upstream or source
         branch_result = self._run_command(
-            ["glab", "api", f"projects/{encoded}", "--hostname", "gitlab.cee.redhat.com"],
+            ["glab", "api", f"projects/{target.replace('/', '%2F')}", "--hostname", "gitlab.cee.redhat.com"],
             check=False,
         )
-        base = str(self._stdout_json(branch_result).get("default_branch") or "")
+        payload = self._stdout_json(branch_result)
+        base = str(payload.get("default_branch") or "")
+        upstream_id = payload.get("id")
         if not base and self.dry_run:
             base = "main"
         if not base:
             return OperationResult(False, f"glab api failed to resolve default branch for {target}")
 
+        if upstream and upstream_id is None and not self.dry_run:
+            return OperationResult(False, f"glab api failed to resolve project id for {upstream}")
+
+        encoded = source.replace("/", "%2F")
         cmd = [
             "glab",
             "api",
@@ -545,9 +568,10 @@ class PushAndPROperations:
             f"title={self.title}",
             "-f",
             f"description={self.body}",
-            "--hostname",
-            "gitlab.cee.redhat.com",
         ]
+        if upstream and upstream_id is not None:
+            cmd += ["-f", f"target_project_id={upstream_id}"]
+        cmd += ["--hostname", "gitlab.cee.redhat.com"]
 
         result = self._run_command(cmd, check=False)
 

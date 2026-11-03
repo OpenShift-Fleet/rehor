@@ -223,8 +223,8 @@ class TestGitLabWorkflow:
             CompletedProcess([], 0, stdout="Synced\n", stderr=""),
             # push_branch: git push with glab credential helper
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            # create_pr: default branch lookup
-            CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr=""),
+            # create_pr: default branch lookup (upstream project, incl. id)
+            CompletedProcess([], 0, stdout='{"default_branch": "main", "id": 321}', stderr=""),
             # create_pr: glab api MR create
             CompletedProcess([], 0, stdout=mr_output, stderr=""),
         ]
@@ -244,7 +244,8 @@ class TestGitLabWorkflow:
         mr_create_call = mock_run.call_args_list[5]
         cmd = mr_create_call[0][0]
         assert cmd[0:2] == ["glab", "api"]
-        assert "projects/team%2Fproject/merge_requests" in " ".join(cmd)
+        assert "projects/user%2Fproject/merge_requests" in " ".join(cmd)
+        assert "target_project_id=321" in " ".join(cmd)
         assert "--hostname" in cmd
         assert "gitlab.cee.redhat.com" in cmd
 
