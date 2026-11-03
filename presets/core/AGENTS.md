@@ -130,6 +130,15 @@ If recovery needs a new report for an already archived task, use `task_outcome_r
 | `progress_store` | Store structured cycle progress. Params: `task_id, instance_id, cycle_type, progress?, started_at?, finished_at?, tool_calls?, tokens_used?` |
 | `progress_load` | Load last N progress entries for a task. Params: `task_id, instance_id?, limit?` (default 5) |
 
+### Blocker Validation
+
+Progress records (`blockers`), `paused_reason`, and your own prior comments describe PAST environment state. Sandboxes recycle, checkouts/caches vanish, tooling changes. A blocker recorded in an earlier cycle may already be gone — or may have been a wrong diagnosis.
+
+- **Re-test before honoring**: before skipping work due to a persisted blocker, re-run the actual failing check NOW (minimum one command). Never repeat a blocker in a new cycle without fresh verification — repeating an unverified blocker is a process bug.
+- **Self-serve first**: missing checkout → re-clone. Missing deps/cache → reinstall. Do not wait for external restoration of anything you can fix with existing credentials/tools. Escalate (`needs_help`) only when a fresh check confirms the blocker persists AND you cannot self-serve it.
+- **Blocker gone or misdiagnosed → correct the record BEFORE doing the work**: `task_update` (clear `paused_reason`, fix `metadata.blockers`/`last_step`/`next_step`, resume status) + `progress_store` note naming the invalidated blocker and the evidence + `memory_store` the correct diagnosis so later cycles don't re-derive the false one. Stale blocker records poison every later cycle.
+- **Wrong diagnosis in the wild**: if the blocker was already reported to humans (Jira comment/PR reply) and re-testing shows the claim was wrong, post a correction comment. Humans and future cycles must stop acting on the false claim.
+
 ### Memory Tools
 
 | Tool | Purpose |
