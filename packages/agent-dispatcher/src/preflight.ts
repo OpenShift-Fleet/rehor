@@ -120,6 +120,19 @@ export function createCredentialProvider(config: AuthConfig, overrides: Partial<
   const deps: Dependencies = { http: httpsRequest, now: Date.now, readFile, env: process.env, ...overrides };
   const logger = isolateLifecycleLogger(lifecycle);
   return {
+    /** Mints a credential without the startup endpoint checks; for runtime consumers. */
+    async mint(): Promise<Credential> {
+      // Never propagate HTTP, filesystem, response, or credential contents.
+      const tokenRequest = logger.start("kubernetes.token_request");
+      try {
+        const credential = await mint(checked, deps);
+        tokenRequest.success();
+        return credential;
+      } catch (error) {
+        tokenRequest.failure(failureCategory(error));
+        throw new PreflightError("token-request");
+      }
+    },
     async get(): Promise<Credential> {
       // Never propagate HTTP, filesystem, response, or credential contents.
       let credential: Credential;

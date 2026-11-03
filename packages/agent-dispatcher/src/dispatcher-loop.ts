@@ -13,6 +13,8 @@ export type DispatcherLoopOptions = {
   env?: NodeJS.ProcessEnv;
   /** Sandbox launch for a start decision. Defaults to completing without creating a sandbox. */
   launch?: (profile: AgentProfile, prompt: string) => Promise<SessionCompletion>;
+  /** Mints the per-cycle memory credential forwarded to preflight scripts. */
+  memoryCredential?: () => Promise<string>;
   /** Observes each completed cycle; defaults to a structured stdout event. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
@@ -43,7 +45,7 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
-      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch });
+      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential });
       if (!signal?.aborted) emit(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {

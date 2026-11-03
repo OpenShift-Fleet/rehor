@@ -20,6 +20,12 @@ export type DispatcherCycleOptions = {
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
   launch: (profile: AgentProfile, prompt: string) => Promise<SessionCompletion>;
+  /**
+   * Mints the short-lived memory credential forwarded to preflight scripts as
+   * BOT_MEMORY_TOKEN. Called once per cycle; a minting failure fails every
+   * profile in the cycle rather than silently dropping authentication.
+   */
+  memoryCredential?: () => Promise<string>;
   dependencies?: Partial<DispatcherCycleDependencies>;
   /** Monotonic milliseconds; injectable for tests. */
   now?: () => number;
@@ -64,6 +70,14 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
     prepareRuntime: preparePreflightRuntime,
     ...options.dependencies,
   };
+  // Mint once per cycle so every profile shares one short-lived credential.
+  // null marks a minting failure: fail every profile rather than run unauthenticated.
+  let memoryToken: string | null | undefined;
+  try {
+    memoryToken = options.memoryCredential ? await options.memoryCredential() : undefined;
+  } catch {
+    memoryToken = null;
+  }
   let repositories;
   try {
     repositories = deps.parseRepositories(options.repositoriesJson);
@@ -96,6 +110,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
       const id = agentId(repository.url, profile.name);
       try {
         const status = await (async () => {
+          // Credential minting failure fails the profile rather than running
+          // unauthenticated requests that could masquerade as empty results.
+          if (memoryToken === null) return "error" as const;
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
           if (options.signal?.aborted) return "shutdown" as const;
           let checks = lastChecks.get(options.dispatcher);
@@ -109,7 +126,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           if (last !== undefined && now - last < intervalMs) return "throttled" as const;
           checks.set(id, now);
           const inherited = typeof options.env === "function" ? await options.env(profile) : options.env;
-          const env = { ...inherited, ...profile.preflightEnv };
+          // The instance environment cannot override the minted credential:
+          // secret-named BOT_ variables are rejected during discovery.
+          const env = { ...inherited, ...(memoryToken === undefined ? {} : { BOT_MEMORY_TOKEN: memoryToken }), ...profile.preflightEnv };
           const runtime = await deps.prepareRuntime(profile);
           let decision;
           try {
@@ -117,7 +136,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
               botRoot: runtime.botRoot,
               workflow: profile.workflow,
               instanceDir: profile.instanceDir,
-              preflightDirs: { workflow: profile.workflowPreflightDir, instance: profile.instancePreflightDir },
+              // Scripts and their imports must resolve inside the private
+              // runtime, never the synced checkout.
+              preflightDirs: runtime.preflightDirs,
               env,
               signal: options.signal,
             });

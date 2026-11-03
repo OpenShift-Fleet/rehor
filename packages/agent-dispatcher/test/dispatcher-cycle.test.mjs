@@ -250,3 +250,58 @@ test("checked-in onboarding preflight flows through cycle with hermetic services
   assert.equal(requests.length, 4);
   assert.doesNotMatch(JSON.stringify([started, skipped]), /fixture|Synthetic|REHOR-123|onboard/);
 });
+
+test("memory authorization failures are errors and the minted credential is forwarded", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-auth-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bot = join(root, "dev-bot");
+  const agent = join(root, "instance", "onboard", "agent");
+  const workflow = join(bot, "presets", "workflows", "onboarding", "preflight");
+  const shared = join(bot, "presets", "shared", "preflight");
+  const skills = join(bot, ".claude", "skills");
+  await Promise.all([agent, workflow, shared, skills, join(bot, "data")].map((dir) => mkdir(dir, { recursive: true })));
+  await writeFile(join(agent, "instance.yaml"), "workflow: onboarding\nimage: { repository: registry.example/team/name }\n");
+  const source = fileURLToPath(new URL("../../../", import.meta.url));
+  await Promise.all([
+    copyFile(join(source, "presets/workflows/onboarding/preflight/03-onboarding-jira.py"), join(workflow, "03-onboarding-jira.py")),
+    ...["common.py", "onboarding_preflight.py"].map((name) => copyFile(join(source, "presets/shared/preflight", name), join(shared, name))),
+  ]);
+  // Only requests carrying the minted credential succeed; anything else is 401.
+  const seen = [];
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    if (req.headers.authorization !== "Bearer fixture-token") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end("{}");
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ items: [] }));
+  });
+  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const port = server.address().port;
+  await writeFile(join(skills, "jira_mcp.py"), `def jira_call(name, args):\n    return {'issues': []}\ndef jira_cleanup():\n    pass\n`);
+  let now = 0;
+  const opts = (extra = {}) => options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
+    env: { PATH: process.env.PATH, BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR" },
+    memoryCredential: async () => "fixture-token",
+    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
+    ...extra,
+  });
+  // Authenticated access: the credential is forwarded on every memory request.
+  const authenticated = await runDispatcherCycle(opts());
+  assert.equal(authenticated.repositories[0].profiles[0].status, "skip");
+  assert.ok(seen.length > 0);
+  assert.ok(seen.every((authorization) => authorization === "Bearer fixture-token"));
+  // Without a credential the endpoint rejects the request; the preflight must
+  // fail as an error, never a successful empty result.
+  now = 300_000;
+  const rejected = await runDispatcherCycle(opts({ memoryCredential: undefined, dispatcher: new SessionDispatcher() }));
+  assert.equal(rejected.repositories[0].profiles[0].status, "error");
+  // A minting failure also fails the profile instead of running unauthenticated.
+  now = 600_000;
+  const unminted = await runDispatcherCycle(opts({ memoryCredential: async () => { throw new Error("mint-secret"); }, dispatcher: new SessionDispatcher() }));
+  assert.equal(unminted.repositories[0].profiles[0].status, "error");
+  assert.doesNotMatch(JSON.stringify([authenticated, rejected, unminted]), /fixture-token|mint-secret|127\.0\.0\.1/);
+});

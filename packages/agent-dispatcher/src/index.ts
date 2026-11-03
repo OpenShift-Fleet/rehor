@@ -97,7 +97,13 @@ async function start(): Promise<void> {
     logger.log("ready", "success");
     writeStartupGreeting();
     if (repositoriesJson && gatewayConfig && authConfig && provider) {
-      loopPromise = runDispatcherLoop({ repositoriesJson, signal: stopController.signal });
+      loopPromise = runDispatcherLoop({
+        repositoriesJson,
+        signal: stopController.signal,
+        // Preflight memory requests authenticate with a short-lived minted
+        // credential; it is forwarded per cycle, never via the process env.
+        memoryCredential: async () => (await provider!.mint()).token,
+      });
     }
   }
 }
