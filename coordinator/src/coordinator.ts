@@ -13,6 +13,7 @@ import {
   type ValidatedRehorRun,
   WorkContextTracker,
 } from "./domain";
+import { type Logger, safeText } from "./log";
 import type { AgentRuntime, AgentRuntimeRunContext } from "./ports/agent-runtime";
 import type { CoordinatorProjection } from "./ports/projection";
 import { type CombinedAbortSignals, combineAbortSignals, isRecord } from "./utils";
@@ -31,6 +32,8 @@ export interface CoordinatorOptions {
   /** Aborts the attempt as interrupted, normally for SIGTERM/SIGINT. */
   shutdownSignal?: AbortSignal;
   projection?: CoordinatorProjection;
+  /** Best-effort progress output for accepted normalized runtime events. */
+  logger?: Pick<Logger, "log">;
   /** Legacy clock override; also used for elapsed time when monotonicNow is absent. */
   now?: () => number;
   /** Monotonic clock in milliseconds for duration/timeout accounting. */
@@ -233,6 +236,7 @@ export async function executeRunWithValidatedInput(
           abortState,
           ledger,
           options.projection,
+          options.logger,
           workContext,
           () => acceptingEvents,
         );
@@ -323,10 +327,13 @@ async function consumeEvents(
   abortState: CombinedAbortSignals,
   ledger: EventLedger,
   projection: CoordinatorProjection | undefined,
+  logger: Pick<Logger, "log"> | undefined,
   workContext: WorkContextTracker,
   isAccepting: () => boolean,
 ): Promise<void> {
   const costBudget = new CostBudgetPolicy(run);
+  const childSessionRefs = new Set<string>();
+  const assistantTextBuffer = logger ? new AssistantTextPreviewBuffer(logger) : undefined;
   const acceptedSequences = new Set(ledger.events.map(({ sequence }) => sequence));
   let coordinatorEventOffset = 0;
 
@@ -380,6 +387,14 @@ async function consumeEvents(
       const event = accept(sequencedEvent);
       if (!event) continue;
       workContext.observe(event);
+      if (
+        event.kind === "run" &&
+        event.payload.state === "child_session_started" &&
+        typeof event.runtimeSessionRef === "string"
+      ) {
+        childSessionRefs.add(event.runtimeSessionRef);
+      }
+      logProgress(logger, event, childSessionRefs, assistantTextBuffer);
       await projectEvent(event, run, projection);
 
       if (event.kind === "usage") {
@@ -395,6 +410,165 @@ async function consumeEvents(
     }
   } finally {
     await iterator.return?.();
+  }
+}
+
+const MAX_ASSISTANT_PREVIEW_LENGTH = 300;
+// Streaming deltas are buffered until a redaction-safe boundary so a secret
+// split across deltas cannot evade environment-value and pattern redaction.
+// Text past the cap is dropped, never emitted as a separate mid-part slice,
+// so no raw split point can fall inside a secret and evade whole-value
+// redaction when logged previews are concatenated.
+const MAX_ASSISTANT_TEXT_BUFFER = 16 * 1024;
+
+type ActivityScope = "root" | "subagent";
+
+interface BufferedAssistantText {
+  scope: ActivityScope;
+  text: string;
+  truncated: boolean;
+}
+
+/** Buffers streaming assistant text so previews are only redacted as a whole. */
+class AssistantTextPreviewBuffer {
+  private readonly pending = new Map<string, BufferedAssistantText>();
+  private readonly seenParts = new Set<string>();
+
+  constructor(private readonly logger: Pick<Logger, "log">) {}
+
+  appendDelta(scopeKey: string, scope: ActivityScope, text: string, partId?: string): void {
+    if (partId !== undefined) this.seenParts.add(partId);
+    this.extend(scopeKey, scope, text);
+  }
+
+  appendPart(scopeKey: string, scope: ActivityScope, text: string, partId?: string): void {
+    // Completed-message parts repeat text already streamed for the part.
+    if (partId !== undefined) {
+      if (this.seenParts.has(partId)) return;
+      this.seenParts.add(partId);
+    }
+    this.extend(scopeKey, scope, text);
+  }
+
+  private extend(scopeKey: string, scope: ActivityScope, text: string): void {
+    const current = this.pending.get(scopeKey) ?? { scope, text: "", truncated: false };
+    if (!current.truncated) {
+      const room = MAX_ASSISTANT_TEXT_BUFFER - current.text.length;
+      current.text += text.slice(0, room);
+      current.truncated = text.length > room;
+    }
+    this.pending.set(scopeKey, current);
+  }
+
+  flush(scopeKey: string): void {
+    const buffered = this.pending.get(scopeKey);
+    if (!buffered) return;
+    this.pending.delete(scopeKey);
+    this.emit(buffered.scope, buffered.text, buffered.truncated);
+  }
+
+  flushAll(): void {
+    for (const scopeKey of [...this.pending.keys()]) this.flush(scopeKey);
+  }
+
+  private emit(scope: ActivityScope, text: string, truncated: boolean): void {
+    if (!text) return;
+    const redacted = safeText(text);
+    const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
+    this.logger.log("INFO", "Assistant text", {
+      activity_scope: scope,
+      text_preview: `${preview}${truncated || redacted.length > preview.length ? "…" : ""}`,
+    });
+  }
+}
+
+/** Logs safe, provider-neutral progress without allowing logging to affect a run. */
+function logProgress(
+  logger: Pick<Logger, "log"> | undefined,
+  event: RehorEvent,
+  childSessionRefs: ReadonlySet<string>,
+  textBuffer: AssistantTextPreviewBuffer | undefined,
+): void {
+  if (!logger || !textBuffer) return;
+  try {
+    const scopeKey = event.runtimeSessionRef ?? "";
+    const activityScope: ActivityScope =
+      event.runtimeSessionRef && childSessionRefs.has(event.runtimeSessionRef)
+        ? "subagent"
+        : "root";
+
+    if (event.kind === "terminal") {
+      textBuffer.flushAll();
+      return;
+    }
+
+    if (event.kind === "run") {
+      // Every run state change ends any pending assistant text part.
+      textBuffer.flush(scopeKey);
+      if (event.payload.state === "child_session_started") {
+        logger.log("INFO", "Subagent session started", { activity_scope: "subagent" });
+        return;
+      }
+      if (event.payload.state === "turn_started") {
+        logger.log("INFO", "Turn started", { activity_scope: activityScope });
+      }
+      return;
+    }
+
+    if (event.kind === "model") {
+      const phase = event.payload.phase;
+      if (phase === "reasoning") return;
+
+      if (event.payload.role === "assistant" && typeof event.payload.text === "string") {
+        // Complete assistant messages already carry whole text.
+        textBuffer.flush(scopeKey);
+        const redacted = safeText(event.payload.text);
+        const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
+        logger.log("INFO", "Assistant text", {
+          activity_scope: activityScope,
+          text_preview: `${preview}${redacted.length > preview.length ? "…" : ""}`,
+        });
+        return;
+      }
+      if (phase === "text") {
+        const partId = typeof event.payload.partId === "string" ? event.payload.partId : undefined;
+        // Per-delta redaction would let a secret split across streaming deltas
+        // reach the log, so text is buffered until a redaction-safe boundary.
+        if (typeof event.payload.delta === "string") {
+          textBuffer.appendDelta(scopeKey, activityScope, event.payload.delta, partId);
+        } else if (typeof event.payload.text === "string") {
+          textBuffer.appendPart(scopeKey, activityScope, event.payload.text, partId);
+        }
+      }
+      return;
+    }
+
+    if (event.kind === "tool") {
+      textBuffer.flush(scopeKey);
+      const rawState = event.payload.state;
+      const isError =
+        event.payload.isError === true || rawState === "failed" || rawState === "error";
+      const state = rawState === "started" ? "started" : isError ? "failed" : "completed";
+      const duration = event.payload.durationMs;
+      const rawName =
+        typeof event.payload.name === "string"
+          ? event.payload.name
+          : typeof event.payload.toolName === "string"
+            ? event.payload.toolName
+            : "unknown";
+      logger.log(isError ? "WARNING" : "INFO", isError ? "Tool failed" : `Tool ${state}`, {
+        activity_scope: activityScope,
+        tool_name: safeText(rawName).slice(0, 200),
+        state,
+        ...(typeof duration === "number" && Number.isFinite(duration)
+          ? { duration_ms: duration }
+          : {}),
+        ...(isError ? { failed: true } : {}),
+      });
+      return;
+    }
+  } catch {
+    // Event logging is diagnostic only and must never interrupt execution.
   }
 }
 
