@@ -15,6 +15,14 @@ npm exec nx -- --version
 npm exec nx -- show projects
 ```
 
+`packages/agent-dispatcher` depends on `@nvidia/openshell-sdk`, hosted on GitHub
+Packages. The repository `.npmrc` pins the `@nvidia` scope to
+`npm.pkg.github.com`, so a root-level `npm ci` needs a token with
+`read:packages` for that scope (for example via `NPM_TOKEN` plus an
+`~/.npmrc` entry, or a CI-provided npmrc). Automation that refreshes the root
+`package-lock.json` — dependency-update bots and lockfile-maintaining CI —
+needs the same credentials or its install step fails.
+
 `show projects` reports registered Nx projects. The private root npm manifest
 declares workspaces only for `packages/*`; npm workspaces exist solely to install
 and manage packages under that path. The existing `coordinator/` and

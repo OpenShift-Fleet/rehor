@@ -6,6 +6,8 @@ on:
       - '**.py'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.tekton/platform-frontend-ai-dev-agent-dispatcher-pull-request.yaml'
+      - '.tekton/platform-frontend-ai-dev-agent-dispatcher-push.yaml'
       - '.github/workflows/ruff-format.yml'
   push:
     branches:
@@ -14,6 +16,8 @@ on:
       - '**.py'
       - 'pyproject.toml'
       - 'uv.lock'
+      - '.tekton/platform-frontend-ai-dev-agent-dispatcher-pull-request.yaml'
+      - '.tekton/platform-frontend-ai-dev-agent-dispatcher-push.yaml'
       - '.github/workflows/ruff-format.yml'
 
 permissions:

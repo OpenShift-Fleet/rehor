@@ -13,6 +13,10 @@ RUN go mod download \
 
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
+# Refresh installed RPMs too: the pinned base can contain vulnerable CA/system packages.
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
+    && dnf clean all
+
 # System deps + Python 3.12 + Chromium runtime libraries
 RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
     python3.12 python3.12-pip python3.12-devel \
@@ -61,8 +65,8 @@ RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.12 /usr/bin/python
 
 # Go — multiple versions via GOVERSIONS build arg
-# Default Go is the first version listed. Bot switches with: eval "$(use-go 1.25.13)"
-ARG GOVERSIONS="1.24.13 1.25.13"
+# Default Go is the first version listed. Bot switches with: eval "$(use-go 1.27.3)"
+ARG GOVERSIONS="1.26.10 1.27.3"
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && for v in $GOVERSIONS; do \
          echo "Installing Go $v..." \
@@ -74,7 +78,7 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && ln -s /usr/local/go${DEFAULT} /usr/local/go
 ENV PATH="/usr/local/go/bin:$PATH"
 
-# use-go helper: eval "$(use-go 1.25.13)"
+# use-go helper: eval "$(use-go 1.27.3)"
 RUN printf '#!/bin/bash\nV=${1:?Usage: use-go <version>}\nif [ ! -d "/usr/local/go${V}" ]; then echo "Go $V not installed. Available:" >&2; ls -d /usr/local/go[0-9]* | sed "s|/usr/local/go||" >&2; exit 1; fi\necho "export PATH=/usr/local/go${V}/bin:\${PATH#/usr/local/go*/bin:}"\n' > /usr/local/bin/use-go \
     && chmod +x /usr/local/bin/use-go
 
@@ -125,7 +129,7 @@ RUN chmod +x /usr/local/bin/start-dev-proxy.sh
 RUN npm install -g chrome-devtools-mcp@latest @redhat-cloud-services/hcc-pf-mcp
 
 # uv
-RUN pip3.12 install uv
+RUN pip3.12 install 'uv>=0.13.4'
 
 # mcp-atlassian runs in the proxy container (streamable-http transport).
 # Bot connects via HTTP — no local install needed.
