@@ -61,6 +61,8 @@ services:
       - GCP_REGION=${VERTEX_LOCATION:-us-east5}
       - VERTEX_ALLOWED_MODELS=${VERTEX_ALLOWED_MODELS:-}
       - OPENAI_API_KEY
+      - REGISTRY_REDHAT_USERNAME
+      - REGISTRY_REDHAT_TOKEN
       - OPENAI_ALLOWED_MODELS=${OPENAI_ALLOWED_MODELS:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
@@ -124,6 +126,9 @@ services:
       - CLAUDE_CODE_SKIP_VERTEX_AUTH=true
       # Empty so .env's OPENAI_API_KEY does not leak into the bot.
       - OPENAI_API_KEY=
+      # Registry credentials from .env belong only to the proxy.
+      - REGISTRY_REDHAT_USERNAME=
+      - REGISTRY_REDHAT_TOKEN=
       - ANTHROPIC_VERTEX_BASE_URL=http://proxy:8443
       - ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-dummy-project}
       - CLOUD_ML_REGION=global
