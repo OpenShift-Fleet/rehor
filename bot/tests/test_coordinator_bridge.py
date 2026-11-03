@@ -203,7 +203,7 @@ def test_prepare_bridge_reuses_runner_config_sequence(
     assert result["budgetUsd"] == expected_budget_usd
     assert result["intervalSeconds"] == 300
     assert result["idleIntervalSeconds"] == 60
-    assert result["cycleTimeoutSeconds"] == 1800
+    assert result["cycleTimeoutSeconds"] == 3600
     assert result["idleReminderCooldownSeconds"] == 3600
     assert result["workflow"] == "test-workflow"
     assert result["source"] == "github"

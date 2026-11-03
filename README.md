@@ -321,7 +321,7 @@ This launches Chrome on port 9222 with a separate profile. Edit the script to us
 `intervalSeconds` is the default post-work sleep. Preflight skips use
 `idleIntervalSeconds`; skills can write `data/cycle-sleep.json` to request a
 different delay for the next cycle. `claude.cycleTimeoutSeconds` defaults to
-1800 when omitted.
+3600 when omitted (per-instance config can still override).
 
 MCP servers are configured in `.mcp.json` (project-level). Remote config repos can provide additional MCP servers via `agent/mcp.json`.
 
