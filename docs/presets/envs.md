@@ -50,11 +50,11 @@ nvm use 20        # switch to it
 
 **Path**: `presets/envs/go/`
 
-Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.24.13 and 1.25.13, plus golangci-lint.
+Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.26.10 and 1.27.3, plus golangci-lint.
 
 **What gets installed**:
 - goenv at `/usr/local/goenv`
-- Go 1.24.13 (default) and 1.25.13
+- Go 1.26.10 (default) and 1.27.3
 - golangci-lint v2.13.2
 - `go`, `gofmt`, `golangci-lint` symlinked to `/usr/local/bin/`
 - Shell init via `/etc/profile.d/goenv.sh`

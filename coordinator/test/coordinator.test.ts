@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   type AgentRuntime,
+  type AgentRuntimeRunContext,
   type CoordinatorProjection,
   createLoopSignals,
   executeRun,
   type RehorEvent,
   type RehorRun,
   type RuntimeCapabilities,
+  type Usage,
   type ValidatedRehorRun,
 } from "../src";
 import { FakeAgentRuntime } from "../src/testing/fake-agent-runtime";
@@ -30,7 +32,7 @@ const run: RehorRun = {
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
-  limits: { timeoutMs: 100, maxTurns: 20 },
+  limits: { timeoutMs: 10_000, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 
@@ -96,6 +98,44 @@ function terminal(sequence = 2): RehorEvent {
     kind: "terminal",
     payload: { state: "completed", resultText: "done", turns: 2 },
   });
+}
+
+/** Cumulative same-model usage snapshot, mirroring OpenCode cost reporting. */
+function usage(sequence: number, costUsd: number, extra: Partial<Usage> = {}): RehorEvent {
+  return event({
+    eventId: `usage-${sequence}`,
+    sequence,
+    kind: "usage",
+    payload: {
+      requestedModel: run.provider.requestedModel,
+      modelKey: "vertex/claude-opus-4-6",
+      tokenCounts: { input: 100, output: 20 },
+      partial: false,
+      final: true,
+      estimated: false,
+      incomplete: false,
+      cost: { amount: costUsd, currency: "USD", source: "provider" },
+      ...extra,
+    } as RehorEvent["payload"],
+  });
+}
+
+/** Records coordinator policy notices pushed through the run context. */
+class NoticeCapturingRuntime extends FakeAgentRuntime {
+  readonly notices: string[] = [];
+
+  override run(
+    input: RehorRun,
+    signal: AbortSignal,
+    context?: AgentRuntimeRunContext,
+  ): AsyncIterable<RehorEvent> {
+    if (context) {
+      context.onPolicyNotice = (text: string): void => {
+        this.notices.push(text);
+      };
+    }
+    return super.run(input, signal);
+  }
 }
 
 class HangingRuntime implements AgentRuntime {
@@ -245,7 +285,7 @@ describe("coordinator execution", () => {
 
   it("turns timeout into an interrupted-safe terminal while retaining prior events", async () => {
     const runtime = new HangingRuntime();
-    const result = await executeRun(runtime, { ...run, limits: { timeoutMs: 10, maxTurns: 20 } });
+    const result = await executeRun(runtime, { ...run, limits: { timeoutMs: 10, budgetUsd: 5 } });
 
     expect(result.terminal.payload.state).toBe("timed_out");
     expect(result.events.map(({ kind }) => kind)).toEqual(["run", "terminal"]);
@@ -337,43 +377,95 @@ describe("coordinator execution", () => {
   });
 
   it("sequences coordinator policy events without colliding with out-of-order runtime events", async () => {
-    const toolEvents = ["one", "two", "three"].flatMap((id, index) => {
-      const startedSequence = 2 + index * 2;
-      return [
-        event({
-          eventId: `tool-${id}-started`,
-          sequence: startedSequence,
-          kind: "tool",
-          payload: { state: "started", toolUseId: id, name: "read" },
-        }),
-        event({
-          eventId: `tool-${id}-completed`,
-          sequence: startedSequence + 1,
-          kind: "tool",
-          payload: { state: "completed", toolUseId: id, name: "read" },
-        }),
-      ];
-    });
+    // A usage snapshot at 50% of the budget inserts a coordinator policy event
+    // between runtime events; a later runtime event reusing that sequence must
+    // be bumped instead of rejected.
     const outOfOrder = event({
       eventId: "late-turn-marker",
-      sequence: 6,
+      sequence: 3,
       kind: "run",
       payload: { state: "turn_started" },
     });
     const runtime = new FakeAgentRuntime({
-      events: [event(), ...toolEvents, outOfOrder, terminal(9)],
+      events: [event(), usage(2, 2.5), outOfOrder, terminal(9)],
     });
 
-    const result = await executeRun(runtime, {
-      ...run,
-      limits: { ...run.limits, maxTurns: 4 },
-    });
+    const result = await executeRun(runtime, run);
 
     const sequences = result.events.map((current) => current.sequence);
     expect(new Set(sequences).size).toBe(sequences.length);
     expect(result.events.filter((current) => current.kind === "policy")).toHaveLength(1);
     expect(result.events.some((current) => current.eventId === "late-turn-marker")).toBe(true);
     expect(result.terminal.payload.state).toBe("completed");
+  });
+
+  it("emits cost budget policy events in order and pushes notices to the runtime", async () => {
+    const runtime = new NoticeCapturingRuntime({
+      events: [event(), usage(2, 2.5), usage(3, 3.75), usage(4, 4.5), usage(5, 5), terminal(6)],
+    });
+
+    const result = await executeRun(runtime, run);
+
+    const policyEvents = result.events
+      .filter((current) => current.kind === "policy")
+      .map((current) => current.payload as Record<string, unknown>);
+    expect(policyEvents.map((payload) => payload.state)).toEqual([
+      "info",
+      "warning",
+      "critical",
+      "exhausted",
+    ]);
+    for (const payload of policyEvents) {
+      expect(payload.label).toBe(run.label);
+      expect(payload.budgetUsd).toBe(5);
+    }
+    expect(policyEvents[3]).toMatchObject({ usedUsd: 5, budgetUsd: 5 });
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
+    // The exhausted notice arrives, but the run is not aborted inside the
+    // grace window.
+    expect(runtime.notices).toHaveLength(4);
+    expect(runtime.notices[3]).toContain("COST BUDGET EXHAUSTED");
+  });
+
+  it("aborts with budget_exceeded once spend passes the hard limit", async () => {
+    const runtime = new NoticeCapturingRuntime({
+      events: [event(), usage(2, 5.75), terminal(6)],
+    });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload).toMatchObject({
+      state: "failed",
+      reason: "budget_exceeded",
+    });
+    // Budget aborts are expected failures, not surfaced runtime errors.
+    expect(result.error).toBeUndefined();
+    const policyEvents = result.events.filter((current) => current.kind === "policy");
+    expect(policyEvents).toHaveLength(1);
+    expect((policyEvents[0].payload as Record<string, unknown>).state).toBe("exhausted");
+    expect(runtime.notices[0]).toContain("COST BUDGET EXHAUSTED");
+  });
+
+  it("fails open with a one-time notice when pricing is unknown", async () => {
+    const runtime = new NoticeCapturingRuntime({
+      events: [
+        event(),
+        usage(2, 0, { cost: { amount: 0, currency: "USD", source: "unknown" } }),
+        usage(3, 0, { cost: { amount: 0, currency: "USD", source: "unknown" } }),
+        terminal(4),
+      ],
+    });
+
+    const result = await executeRun(runtime, run);
+
+    expect(result.terminal.payload.state).toBe("completed");
+    expect(result.error).toBeUndefined();
+    const policyEvents = result.events.filter((current) => current.kind === "policy");
+    expect(policyEvents).toHaveLength(1);
+    expect((policyEvents[0].payload as Record<string, unknown>).state).toBe("warning");
+    expect(runtime.notices).toHaveLength(1);
+    expect(runtime.notices[0]).toContain("COST BUDGET INACTIVE");
   });
 
   it("keeps tool context from tool-start order when completion events arrive later", async () => {

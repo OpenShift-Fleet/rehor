@@ -107,29 +107,26 @@ The provider-neutral Rehor contract preserves current Python behavior; its schem
 See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 for invariants, compatibility mapping, and development commands.
 
-### Runtime-specific budgets (REHOR-198)
+### Cycle cost budget (REHOR-211)
 
-Claude and OpenCode use different budget units. Configure them independently in the runner's `config.json`:
+The turn-based budget is replaced by a per-cycle-run USD cost budget, shared by both runtimes. Configure it in the runner's `config.json`:
 
 ```json
 {
-  "claude": { "maxTurns": 100 },
-  "opencode": { "maxToolCalls": 200 }
+  "claude": { "budgetUsd": 5 }
 }
 ```
 
-This fragment shows budget fields only; retain the other runner settings. `Config.opencode_max_tool_calls` defaults to `200` when `opencode.maxToolCalls` is absent. The JSON value must be a positive integer, not a string, boolean, or fractional number.
+This fragment shows the budget field only; retain the other runner settings. `claude.budgetUsd` defaults to `5` when absent and is sent to the coordinator as `limits.budgetUsd` for every runtime.
 
-`REHOR_OPENCODE_MAX_TOOL_CALLS` overrides the JSON/default value when nonempty. It accepts only ASCII decimal digits with a value greater than zero; leading zeros are accepted. Empty means unset. Signs, whitespace, zero, and other formats fail configuration loading. An override does not bypass validation of the JSON value.
+The coordinator observes usage events and emits cost-budget policy notices at 50% (`info`), 75% (`warning`), 90% (`critical`), and 100% (`exhausted`) of the budget, each once. The exhausted notice opens a grace window so the agent can save state via `task_update`; at 115% of the budget the run hard-aborts with terminal `failed` and reason `budget_exceeded`, which is treated as an expected outcome. When usage reports affirmatively unknown pricing (`cost.source === "unknown"`) and no known cost has been recorded, the budget fails open with a one-time warning policy event and the cycle timeout remains the only backstop. The legacy `opencode.maxToolCalls` / `REHOR_OPENCODE_MAX_TOOL_CALLS` settings and `claude.maxTurns` are no longer used by the coordinator; `claude.maxTurns` is still read by the legacy Python direct-agent path (`bot/agent.py`), whose turn hook remains until that path is retired.
 
-The Python bridge still calls the coordinator field `maxTurns`: it carries the OpenCode tool-call budget only for runtime `opencode`, regardless of provider. Runtime `claude` retains `claude.maxTurns`, whose repository default remains `100`.
-
-| Runtime | Budget unit and enforcement |
+| Runtime | Budget enforcement |
 |---------|-----------------------------|
-| Claude Agent SDK | SDK hard limit on agentic roundtrips via `maxTurns` |
-| OpenCode | Coordinator counts successful, unique completed tool operations across root and child sessions, including normalized nested Code Mode calls and successful native fetch rows. Failed calls and visible `execute` containers do not count. After exhaustion, it aborts at the next root model-turn boundary with reason `max_turns`. |
+| Claude Agent SDK | Coordinator cost budget; notices are flushed to the agent as `PostToolUse` hook system messages |
+| OpenCode | Coordinator cost budget; notices are delivered by prompting the root session (the OpenCode server queues prompts sent while the session is busy) |
 
-OpenCode's budget is not an atomic per-operation ceiling: a single Code Mode batch can contain many calls, and child work can continue and overshoot before the next root model turn. The coordinator counts completed operations but does not stop a batch between nested calls when the budget is crossed. Legacy displayed `turns` count completed root assistant messages, not budget consumption, so a `max_turns` result with far fewer displayed turns is possible. Thresholds at 75% and 90% emit policy telemetry; OpenCode receives no injected warning notice. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
+The cost budget is not an atomic per-operation ceiling: a single Code Mode batch or an in-flight model step can push spend past a threshold before the next usage snapshot arrives, and the hard abort lands on the usage event that crosses 115%. Legacy displayed `turns` counts completed root assistant messages, not budget consumption. Threshold events emit policy telemetry (`devbot_cost_budget_event_total`); both runtimes now receive injected warning notices. Neither a warning nor budget exhaustion guarantees a saved checkpoint.
 
 ## OpenCode Server Lifecycle
 
@@ -488,6 +485,7 @@ This is a provider and credential migration, not only a URL change.
 - `OPENAI_ALLOWED_MODELS` or provider-neutral model allowlist.
 - `OPENAI_BASE_URL` with default `https://api.openai.com/v1`.
 - `REHOR_MODEL_PROXY_URL` for the internal gateway and `REHOR_MODEL_PROXY_TOKEN` as the provider client's placeholder API key. The proxy overwrites the latter; NetworkPolicy controls reachability.
+- `REHOR_WORKSPACE_OWNER_UID` set to the image's `/home/botuser/app` owner UID (normally `1000`). OpenShift Sandbox pods run under a random namespace UID, and the coordinator fails every OpenCode run before the first model call with `workspace ownership mismatch` when this override is missing.
 - OpenAI request ID and usage metrics.
 - OpenAI rate-limit and retry handling.
 
@@ -778,30 +776,14 @@ event.
 
 ### OpenCode cost estimates (REHOR-197)
 
-The coordinator bundles a generated, minimal pricing registry in
-`coordinator/src/runtimes/opencode/pricing.json`. Its source is the **baked
-OpenCode 1.18.35 models.dev catalog**, independent of the **2.1.2 execution
-CLI and client**. This historical frozen catalog remains the pricing fallback;
-upgrading execution does not silently change its rates or provenance. The registry
-records the source version, upstream reference, binary SHA-256 and a canonical
-pricing-content SHA-256. No catalog is downloaded at runtime, and instances do
-not maintain their own prices.
+The coordinator bundles a minimal pricing registry in
+`coordinator/src/runtimes/opencode/pricing.json`. It is the fallback when native
+OpenCode events carry no cost; positive native costs from the execution CLI's
+own catalog take precedence and are labelled `native-catalog`. No catalog is
+downloaded at runtime, and instances do not maintain their own prices.
 
-To regenerate, obtain the official pinned OpenCode 1.18.35 executable for your
-platform, then run from the repository root:
-
-```bash
-python3 coordinator/scripts/opencode-pricing.py /path/to/opencode-1.18.35 > /tmp/opencode-pricing.json
-diff -u coordinator/src/runtimes/opencode/pricing.json /tmp/opencode-pricing.json
-```
-
-Review the generated model/rate changes and replace the registry with the reviewed
-output. Formatting differences are harmless; the content hash is independent of
-JSON whitespace. The binary hash is platform-specific. To add a supported model,
-extend the script's explicit model list and regenerate; do not type rates into
-instance configuration. The script runs only `--version` and `models --verbose
---pure`, with empty temporary HOME/XDG directories, no inherited credentials,
-model fetching disabled, and no provider model overlays. It never runs inference.
+To add a supported model, add its rates (USD per million tokens, from
+models.dev) to the registry; do not type rates into instance configuration.
 
 Pricing aliases are centralized in `pricing.ts`: `rehor-openai` and
 `rehor-openai-chat` use canonical `openai` rates; `vertex` uses
@@ -935,7 +917,7 @@ Required evidence before final acceptance:
 - Root/child shell homes and all operational helpers work while private server auth/config/data/DB cannot leak or import ambient credentials. Native JSON/Markdown denies and MCP namespace permissions remain enforced.
 - V2 usage tests cover one assistant per step, ID replacement/deduplication, compaction recovery, corrected model attribution, pending/interrupted steps, and bounded incomplete recovery. Positive native costs remain estimates; incomplete runs retain known subtotals without double counting.
 - External package plugins have a tested V2 implementation; the runner's local shell plugin alone does not establish that contract.
-- Fresh image includes the pinned client/CLI, packaged provider closure, and offline startup checks. Retain pricing tests with catalog provenance `1.18.35`, independently of CLI `2.1.2`.
+- Fresh image includes the pinned client/CLI, packaged provider closure, and offline startup checks.
 
 Native Code Mode bridge and configuration tests, including root/child execution and the final native Effect/fiber-identity fix, have passed. Native environment, credential-isolation, and policy/deny checks have also passed; strict native frontmatter validation is implemented. After the earlier external `www.python.org` DNS failure, the full rebuild succeeded and a fresh **unmounted Linux ARM64 production image**, `rehor200:v2-final`, passed the complete image smoke. This verifies the required active policy plugin, Responses/Chat/Vertex rejection and successful read-tool paths, exact step/cumulative usage, persisted outcomes, and the generated Code Mode bridge through the built runtime/coordinator. Two nested MCP successes count separately, a denied nested call never reaches the server, filtered task results reach work context, and the wrapper consumes no budget unit: budget 3 completes and budget 2 stops at the next root model boundary. This is offline local-image evidence; separately published external-plugin and live deployment acceptance remain rollout gates, not established by these checks.
 
@@ -944,6 +926,7 @@ Native Code Mode bridge and configuration tests, including root/child execution 
 Canary acceptance criteria:
 
 - One ticket completes from preflight through PR.
+- First OpenCode cycle starts without a `workspace ownership mismatch` failure (`REHOR_WORKSPACE_OWNER_UID` configured).
 - Jira, GitHub/GitLab, memory, browser, and Slack paths work.
 - Tool calls execute with equivalent permissions.
 - OpenAI proxy never exposes API key to bot.

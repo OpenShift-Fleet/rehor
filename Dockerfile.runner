@@ -19,7 +19,11 @@ COPY dev-bot/coordinator/ ./
 # The source checkout may carry a host node_modules/ or dist/ directory; never
 # copy those artifacts into the image or let them replace this platform's npm
 # install.
-RUN rm -rf node_modules dist \
+# These shared libraries are copied into the runtime image below; patch them here
+# too so they cannot overwrite updated runtime RPMs with vulnerable base copies.
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
+    && dnf clean all \
+    && rm -rf node_modules dist \
     && npm ci --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
@@ -41,8 +45,15 @@ WORKDIR /build
 COPY dev-bot/proxy/executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
+# Build the pinned kustomize source with the patched Go toolchain, rather than
+# downloading the release binary that still embeds Go 1.22.7.
+RUN CGO_ENABLED=0 GOBIN=/tmp GOTOOLCHAIN=local go install sigs.k8s.io/kustomize/kustomize/v5@v5.7.1
 
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
+
+# Update installed RPMs, including ca-certificates, even with a digest-pinned base.
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
+    && dnf clean all
 
 # Core system deps + Python 3.12 (env-specific deps installed via presets)
 RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
@@ -85,13 +96,10 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && chmod +x /usr/local/bin/tini
 
 # kustomize — needed by konflux-release-data build-single.sh
-RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.7.1/kustomize_v5.7.1_linux_${ARCH}.tar.gz" \
-    | tar -C /usr/local/bin -xzf - \
-    && chmod +x /usr/local/bin/kustomize
+COPY --from=executor-client-builder /tmp/kustomize /usr/local/bin/kustomize
 
 # uv
-RUN pip3.12 install uv
+RUN pip3.12 install 'uv>=0.13.4'
 
 # Non-root user (Claude Code rejects root)
 RUN useradd -m -s /bin/bash botuser
@@ -132,7 +140,7 @@ COPY instance/ /home/botuser/app/instance/
 
 # Env presets — selective install based on instance.yaml envs list
 COPY dev-bot/presets/ presets/
-ARG GOVERSIONS="1.24.13 1.25.13"
+ARG GOVERSIONS="1.26.10 1.27.3"
 ENV GOVERSIONS="${GOVERSIONS}"
 ARG PYTHONVERSIONS="3.12.8"
 ENV PYTHONVERSIONS="${PYTHONVERSIONS}"

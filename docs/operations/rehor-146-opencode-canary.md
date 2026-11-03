@@ -57,7 +57,7 @@ without changing the other.
 
 1. Confirm the target image includes `coordinator/dist/cli.js`, its locked Node
    dependencies including `@opencode/client@2.1.2`, `/usr/local/bin/opencode` from `@opencode/cli@2.1.2`,
-   the native Responses/compatible provider runtimes, `@ai-sdk/google-vertex@4.0.219` for the coordinator-owned Vertex shim, `zstd`, and configured provider proxies. Native OpenAI runtimes require no `packages` entries or separate `@ai-sdk` metadata. Preserve frozen pricing-catalog provenance `1.18.35` separately.
+   the native Responses/compatible provider runtimes, `@ai-sdk/google-vertex@4.0.219` for the coordinator-owned Vertex shim, `zstd`, and configured provider proxies. Native OpenAI runtimes require no `packages` entries or separate `@ai-sdk` metadata.
 2. Confirm the instance has a known-good Claude/Vertex deployment or revision
    available for rollback.
 3. Confirm the instance config contains no API keys. Credentials remain in

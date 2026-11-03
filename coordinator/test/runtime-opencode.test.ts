@@ -14,7 +14,7 @@ import {
   type SessionInfo,
 } from "@opencode/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeRun, LegacyCompatibilityProjection } from "../src";
+import { type AgentRuntimeRunContext, executeRun, LegacyCompatibilityProjection } from "../src";
 import { runtimeErrorDetails } from "../src/diagnostics";
 import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
 import { createStructuredLogger, type Logger } from "../src/log";
@@ -71,7 +71,7 @@ const runtimeRun: RehorRun = {
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   provider: { id: "rehor-openai", requestedModel: "rehor-openai/gpt-5.6-luna" },
-  limits: { timeoutMs: 5000, maxTurns: 10 },
+  limits: { timeoutMs: 5000, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 
@@ -1046,23 +1046,23 @@ describe("OpenCode V2 runtime lifecycle", () => {
     expect(calls.remove[0]?.signal?.aborted).toBe(false);
     expect(calls.stop).toBe(2);
   });
-  it("leaves direct-run timeout and maxTurns enforcement to coordinator", async () => {
+  it("leaves direct-run timeout enforcement to the coordinator", async () => {
     const events: OpenCodeEvent[] = [];
     for (let i = 0; i < 3; i++) events.push(started(`a-${i}`), ended(`a-${i}`));
     events.push(succeeded());
     const result = await run(
       { promptGate: new Promise((resolve) => setTimeout(resolve, 20)), events },
-      { ...runtimeRun, limits: { timeoutMs: 1, maxTurns: 1 } },
+      { ...runtimeRun, limits: { timeoutMs: 1, budgetUsd: 5 } },
     );
     expect(result.events.at(-1)?.payload).toMatchObject({ state: "completed", turns: 3 });
   });
-  it("allows maxTurns-th finished step to reach terminal success", async () => {
+  it("allows a finished step under budget to reach terminal success", async () => {
     const { runtime } = fakeRuntime({
       events: [started(), text("last answer"), ended(), succeeded()],
     });
     const result = await executeRun(runtime, {
       ...runtimeRun,
-      limits: { ...runtimeRun.limits, maxTurns: 1 },
+      limits: { ...runtimeRun.limits, budgetUsd: 5 },
     });
     expect(result.terminal.payload).toMatchObject({
       state: "completed",
@@ -1070,7 +1070,7 @@ describe("OpenCode V2 runtime lifecycle", () => {
       turns: 1,
     });
   });
-  it("records pending usage before next-turn budget abort without allowing another tool", async () => {
+  it("aborts at the usage event crossing the hard limit without consuming further steps", async () => {
     const costs: unknown[] = [];
     const tool = (type: "called" | "success", messageId: string, id: string) =>
       event(`session.tool.${type}`, {
@@ -1107,41 +1107,30 @@ describe("OpenCode V2 runtime lifecycle", () => {
     });
     const result = await executeRun(
       runtime,
-      { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } },
+      { ...runtimeRun, limits: { ...runtimeRun.limits, budgetUsd: 0.6 } },
       { projection },
     );
     expect(result.terminal.payload).toMatchObject({
       state: "failed",
-      reason: "max_turns",
+      reason: "budget_exceeded",
       turns: 2,
     });
     expect(result.error).toBeUndefined();
     expect(costs).toHaveLength(1);
-    expect(costs[0]).toMatchObject({ costUsd: 0.75, inputTokens: 20, costIncomplete: true });
+    expect(costs[0]).toMatchObject({ costUsd: 0.75, inputTokens: 20 });
     const usages = result.events.filter((value) => value.kind === "usage");
-    expect(usages.at(-2)?.payload).toMatchObject({
+    expect(usages.at(-1)?.payload).toMatchObject({
       final: true,
       incomplete: false,
       cost: { amount: 0.75 },
     });
-    const pending = usages.at(-1);
-    expect(pending?.payload).toMatchObject({
-      final: false,
-      partial: true,
-      incomplete: true,
-      tokenCounts: { input: 20, output: 4, reasoning: 2 },
-      cost: { amount: 0.75 },
-    });
-    const pendingModel = result.events.find(
-      (value) => value.kind === "model" && value.payload.messageId === "budget-blocked",
-    );
-    expect(pendingModel).toBeDefined();
-    expect(pending?.parentEventId).toBe(pendingModel?.eventId);
+    const policies = result.events.filter((value) => value.kind === "policy");
+    expect(policies.map((value) => value.payload.state)).toEqual(["exhausted"]);
+    expect(policies[0]?.parentEventId).toBe(usages.at(-1)?.eventId);
     const turns = result.events.filter(
       (value) => value.kind === "run" && value.payload.state === "turn_started",
     );
-    expect(turns).toHaveLength(3);
-    expect(pending?.sequence).toBeLessThan(turns.at(-1)?.sequence ?? 0);
+    expect(turns).toHaveLength(2);
     expect(result.events.map((value) => value.sequence)).toEqual(
       result.events.map((_, index) => index + 1),
     );
@@ -1155,6 +1144,122 @@ describe("OpenCode V2 runtime lifecycle", () => {
     );
     expect(calls.messages).toHaveLength(0);
     expect(calls.interrupt).toHaveLength(1);
+  });
+  it("keeps the grace window working after exhaustion until the hard limit", async () => {
+    const tool = (type: "called" | "success", messageId: string, id: string) =>
+      event(`session.tool.${type}`, {
+        sessionID: ROOT,
+        assistantMessageID: messageId,
+        id,
+        executed: true,
+        ...(type === "called"
+          ? { name: "read", input: { path: "README.md" } }
+          : { content: [{ type: "text", text: "file contents" }] }),
+      });
+    const { runtime } = fakeRuntime({
+      events: [
+        started("priced"),
+        ended("priced", ROOT, 0.25),
+        started("tool-step"),
+        tool("called", "tool-step", "budget-filling-tool"),
+        tool("success", "tool-step", "budget-filling-tool"),
+        ended("tool-step", ROOT, 0.5),
+        started("unrelated", "unrelated-session"),
+        started("budget-blocked"),
+        tool("called", "budget-blocked", "wrap-up-tool"),
+        tool("success", "budget-blocked", "wrap-up-tool"),
+        ended("budget-blocked", ROOT, 999),
+        succeeded(),
+      ],
+    });
+    const result = await executeRun(runtime, {
+      ...runtimeRun,
+      limits: { ...runtimeRun.limits, budgetUsd: 0.7 },
+    });
+
+    // 0.75 of 0.7 crosses 100% (exhausted notice) but not the 115% hard limit,
+    // so the wrap-up step still runs and records its pending usage.
+    const policies = result.events.filter((value) => value.kind === "policy");
+    expect(policies.map((value) => value.payload.state)).toEqual(["exhausted"]);
+    const usages = result.events.filter((value) => value.kind === "usage");
+    const amount = (value: RehorEvent) =>
+      (value.payload as { cost?: { amount?: number } }).cost?.amount;
+    expect(usages.some((value) => amount(value) === 0.75 && value.payload.final === true)).toBe(
+      true,
+    );
+    expect(usages.some((value) => amount(value) === 0.75 && value.payload.final === false)).toBe(
+      true,
+    );
+    expect(
+      result.events
+        .filter((value) => value.kind === "tool")
+        .map((value) => value.payload.toolUseId),
+    ).toEqual(["budget-filling-tool", "budget-filling-tool", "wrap-up-tool", "wrap-up-tool"]);
+    expect(result.terminal.payload).toMatchObject({
+      state: "failed",
+      reason: "budget_exceeded",
+      turns: 3,
+    });
+    expect(result.error).toBeUndefined();
+  });
+  it("delivers policy notices to the root session and never fails the run", async () => {
+    const logs: Array<{ level: string; message: string }> = [];
+    const logger: Logger = {
+      child: () => logger,
+      scope: (_fields, action) => action(),
+      log: (level, message) => {
+        logs.push({ level, message });
+      },
+    };
+    const fake = fakeRuntime({
+      events: [started(), text("hello"), ended(), succeeded()],
+      logger,
+    });
+    const originalPrompt = fake.client.session.prompt.bind(
+      fake.client.session.prompt,
+    ) as unknown as (input: unknown, request?: { signal?: AbortSignal }) => Promise<unknown>;
+    let promptCalls = 0;
+    let noticeInput: unknown;
+    fake.client.session.prompt = (async (input: unknown, request?: { signal?: AbortSignal }) => {
+      promptCalls += 1;
+      // The second prompt is the coordinator policy notice; make it fail.
+      if (promptCalls === 2) {
+        noticeInput = input;
+        throw new Error("notice delivery failed");
+      }
+      return originalPrompt(input, request);
+    }) as typeof fake.client.session.prompt;
+    const context: AgentRuntimeRunContext = {};
+    await fake.runtime.start(new AbortController().signal);
+    const iterator = fake.runtime
+      .run(runtimeRun, new AbortController().signal, context)
+      [Symbol.asyncIterator]();
+    const events: RehorEvent[] = [];
+    await iterator.next(); // run started
+    for (let index = 0; index < 5 && context.onPolicyNotice === undefined; index += 1) {
+      const next = await iterator.next();
+      if (next.done) throw new Error("runtime ended before policy notices were wired");
+      events.push(next.value);
+    }
+    expect(context.onPolicyNotice).toBeDefined();
+
+    context.onPolicyNotice?.("COST BUDGET WARNING: $3.75/5 used.");
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      events.push(next.value);
+    }
+    await waitForCondition(() => promptCalls >= 2);
+
+    expect(promptCalls).toBe(2);
+    expect(noticeInput).toEqual({
+      sessionID: ROOT,
+      text: "COST BUDGET WARNING: $3.75/5 used.",
+    });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
+    expect(logs.some((entry) => entry.message === "OpenCode policy notice delivery failed")).toBe(
+      true,
+    );
   });
   it("reconciles lost prompt response using authoritative V2 messages and outcome", async () => {
     const { calls, events } = await run({

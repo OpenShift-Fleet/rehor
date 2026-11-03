@@ -78,6 +78,6 @@ export function usageCost(
     amount: priceTokens(tokens, price),
     currency: "USD",
     source: "estimated",
-    pricing: `opencode/${catalog.source.version}:${catalog.source.pricingSha256}`,
+    pricing: "opencode/fallback-catalog",
   };
 }

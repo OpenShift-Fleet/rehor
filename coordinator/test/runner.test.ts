@@ -33,7 +33,7 @@ const prepared: PreparedCycleInput = {
     model: "gpt-6-luna",
     runtimeId: "opencode",
     providerId: "rehor-openai",
-    maxTurns: 17,
+    budgetUsd: 5,
     intervalSeconds: 30,
     idleIntervalSeconds: 45,
     cycleTimeoutSeconds: 120,
@@ -117,7 +117,7 @@ describe("production runner boundary", () => {
       workflowId: "jira-sprint",
       runtimeId: "opencode",
       provider: { id: "rehor-openai", requestedModel: "gpt-6-luna" },
-      limits: { timeoutMs: 120_000, maxTurns: 17 },
+      limits: { timeoutMs: 120_000, budgetUsd: 5 },
       worktree: {
         path: "/work/rehor",
         repository: "https://github.com/example/rehor.git",
@@ -283,6 +283,7 @@ describe("production runner boundary", () => {
     [{ state: "completed" }, new Error("projection failed"), 1],
     [{ state: "failed", reason: "max_turns" }, undefined, 0],
     [{ state: "failed", reason: "error_max_turns" }, undefined, 0],
+    [{ state: "failed", reason: "budget_exceeded" }, undefined, 0],
   ])("counts terminal %o with error %o as %i run failures", async (payload, error, failures) => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({

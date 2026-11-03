@@ -105,7 +105,7 @@ export async function prepareCycleInput(
       model: config.model,
       runtimeId: config.runtimeId,
       providerId: config.providerId,
-      maxTurns: config.maxTurns,
+      budgetUsd: config.budgetUsd,
       intervalSeconds: config.intervalSeconds,
       idleIntervalSeconds: config.idleIntervalSeconds,
       cycleTimeoutSeconds: config.cycleTimeoutSeconds,

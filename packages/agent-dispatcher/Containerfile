@@ -1,0 +1,28 @@
+# Agent Dispatcher — minimal TypeScript Node process (REHOR-204)
+#
+# Built by the Konflux platform-frontend-ai-dev-agent-dispatcher component
+# (dockerfile: packages/agent-dispatcher/Containerfile, path-context: ./).
+# The Nx workspace build requires the repository root as build context.
+#
+# The process logs a hello-world line on startup, stays alive as a long-lived
+# process, and exits 0 on SIGTERM/SIGINT. It exposes no HTTP listener, port,
+# or REST API by design.
+
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS builder
+USER 0
+WORKDIR /app
+
+# Root Nx workspace manifest, lockfile, and package configuration first so
+# dependency installation is layer-cached independently of source changes.
+COPY package.json package-lock.json nx.json ./
+COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/tsconfig.json packages/agent-dispatcher/project.json packages/agent-dispatcher/
+RUN npm ci --ignore-scripts
+
+COPY packages/agent-dispatcher/src packages/agent-dispatcher/src
+RUN npx nx build @rehor/agent-dispatcher
+
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
+WORKDIR /app
+COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/dist ./dist
+USER 1001
+CMD ["node", "dist/index.js"]

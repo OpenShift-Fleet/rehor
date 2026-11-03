@@ -22,7 +22,7 @@ const config: ConfigPreparationResult = {
   model: "test-model",
   runtimeId: "claude",
   providerId: "vertex",
-  maxTurns: 10,
+  budgetUsd: 5,
   intervalSeconds: 300,
   idleIntervalSeconds: 300,
   cycleTimeoutSeconds: 1800,
@@ -364,7 +364,7 @@ describe("Python preflight bridge", () => {
         model: "test-model",
         runtimeId: "opencode",
         providerId: "rehor-openai",
-        maxTurns: 10,
+        budgetUsd: 5,
         intervalSeconds: 300,
         idleIntervalSeconds: 300,
         cycleTimeoutSeconds: 1_800,
@@ -395,6 +395,47 @@ describe("Python preflight bridge", () => {
     );
   });
 
+  it("defaults budgetUsd to 5 when config preparation omits it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rehor-python-budget-default-"));
+    const executable = join(root, "bridge-fixture");
+    const response = {
+      protocolVersion: 1,
+      ok: true,
+      result: {
+        model: "test-model",
+        runtimeId: "opencode",
+        providerId: "rehor-openai",
+        intervalSeconds: 300,
+        idleIntervalSeconds: 300,
+        cycleTimeoutSeconds: 1_800,
+        idleReminderCooldownSeconds: 1_728_000,
+        workflow: "test-workflow",
+        source: "test",
+        envs: null,
+        activeEnvs: [],
+        claudeMdStrategy: "append",
+        idleCycleLimit: 0,
+        remoteAgentDir: null,
+        sharedAgentDir: null,
+        claudeMdPath: join(root, "CLAUDE.md"),
+        mcpServers: {},
+        openCodeMcpServers: {},
+        allowedTools: [],
+        optionalMcpServers: [],
+      },
+    };
+    await writeFile(
+      executable,
+      `#!/usr/bin/env node\nprocess.stdin.resume();\nprocess.stdin.on("end", () => process.stdout.write(${JSON.stringify(JSON.stringify(response))}));\n`,
+      { mode: 0o755 },
+    );
+
+    const bridge = new PythonCoordinatorBridge({ executable, cwd: root });
+    const prepared = await bridge.prepareConfig({ scriptDir: root, label: "test-label" });
+
+    expect(prepared.budgetUsd).toBe(5);
+  });
+
   it("parses MCP transports and allowed tools from config preparation", async () => {
     const root = await mkdtemp(join(tmpdir(), "rehor-python-config-"));
     const executable = join(root, "bridge-fixture");
@@ -405,7 +446,7 @@ describe("Python preflight bridge", () => {
         model: "test-model",
         runtimeId: "opencode",
         providerId: "rehor-openai",
-        maxTurns: 10,
+        budgetUsd: 5,
         intervalSeconds: 300,
         idleIntervalSeconds: 300,
         cycleTimeoutSeconds: 1_800,

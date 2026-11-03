@@ -1,7 +1,7 @@
 import { assertTerminalEvent, type RehorEvent, type RehorTerminalEvent } from "../domain/event";
 import type { RehorRun } from "../domain/run";
 import type { TerminalWorkContext } from "../domain/terminal-state";
-import type { Usage } from "../domain/usage";
+import { type Usage, UsageLedger } from "../domain/usage";
 import type {
   CompatibilityWriters,
   CostRecord,
@@ -18,7 +18,7 @@ interface ProjectionState {
   runtimeSessionRef: string | null;
   runtimeReadyObserved: boolean;
   runtimeSessionObserved: boolean;
-  usages: Map<string, Usage>;
+  ledger: UsageLedger;
 }
 
 interface UsageTotals {
@@ -51,7 +51,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
         await observeRuntimeSessionMetric(this.writers.metrics, run);
       }
     }
-    if (event.kind === "usage") this.recordUsage(state, event);
+    if (event.kind === "usage") state.ledger.record(event.payload as Usage);
 
     await this.writers.transcripts?.append({
       runId: run.runId,
@@ -79,7 +79,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     this.completedAttempts.add(key);
     const payload = event.payload;
     const context = payload.context;
-    const totals = aggregateUsage(state.usages, run);
+    const totals = aggregateUsage(state.ledger, run);
     const noWork = payload.noWork === true;
     const isError = payload.state !== "completed";
     const durationMs = payload.durationMs ?? elapsedMs(state.startedAt, event.occurredAt);
@@ -119,7 +119,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       runtimeSessionRef: null,
       runtimeReadyObserved: false,
       runtimeSessionObserved: false,
-      usages: new Map(),
+      ledger: new UsageLedger(),
     };
     this.state.set(key, state);
     return state;
@@ -132,19 +132,9 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       this.completedAttempts.delete(oldest);
     }
   }
-
-  private recordUsage(state: ProjectionState, event: RehorEvent): void {
-    const usage = event.payload as Usage;
-    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
-    const previous = state.usages.get(model);
-    // Legacy snapshots prefer final over partial. OpenCode modelKey snapshots
-    // already include all root/child messages, so a later partial snapshot can
-    // legitimately add a new step/message after an earlier final snapshot.
-    if (usage.modelKey || !previous || usage.final || !previous.final) {
-      state.usages.set(model, usage);
-    }
-  }
 }
+
+const COST_BUDGET_STATES = new Set(["info", "warning", "critical", "exhausted"]);
 
 async function observePolicyMetric(
   writer: CompatibilityWriters["metrics"],
@@ -153,10 +143,10 @@ async function observePolicyMetric(
 ): Promise<void> {
   if (!writer || event.kind !== "policy") return;
   const level = stringPayload(event.payload, "state");
-  if (level !== "warning" && level !== "critical") return;
+  if (level === null || !COST_BUDGET_STATES.has(level)) return;
   await writer.observe({
     type: "counter",
-    name: "devbot_turn_budget_event_total",
+    name: "devbot_cost_budget_event_total",
     value: 1,
     labels: { label: run.label, level },
   });
@@ -418,7 +408,7 @@ async function observeTerminalMetrics(
   for (const point of points) await writer.observe(point);
 }
 
-function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals {
+function aggregateUsage(ledger: UsageLedger, run: RehorRun): UsageTotals {
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
@@ -429,7 +419,7 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
   let costIncomplete = false;
   const modelUsage: Record<string, Record<string, number>> = {};
 
-  for (const usage of usages.values()) {
+  for (const usage of ledger.usages()) {
     const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
     const {
       input = 0,

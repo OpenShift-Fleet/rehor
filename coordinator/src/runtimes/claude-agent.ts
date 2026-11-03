@@ -58,7 +58,8 @@ const CAPABILITIES: RuntimeCapabilities = {
   configVersion: "claude-agent-sdk-options-v1",
   streaming: true,
   interruption: true,
-  enforcesTurnLimit: true,
+  // Turn enforcement is removed; the coordinator cost budget is the backstop.
+  enforcesTurnLimit: false,
   childSessions: true,
   toolSupport: true,
   mcpSupport: true,
@@ -173,6 +174,14 @@ export class ClaudeAgentRuntime implements AgentRuntime {
       );
       const usage = new AssistantUsage();
       const toolStarts = new Map<string, number>();
+      const policyNotices: string[] = [];
+      // The coordinator pushes cost-budget notices here between turns; the
+      // PostToolUse hook flushes the queue into the SDK conversation.
+      if (context) {
+        context.onPolicyNotice = (text: string): void => {
+          policyNotices.push(text);
+        };
+      }
       let sessionRef: string | undefined;
       let turns = 0;
       let terminalEmitted = false;
@@ -266,7 +275,6 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             abortController: controller,
             cwd: input.worktree.path,
             model: input.provider.requestedModel,
-            maxTurns: input.limits.maxTurns,
             permissionMode: runtime.options.permissionMode ?? "acceptEdits",
             settingSources: [...(runtime.options.settingSources ?? ["project"])],
             mcpServers: toSdkMcpServers(runtime.options.mcpServers ?? {}),
@@ -278,7 +286,7 @@ export class ClaudeAgentRuntime implements AgentRuntime {
             ...(runtime.options.additionalDirectories === undefined
               ? {}
               : { additionalDirectories: [...runtime.options.additionalDirectories] }),
-            hooks: createHooks(context, toolStarts),
+            hooks: createHooks(policyNotices, toolStarts),
           },
         });
         state.query = activeQuery;
@@ -384,21 +392,16 @@ export function createClaudeAgentRuntimeFactory(
 }
 
 function createHooks(
-  context: AgentRuntimeRunContext | undefined,
+  policyNotices: string[],
   toolStarts: Map<string, number>,
 ): Record<string, Array<{ hooks: Array<(...args: unknown[]) => Promise<JsonObject>> }>> {
-  const postToolUse = async (...args: unknown[]): Promise<JsonObject> => {
-    const input = asObject(args[0]);
-    const toolUseId = stringValue(args[1]) ?? stringValue(input?.tool_use_id);
-    if (!toolUseId || !context?.onSuccessfulToolCall) return {};
-
-    let systemMessage: string | undefined;
-    context.onSuccessfulToolCall(toolUseId, {
-      deliverNotice(text) {
-        systemMessage = text;
-      },
-    });
-    return systemMessage === undefined ? {} : { systemMessage };
+  // Flush any queued coordinator policy notices (cost budget warnings) after a
+  // tool completes so the model sees them before its next turn.
+  const postToolUse = async (): Promise<JsonObject> => {
+    if (policyNotices.length === 0) return {};
+    const systemMessage = policyNotices.join("\n\n");
+    policyNotices.length = 0;
+    return { systemMessage };
   };
 
   const failedToolCleanup = async (...args: unknown[]): Promise<JsonObject> => {

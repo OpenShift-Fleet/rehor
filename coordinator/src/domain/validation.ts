@@ -54,7 +54,7 @@ export function parseRehorRun(value: unknown): ValidatedRehorRun {
     },
     limits: {
       timeoutMs: run.limits.timeoutMs,
-      maxTurns: run.limits.maxTurns,
+      budgetUsd: run.limits.budgetUsd,
       ...optional("maxOutputTokens", run.limits.maxOutputTokens),
     },
     preflightPayloadRef: run.preflightPayloadRef,

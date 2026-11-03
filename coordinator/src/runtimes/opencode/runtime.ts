@@ -274,6 +274,11 @@ export class OpenCodeRuntime implements AgentRuntime {
       if (!sessionId) throw new Error("OpenCode session creation returned no session");
       active.sessionId = sessionId;
       normalization = createNormalizationContext(sessionId, effectiveModel.value);
+      if (context) {
+        context.onPolicyNotice = (text: string): void => {
+          void this.deliverPolicyNotice(active, text);
+        };
+      }
 
       promptAttempted = true;
       await boundedOperation(
@@ -464,6 +469,31 @@ export class OpenCodeRuntime implements AgentRuntime {
     this.stopped = true;
     this.active?.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
     await this.supervisor.stop();
+  }
+
+  /**
+   * Delivers a coordinator policy notice to the root session. The OpenCode
+   * server queues prompts sent while the session is busy, so issuing a prompt
+   * here is the intended delivery path mid-run. Delivery is fire-and-forget: a
+   * failed notice is logged and must never abort the cycle.
+   */
+  private async deliverPolicyNotice(active: ActiveRun, text: string): Promise<void> {
+    const client = active.client;
+    const sessionId = active.sessionId;
+    if (!client || !sessionId) return;
+    try {
+      await boundedOperation(
+        (requestSignal) =>
+          client.session.prompt({ sessionID: sessionId, text }, { signal: requestSignal }),
+        active.controller.signal,
+        Date.now() + this.requestTimeoutMs,
+        "OpenCode policy notice",
+      );
+    } catch (error) {
+      this.logger.log("WARNING", "OpenCode policy notice delivery failed", {
+        diagnostic: providerDiagnostic(error),
+      });
+    }
   }
 
   private async assertPolicyActive(
