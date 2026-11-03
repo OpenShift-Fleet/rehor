@@ -40,7 +40,8 @@ var (
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
 
-	openaiListen = flag.String("openai-listen", ":8450", "openai-compatible auth proxy listen address")
+	openaiListen   = flag.String("openai-listen", ":8450", "openai-compatible auth proxy listen address")
+	registryListen = flag.String("registry-listen", ":8451", "Red Hat registry pull proxy listen address")
 
 	glitchtipListen = flag.String("glitchtip-listen", ":8448", "glitchtip auth proxy listen address")
 	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
@@ -229,6 +230,9 @@ func main() {
 	if v := os.Getenv("OPENAI_AUTH_LISTEN"); v != "" {
 		*openaiListen = v
 	}
+	if v := os.Getenv("REGISTRY_AUTH_LISTEN"); v != "" {
+		*registryListen = v
+	}
 	if v := os.Getenv("JIRA_AUTH_LISTEN"); v != "" {
 		*jiraListen = v
 	}
@@ -257,6 +261,11 @@ func main() {
 		*metricsListen = v
 	}
 
+	registryHandler, err := executor.NewRegistryProxy(os.Getenv("REGISTRY_REDHAT_USERNAME"), os.Getenv("REGISTRY_REDHAT_TOKEN"))
+	if err != nil {
+		log.Fatalf("registry config: %v", err)
+	}
+
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	metricsSrv := &http.Server{Addr: *metricsListen, Handler: metricsMux}
@@ -282,6 +291,22 @@ func main() {
 		gpgPath:  *gpgPath,
 		timeout:  *timeout,
 	})
+
+	var registrySrv *http.Server
+	if registryHandler != nil {
+		registrySrv = &http.Server{
+			Addr:              *registryListen,
+			Handler:           executor.InstrumentHTTPHandler("registry", registryHandler),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		go func() {
+			log.Printf("registry-auth-proxy listening on %s", *registryListen)
+			if err := registrySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("registry proxy: %v", err)
+			}
+		}()
+	}
 
 	var vertexSrv *http.Server
 	if *vertexProject != "" {
@@ -396,6 +421,9 @@ func main() {
 		}
 		if openaiSrv != nil {
 			openaiSrv.Shutdown(ctx)
+		}
+		if registrySrv != nil {
+			registrySrv.Shutdown(ctx)
 		}
 		if gitAuthSrv != nil {
 			gitAuthSrv.Shutdown(ctx)
