@@ -203,11 +203,21 @@ test("preflight drains SDK token acquisition after RPC abort before reporting fa
 test("partial runtime gateway config fails without exposing values", () => {
   const result = spawnSync(process.execPath, ["dist/index.js"], { cwd: new URL("..", import.meta.url), encoding: "utf8", env: { OPENSHELL_CLIENT_ID: "sensitive-client" }, timeout: 5000 });
   assert.equal(result.status, 1);
-  assert.equal(result.stderr.trim(), "OpenShell gateway configuration failed");
+  assert.equal(result.stderr.trim(), "Agent dispatcher gateway or preflight tooling configuration failed");
   assert.doesNotMatch(result.stderr + result.stdout, /sensitive-client/);
   assert.deepEqual(result.stdout.trim().split("\n").map(JSON.parse).map(({ event, status }) => [event, status]), [
     ["startup", "start"], ["configuration", "start"], ["configuration", "failure"], ["startup", "failure"], ["shutdown", "start"], ["shutdown", "success"],
   ]);
+});
+
+test("configured repository checks require gateway authentication", () => {
+  const result = spawnSync(process.execPath, ["dist/index.js"], {
+    cwd: new URL("..", import.meta.url), encoding: "utf8",
+    env: { AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.invalid/private.git"]' }, timeout: 5000,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trim(), "Agent dispatcher gateway or preflight tooling configuration failed");
+  assert.doesNotMatch(result.stderr + result.stdout, /example\.invalid/);
 });
 
 test("runtime fails closed when real SDK credential preflight fails", () => {
