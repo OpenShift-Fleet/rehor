@@ -27,6 +27,9 @@ services:
       DATABASE_URL: postgresql://bot:bot@postgres:5432/bot_memory
       TRUSTED_BOT_ACCOUNTS: "${TRUSTED_BOT_ACCOUNTS:-}"
       KUBEARCHIVE_TOKEN: "${KUBEARCHIVE_TOKEN:-}"
+      # Registry credentials from .env belong only to the proxy.
+      REGISTRY_REDHAT_USERNAME: ""
+      REGISTRY_REDHAT_TOKEN: ""
     depends_on:
       postgres:
         condition: service_healthy

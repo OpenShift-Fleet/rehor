@@ -49,8 +49,8 @@ the proxy after credential rotation, since environment variables are read at
 startup. Remove both keys and recycle the proxy to disable the listener.
 
 For Compose, set the same two environment variables in `.env`. Compose supplies
-them to the proxy and explicitly clears them in the bot. The endpoint is
-`http://proxy:8451` on the internal network.
+them to the proxy and explicitly clears them in the bot and memory-server.
+The endpoint is `http://proxy:8451` on the internal network.
 
 ## Configure Podman or Skopeo
 
