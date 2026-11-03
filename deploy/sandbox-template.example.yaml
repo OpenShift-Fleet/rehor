@@ -92,6 +92,8 @@ objects:
         # OpenAI-compatible model gateway; used only by coordinator/OpenCode runners.
         - port: 8450
           protocol: TCP
+        - port: 8451
+          protocol: TCP
         - port: 9090
           protocol: TCP
       - to:
