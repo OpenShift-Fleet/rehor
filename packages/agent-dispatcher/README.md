@@ -1,8 +1,31 @@
 # Agent dispatcher
 
-The agent dispatcher is a long-running, non-HTTP Node.js process. On startup it validates memory-server credentials and OpenShell Gateway authentication; once both preflights pass it idles until it receives SIGTERM or SIGINT, then shuts down. It does not create sandboxes, expose ports, or serve requests.
+The agent dispatcher is a long-running, non-HTTP Node.js process. It validates memory-server credentials and OpenShell Gateway authentication on startup. When agent repositories are configured, it runs their work preflights. It exposes no ports or HTTP API.
 
-With no memory or Gateway configuration, the dispatcher starts and idles without running preflights. A partially configured environment fails startup.
+With no memory, Gateway, or agent repository configuration, the dispatcher starts and idles. Partial authentication configuration fails startup.
+
+## Agent work preflights
+
+Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the memory URL must identify the exact `/health` endpoint. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing. Startup fails fast when `python3` or `git` are unavailable; synchronization failures surface only a coarse category (timeout, unavailable, rejected) so Git output and arguments never leak credentials.
+
+Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's scripts — an instance cannot override operational variables the dispatcher forwards itself (`PATH`, proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. For example:
+
+```yaml
+workflow: onboarding
+image:
+  repository: quay.io/example/onboarding-agent
+  tag: v1
+preflight:
+  env:
+    BOT_INSTANCE_ID: onboarding-test
+    BOT_LABEL: onboarding-test
+```
+
+Shared Python workflow scripts and helpers come from the repository's pinned `dev-bot` submodule. Python execution is a stopgap: existing preflight scripts run unchanged during migration, but preflights will move to `.mjs` and only `.mjs` preflights will be supported long-term. The instance's `project-repos.json` is used as-is, never merged with the shared map. Checks run sequentially and at most once per agent every five minutes; the in-memory timer resets on restart. Python preflight failures use the existing aggregation contract: an actionable successful script can produce a start decision despite another script's failure. Missing scripts never produce a start decision.
+
+Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3 and Git from the Node.js base image, but not the Python MCP client (hermetic builds cannot install it over the network) and not the agent executor's `gh`/`glab` shims; skills that import the `mcp` package do not run in deployments until it is vendored. Only trusted repositories should be configured: their scripts execute in the dispatcher.
+
+Sandbox launch is not part of this change: no sandbox is created yet, and a `start` decision completes its session without launching one. Real preflight-output delivery to a sandbox agent runner is tracked separately.
 
 ## Memory credential preflight
 
@@ -109,7 +132,7 @@ tar -cf - package.json package-lock.json nx.json \
     -t registry.example.com/team/agent-dispatcher:dev -
 ```
 
-The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher and production dependencies only. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
+The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3, and Git, all from the base image: hermetic builds perform no network installs. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
 
 ## Development
 
