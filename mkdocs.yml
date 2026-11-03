@@ -75,6 +75,7 @@ nav:
     - Custom Preflight Scripts: presets/custom-preflight.md
   - Operations Runbooks:
     - Operations Overview: operations/index.md
+    - Dashboard Global Search: global-search.md
     - Branch Protection Rollout: operations/rehor-77-branch-protection-rollout.md
     - Container Verification: operations/rehor-107-container-verification.md
     - Container E2E: operations/rehor-62-container-e2e.md

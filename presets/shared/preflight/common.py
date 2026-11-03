@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -34,6 +35,72 @@ def http_get(url, timeout=10):
     except Exception as e:
         print(f"ERR GET {url}: {e}", file=sys.stderr)
         return None
+
+
+_snapshot_disabled_warned = False
+_snapshot_unavailable = False
+
+
+class _NoSnapshotRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def persist_pr_snapshot(task, host, repository, number, data):
+    """Best-effort label cache refresh; never touches task scheduling/progress."""
+    global _snapshot_disabled_warned, _snapshot_unavailable
+    if _snapshot_unavailable:
+        return False
+    secret = os.environ.get("UPLOAD_MEMORY_PASSWORD", "")
+    if not secret:
+        if not _snapshot_disabled_warned:
+            print(
+                "WARN PR/MR label ingestion disabled: UPLOAD_MEMORY_PASSWORD unset; labels may be stale",
+                file=sys.stderr,
+            )
+            _snapshot_disabled_warned = True
+        return False
+    try:
+        labels = data.get("labels")
+        if not isinstance(labels, list):
+            raise ValueError("missing label snapshot")
+        if host == "github":
+            if not all(isinstance(label, dict) and isinstance(label.get("name"), str) for label in labels):
+                raise ValueError("invalid GitHub labels")
+            labels = [label["name"] for label in labels]
+        elif not all(isinstance(label, str) for label in labels):
+            raise ValueError("invalid GitLab labels")
+        payload = {
+            "external_key": task["external_key"],
+            "source_type": task.get("source_type", "jira"),
+            "host": host,
+            "repository": repository,
+            "number": int(number),
+            "url": data.get("url") if host == "github" else data.get("web_url"),
+            "title": data.get("title"),
+            "state": data.get("state"),
+            "is_draft": data.get("isDraft") if host == "github" else data.get("draft", data.get("work_in_progress")),
+            "labels": labels,
+        }
+        request = urllib.request.Request(
+            f"{MEMORY_URL}/api/internal/pull-requests",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {secret}"},
+            method="POST",
+        )
+        opener = urllib.request.build_opener(_NoSnapshotRedirect)
+        with opener.open(request, timeout=2) as response:
+            if response.status != 200 or json.loads(response.read(4096)).get("updated") is not True:
+                raise ValueError("snapshot rejected")
+        return True
+    except Exception as exc:
+        if isinstance(exc, OSError) and (not isinstance(exc, urllib.error.HTTPError) or exc.code >= 500):
+            # Bound outage overhead to one failed request per script process,
+            # rather than timing out once for every tracked PR/MR.
+            _snapshot_unavailable = True
+        # Do not log request headers, credentials, or remote response bodies.
+        print(f"WARN PR/MR label ingestion failed ({type(exc).__name__}); cached labels may be stale", file=sys.stderr)
+        return False
 
 
 def get_tasks():

@@ -261,6 +261,7 @@ describe("native OpenCode V2 config", () => {
     "JIRA_USERNAME",
     "AWS_SECRET_ACCESS_KEY",
     "OPENCODE_CONFIG",
+    "UPLOAD_MEMORY_PASSWORD",
   ])("blocks unapproved provider references %s", (name) => {
     expect(() =>
       renderOpenCodeConfig({

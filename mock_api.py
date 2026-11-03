@@ -27,6 +27,7 @@ from fixtures.api_payloads import (
     TASK_OUTCOME_SUMMARY,
     TASK_OUTCOME_TASKS,
     TASK_OUTCOME_TRENDS,
+    TASK_PR_LABELS,
     TASKS,
 )
 
@@ -81,10 +82,34 @@ class Handler(BaseHTTPRequestHandler):
             status_filter = qs.get("status", [None])[0]
             exclude = qs.get("exclude_status", [None])[0]
             instance_filter = qs.get("instance_id", [None])[0]
-            limit = int(qs.get("limit", ["20"])[0])
-            offset = int(qs.get("offset", ["0"])[0])
+            task_qs = parse_qs(parsed.query, keep_blank_values=True)
+            query = task_qs.get("q", [None])[0]
+            if query is not None:
+                query = query.strip()
+                if not 2 <= len(query) <= 200 or "\x00" in query:
+                    return self.send_json({"error": "q must contain 2 to 200 characters and no NUL"}, 400)
+            try:
+                limit = int(task_qs.get("limit", ["20"])[0])
+                offset = int(task_qs.get("offset", ["0"])[0])
+                if limit < 1 or offset < 0:
+                    raise ValueError
+            except ValueError:
+                return self.send_json({"error": "Invalid pagination"}, 400)
+            if any(
+                value and value not in {"in_progress", "pr_open", "pr_changes", "paused", "done", "archived"}
+                for value in (status_filter, exclude)
+            ):
+                return self.send_json({"error": "unsupported task status"}, 400)
 
             tasks = list(TASKS.values())
+            if "task_id" in qs:
+                try:
+                    task_id = int(qs["task_id"][0])
+                    if not 1 <= task_id <= 2147483647:
+                        raise ValueError
+                except ValueError:
+                    return self.send_json({"error": "task_id must be a positive task ID"}, 400)
+                tasks = [t for t in tasks if t["id"] == task_id]
             if status_filter:
                 tasks = [t for t in tasks if t["status"] == status_filter]
             elif exclude:
@@ -92,6 +117,26 @@ class Handler(BaseHTTPRequestHandler):
             if instance_filter:
                 tasks = [t for t in tasks if t.get("instance_id") == instance_filter]
 
+            if query is not None:
+                if status_filter and exclude:
+                    tasks = [t for t in tasks if t["status"] != exclude]
+                needle = query.lower()
+                label_task_ids = {
+                    task_id
+                    for task_id, labels in TASK_PR_LABELS.items()
+                    if any(needle in label.lower() for label in labels)
+                }
+                tasks = [
+                    t
+                    for t in tasks
+                    if t["id"] in label_task_ids
+                    or any(
+                        needle in (t.get(field) or "").lower()
+                        for field in ("external_key", "title", "summary", "repo", "instance_id")
+                    )
+                ]
+            order_col = "last_addressed" if status_filter == "archived" else "created_at"
+            tasks.sort(key=lambda t: (t.get(order_col) or "", t["id"]), reverse=True)
             total = len(tasks)
             tasks = tasks[offset : offset + limit]
             self.send_json({"items": tasks, "total": total, "limit": limit, "offset": offset})
@@ -280,23 +325,48 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"items": costs, "daily": daily_result})
 
         elif path == "/api/cycle-runs":
-            task_id = qs.get("task_id", [None])[0]
-            instance_id = qs.get("instance_id", [None])[0]
-            cycle_type = qs.get("cycle_type", [None])[0]
-            limit = int(qs.get("limit", ["50"])[0])
-            offset = int(qs.get("offset", ["0"])[0])
+            cycle_qs = parse_qs(parsed.query, keep_blank_values=True)
+            task_id = cycle_qs.get("task_id", [None])[0]
+            run_id = cycle_qs.get("run_id", [None])[0]
+            external_key = cycle_qs.get("external_key", [None])[0]
+            instance_id = cycle_qs.get("instance_id", [None])[0]
+            cycle_type = cycle_qs.get("cycle_type", [None])[0]
+            try:
+                if run_id is not None and not 1 <= int(run_id) <= 2147483647:
+                    raise ValueError
+                if task_id is not None and task_id != "none" and not 1 <= int(task_id) <= 2147483647:
+                    raise ValueError
+            except ValueError:
+                return self.send_json({"error": "Invalid task_id or run_id"}, 400)
+            limit = int(cycle_qs.get("limit", ["50"])[0])
+            offset = int(cycle_qs.get("offset", ["0"])[0])
 
             runs = CYCLE_RUNS[:]
             if task_id is not None:
                 if task_id == "none":
                     runs = [r for r in runs if r["task_id"] is None]
                 else:
-                    runs = [r for r in runs if r["task_id"] == int(task_id)]
+                    task = next((t for t in TASKS.values() if t["id"] == int(task_id)), None)
+                    legacy_key = task.get("external_key") if task and task.get("source_type") == "jira" else None
+                    runs = [
+                        r
+                        for r in runs
+                        if r["task_id"] == int(task_id)
+                        or (
+                            r["task_id"] is None
+                            and legacy_key is not None
+                            and (r.get("progress") or {}).get("external_key") == legacy_key
+                        )
+                    ]
+            if run_id is not None:
+                runs = [r for r in runs if r["id"] == int(run_id)]
+            if external_key is not None:
+                runs = [r for r in runs if ((r.get("progress") or {}).get("external_key") or "") == external_key]
             if instance_id:
                 runs = [r for r in runs if r.get("instance_id") == instance_id]
             if cycle_type:
                 runs = [r for r in runs if r["cycle_type"] == cycle_type]
-
+            runs.sort(key=lambda r: (r.get("created_at", r["started_at"]), r["id"]), reverse=True)
             total = len(runs)
             runs = runs[offset : offset + limit]
             self.send_json({"items": runs, "total": total, "limit": limit, "offset": offset})
@@ -305,8 +375,9 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                pass
-            self.send_json(groups)
+                task_ids = {r["task_id"] for r in CYCLE_RUNS if r.get("instance_id") == instance_id}
+                groups = [g for g in groups if g["task_id"] in task_ids]
+            self.send_json({"items": groups, "total": len(groups)})
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
             run_id = int(path.split("/")[3])
