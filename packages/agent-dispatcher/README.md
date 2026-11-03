@@ -113,8 +113,6 @@ The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher and prod
 
 ## Development
 
-The dispatcher depends on `@nvidia/openshell-sdk`, which is hosted on GitHub Packages. Because the root manifest is an npm workspace, a root-level `npm ci` now authenticates to `npm.pkg.github.com` for the `@nvidia` scope: the repository `.npmrc` pins the registry, and every developer (and automation) installing from the root lockfile needs a token with `read:packages` for that scope — for example via `NPM_TOKEN` and an `~/.npmrc` entry, or a CI-provided npmrc. Dependency-update bots that refresh the root `package-lock.json` need the same credentials or their pull requests will fail to install.
-
 Run the test suite from the repository root:
 
 ```sh
