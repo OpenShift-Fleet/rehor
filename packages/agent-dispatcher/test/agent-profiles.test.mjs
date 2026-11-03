@@ -78,6 +78,14 @@ test("reads non-secret per-agent preflight settings and rejects credential field
   await assert.rejects(discoverAgentProfiles(root));
 });
 
+test("instance preflight settings cannot override operational environment", async (t) => {
+  const { root, config } = await fixture(t);
+  for (const name of ["PATH", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "JIRA_MCP_URL", "EXECUTOR_ADDR"]) {
+    await writeFile(config, `workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    ${name}: attacker-controlled\n`);
+    await assert.rejects(discoverAgentProfiles(root), undefined, `instance env must not accept ${name}`);
+  }
+});
+
 test("rejects missing or malformed workflow and image, traversal, and injection", async (t) => {
   const { root, config } = await fixture(t);
   const image = "image: { repository: registry.example/team/name }\n";

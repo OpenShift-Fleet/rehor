@@ -123,7 +123,7 @@ test("sync snapshots default HEAD and pinned submodules, reuses intact checkouts
   run(parent, "add", ".gitmodules");
   run(parent, "commit", "-m", "broken submodule");
   run(parent, "push", join(root, "onboarding.git"), "main");
-  await assert.rejects(sync(), (error) => error.message === "Git repository synchronization failed" && !error.message.includes("missing-private"));
+  await assert.rejects(sync(), (error) => error.message === "Git repository synchronization failed (rejected)" && !error.message.includes("missing-private"));
   assert.equal(await readFile(join(stateDir, "current.json"), "utf8"), stateBefore);
   assert.equal(await readFile(join(repaired.path, "config"), "utf8"), "second\n");
   assert.equal((await readdir(stateDir)).filter((name) => name.startsWith("snapshot-")).length, 3);

@@ -26,7 +26,8 @@ const gitTimeoutMs: Record<string, number> = {
 };
 
 // Never expose Git's stdout/stderr or its argument list in an error: Git may
-// include private repository URLs or credentials supplied by helpers.
+// include private repository URLs or credentials supplied by helpers. A coarse
+// category (timeout / unavailable / rejected) stays safe to surface.
 async function git(args: string[], cwd?: string, signal?: AbortSignal): Promise<string> {
   const kind = args[0] === "clone" || args[0] === "ls-remote" ? args[0] : args[0] === "submodule" ? "submodule" : "other";
   try {
@@ -39,8 +40,12 @@ async function git(args: string[], cwd?: string, signal?: AbortSignal): Promise<
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
     return result.stdout;
-  } catch {
-    throw new Error("Git repository synchronization failed");
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals };
+    const category = failure.code === "ENOENT" ? "git unavailable"
+      : failure.killed || failure.signal ? "timed out or cancelled"
+      : "rejected";
+    throw new Error(`Git repository synchronization failed (${category})`);
   }
 }
 

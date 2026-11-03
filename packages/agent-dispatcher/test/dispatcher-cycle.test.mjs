@@ -70,13 +70,14 @@ test("sequential preflights, parallel sessions, busy check and stable unique ide
     await waiting.promise;
     return "gone";
   }, dependencies: {
-    prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
+    prepareRuntime: async (p) => ({ botRoot: p.botRoot, preflightDirs: { workflow: `${p.botRoot}/runtime-preflight` }, dispose: async () => {} }),
     syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
     discoverProfiles: async (root) => [profile("same", root)],
-    preflight: async ({ botRoot, workflow, instanceDir, env }) => {
+    preflight: async ({ botRoot, workflow, instanceDir, env, preflightDirs }) => {
       events.push(`preflight:${botRoot}`);
       assert.equal(workflow, "same");
       assert.equal(instanceDir, `${botRoot}/same`);
+      assert.deepEqual(preflightDirs, { workflow: `${botRoot}/runtime-preflight` });
       assert.deepEqual(env, { BOT_INSTANCE_ID: "secret-instance" });
       return start(botRoot);
     },

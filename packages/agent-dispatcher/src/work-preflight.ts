@@ -2,6 +2,45 @@ import { spawn } from "node:child_process";
 import { readdir, stat, unlink } from "node:fs/promises";
 import { basename, delimiter, join, resolve } from "node:path";
 
+/** Fail fast when the stopgap Python preflights cannot run at all: without
+ * this check a missing interpreter degrades into permanent, undiagnosable
+ * per-script "could not be executed" errors. Git is required for config
+ * repository synchronization. */
+export async function verifyPreflightTools(): Promise<void> {
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn("python3", ["-c", "import sys, urllib.request, json; sys.exit(0)"], { stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error("python3 check timed out"));
+    }, 30_000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      rejectPromise(new Error("python3 is not available"));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error("python3 is not functional"));
+    });
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn("git", ["--version"], { stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error("git check timed out"));
+    }, 30_000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      rejectPromise(new Error("git is not available"));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error("git is not functional"));
+    });
+  });
+}
+
 export type WorkPreflightScriptResult = {
   name: string;
   status: "start" | "skip" | "error";
@@ -17,7 +56,7 @@ export interface WorkPreflightOptions {
   botRoot: string;
   workflow: string;
   instanceDir?: string;
-  /** Pre-validated preflight directories from agent discovery; skips path re-resolution. */
+  /** Pre-validated preflight directories (prefer the private runtime copies); skips path re-resolution. */
   preflightDirs?: { workflow?: string; instance?: string };
   /** Defaults to the parent environment, as in the Python runner. */
   env?: NodeJS.ProcessEnv;

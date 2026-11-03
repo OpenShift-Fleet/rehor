@@ -5,6 +5,7 @@ import { connectGateway } from "./gateway.js";
 import { createLifecycleLogger, writeStartupGreeting } from "./logging.js";
 import { parseConfigRepositories } from "./config-repositories.js";
 import { runDispatcherLoop } from "./dispatcher-loop.js";
+import { verifyPreflightTools } from "./work-preflight.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
@@ -63,11 +64,15 @@ async function start(): Promise<void> {
     gatewayConfig = readGatewayConfig(process.env);
     if (repositoriesJson !== undefined) {
       if (!gatewayConfig || !authConfig || !provider || !parseConfigRepositories(repositoriesJson).length) throw new Error();
+      // Work preflights execute Python from the base image; config repository
+      // synchronization needs Git. Fail startup instead of degrading into
+      // undiagnosable per-cycle errors.
+      await verifyPreflightTools();
     }
   } catch {
     configuration.failure("configuration");
     startup.failure("configuration");
-    fail("OpenShell gateway configuration failed");
+    fail("Agent dispatcher gateway or preflight tooling configuration failed");
     return;
   }
   configuration.success();
