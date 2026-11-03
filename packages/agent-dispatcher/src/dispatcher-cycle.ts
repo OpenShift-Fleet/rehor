@@ -5,7 +5,6 @@ import { parseConfigRepositories, syncConfigRepositories } from "./config-reposi
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
 import { runWorkPreflight } from "./work-preflight.js";
 import { preparePreflightRuntime } from "./preflight-runtime.js";
-
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
   syncRepositories: typeof syncConfigRepositories;
@@ -39,16 +38,11 @@ export type DispatcherCycleResult =
       | { index: number; status: "processed"; profiles: CycleProfileStatus[] }
     > };
 
-// The runner uses a shared state file under botRoot. Serialize preflight and
-// admission across overlapping cycles, including cycles with different dispatchers.
-let previousPreflight: Promise<void> = Promise.resolve();
+// Per-agent check cooldowns. Sessions and preflights run per agent; each
+// agent's private runtime state (preparePreflightRuntime) means one agent's
+// preflight never blocks another's.
 const lastChecks = new WeakMap<SessionDispatcher, Map<string, number>>();
 const intervalMs = 5 * 60_000;
-function serializePreflight<T>(work: () => Promise<T>): Promise<T> {
-  const next = previousPreflight.then(work);
-  previousPreflight = next.then(() => {}, () => {});
-  return next;
-}
 
 /** Stable, opaque ID; length-safe encoding avoids repository/profile collisions. */
 function agentId(repositoryUrl: string, profileName: string): string {
@@ -101,7 +95,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
       if (options.signal?.aborted) break;
       const id = agentId(repository.url, profile.name);
       try {
-        const status = await serializePreflight(async () => {
+        const status = await (async () => {
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
           if (options.signal?.aborted) return "shutdown" as const;
           let checks = lastChecks.get(options.dispatcher);
@@ -123,6 +117,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
               botRoot: runtime.botRoot,
               workflow: profile.workflow,
               instanceDir: profile.instanceDir,
+              preflightDirs: { workflow: profile.workflowPreflightDir, instance: profile.instancePreflightDir },
               env,
               signal: options.signal,
             });
@@ -136,7 +131,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             void dispatched.completion.catch(() => {});
           }
           return dispatched.status;
-        });
+        })();
         profileResults.push({ agentId: id, status });
       } catch {
         profileResults.push({ agentId: id, status: "error" });

@@ -97,7 +97,7 @@ test("sequential preflights, parallel sessions, busy check and stable unique ide
   await dispatcher.drain();
 });
 
-test("overlapping cycles serialize preflight and check reservation before repeating it", async () => {
+test("overlapping cycles do not repeat a preflight within the cooldown", async () => {
   const waiting = deferred();
   const session = deferred();
   const entered = deferred();
@@ -120,7 +120,8 @@ test("overlapping cycles serialize preflight and check reservation before repeat
   waiting.resolve();
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a.repositories[0].profiles[0].status, "started");
-  assert.equal(b.repositories[0].profiles[0].status, "busy");
+  // The second cycle hits the five-minute cooldown rather than repeating the check.
+  assert.equal(b.repositories[0].profiles[0].status, "throttled");
   assert.equal(calls, 1);
   session.resolve();
   await dispatcher.drain();

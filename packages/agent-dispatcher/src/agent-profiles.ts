@@ -1,6 +1,7 @@
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { isForwardedPreflightVariable } from "./preflight-env.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
 
@@ -99,7 +100,7 @@ function preflightEnvironment(value: unknown): Record<string, string> {
   }
   const env: Record<string, string> = {};
   for (const [name, setting] of Object.entries(value.env)) {
-    if (!/^BOT_[A-Z0-9_]+$/.test(name) || /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(name) || typeof setting !== "string" || !setting) {
+    if (!isForwardedPreflightVariable(name) || typeof setting !== "string" || !setting) {
       throw new Error("Invalid preflight environment");
     }
     env[name] = setting;

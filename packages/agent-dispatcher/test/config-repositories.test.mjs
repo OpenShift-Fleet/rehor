@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,6 +24,12 @@ test("repository list rejects credentials, ambiguous names and unsafe URL forms 
   assert.deepEqual(parseConfigRepositories('["https://example.com/team/onboarding.git"]'), [
     { name: "onboarding", url: "https://example.com/team/onboarding.git" },
   ]);
+  // SSH URLs commonly carry a username; only credentials are rejected.
+  assert.deepEqual(parseConfigRepositories('["ssh://git@github.com/team/onboarding.git"]'), [
+    { name: "onboarding", url: "ssh://git@github.com/team/onboarding.git" },
+  ]);
+  assert.throws(() => parseConfigRepositories('["ssh://git:secret@github.com/team/onboarding.git"]'));
+  assert.throws(() => parseConfigRepositories('["https://git@github.com/team/onboarding.git"]'));
 });
 
 test("sync snapshots default HEAD and pinned submodules, reuses intact checkouts and preserves last good on failure", async (t) => {
@@ -120,5 +126,20 @@ test("sync snapshots default HEAD and pinned submodules, reuses intact checkouts
   await assert.rejects(sync(), (error) => error.message === "Git repository synchronization failed" && !error.message.includes("missing-private"));
   assert.equal(await readFile(join(stateDir, "current.json"), "utf8"), stateBefore);
   assert.equal(await readFile(join(repaired.path, "config"), "utf8"), "second\n");
+  assert.equal((await readdir(stateDir)).filter((name) => name.startsWith("snapshot-")).length, 3);
+
+  // Superseded snapshots older than the grace period are pruned on the next
+  // publish; recent ones are kept for in-flight consumers.
+  const stale = new Date(Date.now() - 2 * 60 * 60_000);
+  await utimes(restored.path, stale, stale);
+  run(parent, "config", "-f", ".gitmodules", "submodule.dev-bot.url", "https://fixture.invalid/child.git");
+  run(parent, "add", ".gitmodules");
+  run(parent, "commit", "-m", "restore submodule");
+  run(parent, "push", join(root, "onboarding.git"), "main");
+  const fourth = await sync();
+  assert.notEqual(fourth.path, repaired.path);
+  await assert.rejects(access(restored.path));
+  await access(second.path);
+  await access(repaired.path);
   assert.equal((await readdir(stateDir)).filter((name) => name.startsWith("snapshot-")).length, 3);
 });

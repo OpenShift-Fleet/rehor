@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -18,15 +18,24 @@ export interface ConfigRepositoryCheckout {
 const execFileAsync = promisify(execFile);
 const pending = new Map<string, Promise<unknown>>();
 
+/** Operation deadlines: a hung Git child must not block the whole cycle. */
+const gitTimeoutMs: Record<string, number> = {
+  "ls-remote": 60_000,
+  clone: 900_000,
+  submodule: 900_000,
+};
+
 // Never expose Git's stdout/stderr or its argument list in an error: Git may
 // include private repository URLs or credentials supplied by helpers.
 async function git(args: string[], cwd?: string, signal?: AbortSignal): Promise<string> {
+  const kind = args[0] === "clone" || args[0] === "ls-remote" ? args[0] : args[0] === "submodule" ? "submodule" : "other";
   try {
     const result = await execFileAsync("git", args, {
       cwd,
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
       signal,
+      timeout: gitTimeoutMs[kind] ?? 60_000,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
     });
     return result.stdout;
@@ -45,8 +54,9 @@ function repository(url: unknown): ConfigRepository {
   } catch {
     throw new Error("Invalid configuration repository URL");
   }
-  if (!["https:", "ssh:"].includes(parsed.protocol) || !parsed.hostname ||
-      parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (!["https:", "ssh:"].includes(parsed.protocol) || !parsed.hostname
+      || parsed.password || parsed.search || parsed.hash
+      || (parsed.protocol === "https:" && parsed.username)) {
     throw new Error("Invalid configuration repository URL");
   }
   const name = basename(parsed.pathname.replace(/\/+$/, "")).replace(/\.git$/, "");
@@ -85,6 +95,26 @@ async function intact(path: string, revision: string, signal?: AbortSignal): Pro
   }
 }
 
+// Superseded snapshots are kept for a grace period so in-flight consumers
+// (a cycle still reading an older checkout) finish safely.
+const pruneAgeMs = 60 * 60_000;
+
+/** Best-effort removal of superseded snapshots older than the grace period. */
+async function prune(directory: string, current: string): Promise<void> {
+  try {
+    for (const name of await readdir(directory)) {
+      if (!name.startsWith("snapshot-") || name === current) continue;
+      const path = join(directory, name);
+      try {
+        const info = await stat(path);
+        if (info.isDirectory() && Date.now() - info.mtimeMs > pruneAgeMs) {
+          await rm(path, { recursive: true, force: true });
+        }
+      } catch { /* Best effort. */ }
+    }
+  } catch { /* Best effort. */ }
+}
+
 async function syncOne(root: string, item: ConfigRepository, signal?: AbortSignal): Promise<ConfigRepositoryCheckout> {
   const key = createHash("sha256").update(item.url).digest("hex");
   const directory = join(root, `${item.name}-${key}`);
@@ -99,7 +129,10 @@ async function syncOne(root: string, item: ConfigRepository, signal?: AbortSigna
     if (typeof state === "object" && state !== null && "revision" in state && "snapshot" in state &&
         state.revision === revision && typeof state.snapshot === "string" && /^snapshot-[a-zA-Z0-9]+$/.test(state.snapshot)) {
       const path = join(directory, state.snapshot);
-      if (await intact(path, revision, signal)) return { name: item.name, revision, path };
+      if (await intact(path, revision, signal)) {
+        await prune(directory, state.snapshot);
+        return { name: item.name, revision, path };
+      }
     }
   } catch {
     // Missing or invalid state is repaired by creating a new snapshot.
@@ -117,6 +150,7 @@ async function syncOne(root: string, item: ConfigRepository, signal?: AbortSigna
     await writeFile(temporaryState, JSON.stringify({ revision, snapshot: basename(path) }), { flag: "wx" });
     await rename(temporaryState, statePath);
     published = true;
+    await prune(directory, basename(path));
     return { name: item.name, revision, path };
   } finally {
     if (temporaryState) await rm(temporaryState, { force: true });

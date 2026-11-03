@@ -17,6 +17,8 @@ export interface WorkPreflightOptions {
   botRoot: string;
   workflow: string;
   instanceDir?: string;
+  /** Pre-validated preflight directories from agent discovery; skips path re-resolution. */
+  preflightDirs?: { workflow?: string; instance?: string };
   /** Defaults to the parent environment, as in the Python runner. */
   env?: NodeJS.ProcessEnv;
   /** Per-script deadline and per-stream output cap. Defaults: 120 seconds and 1 MiB. */
@@ -138,10 +140,12 @@ export async function runWorkPreflight(options: WorkPreflightOptions): Promise<W
   const workflowDir = options.workflow.startsWith("./")
     ? resolve(instance!, options.workflow.slice(2))
     : resolve(root, "presets", "workflows", options.workflow);
+  const workflowPreflight = options.preflightDirs?.workflow ?? join(workflowDir, "preflight");
+  const instancePreflight = options.preflightDirs?.instance ?? (instance ? join(instance, "preflight") : undefined);
   let scripts: string[];
   try {
-    scripts = await listScripts(join(workflowDir, "preflight"));
-    if (instance) scripts.push(...await listScripts(join(instance, "preflight")));
+    scripts = await listScripts(workflowPreflight);
+    if (instancePreflight) scripts.push(...await listScripts(instancePreflight));
   } catch {
     return { action: "error", transcript: "Preflight discovery failed", scripts: [] };
   }
