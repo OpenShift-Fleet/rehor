@@ -8,7 +8,7 @@ With no memory, Gateway, or agent repository configuration, the dispatcher start
 
 Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the memory URL must identify the exact `/health` endpoint. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing.
 
-Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's scripts; credentials belong in runtime secret mechanisms, not the repository. For example:
+Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Non-secret forwarded settings (see below) under `preflight.env` are passed to that agent's scripts; credentials belong in runtime secret mechanisms, not the repository. For example:
 
 ```yaml
 workflow: onboarding
@@ -23,7 +23,7 @@ preflight:
 
 Shared Python workflow scripts and helpers come from the repository's pinned `dev-bot` submodule. Python execution is a stopgap: existing preflight scripts run unchanged during migration, but preflights will move to `.mjs` and only `.mjs` preflights will be supported long-term. The instance's `project-repos.json` is used as-is, never merged with the shared map. Checks run sequentially and at most once per agent every five minutes; the in-memory timer resets on restart. Python preflight failures use the existing aggregation contract: an actionable successful script can produce a start decision despite another script's failure. Missing scripts never produce a start decision.
 
-Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. Supply service endpoints and any required executor integration separately. The image includes Python and the MCP client, but not the agent executor's `gh`/`glab` shims. Only trusted repositories should be configured: their scripts execute in the dispatcher.
+Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. Supply service endpoints and any required executor integration separately. The image includes Python 3 and Git from the Node.js base image, but not the Python MCP client (hermetic builds cannot install it over the network) and not the agent executor's `gh`/`glab` shims; skills that import the `mcp` package do not run in deployments until it is vendored. Only trusted repositories should be configured: their scripts execute in the dispatcher.
 
 Sandbox launch is not part of this change: no sandbox is created yet, and a `start` decision completes its session without launching one. Real preflight-output delivery to a sandbox agent runner is tracked separately.
 
@@ -132,7 +132,7 @@ tar -cf - package.json package-lock.json nx.json \
     -t registry.example.com/team/agent-dispatcher:dev -
 ```
 
-The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3.12, the Python MCP client, and Git. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
+The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3, and Git, all from the base image: hermetic builds perform no network installs. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
 
 ## Development
 

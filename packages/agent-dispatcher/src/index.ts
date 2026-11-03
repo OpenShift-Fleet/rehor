@@ -3,12 +3,8 @@ import { createCredentialProvider, preflightFailureMessage } from "./preflight.j
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
 import { createLifecycleLogger, writeStartupGreeting } from "./logging.js";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { setTimeout as sleep } from "node:timers/promises";
 import { parseConfigRepositories } from "./config-repositories.js";
-import { runDispatcherCycle } from "./dispatcher-cycle.js";
-import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
+import { runDispatcherLoop } from "./dispatcher-loop.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
@@ -84,9 +80,12 @@ async function start(): Promise<void> {
     return;
   }
   if (shuttingDown) return;
-  let gateway: Awaited<ReturnType<typeof connectGateway>> | undefined;
   try {
-    if (gatewayConfig) gateway = await connectGateway(gatewayConfig, logger, stopController.signal);
+    // Authentication only: connectGateway verifies the gateway and discards
+    // its client. The preflight loop must depend on the configuration objects,
+    // never on a client value, so it starts exactly when repositories,
+    // memory and gateway are all configured and authenticated.
+    if (gatewayConfig) await connectGateway(gatewayConfig, logger, stopController.signal);
   } catch {
     if (shuttingDown) return;
     startup.failure("internal");
@@ -97,40 +96,8 @@ async function start(): Promise<void> {
     startup.success();
     logger.log("ready", "success");
     writeStartupGreeting();
-    if (repositoriesJson && gateway && authConfig && provider) {
-      loopPromise = runLoop(repositoriesJson);
-    }
-  }
-}
-
-/** Forward only non-secret settings needed by legacy preflights. */
-function preflightEnvironment(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    if (value !== undefined && (name === "PATH" || name === "JIRA_MCP_URL" || name === "EXECUTOR_ADDR" || /^(?:HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy)$/.test(name) || (/^BOT_[A-Z0-9_]+$/.test(name) && !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(name)))) env[name] = value;
-  }
-  return env;
-}
-
-async function runLoop(repositoriesJson: string): Promise<void> {
-  const sessions = new SessionDispatcher();
-  const signal = stopController.signal;
-  const cacheRoot = process.env.AGENT_DISPATCHER_CONFIG_DIR || join(tmpdir(), "rehor-agent-dispatcher");
-  while (!signal.aborted) {
-    try {
-      const result = await runDispatcherCycle({
-        repositoriesJson, cacheRoot, env: preflightEnvironment(), dispatcher: sessions, signal,
-        // Sandbox launch is deliberately not part of this change: the echo probe
-        // and real runner dispatch follow in REHOR-226.
-        launch: async (): Promise<SessionCompletion> => "not-created",
-      });
-      if (!signal.aborted) console.log(JSON.stringify({ event: "preflight.cycle", result }));
-      await sleep(5 * 60_000, undefined, { signal });
-    } catch {
-      if (!signal.aborted) {
-        console.error("Dispatcher cycle failed");
-        try { await sleep(5 * 60_000, undefined, { signal }); } catch { break; }
-      }
+    if (repositoriesJson && gatewayConfig && authConfig && provider) {
+      loopPromise = runDispatcherLoop({ repositoriesJson, signal: stopController.signal });
     }
   }
 }

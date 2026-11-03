@@ -29,13 +29,11 @@ COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/
 COPY packages/openshell-sdk packages/openshell-sdk
 RUN npm ci --workspace=@rehor/agent-dispatcher --omit=dev --offline --no-audit --ignore-scripts
 
+# Runtime dependencies come from the Node.js base image, which already provides
+# Python 3 and Git for the stopgap Python preflights. Hermetic builds cannot
+# install packages over the network; the Python MCP client is not vendored yet
+# (mcp-dependent skills are unavailable in deployments until that lands).
 FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
-USER 0
-RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
-    python3.12 python3.12-pip git \
-    && dnf clean all \
-    && pip3.12 install --no-cache-dir 'mcp==1.27.0' \
-    && ln -sf /usr/bin/python3.12 /usr/bin/python3
 WORKDIR /app
 COPY --from=dependencies --chown=1001:0 /app/node_modules ./node_modules
 COPY --from=dependencies --chown=1001:0 /app/packages/openshell-sdk ./packages/openshell-sdk
