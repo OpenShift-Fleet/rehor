@@ -20,7 +20,7 @@ import {
 } from "@patternfly/react-core";
 import { TimesIcon } from "@patternfly/react-icons";
 import type { Memory, Task } from "../types";
-import { displayKey, sourceUrl, timeAgo } from "../utils";
+import { displayKey, sourceUrl, stringList, timeAgo } from "../utils";
 
 interface MemoryDetailProps {
   type: "memory";
@@ -180,6 +180,9 @@ function TaskDetail({
   onUnpause,
 }: Omit<TaskDetailProps, "type">) {
   const meta = task.metadata || {};
+  const filesChanged = stringList(meta.files_changed);
+  const filesChangedCount =
+    filesChanged.length === 0 && typeof meta.files_changed === "number" ? meta.files_changed : 0;
   const prs: Array<{ repo: string; number: number; url: string; host: string }> = meta.prs || [];
   const repos: string[] = meta.repos || [task.repo];
   const key = displayKey(task);
@@ -319,16 +322,22 @@ function TaskDetail({
                   <DescriptionListDescription>{meta.next_step}</DescriptionListDescription>
                 </DescriptionListGroup>
               )}
-              {meta.files_changed && (
+              {filesChanged.length > 0 && (
                 <DescriptionListGroup>
                   <DescriptionListTerm>Files changed</DescriptionListTerm>
                   <DescriptionListDescription>
-                    {meta.files_changed.map((f: string, i: number) => (
+                    {filesChanged.map((f, i) => (
                       <div key={i}>
                         <code>{f}</code>
                       </div>
                     ))}
                   </DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {filesChangedCount > 0 && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Files changed</DescriptionListTerm>
+                  <DescriptionListDescription>{filesChangedCount} files</DescriptionListDescription>
                 </DescriptionListGroup>
               )}
               {meta.commits && (

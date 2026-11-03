@@ -79,6 +79,7 @@ def cycle_run(
     started_day: str = "01",
     duration_min: int = 5,
     has_transcript: bool = True,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate cycle run payload."""
     start = f"2026-07-{started_day}T10:00:00Z"
@@ -92,7 +93,9 @@ def cycle_run(
         "finished_at": end,
         "tool_calls": 12,
         "tokens_used": 15000,
-        "progress": {"phase": "implementation", "completed_steps": 3, "total_steps": 5},
+        "progress": progress
+        if progress is not None
+        else {"phase": "implementation", "completed_steps": 3, "total_steps": 5},
         "input_prompt": "Implement the login bug fix for RHCLOUD-001",
         "created_at": start,
         "has_transcript": has_transcript,
@@ -383,8 +386,32 @@ MEMORIES = [
 ]
 
 CYCLE_RUNS = [
-    cycle_run(1, 1, "implementation", started_day="01", duration_min=5),
-    cycle_run(2, 1, "review", started_day="01", duration_min=3),
+    cycle_run(
+        1,
+        1,
+        "implementation",
+        started_day="01",
+        duration_min=5,
+        progress={
+            "last_step": "pr_opened",
+            "next_step": "await_review",
+            "files_changed": ["eslint.config.mjs", "package.json"],
+            "commits": ["fb55339"],
+        },
+    ),
+    cycle_run(
+        2,
+        1,
+        "review",
+        started_day="01",
+        duration_min=3,
+        progress={
+            "last_step": "review_addressed",
+            "next_step": "await_review",
+            "files_changed": 20,
+            "commits": ["0263f26"],
+        },
+    ),
     cycle_run(3, 2, "implementation", started_day="02", duration_min=8),
     cycle_run(4, None, "idle_check", started_day="03", duration_min=1, has_transcript=False),
 ]

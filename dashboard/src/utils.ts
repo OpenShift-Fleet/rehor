@@ -40,6 +40,12 @@ export function displayKey(item: SourceLike): string {
   return item.external_key || "";
 }
 
+export function stringList(value: unknown): string[] {
+  if (typeof value === "string") return value ? [value] : [];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
 const SLEEP_THRESHOLD_MS = 60_000; // 60 seconds
 
 export type DisplayState = "working" | "idle" | "error" | "sleep" | "unknown";

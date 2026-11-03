@@ -305,8 +305,9 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                pass
-            self.send_json(groups)
+                task_ids = {r["task_id"] for r in CYCLE_RUNS if r.get("instance_id") == instance_id}
+                groups = [g for g in groups if g["task_id"] in task_ids]
+            self.send_json({"items": groups, "total": len(groups)})
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
             run_id = int(path.split("/")[3])
