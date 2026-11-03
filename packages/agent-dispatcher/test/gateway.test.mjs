@@ -210,6 +210,16 @@ test("partial runtime gateway config fails without exposing values", () => {
   ]);
 });
 
+test("configured repository checks require gateway authentication", () => {
+  const result = spawnSync(process.execPath, ["dist/index.js"], {
+    cwd: new URL("..", import.meta.url), encoding: "utf8",
+    env: { AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.invalid/private.git"]' }, timeout: 5000,
+  });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trim(), "OpenShell gateway configuration failed");
+  assert.doesNotMatch(result.stderr + result.stdout, /example\.invalid/);
+});
+
 test("runtime fails closed when real SDK credential preflight fails", () => {
   const script = 'globalThis.fetch = async () => { throw new Error("test-secret test-token example-client example-subject"); };';
   const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {
