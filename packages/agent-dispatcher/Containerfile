@@ -16,13 +16,28 @@ WORKDIR /app
 # dependency installation is layer-cached independently of source changes.
 COPY package.json package-lock.json nx.json ./
 COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/tsconfig.json packages/agent-dispatcher/project.json packages/agent-dispatcher/
+COPY packages/openshell-sdk packages/openshell-sdk
 RUN npm ci --ignore-scripts
 
 COPY packages/agent-dispatcher/src packages/agent-dispatcher/src
 RUN npx nx build @rehor/agent-dispatcher
 
+# Install only production dependencies for the runtime image. npm links the
+# vendored SDK workspace from node_modules/@nvidia/openshell-sdk to
+# /app/packages/openshell-sdk, so that workspace path must also be copied below.
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS dependencies
+USER 0
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/agent-dispatcher/package.json packages/agent-dispatcher/
+COPY packages/openshell-sdk packages/openshell-sdk
+RUN npm ci --workspace=@rehor/agent-dispatcher --omit=dev --ignore-scripts
+
 FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
 WORKDIR /app
-COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/dist ./dist
+COPY --from=dependencies --chown=1001:0 /app/node_modules ./node_modules
+COPY --from=dependencies --chown=1001:0 /app/packages/openshell-sdk ./packages/openshell-sdk
+COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/package.json ./packages/agent-dispatcher/package.json
+COPY --from=builder --chown=1001:0 /app/packages/agent-dispatcher/dist ./packages/agent-dispatcher/dist
 USER 1001
-CMD ["node", "dist/index.js"]
+CMD ["node", "packages/agent-dispatcher/dist/index.js"]
