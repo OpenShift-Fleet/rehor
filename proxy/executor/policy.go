@@ -36,7 +36,6 @@ var defaultPolicy = Policy{
 	allowed: map[string][]subcommand{
 		"gh": {
 			{[]string{"pr", "view"}},
-			{[]string{"pr", "create"}},
 			{[]string{"pr", "close"}},
 			{[]string{"pr", "checks"}},
 			{[]string{"pr", "comment"}},
@@ -59,7 +58,6 @@ var defaultPolicy = Policy{
 		},
 		"glab": {
 			{[]string{"api"}},
-			{[]string{"mr", "create"}},
 			{[]string{"mr", "close"}},
 			{[]string{"mr", "view"}},
 			{[]string{"mr", "list"}},
@@ -75,9 +73,12 @@ var defaultPolicy = Policy{
 			{[]string{"auth", "refresh"}, "token refresh not allowed"},
 			{[]string{"auth", "token"}, "token exposure not allowed"},
 			{[]string{"repo", "delete"}, "destructive operation not allowed"},
+			{[]string{"pr", "checkout"}, "gh runs in the executor container and cannot see or modify sandbox repo files — use git: git fetch <remote> pull/<n>/head:pr-<n> && git checkout pr-<n>"},
+			{[]string{"pr", "create"}, "gh cannot see the sandbox repo — create PRs via API: gh api repos/<owner>/<repo>/pulls -X POST -f head=<branch> -f base=<default> ..."},
 		},
 		"glab": {
 			{[]string{"auth", "login"}, "interactive auth not allowed"},
+			{[]string{"mr", "create"}, "glab cannot see the sandbox repo — create MRs via API: glab api projects/<path>/merge_requests -X POST -f source_branch=... -f target_branch=..."},
 		},
 	},
 	blockedFlags: map[string][]blockedFlag{
