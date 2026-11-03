@@ -97,6 +97,8 @@ The proxy follows signed layer redirects to `cdn.quay.io`, `cdn01.quay.io`,
 `cdn02.quay.io`, and `cdn03.quay.io` without forwarding registry credentials.
 Those hosts and `registry.redhat.io` must be reachable on HTTPS from the proxy.
 Bots receive the streamed layer, so they need no additional Squid/CDN access.
+For clients using Squid directly, its allowlist also includes the registry and
+these four CDN hosts; `sso.redhat.com` is covered by the existing `.redhat.com` rule.
 Unexpected redirect destinations fail closed. Token exchange failures return a
 generic 502 without exposing the upstream response or credential values.
 
