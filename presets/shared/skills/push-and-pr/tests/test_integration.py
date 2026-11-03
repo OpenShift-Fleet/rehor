@@ -52,21 +52,29 @@ class TestGitHubForkWorkflow:
             CompletedProcess([], 0, stdout="Synced successfully\n", stderr=""),
             # push_branch: git push
             CompletedProcess([], 0, stdout="Pushed to origin\n", stderr=""),
-            # create_pr: gh pr create
-            CompletedProcess([], 0, stdout="https://github.com/RedHatInsights/test-repo/pull/123\n", stderr=""),
+            # create_pr: default branch lookup
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
+            # create_pr: gh api PR create
+            CompletedProcess(
+                [],
+                0,
+                stdout='{"html_url": "https://github.com/RedHatInsights/test-repo/pull/123", "number": 123}',
+                stderr="",
+            ),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="Test PR", body="Test description", dry_run=False)
 
         assert exit_code == 0
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 5
 
         # Verify command sequence
         calls = mock_run.call_args_list
         assert calls[0][0][0] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
         assert calls[1][0][0] == ["gh", "repo", "sync", "catastrophe-brandon/test-repo"]
         assert calls[2][0][0][0:3] == ["git", "-c", "credential.helper=!gh auth git-credential"]
-        assert calls[3][0][0][0:2] == ["gh", "pr"]
+        assert calls[3][0][0] == ["gh", "api", "repos/RedHatInsights/test-repo", "--jq", ".default_branch"]
+        assert calls[4][0][0][0:2] == ["gh", "api"]
 
     @patch("scripts.push_and_pr_operations.Path.cwd")
     @patch("scripts.push_and_pr_operations.PushAndPROperations._run_command")
@@ -78,7 +86,13 @@ class TestGitHubForkWorkflow:
             CompletedProcess([], 0, stdout="feature\n", stderr=""),
             CompletedProcess([], 1, stdout="", stderr="already up-to-date"),  # sync already done
             CompletedProcess([], 0, stdout="", stderr="Everything up-to-date"),  # push already done
-            CompletedProcess([], 0, stdout="https://github.com/RedHatInsights/test-repo/pull/456\n", stderr=""),
+            CompletedProcess([], 0, stdout="main\n", stderr=""),  # default branch lookup
+            CompletedProcess(
+                [],
+                0,
+                stdout='{"html_url": "https://github.com/RedHatInsights/test-repo/pull/456", "number": 456}',
+                stderr="",
+            ),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="Update docs", body="Minor update", dry_run=False)
@@ -95,7 +109,13 @@ class TestGitHubForkWorkflow:
             CompletedProcess([], 0, stdout="fix-bug\n", stderr=""),
             CompletedProcess([], 0, stdout="Synced\n", stderr=""),
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            CompletedProcess([], 0, stdout="https://github.com/RedHatInsights/test-repo/pull/789\n", stderr=""),
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
+            CompletedProcess(
+                [],
+                0,
+                stdout='{"html_url": "https://github.com/RedHatInsights/test-repo/pull/789", "number": 789}',
+                stderr="",
+            ),
         ]
 
         title = 'Fix "quoted" issue & <tags>'
@@ -105,10 +125,10 @@ class TestGitHubForkWorkflow:
 
         assert exit_code == 0
 
-        # Verify title and body were passed to gh pr create
-        pr_create_call = mock_run.call_args_list[3]
-        assert title in pr_create_call[0][0]
-        assert body in pr_create_call[0][0]
+        # Verify title and body were passed to the PR create API call
+        pr_create_call = mock_run.call_args_list[4]
+        assert any(title in arg for arg in pr_create_call[0][0])
+        assert any(body in arg for arg in pr_create_call[0][0])
 
 
 class TestGitHubDirectWorkflow:
@@ -131,23 +151,31 @@ class TestGitHubDirectWorkflow:
             # sync_fork: skipped (not a fork)
             # push_branch: git push
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            # create_pr: gh pr create (direct)
-            CompletedProcess([], 0, stdout="https://github.com/RedHatInsights/test-repo/pull/100\n", stderr=""),
+            # create_pr: default branch lookup
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
+            # create_pr: gh api PR create (direct)
+            CompletedProcess(
+                [],
+                0,
+                stdout='{"html_url": "https://github.com/RedHatInsights/test-repo/pull/100", "number": 100}',
+                stderr="",
+            ),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="Direct PR", body="Direct push", dry_run=False)
 
         assert exit_code == 0
-        assert mock_run.call_count == 4
+        assert mock_run.call_count == 5
 
-        # Verify gh pr create for direct push (no --repo, no --head)
-        pr_create_call = mock_run.call_args_list[3]
+        # Verify gh api PR create for direct push (no fork owner in head)
+        pr_create_call = mock_run.call_args_list[4]
         cmd = pr_create_call[0][0]
-        assert cmd[0:2] == ["gh", "pr"]
-        assert "--repo" not in cmd
-        assert "--head" not in cmd
-        assert "--title" in cmd
-        assert "--body" in cmd
+        assert cmd[0:2] == ["gh", "api"]
+        assert "repos/RedHatInsights/test-repo/pulls" in " ".join(cmd)
+        assert "head=main" in cmd
+        assert "base=main" in cmd
+        assert "title=Direct PR" in cmd
+        assert "body=Direct push" in cmd
 
     @patch("scripts.push_and_pr_operations.PushAndPROperations._run_command")
     def test_github_direct_workflow_ssh_url(self, mock_run):
@@ -160,7 +188,10 @@ class TestGitHubDirectWorkflow:
             CompletedProcess([], 0, stdout="develop\n", stderr=""),
             CompletedProcess([], 0, stdout=remote_output, stderr=""),
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            CompletedProcess([], 0, stdout="https://github.com/org/project/pull/42\n", stderr=""),
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
+            CompletedProcess(
+                [], 0, stdout='{"html_url": "https://github.com/org/project/pull/42", "number": 42}', stderr=""
+            ),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="SSH test", body="Testing SSH URL", dry_run=False)
@@ -181,7 +212,7 @@ class TestGitLabWorkflow:
             "upstream\thttps://gitlab.cee.redhat.com/team/project.git (push)\n"
         )
 
-        mr_output = "Created merge request\n!123 https://gitlab.cee.redhat.com/team/project/-/merge_requests/123\n"
+        mr_output = '{"web_url": "https://gitlab.cee.redhat.com/team/project/-/merge_requests/123", "iid": 123}'
 
         mock_run.side_effect = [
             # detect_repository: get current branch
@@ -192,14 +223,16 @@ class TestGitLabWorkflow:
             CompletedProcess([], 0, stdout="Synced\n", stderr=""),
             # push_branch: git push with glab credential helper
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            # create_pr: glab mr create
+            # create_pr: default branch lookup
+            CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr=""),
+            # create_pr: glab api MR create
             CompletedProcess([], 0, stdout=mr_output, stderr=""),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="GitLab MR", body="Test MR", dry_run=False)
 
         assert exit_code == 0
-        assert mock_run.call_count == 5
+        assert mock_run.call_count == 6
 
         # Verify glab commands were used
         sync_call = mock_run.call_args_list[2]
@@ -208,9 +241,10 @@ class TestGitLabWorkflow:
         push_call = mock_run.call_args_list[3]
         assert "glab auth git-credential" in push_call[0][0][2]
 
-        mr_create_call = mock_run.call_args_list[4]
+        mr_create_call = mock_run.call_args_list[5]
         cmd = mr_create_call[0][0]
-        assert cmd[0:2] == ["glab", "mr"]
+        assert cmd[0:2] == ["glab", "api"]
+        assert "projects/team%2Fproject/merge_requests" in " ".join(cmd)
         assert "--hostname" in cmd
         assert "gitlab.cee.redhat.com" in cmd
 
@@ -222,13 +256,14 @@ class TestGitLabWorkflow:
             "origin\thttps://gitlab.cee.redhat.com/team/project.git (push)\n"
         )
 
-        mr_output = "!99 https://gitlab.cee.redhat.com/team/project/-/merge_requests/99"
+        mr_output = '{"web_url": "https://gitlab.cee.redhat.com/team/project/-/merge_requests/99", "iid": 99}'
 
         mock_run.side_effect = [
             CompletedProcess([], 0, stdout="main\n", stderr=""),
             CompletedProcess([], 0, stdout=remote_output, stderr=""),
             # sync skipped for direct push
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
+            CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr=""),
             CompletedProcess([], 0, stdout=mr_output, stderr=""),
         ]
 
@@ -302,6 +337,8 @@ class TestWorkflowErrorHandling:
             CompletedProcess([], 0, stdout="feature\n", stderr=""),
             CompletedProcess([], 0, stdout=remote_output, stderr=""),
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
+            # create_pr: default branch lookup succeeds
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
             # create_pr: failed
             CompletedProcess([], 1, stdout="", stderr="pull request already exists"),
         ]
@@ -309,7 +346,7 @@ class TestWorkflowErrorHandling:
         exit_code = execute_push_and_pr_workflow(title="Test", body="Test", dry_run=False)
 
         assert exit_code == 1
-        assert mock_run.call_count == 4  # All operations attempted, last one failed
+        assert mock_run.call_count == 5  # All operations attempted, last one failed
 
     @patch("scripts.push_and_pr_operations.PushAndPROperations._run_command")
     def test_workflow_fails_on_unsupported_remote(self, mock_run):
@@ -400,7 +437,10 @@ class TestWorkflowOutputs:
             CompletedProcess([], 0, stdout="main\n", stderr=""),
             CompletedProcess([], 0, stdout=remote_output, stderr=""),
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
-            CompletedProcess([], 0, stdout="https://github.com/org/repo/pull/999\n", stderr=""),
+            CompletedProcess([], 0, stdout="main\n", stderr=""),
+            CompletedProcess(
+                [], 0, stdout='{"html_url": "https://github.com/org/repo/pull/999", "number": 999}', stderr=""
+            ),
         ]
 
         exit_code = execute_push_and_pr_workflow(title="Test", body="Test", dry_run=False)
@@ -416,12 +456,13 @@ class TestWorkflowOutputs:
         """Test workflow extracts GitLab MR number."""
         remote_output = "origin\thttps://gitlab.cee.redhat.com/team/project.git (fetch)\n"
 
-        mr_output = "!555 https://gitlab.cee.redhat.com/team/project/-/merge_requests/555"
+        mr_output = '{"web_url": "https://gitlab.cee.redhat.com/team/project/-/merge_requests/555", "iid": 555}'
 
         mock_run.side_effect = [
             CompletedProcess([], 0, stdout="feature\n", stderr=""),
             CompletedProcess([], 0, stdout=remote_output, stderr=""),
             CompletedProcess([], 0, stdout="Pushed\n", stderr=""),
+            CompletedProcess([], 0, stdout='{"default_branch": "main"}', stderr=""),
             CompletedProcess([], 0, stdout=mr_output, stderr=""),
         ]
 
