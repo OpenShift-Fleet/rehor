@@ -336,6 +336,67 @@ describe("coordinator execution", () => {
     expect(previews[0]).toContain("[REDACTED]");
   });
 
+  it("redacts secrets intersecting the assistant text buffer cap boundary", async () => {
+    vi.stubEnv("REVIEW_SECRET", "review-sensitive-value-123456");
+    const secret = "review-sensitive-value-123456";
+    const firstDelta =
+      "a".repeat(240) + secret + "b".repeat(2300 - 240 - secret.length);
+    const logs: Array<{ level: string; message: string; fields?: Record<string, unknown> }> = [];
+    const result = await executeRun(
+      new FakeAgentRuntime({
+        events: [
+          event({
+            eventId: "root-text-delta-1",
+            kind: "model",
+            runtimeSessionRef: "root-session-id",
+            payload: {
+              phase: "text",
+              partId: "root-session-id:assistant-1:text:0",
+              delta: firstDelta,
+            },
+          }),
+          event({
+            eventId: "root-text-delta-2",
+            sequence: 2,
+            kind: "model",
+            runtimeSessionRef: "root-session-id",
+            payload: {
+              phase: "text",
+              partId: "root-session-id:assistant-1:text:0",
+              delta: "c".repeat(15000),
+            },
+          }),
+          terminal(3),
+        ],
+      }),
+      run,
+      {
+        logger: {
+          log(level, message, fields) {
+            logs.push({ level, message, fields });
+          },
+        },
+      },
+    );
+
+    expect(result.terminal.payload.state).toBe("completed");
+    const previews = logs
+      .filter((entry) => entry.message === "Assistant text")
+      .map((entry) => String(entry.fields?.text_preview ?? ""));
+    // The cap overflow must not emit a raw mid-part slice before the boundary.
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toContain("[REDACTED]");
+    expect(previews[0].endsWith("…")).toBe(true);
+    // Concatenated previews must not reconstruct the secret, and no fragment
+    // of it may survive for a consumer to pair up across previews.
+    const joined = previews.join("");
+    expect(joined).not.toContain(secret);
+    for (let start = 0; start + 16 <= secret.length; start++) {
+      expect(joined).not.toContain(secret.slice(start, start + 16));
+    }
+    expect(JSON.stringify(logs)).not.toContain(secret);
+  });
+
   it("continues execution when progress logger throws", async () => {
     const result = await executeRun(
       new FakeAgentRuntime({

@@ -416,16 +416,17 @@ async function consumeEvents(
 const MAX_ASSISTANT_PREVIEW_LENGTH = 300;
 // Streaming deltas are buffered until a redaction-safe boundary so a secret
 // split across deltas cannot evade environment-value and pattern redaction.
+// Text past the cap is dropped, never emitted as a separate mid-part slice,
+// so no raw split point can fall inside a secret and evade whole-value
+// redaction when logged previews are concatenated.
 const MAX_ASSISTANT_TEXT_BUFFER = 16 * 1024;
-// A secret spanning the buffer cap boundary must stay within one buffer for
-// whole-value redaction, so the last slice is retained after a cap flush.
-const ASSISTANT_TEXT_BUFFER_RETAINED_TAIL = 2048;
 
 type ActivityScope = "root" | "subagent";
 
 interface BufferedAssistantText {
   scope: ActivityScope;
   text: string;
+  truncated: boolean;
 }
 
 /** Buffers streaming assistant text so previews are only redacted as a whole. */
@@ -450,35 +451,33 @@ class AssistantTextPreviewBuffer {
   }
 
   private extend(scopeKey: string, scope: ActivityScope, text: string): void {
-    const current = this.pending.get(scopeKey);
-    let buffered = current?.text ?? "";
-    const bufferedScope = current?.scope ?? scope;
-    if (buffered.length + text.length > MAX_ASSISTANT_TEXT_BUFFER) {
-      const split = Math.max(0, buffered.length - ASSISTANT_TEXT_BUFFER_RETAINED_TAIL);
-      this.emit(bufferedScope, buffered.slice(0, split));
-      buffered = buffered.slice(split);
+    const current = this.pending.get(scopeKey) ?? { scope, text: "", truncated: false };
+    if (!current.truncated) {
+      const room = MAX_ASSISTANT_TEXT_BUFFER - current.text.length;
+      current.text += text.slice(0, room);
+      current.truncated = text.length > room;
     }
-    this.pending.set(scopeKey, { scope: bufferedScope, text: buffered + text });
+    this.pending.set(scopeKey, current);
   }
 
   flush(scopeKey: string): void {
     const buffered = this.pending.get(scopeKey);
     if (!buffered) return;
     this.pending.delete(scopeKey);
-    this.emit(buffered.scope, buffered.text);
+    this.emit(buffered.scope, buffered.text, buffered.truncated);
   }
 
   flushAll(): void {
     for (const scopeKey of [...this.pending.keys()]) this.flush(scopeKey);
   }
 
-  private emit(scope: ActivityScope, text: string): void {
+  private emit(scope: ActivityScope, text: string, truncated: boolean): void {
     if (!text) return;
     const redacted = safeText(text);
     const preview = redacted.slice(0, MAX_ASSISTANT_PREVIEW_LENGTH);
     this.logger.log("INFO", "Assistant text", {
       activity_scope: scope,
-      text_preview: `${preview}${redacted.length > preview.length ? "…" : ""}`,
+      text_preview: `${preview}${truncated || redacted.length > preview.length ? "…" : ""}`,
     });
   }
 }
