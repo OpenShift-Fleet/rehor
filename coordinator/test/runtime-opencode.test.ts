@@ -1276,6 +1276,61 @@ describe("OpenCode V2 runtime lifecycle", () => {
     expect(model).toBeDefined();
     expect(usage?.parentEventId).toBe(model?.eventId);
   });
+  it("scopes sessions recovered by child reconciliation as subagents in logs and status", async () => {
+    const records: Record<string, unknown>[] = [];
+    const statuses: Array<{ message: string }> = [];
+    const projection = new LegacyCompatibilityProjection({
+      status: {
+        write: (record) => {
+          statuses.push(record as { message: string });
+        },
+      },
+    });
+    const child = "session-child";
+    const { runtime } = fakeRuntime({
+      promptError: new Error("prompt response lost"),
+      active: {},
+      info: sessionInfo({ outcome: "succeeded", time: { created: 1, updated: 3, idle: 3 } }),
+      messagesBySession: {
+        [ROOT]: [assistant(), idle()],
+        [child]: [assistant("child-assistant-1", "Recovered child progress")],
+      },
+      children: [{ ...sessionInfo(), id: child, parentID: ROOT }],
+    });
+    const result = await executeRun(runtime, runtimeRun, {
+      projection,
+      logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }),
+    });
+
+    expect(result.terminal.payload.state).toBe("completed");
+    const marker = result.events.find(
+      (value) =>
+        value.payload.state === "child_session_started" && value.runtimeSessionRef === child,
+    );
+    const childText = result.events.find(
+      (value) => value.kind === "model" && value.payload.text === "Recovered child progress",
+    );
+    expect(marker).toBeDefined();
+    expect(childText).toBeDefined();
+    // The discovery marker must precede the child's recovered messages so both
+    // the coordinator log scope and the compatibility projection stay subagent.
+    expect(result.events.indexOf(marker as RehorEvent)).toBeLessThan(
+      result.events.indexOf(childText as RehorEvent),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({ message: "Subagent session started", activity_scope: "subagent" }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        message: "Assistant text",
+        activity_scope: "subagent",
+        text_preview: "Recovered child progress",
+      }),
+    );
+    expect(statuses.map((value) => value.message)).toEqual(
+      expect.arrayContaining(["Subagent: session started", "Subagent: Recovered child progress"]),
+    );
+  });
   it("preserves partial text and replaces it from authoritative recovery without double counting", async () => {
     const { events } = await run({
       events: [
@@ -1534,7 +1589,10 @@ describe("OpenCode V2 runtime lifecycle", () => {
       },
     });
     expect(statuses).toContainEqual(
-      expect.objectContaining({ message: "Tool: mcp__bot-memory__task_add" }),
+      expect.objectContaining({ message: "Tool started: mcp__bot-memory__task_add" }),
+    );
+    expect(statuses).toContainEqual(
+      expect.objectContaining({ message: "Tool completed: mcp__bot-memory__task_add" }),
     );
     expect(costs[0]).toMatchObject({ repository: "rehor", externalKey: "REHOR-143" });
     expect(cycleRuns[0]).toMatchObject({ taskId: 143, cycleType: "task_work" });

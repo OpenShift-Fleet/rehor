@@ -67,6 +67,8 @@ export interface NormalizationContext {
   seenMessages: Set<string>;
   seenParts: Set<string>;
   sessionIds: Set<string>;
+  /** Sessions that already emitted a child_session_started lifecycle marker. */
+  announcedSessions: Set<string>;
   toolPhases: Map<string, "started" | "completed">;
   modelEventIds: Map<string, string>;
   usageSnapshots: Map<string, UsageSnapshot>;
@@ -102,6 +104,7 @@ export function createNormalizationContext(
     seenMessages: new Set(),
     seenParts: new Set(),
     sessionIds: new Set([rootSessionId]),
+    announcedSessions: new Set(),
     toolPhases: new Map(),
     modelEventIds: new Map(),
     usageSnapshots: new Map(),
@@ -192,9 +195,12 @@ export function normalizeOpenCodeEvent(
   const messageKey = `${sessionID}:${messageID}`;
   switch (event.type) {
     case "session.created":
-      return root
-        ? empty
-        : { events: [factory("run", { state: "child_session_started" }, withSession)], turns: 0 };
+      if (root) return empty;
+      context.announcedSessions.add(sessionID);
+      return {
+        events: [factory("run", { state: "child_session_started" }, withSession)],
+        turns: 0,
+      };
     case "session.execution.started":
       if (root) {
         context.rootExecutionOutcome = undefined;
