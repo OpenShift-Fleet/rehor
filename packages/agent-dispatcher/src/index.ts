@@ -12,11 +12,16 @@ const logger = createLifecycleLogger();
 const startup = logger.start("startup");
 const keepAlive = setInterval(() => {}, 60_000);
 const stopController = new AbortController();
-const shutdownDeadlineMs = 25_000;
+// A session may spend 180s in each delete RPC and 300s verifying absence for
+// both sandbox and workspace, plus bounded provider/profile cleanup RPCs.
+// Runtime termination grace must exceed this drain deadline (documented in
+// README); no dispatcher workload manifest lives in this repository to set it here.
+const shutdownDeadlineMs = 22 * 60_000;
 let shuttingDown = false;
 let startPromise = Promise.resolve();
 let loopPromise: Promise<void> | undefined;
 const sessionRuns = new Set<Promise<unknown>>();
+let unresolvedSessionResult = false;
 
 async function drainOperations(): Promise<void> {
   // Startup may register the loop after shutdown begins. The loop may itself
@@ -26,9 +31,17 @@ async function drainOperations(): Promise<void> {
   try { await loopPromise; } catch { failed = true; }
   while (sessionRuns.size) {
     const results = await Promise.allSettled([...sessionRuns]);
-    if (results.some((result) => result.status === "rejected")) failed = true;
+    if (results.some((result) => result.status === "rejected"
+      || (result.status === "fulfilled" && isUnresolvedSession(result.value)))) failed = true;
   }
+  if (unresolvedSessionResult) failed = true;
   if (failed) throw new Error("Dispatcher operations failed");
+}
+
+function isUnresolvedSession(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const result = value as { completion?: unknown; cleanup?: unknown };
+  return result.completion === "unknown" || result.cleanup === "unknown";
 }
 
 const shutdown = (): void => {
@@ -53,7 +66,7 @@ const shutdown = (): void => {
   }, () => {
     clearTimeout(deadline);
     stopping.failure("internal");
-    process.exitCode = 1;
+    if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
   });
 };
 
@@ -135,6 +148,7 @@ async function start(): Promise<void> {
           const running = logger.start("sandbox.session");
           try {
             const record = await work;
+            if (isUnresolvedSession(record)) unresolvedSessionResult = true;
             if (record.outcome === "passed") running.success();
             else running.failure("internal");
             logger.log("sandbox.cleanup", record.cleanup === "unknown" ? "failure" : "success");

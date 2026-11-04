@@ -301,6 +301,9 @@ export class SandboxSession {
         const readSandbox = async () => (await this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions())).sandbox;
         const currentWorkspace = await readOptional(readWorkspace);
         if (!currentWorkspace) {
+          // A NotFound immediately after an uncertain create does not prove
+          // the server-side operation stopped; it may still commit later.
+          if (workspace.state === "unknown") throw new Error();
           if (sandbox.state !== "not-attempted" || record.profile.state !== "not-attempted" || record.provider.state !== "not-attempted") throw new Error();
           workspace.state = "deleted";
           sandbox.state = "deleted";
@@ -322,6 +325,10 @@ export class SandboxSession {
           const deleted = await this.raw.deleteSandbox({ workspaceScope: scope, name: sandbox.name, requestId: randomUUID() }, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) });
           if (deleted.sandboxId !== sandbox.id || (deleted.outcome !== DeletionOutcome.ACCEPTED && deleted.outcome !== DeletionOutcome.COMPLETED)) throw new Error();
           await waitAbsent(readSandbox, (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id);
+        } else if (sandbox.state === "unknown") {
+          // Do not release dependencies while an ambiguous sandbox create may
+          // still become visible after this read.
+          throw new Error();
         }
         sandbox.state = "deleted";
 
@@ -333,12 +340,14 @@ export class SandboxSession {
         if (record.provider.state === "created" || record.provider.state === "unknown") {
           const readProvider = async () => (await this.raw.getProvider({ workspaceScope: scope, name: record.provider.name }, callOptions())).provider;
           const current = await readOptional(readProvider);
+          if (!current && record.provider.state === "unknown") throw new Error();
           if (current) {
             if (current.metadata?.name !== record.provider.name || current.metadata.workspace !== workspace.name
               || current.type !== record.profile.name || current.profileWorkspace !== workspace.name
               || !uuid.test(current.metadata.id)
               || (record.provider.id && current.metadata.id !== record.provider.id)) throw new Error();
             record.provider.id = current.metadata.id;
+            record.provider.state = "created";
             await this.raw.deleteProvider({ workspaceScope: scope, name: record.provider.name, allowMissing: false, requestId: randomUUID() }, callOptions());
           }
           if (await readOptional(readProvider)) throw new Error();
@@ -348,10 +357,12 @@ export class SandboxSession {
         if (record.profile.state === "created" || record.profile.state === "unknown") {
           const readProfile = async () => (await this.raw.getProviderProfile({ workspaceScope: scope, id: record.profile.name }, callOptions())).profile;
           const current = await readOptional(readProfile);
+          if (!current && record.profile.state === "unknown") throw new Error();
           if (current) {
             if (current.id !== record.profile.name || current.scope !== "workspace" || current.source !== "user"
               || (record.profile.version !== undefined && current.resourceVersion.toString() !== record.profile.version)
               || current.category !== ProviderProfileCategory.OTHER || current.endpoints.length || current.binaries.length || current.files.length) throw new Error();
+            record.profile.state = "created";
             await this.raw.deleteProviderProfile({ workspaceScope: scope, id: record.profile.name, allowMissing: false, requestId: randomUUID() }, callOptions());
           }
           if (await readOptional(readProfile)) throw new Error();

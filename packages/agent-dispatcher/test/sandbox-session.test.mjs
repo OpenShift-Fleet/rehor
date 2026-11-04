@@ -5,6 +5,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { DeletionOutcome, ProviderReadinessState, ProviderProfileSchema, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { SandboxSession } from "../dist/sandbox-session.js";
+import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "../dist/input-envelope.js";
 
 const prompt = "sensitive prepared prompt 🦊";
@@ -18,23 +19,38 @@ function fixture(options = {}) {
   let workspace, sandbox, provider, profile, suppliedPolicy;
   const raw = {
     async createWorkspace(request) {
-      workspace = { metadata: { id: randomUUID(), name: request.name, labels: request.labels } };
+      const created = { metadata: { id: randomUUID(), name: request.name, labels: request.labels } };
+      if (options.delayedCreate === "workspace") {
+        setTimeout(() => { workspace = created; }, 25);
+        throw new ConnectError("private create error", Code.Unavailable);
+      }
+      workspace = created;
       return { workspace };
     },
     async getWorkspace() { return workspace ? { workspace } : absent(); },
     async listWorkspaceMembers() { return { members: [] }; },
     async importProviderProfiles(request) {
-      profile = create(ProviderProfileSchema, { ...request.profiles[0].profile, scope: "workspace", source: "user", resourceVersion: 1n });
+      const imported = create(ProviderProfileSchema, { ...request.profiles[0].profile, scope: "workspace", source: "user", resourceVersion: 1n });
+      if (options.delayedCreate === "profile") {
+        setTimeout(() => { profile = imported; }, 25);
+        throw new ConnectError("private create error", Code.Unavailable);
+      }
+      profile = imported;
       return { imported: true, profiles: [profile], diagnostics: [] };
     },
     async getProviderProfile() { return profile ? { profile } : absent(); },
     async createProvider(request) {
-      provider = { metadata: { id: randomUUID(), name: request.provider.metadata.name, workspace: workspace.metadata.name, resourceVersion: 1n }, type: profile.id, profileWorkspace: workspace.metadata.name };
+      const created = { metadata: { id: randomUUID(), name: request.provider.metadata.name, workspace: workspace.metadata.name, resourceVersion: 1n }, type: profile.id, profileWorkspace: workspace.metadata.name };
+      if (options.delayedCreate === "provider") {
+        setTimeout(() => { provider = created; }, 25);
+        throw new ConnectError("private create error", Code.Unavailable);
+      }
+      provider = created;
       return { provider };
     },
     async getProvider() { return provider ? { provider } : absent(); },
     async createSandbox(request) {
-      sandbox = { metadata: { id: randomUUID(), name: request.name, labels: request.labels, workspace: workspace.metadata.name }, status: { phase: SandboxPhase.READY } };
+      const created = { metadata: { id: randomUUID(), name: request.name, labels: request.labels, workspace: workspace.metadata.name }, status: { phase: SandboxPhase.READY } };
       suppliedPolicy = create(SandboxPolicySchema, structuredClone(request.spec.policy));
       for (const rule of Object.values(suppliedPolicy.networkPolicies)) for (const endpoint of rule.endpoints) endpoint.providerCredentialed = true;
       // Model Gateway's additive runtime filesystem/default policy enrichment,
@@ -45,6 +61,11 @@ function fixture(options = {}) {
         networkPolicies: { platform_default: { name: "platform-default" } },
       }).networkPolicies.platform_default;
       options.enrichPolicy?.(suppliedPolicy);
+      if (options.delayedCreate === "sandbox") {
+        setTimeout(() => { sandbox = created; }, 25);
+        throw new ConnectError("private create error", Code.Unavailable);
+      }
+      sandbox = created;
       if (options.ambiguousCreate) throw new ConnectError("private create error", Code.Unavailable);
       return { sandbox };
     },
@@ -86,7 +107,8 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession(raw, memory), minted: () => minted };
+  return { raw, calls, memory, session: new SandboxSession(raw, memory), minted: () => minted, workspace: () => workspace,
+    resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
 test("safe stdin writer then exact runner with per-exec pointers, unique request IDs, no payload leaks", async () => {
@@ -230,6 +252,41 @@ test("ambiguous create recovered by deterministic name and owned identity; never
   assert.equal(result.errorCode, "unavailable");
   assert.equal(f.calls.filter((call) => call.name === "createSandbox").length, 1);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 0);
+});
+
+test("delayed workspace create stays unknown and retains its agent reservation", async () => {
+  const f = fixture({ delayedCreate: "workspace" });
+  const dispatcher = new SessionDispatcher();
+  const admitted = dispatcher.dispatch("agent", decision, async () => {
+    const result = await f.session.run(image, decision, {});
+    assert.equal(result.cleanup, "unknown");
+    return result.completion;
+  });
+  assert.equal(admitted.status, "started");
+  assert.equal(await admitted.completion, "unknown");
+  assert.equal(dispatcher.status("agent"), "retained");
+  assert.deepEqual(dispatcher.dispatch("agent", decision, () => "gone"), { status: "busy" });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.ok(f.workspace(), "delayed create became visible after cleanup read");
+  assert.equal(dispatcher.status("agent"), "retained");
+  assert.deepEqual(dispatcher.dispatch("agent", decision, () => "gone"), { status: "busy" });
+  assert.equal(f.calls.some((call) => call.name === "deleteWorkspace"), false);
+});
+
+test("delayed profile, provider and sandbox creates block dependent cleanup", async () => {
+  for (const resource of ["profile", "provider", "sandbox"]) {
+    const f = fixture({ delayedCreate: resource });
+    const result = await f.session.run(image, decision, {});
+    assert.equal(result.completion, "unknown", `${resource} completion`);
+    assert.equal(result.cleanup, "unknown", `${resource} cleanup`);
+    assert.equal(f.calls.some((call) => call.name === "deleteWorkspace"), false, `${resource} must retain workspace`);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.ok(f.resources()[resource], `${resource} became visible after cleanup read`);
+    if (resource === "sandbox") {
+      assert.equal(f.calls.some((call) => ["deleteProvider", "deleteProviderProfile"].includes(call.name)), false);
+    }
+  }
 });
 
 test("runner cancellation still performs independently bounded cleanup", async () => {

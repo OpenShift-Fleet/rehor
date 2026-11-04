@@ -358,7 +358,7 @@ test("SIGTERM during OIDC waits for in-flight work before one successful shutdow
 test("SIGTERM reports unsuccessful shutdown if in-flight work exceeds deadline", { timeout: 8000 }, async () => {
   const script = `
     const original = globalThis.setTimeout;
-    globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms === 25000 ? 400 : ms, ...args);
+    globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms >= 20 * 60_000 ? 400 : ms, ...args);
     globalThis.fetch = async () => new Promise(() => {});
   `;
   const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {

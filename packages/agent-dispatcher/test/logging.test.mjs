@@ -157,9 +157,6 @@ test("production wiring preserves decision, filters runner env, and drains signa
     cwd: new URL("..", import.meta.url), stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: {
       AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]',
-      AGENT_DISPATCHER_PROBE_ACTIONS: 'invalid-removed-setting',
-      AGENT_DISPATCHER_PROBE_VALIDATE: '1', AGENT_DISPATCHER_PROBE_LOG_OUTPUT: '1',
-      AGENT_DISPATCHER_PROBE_IMAGE: 'registry.example/removed:probe',
       BOT_MEMORY_TOKEN: 'must-not-forward', OPENSHELL_OIDC_CLIENT_SECRET: 'must-not-forward',
       KUBERNETES_SERVICE_HOST: 'must-not-forward',
     },
@@ -186,7 +183,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     const shutdownSuccess = records.findIndex(({ event, status }) => event === "shutdown" && status === "success");
     const sessionSuccess = records.findIndex(({ event, status }) => event === "sandbox.session" && status === "success");
     assert.ok(sessionSuccess >= 0 && shutdownSuccess > sessionSuccess);
-    assert.doesNotMatch(stdout, /sensitive|config\.yaml|memory-credential|must-not-forward|registry\.example|probe|validate/);
+    assert.doesNotMatch(stdout, /sensitive|config\.yaml|memory-credential|must-not-forward|registry\.example/);
   } finally { child.kill("SIGKILL"); }
 });
 
@@ -215,6 +212,63 @@ test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 
     assert.deepEqual(result, { code: 0, signal: null });
     assert.equal(stderr, "");
   } finally { child.kill("SIGKILL"); child.stdout.destroy(); }
+});
+
+test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
+  const modules = {
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') });`,
+    "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
+    "gateway-config.js": `export const readGatewayConfig = () => ({});`,
+    "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
+    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "dispatcher-loop.js": `
+      export const preflightEnvironment = () => ({});
+      export async function runDispatcherLoop(options) {
+        const decision = { action: 'start', prompt: 'work', scripts: [] };
+        const profile = { image: { reference: 'registry.example/agent:runner' }, preflightEnv: {} };
+        const completion = await options.launch(profile, decision.prompt, decision);
+        process.send({ event: 'completion', completion });
+      }
+    `,
+    "sandbox-session.js": `
+      export class SandboxSession {
+        constructor() {}
+        run() {
+          process.exitCode = 7;
+          process.kill(process.pid, 'SIGTERM');
+          return new Promise(resolve => setTimeout(() => resolve({ completion: 'unknown', outcome: 'unknown', cleanup: 'unknown' }), 40));
+        }
+      }
+    `,
+  };
+  const preload = `
+    import { registerHooks } from 'node:module';
+    const modules = ${JSON.stringify(modules)};
+    registerHooks({ load(url, context, nextLoad) {
+      const name = url.split('/').pop();
+      if (url.includes('/dist/') && Object.hasOwn(modules, name)) return { format: 'module', source: modules[name], shortCircuit: true };
+      return nextLoad(url, context);
+    } });
+  `;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
+    cwd: new URL("..", import.meta.url), stdio: ["ignore", "pipe", "pipe", "ipc"], env: {
+      AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]',
+    },
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  try {
+    const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+    assert.deepEqual(result, { code: 7, signal: null });
+    assert.equal(stderr, "");
+    const records = stdout.trim().split("\n").map(JSON.parse);
+    assert.ok(records.some(({ event, status }) => event === "sandbox.cleanup" && status === "failure"));
+    assert.ok(records.some(({ event, status, category }) => event === "shutdown" && status === "failure" && category === "internal"));
+    assert.equal(records.some(({ event, status }) => event === "shutdown" && status === "success"), false);
+  } finally { child.kill("SIGKILL"); }
 });
 
 test("SIGTERM during memory preflight drains current work without starting Gateway", { timeout: 8000 }, async () => {
