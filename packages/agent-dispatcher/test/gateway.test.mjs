@@ -64,10 +64,11 @@ test("gateway config is opt-in, complete, HTTPS only and rejects unsafe TLS", ()
   assert.equal(readGatewayConfig(noSubject).subject, undefined);
 });
 
-test("preflight wires renewable provider and authenticated identity; no sandbox operations", async (t) => {
+test("preflight returns the authenticated client with a renewable provider; no sandbox operations", async (t) => {
   const f = fixture();
   useSdk(t, f.sdk);
-  await connectGateway(config());
+  const client = await connectGateway(config());
+  assert.equal(client.raw, f.raw);
   assert.deepEqual(f.calls[0], ["credentials", { issuer: env.OPENSHELL_OIDC_ISSUER, clientId: env.OPENSHELL_CLIENT_ID, clientSecret: env.OPENSHELL_OIDC_CLIENT_SECRET, audience: env.OPENSHELL_OIDC_AUDIENCE, timeoutMs: 30_000 }]);
   assert.equal(f.calls[1][1].gateway, env.OPENSHELL_GATEWAY_ENDPOINT);
   assert.equal(f.calls[1][1].insecureSkipVerify, false);
@@ -235,8 +236,8 @@ test("runtime exits 1 on a real gateway identity mismatch instead of hanging", {
   let server;
   try {
     execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(directory, "key.pem"), "-out", join(directory, "cert.pem"), "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], { stdio: "ignore" });
-    // The gateway preflight discards its client (the SDK exposes no close()),
-    // so this test proves end to end that a mismatched identity still exits:
+    // The SDK exposes no close(), so this test proves end to end that a
+    // mismatched identity still exits before returning a client:
     // connect-node unrefs the HTTP/2 session once the identity RPC's stream
     // closes, and no other socket or timer holds the event loop.
     const { OpenShell } = await import("@nvidia/openshell-sdk/raw");

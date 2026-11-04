@@ -10,6 +10,8 @@ const EVENTS = [
   "memory.token",
   "gateway.authentication",
   "gateway.oidc",
+  "sandbox.session",
+  "sandbox.cleanup",
   "ready",
   "shutdown",
 ] as const;

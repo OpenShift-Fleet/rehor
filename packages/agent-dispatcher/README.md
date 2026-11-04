@@ -25,7 +25,25 @@ Shared Python workflow scripts and helpers come from the repository's pinned `de
 
 Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3 and Git from the Node.js base image, but not the Python MCP client (hermetic builds cannot install it over the network) and not the agent executor's `gh`/`glab` shims; skills that import the `mcp` package do not run in deployments until it is vendored. Only trusted repositories should be configured: their scripts execute in the dispatcher.
 
-Sandbox launch is not part of this change: no sandbox is created yet, and a `start` decision completes its session without launching one. Real preflight-output delivery to a sandbox agent runner is tracked separately.
+## Sandbox dispatch
+
+A normal `start` decision creates a per-run workspace, provider, profile, and sandbox. The configured profile image is used without fallback; it must include Python 3.12 and Bash for the idle command and input-file write. Sandbox creation overrides the image's default entrypoint with an idle command and sets `restartPolicy: NEVER`. After the sandbox reaches `READY`, the dispatcher sends preflight output, then invokes the existing `Dockerfile.runner` entrypoint from `/home/botuser/app`.
+
+The dispatcher writes one UTF-8 JSON envelope to `/tmp/rehor-input.json` using exec stdin, creating the file with mode `0600`:
+
+```json
+{"schemaVersion":1,"runId":"…","prompt":"…","metadata":{"action":"start","scripts":[{"name":"…","status":"…"}]}}
+```
+
+The 64 KiB limit applies to the complete serialized envelope. An oversized or invalid envelope fails dispatch without creating a sandbox. Empty or whitespace-only prompts, `skip` or `error` decisions, and runs with no scripts do not create a sandbox. Prompt contents travel through stdin, not environment variables, argv, sandbox configuration, or logs. The runner exec receives fixed per-exec controls, `REHOR_INPUT_SOURCE=sandbox` and `REHOR_INPUT_FILE=/tmp/rehor-input.json`, alongside its non-secret runtime settings; its output is discarded by the dispatcher. OpenShell SDK supports environment, argv, and stdin input, but stdin keeps prompt content out of inspectable configuration and process arguments. Each runner exec has a unique durable request ID; sandbox creation and exec are not automatically retried.
+
+Non-secret `BOT_` settings and explicitly allowed service/proxy settings are forwarded to the sandbox, with agent-profile settings applied per agent. The dispatcher does not copy its raw process environment, `PATH`, or authentication credentials into the sandbox; the memory credential is delivered through its OpenShell provider. Existing memory and Gateway authentication variables below remain unchanged.
+
+On completion, the dispatcher verifies resource ownership and confirms sandbox absence before dependent cleanup, then removes all run-owned resources. Ambiguous cleanup fails closed and retains the agent's in-flight reservation. `SessionDispatcher` allows one in-flight run per agent per process; reservations are process-local and cannot be recovered after a dispatcher restart.
+
+The current bootstrap policy authorizes only Python access to the configured HTTPS memory `/health` endpoint. It keeps `/home/botuser/app` read-only and permits writes under `/tmp`, `/home/botuser/repos`, and `/home/botuser/data`. Full memory MCP/proxy connectivity and runtime permissions remain REHOR-215 dependencies; the dispatcher does not infer broad egress from environment variables. Do not deploy for real agent work until those dependencies and runner consumption are ready.
+
+Runner-side consumption is separate work tracked by REHOR-233: the runner must consume the prepared prompt once, bypass its preflights and subsequent polling for that invocation, then exit. Non-dispatcher deployments retain the runner's legacy behavior when `REHOR_INPUT_SOURCE` is unset. Delivery validation has verified envelope readback, mode `0600`, memory health, and cleanup; it has not demonstrated an agent session or full runner end-to-end behavior.
 
 ## Memory credential preflight
 
@@ -104,6 +122,8 @@ The dispatcher writes one JSON object per lifecycle event to stdout through [pin
 | `memory.token` | Credential expiry validation and authenticated endpoint check. |
 | `gateway.authentication` | Gateway preflight, including the OIDC identity and optional subject checks. |
 | `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
+| `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail. |
+| `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous. |
 | `ready` | Startup completed. |
 | `shutdown` | Shutdown after a signal or startup failure. |
 

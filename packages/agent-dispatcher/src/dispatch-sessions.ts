@@ -1,4 +1,5 @@
 import type { WorkPreflightResult } from "./work-preflight.js";
+import { buildInputEnvelope } from "./input-envelope.js";
 
 export type SessionCompletion = "gone" | "not-created" | "unknown";
 export type SessionConfirmation = Exclude<SessionCompletion, "unknown">;
@@ -47,6 +48,13 @@ export class SessionDispatcher {
   ): DispatchResult {
     if (this.closed) return { status: "shutdown" };
     if (preflight.action !== "start") return { status: preflight.action };
+    try {
+      const input = buildInputEnvelope(preflight);
+      if (input.status === "skipped") return { status: "skip" };
+      if (input.status !== "built") return { status: "error" };
+    } catch {
+      return { status: "error" };
+    }
     if (this.inFlight.has(agent)) return { status: "busy" };
 
     // Defer user code until after the reservation is visible, even for

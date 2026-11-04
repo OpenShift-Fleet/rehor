@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
-import type { AgentProfile } from "./agent-profiles.js";
-import { runDispatcherCycle, type DispatcherCycleResult } from "./dispatcher-cycle.js";
+import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
 import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
 import { isForwardedPreflightVariable } from "./preflight-env.js";
 
@@ -12,7 +11,7 @@ export type DispatcherLoopOptions = {
   /** Complete environment for preflights; defaults to the filtered process environment. */
   env?: NodeJS.ProcessEnv;
   /** Sandbox launch for a start decision. Defaults to completing without creating a sandbox. */
-  launch?: (profile: AgentProfile, prompt: string) => Promise<SessionCompletion>;
+  launch?: DispatcherCycleOptions["launch"];
   /** Mints the per-cycle memory credential forwarded to preflight scripts. */
   memoryCredential?: () => Promise<string>;
   /** Observes each completed cycle; defaults to a structured stdout event. */
