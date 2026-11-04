@@ -150,8 +150,9 @@ async function start(): Promise<void> {
             const record = await work;
             if (isUnresolvedSession(record)) unresolvedSessionResult = true;
             if (record.outcome === "passed") running.success();
-            else running.failure("internal");
-            logger.log("sandbox.cleanup", record.cleanup === "unknown" ? "failure" : "success");
+            else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
+            if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success");
+            else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode });
             return record.completion;
           } catch {
             running.failure("internal");

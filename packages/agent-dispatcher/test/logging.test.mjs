@@ -18,9 +18,9 @@ function fixture() {
 
 // pino adds its level to each record; everything else is our lifecycle schema.
 const fields = (line) => {
-  const { event, status, durationMs, category } = JSON.parse(line);
-  return durationMs !== undefined || category !== undefined
-    ? { event, status, ...(durationMs !== undefined && { durationMs }), ...(category !== undefined && { category }) }
+  const { event, status, durationMs, category, stage, errorCode } = JSON.parse(line);
+  return durationMs !== undefined || category !== undefined || stage !== undefined || errorCode !== undefined
+    ? { event, status, ...(durationMs !== undefined && { durationMs }), ...(category !== undefined && { category }), ...(stage !== undefined && { stage }), ...(errorCode !== undefined && { errorCode }) }
     : { event, status };
 };
 
@@ -48,13 +48,23 @@ test("runtime rejects arbitrary event names, statuses, categories, and malformed
     assert.doesNotThrow(() => logger.start(event).failure("internal"));
   }
   for (const status of ["secret", "__proto__", null, 0, {}]) logger.log("startup", status);
-  for (const options of [null, "secret", 1, { category: "secret" }, { category: {} },
+  for (const options of [null, "secret", 1, { category: "secret" }, { category: {} }, { stage: "secret" }, { errorCode: "secret" },
     { durationMs: "1" }, { durationMs: NaN }, { durationMs: Infinity },
     { get category() { throw new Error("secret"); } },
     new Proxy({}, { get() { throw new Error("secret"); } })]) {
     assert.doesNotThrow(() => logger.log("startup", "failure", options));
   }
   assert.deepEqual(lines, []);
+});
+
+test("session diagnostics expose only fixed stage and error codes", () => {
+  const { logger, lines } = fixture();
+  const session = logger.start("sandbox.session");
+  session.failure("internal", { stage: "runner", errorCode: "unavailable" });
+  assert.deepEqual(lines.map(fields), [
+    { event: "sandbox.session", status: "start" },
+    { event: "sandbox.session", status: "failure", durationMs: 0, category: "internal", stage: "runner", errorCode: "unavailable" },
+  ]);
 });
 
 test("durations are bounded, rounded and measured with an injectable clock", () => {

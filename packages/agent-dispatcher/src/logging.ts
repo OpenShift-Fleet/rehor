@@ -26,21 +26,28 @@ const CATEGORIES = [
   "response",
   "internal",
 ] as const;
+const SESSION_STAGES = ["input", "policy", "workspace", "provider", "sandbox", "readiness", "write", "runner", "complete"] as const;
+const SESSION_ERROR_CODES = ["invalid_argument", "not_found", "permission_denied", "unauthenticated", "deadline_exceeded", "unavailable", "cancelled", "readiness_timeout", "other"] as const;
 
 export type LifecycleEvent = (typeof EVENTS)[number];
 export type LifecycleStatus = (typeof STATUSES)[number];
 export type ErrorCategory = (typeof CATEGORIES)[number];
+export type SessionStage = (typeof SESSION_STAGES)[number];
+export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number];
+export type LifecycleDetails = { stage?: SessionStage; errorCode?: SessionErrorCode };
 
 export interface LogOptions {
   durationMs?: number;
   category?: ErrorCategory;
+  stage?: SessionStage;
+  errorCode?: SessionErrorCode;
 }
 
 export interface LifecycleLogger {
   log(event: LifecycleEvent, status: LifecycleStatus, options?: LogOptions): void;
   start(event: LifecycleEvent): {
-    success(category?: ErrorCategory): void;
-    failure(category?: ErrorCategory): void;
+    success(category?: ErrorCategory, details?: LifecycleDetails): void;
+    failure(category?: ErrorCategory, details?: LifecycleDetails): void;
   };
 }
 
@@ -106,12 +113,18 @@ export function createLifecycleLogger(deps: {
       if (options !== undefined && (options === null || typeof options !== "object")) return;
       const duration = options?.durationMs;
       const category = options?.category;
+      const stage = options?.stage;
+      const errorCode = options?.errorCode;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
+      if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
+      if (errorCode !== undefined && !isMember(SESSION_ERROR_CODES, errorCode)) return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
+      if (stage !== undefined) record.stage = stage;
+      if (errorCode !== undefined) record.errorCode = errorCode;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.
@@ -131,15 +144,15 @@ export function createLifecycleLogger(deps: {
     const valid = isMember(EVENTS, event);
     const started = valid ? clock() : undefined;
     if (valid) log(event, "start");
-    const finish = (status: "success" | "failure", category?: ErrorCategory) => {
+    const finish = (status: "success" | "failure", category?: ErrorCategory, details?: LifecycleDetails) => {
       if (!valid) return;
       const ended = clock();
       const durationMs = started !== undefined && ended !== undefined ? ended - started : undefined;
-      log(event, status, { durationMs: Number.isFinite(durationMs) ? durationMs : undefined, category });
+      log(event, status, { ...details, durationMs: Number.isFinite(durationMs) ? durationMs : undefined, category });
     };
     return {
-      success: (category?: ErrorCategory) => finish("success", category),
-      failure: (category?: ErrorCategory) => finish("failure", category),
+      success: (category?: ErrorCategory, details?: LifecycleDetails) => finish("success", category, details),
+      failure: (category?: ErrorCategory, details?: LifecycleDetails) => finish("failure", category, details),
     };
   }
 
