@@ -12,10 +12,9 @@ const logger = createLifecycleLogger();
 const startup = logger.start("startup");
 const keepAlive = setInterval(() => {}, 60_000);
 const stopController = new AbortController();
-// A session may spend 180s in each delete RPC and 300s verifying absence for
-// both sandbox and workspace, plus bounded provider/profile cleanup RPCs.
-// Runtime termination grace must exceed this drain deadline (documented in
-// README); no dispatcher workload manifest lives in this repository to set it here.
+// Each session cleanup has a shared 20-minute deadline, leaving two minutes
+// for shutdown bookkeeping. Runtime termination grace must exceed this drain
+// deadline (documented in README); no workload manifest lives here to set it.
 const shutdownDeadlineMs = 22 * 60_000;
 let shuttingDown = false;
 let startPromise = Promise.resolve();

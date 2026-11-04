@@ -22,6 +22,7 @@ function fixture(options = {}) {
   const calls = [];
   let workspace, sandbox, provider, profile, suppliedPolicy;
   let sandboxDeleteAttempts = 0;
+  let workspaceReads = 0;
   let cleanupStarted = false;
   let workspaceCleanupReadFailures = options.cleanupReadFailures ?? 0;
   let sandboxCleanupReadFailures = options.cleanupSandboxReadFailures ?? 0;
@@ -37,7 +38,12 @@ function fixture(options = {}) {
       workspace = created;
       return { workspace };
     },
-    async getWorkspace() {
+    async getWorkspace(_request, callOptions) {
+      workspaceReads++;
+      if (options.slowCleanup && workspaceReads >= 3) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        callOptions.signal.throwIfAborted();
+      }
       if (cleanupStarted && !sandbox && workspace && workspaceCleanupReadFailures-- > 0) throw new ConnectError("private read error", Code.Unavailable);
       return workspace ? { workspace } : absent();
     },
@@ -130,7 +136,7 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession(raw, memory), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession(raw, memory, options.cleanupBudgetMs), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
@@ -300,6 +306,15 @@ test("lost delete response reconciles absence instead of retrying mutation", asy
   assert.equal(result.completion, "gone");
   assert.equal(result.cleanup, "deleted");
   assert.equal(f.calls.filter((call) => call.name === "deleteSandbox").length, 1);
+});
+
+test("one shared cleanup budget stops slow reads and records unresolved cleanup", async () => {
+  const f = fixture({ cleanupBudgetMs: 1, slowCleanup: true });
+  const result = await f.session.run(image, decision, {});
+  assert.equal(result.completion, "unknown");
+  assert.equal(result.cleanup, "unknown");
+  assert.equal(result.errorCode, "deadline_exceeded");
+  assert.equal(f.calls.some((call) => call.name === "deleteSandbox"), false);
 });
 
 test("writer failure prevents runner launch", async () => {

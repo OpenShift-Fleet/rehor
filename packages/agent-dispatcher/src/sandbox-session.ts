@@ -31,7 +31,8 @@ export type SandboxSessionResult = {
 };
 
 const rpcTimeoutMs = 10_000;
-const callOptions = (signal?: AbortSignal) => ({ timeoutMs: rpcTimeoutMs, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(rpcTimeoutMs)]) : AbortSignal.timeout(rpcTimeoutMs) });
+const defaultCleanupBudgetMs = 20 * 60_000;
+const callOptions = (signal?: AbortSignal, timeoutMs = rpcTimeoutMs) => ({ timeoutMs, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
 const isTransient = (error: unknown) => error instanceof ConnectError && (error.code === Code.Unavailable || error.code === Code.DeadlineExceeded);
 
 async function retryTransient<T>(operation: () => Promise<T>, options: { attempts?: number; signal?: AbortSignal } = {}): Promise<T> {
@@ -46,17 +47,17 @@ async function retryTransient<T>(operation: () => Promise<T>, options: { attempt
   }
 }
 
-async function retryDelete<T, R>(remove: () => Promise<T>, read: () => Promise<R | undefined>, matches: (resource: R) => boolean, attempts = 2): Promise<T | undefined> {
+async function retryDelete<T, R>(remove: () => Promise<T>, read: () => Promise<R | undefined>, matches: (resource: R) => boolean, signal: AbortSignal, attempts = 2): Promise<T | undefined> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await remove();
     } catch (error) {
       if (!isTransient(error)) throw error;
-      const current = await readOptional(read);
+      const current = await readOptional(read, signal);
       if (!current) return undefined;
       if (!matches(current)) throw new Error();
       if (attempt + 1 >= attempts) throw error;
-      await sleep(Math.min(500 * 2 ** attempt, 4000));
+      await sleep(Math.min(500 * 2 ** attempt, 4000), undefined, { signal });
     }
   }
 }
@@ -103,9 +104,9 @@ function errorCode(error: unknown, signal?: AbortSignal): NonNullable<SandboxSes
 }
 
 /** Absence requires explicit NotFound; empty/malformed responses are ambiguous. */
-async function readOptional<T>(read: () => Promise<T | undefined>): Promise<T | undefined> {
+async function readOptional<T>(read: () => Promise<T | undefined>, signal?: AbortSignal): Promise<T | undefined> {
   try {
-    const value = await retryTransient(read);
+    const value = await retryTransient(read, { signal });
     if (!value) throw new Error();
     return value;
   } catch (error) {
@@ -114,13 +115,13 @@ async function readOptional<T>(read: () => Promise<T | undefined>): Promise<T | 
   }
 }
 
-async function waitAbsent<T>(read: () => Promise<T | undefined>, matches: (value: T) => boolean): Promise<void> {
+async function waitAbsent<T>(read: () => Promise<T | undefined>, matches: (value: T) => boolean, signal: AbortSignal): Promise<void> {
   const deadline = performance.now() + 300_000;
-  while (performance.now() < deadline) {
-    const value = await readOptional(read);
+  while (performance.now() < deadline && !signal.aborted) {
+    const value = await readOptional(read, signal);
     if (!value) return;
     if (!matches(value)) throw new Error();
-    await sleep(2000);
+    await sleep(2000, undefined, { signal });
   }
   throw new ConnectError("", Code.DeadlineExceeded);
 }
@@ -131,7 +132,7 @@ async function waitAbsent<T>(read: () => Promise<T | undefined>, matches: (value
  * runtime compatibility: service policy mapping remains REHOR-215; input
  * consumption and filesystem/runtime validation remain REHOR-233. */
 export class SandboxSession {
-  constructor(private readonly raw: Raw, private readonly memory: SandboxMemory) {}
+  constructor(private readonly raw: Raw, private readonly memory: SandboxMemory, private readonly cleanupBudgetMs = defaultCleanupBudgetMs) {}
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
   async run(image: string, decision: Extract<WorkPreflightResult, { action: "start" }>, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
@@ -226,9 +227,7 @@ export class SandboxSession {
       while (performance.now() < readinessDeadline) {
         let current;
         try {
-          current = (await retryTransient(
-            () => this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions(signal)), { signal },
-          )).sandbox;
+          current = (await this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions(signal))).sandbox;
         } catch (error) {
           if (isTransient(error) && !signal?.aborted) {
             await sleep(1000, undefined, { signal });
@@ -329,12 +328,15 @@ export class SandboxSession {
     } else {
       record.completion = "unknown";
       record.cleanup = "unknown";
+      // Bound the entire reconciliation once, not the sum of per-RPC retries.
+      const cleanupSignal = AbortSignal.timeout(this.cleanupBudgetMs);
       try {
         // Recover ambiguous create responses by looking up deterministic names
         // and checking run-specific ownership metadata before deleting anything.
-        const readWorkspace = async () => (await this.raw.getWorkspace({ name: workspace.name }, callOptions())).workspace;
-        const readSandbox = async () => (await this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions())).sandbox;
-        const currentWorkspace = await readOptional(readWorkspace);
+        const cleanupOptions = (timeoutMs = rpcTimeoutMs) => callOptions(cleanupSignal, timeoutMs);
+        const readWorkspace = async () => (await this.raw.getWorkspace({ name: workspace.name }, cleanupOptions())).workspace;
+        const readSandbox = async () => (await this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, cleanupOptions())).sandbox;
+        const currentWorkspace = await readOptional(readWorkspace, cleanupSignal);
         if (!currentWorkspace) {
           // A NotFound immediately after an uncertain create does not prove
           // the server-side operation stopped; it may still commit later.
@@ -352,19 +354,20 @@ export class SandboxSession {
         workspace.id = currentWorkspace.metadata!.id;
         workspace.state = "created";
 
-        const currentSandbox = await readOptional(readSandbox);
+        const currentSandbox = await readOptional(readSandbox, cleanupSignal);
         if (currentSandbox) {
           if (!sandboxMatches(currentSandbox.metadata) || (sandbox.id && currentSandbox.metadata?.id !== sandbox.id)) throw new Error();
           sandbox.id = currentSandbox.metadata!.id;
           sandbox.state = "created";
           const request = { workspaceScope: scope, name: sandbox.name, requestId: randomUUID() };
           const deleted = await retryDelete(
-            () => this.raw.deleteSandbox(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }),
+            () => this.raw.deleteSandbox(request, cleanupOptions(180_000)),
             readSandbox,
             (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id,
+            cleanupSignal,
           );
           if (deleted && (deleted.sandboxId !== sandbox.id || (deleted.outcome !== DeletionOutcome.ACCEPTED && deleted.outcome !== DeletionOutcome.COMPLETED))) throw new Error();
-          await waitAbsent(readSandbox, (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id);
+          await waitAbsent(readSandbox, (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id, cleanupSignal);
         } else if (sandbox.state === "unknown") {
           // Do not release dependencies while an ambiguous sandbox create may
           // still become visible after this read.
@@ -372,14 +375,14 @@ export class SandboxSession {
         }
         sandbox.state = "deleted";
 
-        const members = await retryTransient(() => this.raw.listWorkspaceMembers({ workspaceScope: scope, pageSize: 100 }, callOptions()));
+        const members = await retryTransient(() => this.raw.listWorkspaceMembers({ workspaceScope: scope, pageSize: 100 }, cleanupOptions()), { signal: cleanupSignal });
         if (members.members.length || members.nextPageToken) throw new Error();
-        const remainingSandboxes = await retryTransient(() => this.raw.listSandboxes({ workspaceScope: scope, pageSize: 100 }, callOptions()));
+        const remainingSandboxes = await retryTransient(() => this.raw.listSandboxes({ workspaceScope: scope, pageSize: 100 }, cleanupOptions()), { signal: cleanupSignal });
         if (remainingSandboxes.sandboxes.length || remainingSandboxes.nextPageToken) throw new Error();
 
         if (record.provider.state === "created" || record.provider.state === "unknown") {
-          const readProvider = async () => (await this.raw.getProvider({ workspaceScope: scope, name: record.provider.name }, callOptions())).provider;
-          const current = await readOptional(readProvider);
+          const readProvider = async () => (await this.raw.getProvider({ workspaceScope: scope, name: record.provider.name }, cleanupOptions())).provider;
+          const current = await readOptional(readProvider, cleanupSignal);
           if (!current && record.provider.state === "unknown") throw new Error();
           if (current) {
             if (current.metadata?.name !== record.provider.name || current.metadata.workspace !== workspace.name
@@ -390,20 +393,21 @@ export class SandboxSession {
             record.provider.state = "created";
             const request = { workspaceScope: scope, name: record.provider.name, allowMissing: false, requestId: randomUUID() };
             await retryDelete(
-              () => this.raw.deleteProvider(request, callOptions()),
+              () => this.raw.deleteProvider(request, cleanupOptions()),
               readProvider,
               (resource) => resource.metadata?.name === record.provider.name && resource.metadata.workspace === workspace.name
                 && resource.type === record.profile.name && resource.profileWorkspace === workspace.name
                 && uuid.test(resource.metadata.id) && resource.metadata.id === record.provider.id,
+              cleanupSignal,
             );
           }
-          if (await readOptional(readProvider)) throw new Error();
+          if (await readOptional(readProvider, cleanupSignal)) throw new Error();
           record.provider.state = "deleted";
         }
 
         if (record.profile.state === "created" || record.profile.state === "unknown") {
-          const readProfile = async () => (await this.raw.getProviderProfile({ workspaceScope: scope, id: record.profile.name }, callOptions())).profile;
-          const current = await readOptional(readProfile);
+          const readProfile = async () => (await this.raw.getProviderProfile({ workspaceScope: scope, id: record.profile.name }, cleanupOptions())).profile;
+          const current = await readOptional(readProfile, cleanupSignal);
           if (!current && record.profile.state === "unknown") throw new Error();
           if (current) {
             if (current.id !== record.profile.name || current.scope !== "workspace" || current.source !== "user"
@@ -412,32 +416,34 @@ export class SandboxSession {
             record.profile.state = "created";
             const request = { workspaceScope: scope, id: record.profile.name, allowMissing: false, requestId: randomUUID() };
             await retryDelete(
-              () => this.raw.deleteProviderProfile(request, callOptions()),
+              () => this.raw.deleteProviderProfile(request, cleanupOptions()),
               readProfile,
               (resource) => resource.id === record.profile.name && resource.scope === "workspace" && resource.source === "user"
                 && (record.profile.version === undefined || resource.resourceVersion.toString() === record.profile.version)
                 && resource.category === ProviderProfileCategory.OTHER && !resource.endpoints.length && !resource.binaries.length && !resource.files.length,
+              cleanupSignal,
             );
           }
-          if (await readOptional(readProfile)) throw new Error();
+          if (await readOptional(readProfile, cleanupSignal)) throw new Error();
           record.profile.state = "deleted";
         }
 
         const [providers, profiles] = await Promise.all([
-          retryTransient(() => this.raw.listProviders({ workspaceScope: scope, pageSize: 100 }, callOptions())),
-          retryTransient(() => this.raw.listProviderProfiles({ workspaceScope: scope, pageSize: 100 }, callOptions())),
+          retryTransient(() => this.raw.listProviders({ workspaceScope: scope, pageSize: 100 }, cleanupOptions()), { signal: cleanupSignal }),
+          retryTransient(() => this.raw.listProviderProfiles({ workspaceScope: scope, pageSize: 100 }, cleanupOptions()), { signal: cleanupSignal }),
         ]);
         if (providers.providers.length || providers.nextPageToken || profiles.profiles.length || profiles.nextPageToken) throw new Error();
 
-        const finalWorkspace = (await retryTransient(() => this.raw.getWorkspace({ name: workspace.name }, callOptions()))).workspace;
+        const finalWorkspace = (await retryTransient(() => this.raw.getWorkspace({ name: workspace.name }, cleanupOptions()), { signal: cleanupSignal })).workspace;
         if (!workspaceMatches(finalWorkspace?.metadata) || finalWorkspace?.metadata?.id !== workspace.id) throw new Error();
         const request = { name: workspace.name, allowMissing: false, requestId: randomUUID() };
         await retryDelete(
-          () => this.raw.deleteWorkspace(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }),
+          () => this.raw.deleteWorkspace(request, cleanupOptions(180_000)),
           readWorkspace,
           (resource) => workspaceMatches(resource.metadata) && resource.metadata?.id === workspace.id,
+          cleanupSignal,
         );
-        await waitAbsent(readWorkspace, (remaining) => workspaceMatches(remaining.metadata) && remaining.metadata?.id === workspace.id);
+        await waitAbsent(readWorkspace, (remaining) => workspaceMatches(remaining.metadata) && remaining.metadata?.id === workspace.id, cleanupSignal);
         workspace.state = "deleted";
         record.cleanup = "deleted";
         record.completion = "gone";
@@ -445,7 +451,7 @@ export class SandboxSession {
         // Never delete a resource unless its run-specific identity was verified.
         record.cleanup = "unknown";
         record.outcome = "unknown";
-        record.errorCode ??= errorCode(error);
+        record.errorCode ??= cleanupSignal.aborted ? "deadline_exceeded" : errorCode(error);
       }
     }
     return snapshot(record);
