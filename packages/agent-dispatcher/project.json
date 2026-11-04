@@ -9,6 +9,12 @@
         "command": "npm run build --workspace=@rehor/agent-dispatcher"
       }
     },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "npm test --workspace=@rehor/agent-dispatcher"
+      }
+    },
     "run": {
       "executor": "nx:run-commands",
       "dependsOn": ["build"],

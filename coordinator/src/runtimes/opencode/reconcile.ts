@@ -154,6 +154,14 @@ export async function reconcileSession(
         return;
       }
       visited.add(parentID);
+      if (parentID !== sessionId && !normalization.announcedSessions.has(parentID)) {
+        // Recovery discovers children whose creation event was missed; emit the
+        // lifecycle marker first so their messages keep subagent scope.
+        normalization.announcedSessions.add(parentID);
+        events.push(
+          factory("run", { state: "child_session_started" }, { runtimeSessionRef: parentID }),
+        );
+      }
       const descendants: Promise<void>[] = [];
       const usage =
         parentID === sessionId

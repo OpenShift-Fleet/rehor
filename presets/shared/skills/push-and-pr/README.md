@@ -45,11 +45,20 @@ Pushes current branch with proper credential helper:
 
 ### 4. Create PR (`create_pr`)
 
-Creates pull/merge request with correct flags:
+Creates pull/merge request via REST APIs (`gh`/`glab` are thin clients executing
+in the remote executor container — they cannot resolve sandbox repo context, so
+`gh pr create`/`glab mr create` are blocked):
 
-**GitHub (fork)**: `gh pr create --repo <upstream> --head <fork>:<branch> --title <title> --body <body>`
-**GitHub (direct)**: `gh pr create --title <title> --body <body>`
-**GitLab**: `glab mr create --hostname gitlab.cee.redhat.com --title <title> --description <body>`
+**GitHub (fork)**: `gh api repos/<upstream>/pulls -X POST -f title=<title> -f body=<body> -f head=<fork>:<branch> -f base=<default>`
+**GitHub (direct)**: `gh api repos/<origin>/pulls -X POST -f title=<title> -f body=<body> -f head=<branch> -f base=<default>`
+**GitLab (fork)**: `glab api projects/<fork>%2F<repo>/merge_requests -X POST -f source_branch=<branch> -f target_branch=<default> -f title=<title> -f description=<body> -f target_project_id=<upstream-id> --hostname gitlab.cee.redhat.com`
+**GitLab (direct)**: `glab api projects/<origin>%2F<repo>/merge_requests -X POST -f source_branch=<branch> -f target_branch=<default> -f title=<title> -f description=<body> --hostname gitlab.cee.redhat.com`
+
+The default branch for the `base`/`target_branch` ref is resolved via a prior
+`gh api repos/<repo>` / `glab api projects/<repo>` call. For GitLab forks the
+lookup targets the upstream project and its response also provides the
+`target_project_id`, so the MR is created in the fork (source) project where
+the branch was pushed.
 
 Returns PR/MR URL and number.
 

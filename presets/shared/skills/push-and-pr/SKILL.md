@@ -6,7 +6,8 @@ description: >
 when_to_use: >
   Invoke after implementing changes and committing to push and create PR. Triggers on:
   "push and pr", "create pr", "open pr", "git push pr". Replaces manual git push +
-  gh pr create / glab mr create calls.
+  REST API PR/MR creation calls (gh pr create / glab mr create are blocked:
+  thin clients have no sandbox repo context).
 user-invocable: true
 allowed-tools:
   - "Bash(python3 .claude/skills/push-and-pr/scripts/push_and_pr_operations.py *)"
