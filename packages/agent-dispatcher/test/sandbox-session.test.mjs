@@ -114,6 +114,7 @@ function fixture(options = {}) {
       if (options.transientDelete && sandboxDeleteAttempts++ === 0) throw new ConnectError("private delete error", Code.Unavailable);
       const sandboxId = sandbox.metadata.id;
       sandbox = undefined;
+      if (options.transientDeleteAfterCommit && sandboxDeleteAttempts++ === 0) throw new ConnectError("private lost delete response", Code.Unavailable);
       return { sandboxId, outcome: DeletionOutcome.COMPLETED };
     },
     async listSandboxes() { return { sandboxes: sandbox ? [sandbox] : [] }; },
@@ -291,6 +292,14 @@ test("transient readiness and cleanup errors retry without losing the session", 
   const deletes = f.calls.filter((call) => call.name === "deleteSandbox");
   assert.equal(deletes.length, 2);
   assert.equal(deletes[0].request.requestId, deletes[1].request.requestId);
+});
+
+test("lost delete response reconciles absence instead of retrying mutation", async () => {
+  const f = fixture({ transientDeleteAfterCommit: true });
+  const result = await f.session.run(image, decision, {});
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(f.calls.filter((call) => call.name === "deleteSandbox").length, 1);
 });
 
 test("writer failure prevents runner launch", async () => {

@@ -46,6 +46,21 @@ async function retryTransient<T>(operation: () => Promise<T>, options: { attempt
   }
 }
 
+async function retryDelete<T, R>(remove: () => Promise<T>, read: () => Promise<R | undefined>, matches: (resource: R) => boolean, attempts = 2): Promise<T | undefined> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await remove();
+    } catch (error) {
+      if (!isTransient(error)) throw error;
+      const current = await readOptional(read);
+      if (!current) return undefined;
+      if (!matches(current)) throw new Error();
+      if (attempt + 1 >= attempts) throw error;
+      await sleep(Math.min(500 * 2 ** attempt, 4000));
+    }
+  }
+}
+
 const idleCommand = ["/usr/bin/python3.12", "-c", "import threading; threading.Event().wait()"];
 // Delivery exec: stdin → fixed path, created with mode 0600 (REHOR-226 contract).
 const writeCommand = ["/usr/bin/python3.12", "-c", `import os,stat,sys
@@ -343,10 +358,12 @@ export class SandboxSession {
           sandbox.id = currentSandbox.metadata!.id;
           sandbox.state = "created";
           const request = { workspaceScope: scope, name: sandbox.name, requestId: randomUUID() };
-          const deleted = await retryTransient(
-            () => this.raw.deleteSandbox(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }), { attempts: 2 },
+          const deleted = await retryDelete(
+            () => this.raw.deleteSandbox(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }),
+            readSandbox,
+            (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id,
           );
-          if (deleted.sandboxId !== sandbox.id || (deleted.outcome !== DeletionOutcome.ACCEPTED && deleted.outcome !== DeletionOutcome.COMPLETED)) throw new Error();
+          if (deleted && (deleted.sandboxId !== sandbox.id || (deleted.outcome !== DeletionOutcome.ACCEPTED && deleted.outcome !== DeletionOutcome.COMPLETED))) throw new Error();
           await waitAbsent(readSandbox, (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id);
         } else if (sandbox.state === "unknown") {
           // Do not release dependencies while an ambiguous sandbox create may
@@ -372,7 +389,13 @@ export class SandboxSession {
             record.provider.id = current.metadata.id;
             record.provider.state = "created";
             const request = { workspaceScope: scope, name: record.provider.name, allowMissing: false, requestId: randomUUID() };
-            await retryTransient(() => this.raw.deleteProvider(request, callOptions()), { attempts: 2 });
+            await retryDelete(
+              () => this.raw.deleteProvider(request, callOptions()),
+              readProvider,
+              (resource) => resource.metadata?.name === record.provider.name && resource.metadata.workspace === workspace.name
+                && resource.type === record.profile.name && resource.profileWorkspace === workspace.name
+                && uuid.test(resource.metadata.id) && resource.metadata.id === record.provider.id,
+            );
           }
           if (await readOptional(readProvider)) throw new Error();
           record.provider.state = "deleted";
@@ -388,7 +411,13 @@ export class SandboxSession {
               || current.category !== ProviderProfileCategory.OTHER || current.endpoints.length || current.binaries.length || current.files.length) throw new Error();
             record.profile.state = "created";
             const request = { workspaceScope: scope, id: record.profile.name, allowMissing: false, requestId: randomUUID() };
-            await retryTransient(() => this.raw.deleteProviderProfile(request, callOptions()), { attempts: 2 });
+            await retryDelete(
+              () => this.raw.deleteProviderProfile(request, callOptions()),
+              readProfile,
+              (resource) => resource.id === record.profile.name && resource.scope === "workspace" && resource.source === "user"
+                && (record.profile.version === undefined || resource.resourceVersion.toString() === record.profile.version)
+                && resource.category === ProviderProfileCategory.OTHER && !resource.endpoints.length && !resource.binaries.length && !resource.files.length,
+            );
           }
           if (await readOptional(readProfile)) throw new Error();
           record.profile.state = "deleted";
@@ -403,8 +432,10 @@ export class SandboxSession {
         const finalWorkspace = (await retryTransient(() => this.raw.getWorkspace({ name: workspace.name }, callOptions()))).workspace;
         if (!workspaceMatches(finalWorkspace?.metadata) || finalWorkspace?.metadata?.id !== workspace.id) throw new Error();
         const request = { name: workspace.name, allowMissing: false, requestId: randomUUID() };
-        await retryTransient(
-          () => this.raw.deleteWorkspace(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }), { attempts: 2 },
+        await retryDelete(
+          () => this.raw.deleteWorkspace(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }),
+          readWorkspace,
+          (resource) => workspaceMatches(resource.metadata) && resource.metadata?.id === workspace.id,
         );
         await waitAbsent(readWorkspace, (remaining) => workspaceMatches(remaining.metadata) && remaining.metadata?.id === workspace.id);
         workspace.state = "deleted";
