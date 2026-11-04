@@ -174,14 +174,17 @@ def test_timeout_records_incomplete_cost(tmp_path, caplog):
             subtype="init",
             data={"session_id": session_id, "mcp_servers": []},
         )
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
 
     short_config = Config(
         model="claude-opus-4",
         max_turns=10,
         interval=60,
         idle_interval=300,
-        cycle_timeout=1,
+        # 5s gives CI enough headroom to receive the init message before the
+        # deadline fires; 1s was flaky because _push_status and stream setup
+        # could consume the entire budget on slow runners.
+        cycle_timeout=5,
         board_key="TEST",
     )
 
