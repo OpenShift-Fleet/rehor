@@ -24,6 +24,14 @@ export default {
       for (const name of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_TEST_HOME", "OPENCODE_DB", "OPENCODE_AUTH_CONTENT", "OPENCODE_PASSWORD", "OPENCODE_SERVER_PASSWORD"]) {
         delete event.env[name];
       }
+      // The supervisor forces npm offline for the server's own in-process package
+      // resolution so only the image's pre-baked closure can load. Shell commands
+      // do not participate in that resolution: strip the offline override here so
+      // agent-driven installs in checked-out repositories use the deployment's
+      // approved proxy egress, restoring the pre-migration behavior.
+      for (const name of ["NPM_CONFIG_OFFLINE", "npm_config_offline"]) {
+        delete event.env[name];
+      }
       for (const [name, value] of Object.entries(original)) {
         if (value === null) delete event.env[name];
         else event.env[name] = value;

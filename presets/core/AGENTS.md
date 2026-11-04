@@ -201,6 +201,7 @@ Record it in task `notes` and continue.
 
 - **Mark reviewed tasks**: Nothing actionable + task in input → `task_update last_addressed` to now before ending cycle.
 - **Use runtime env vars**: Skills MUST use existing runtime env vars (see deploy/template.yaml). Never introduce custom `BOT_*` vars if runtime provides equivalent. Use `GH_USER_NAME` (not `BOT_GITHUB_USERNAME`), `BOT_JIRA_EMAIL` (not `JIRA_USER`), `BOT_CONFIG_PATH` (already exists). Check deployment config before adding new env var requirements.
+- **Internal GitLab Git transport**: `git clone`/`fetch`/`push` to `gitlab.cee.redhat.com` must use shared Git auth proxy. Runtime must set `GIT_AUTH_PROXY_HOST=devbot-proxy`, which makes `setup_git()` rewrite GitLab URLs to `http://devbot-proxy:8447/...`; sandbox egress must allow TCP 8447. `GITLAB_TLS_SKIP_VERIFY=true` is proxy-side and scoped to the internal GitLab upstream. It does not affect direct Git connections. On certificate errors, check the generated Git URL rewrite, egress, and proxy logs before diagnosing credentials. TLS verification errors occur before GitLab checks the token. `glab` API traffic is separate from Git transport. Never set global `GIT_SSL_NO_VERIFY` or `http.sslVerify=false`.
 
 ## OpenShell Filesystem Access
 

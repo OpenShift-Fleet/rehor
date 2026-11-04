@@ -114,12 +114,19 @@ var hosts = map[string]GitHost{
 
 Requests to unregistered hosts are rejected with 403. This is a security boundary — the proxy only forwards to explicitly configured git providers.
 
-TLS verification is strict by default. For internal GitLab certificate chains, provide a CA bundle via one of:
+TLS verification is strict by default. For internal GitLab certificate chains, prefer providing a CA bundle via one of:
 - `GITLAB_CA_CERT_B64` (base64 PEM; decoded by proxy startup)
 - `GITLAB_CA_CERT_PEM` (raw PEM)
 - `GITLAB_CA_CERT_FILE` (path to PEM bundle)
 
-`GITLAB_TLS_SKIP_VERIFY=true` remains available only as a temporary break-glass fallback and should not be used in normal operation.
+The internal `gitlab.cee.redhat.com` currently uses a self-signed chain. Its approved stage configuration sets `GITLAB_TLS_SKIP_VERIFY=true` on the Git auth proxy. This skips verification only for the allowlisted GitLab upstream connection made by that proxy; it does not disable TLS verification for other hosts or direct Git connections. Never set `GIT_SSL_NO_VERIFY` or global `http.sslVerify=false` in the bot.
+
+### Troubleshooting GitLab clone/fetch/push
+
+- Git transport must be rewritten through `http://devbot-proxy:8447/gitlab.cee.redhat.com/` by `GIT_AUTH_PROXY_HOST=devbot-proxy`.
+- Confirm the generated `.gitconfig` contains the host-specific `insteadOf` rewrite and the sandbox NetworkPolicy allows TCP 8447 to `devbot-proxy`.
+- If Git reports a certificate-chain error and proxy logs show no request for that repository, the bot connected directly; fix proxy routing rather than changing credentials or disabling client-side TLS.
+- `glab` API calls use a separate path; the Git auth listener handles Git smart-HTTP transport, not `glab` CLI API requests.
 
 ### Request Flow
 
