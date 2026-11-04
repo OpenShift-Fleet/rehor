@@ -165,6 +165,28 @@ verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "
 # Point MCP config to the memory server
 sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
 
+# Bind bot instance identity to the MCP connection (REHOR-235): the memory
+# server reads X-Bot-Instance-Id from the connection instead of trusting an
+# LLM-echoed instance_id tool parameter.
+if [ -n "${BOT_INSTANCE_ID:-}" ]; then
+    python3 - <<'PYEOF' || echo "WARNING: failed to inject X-Bot-Instance-Id into .mcp.json"
+import json
+import os
+
+path = ".mcp.json"
+with open(path, encoding="utf-8") as f:
+    config = json.load(f)
+
+server = config.get("mcpServers", {}).get("bot-memory")
+if server is not None:
+    server.setdefault("headers", {})["X-Bot-Instance-Id"] = os.environ["BOT_INSTANCE_ID"]
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PYEOF
+fi
+
 # --- Verify auth (via thin client → proxy) ---
 echo "Verifying GitHub auth..."
 gh auth status 2>&1 | head -3 || { echo "WARNING: gh auth failed"; }
