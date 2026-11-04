@@ -22,6 +22,34 @@ const options = (extra = {}) => ({
   dispatcher: new SessionDispatcher(), launch: async () => "gone", ...extra,
 });
 
+test("launch receives original start decision and script metadata with mock-only dependencies", async () => {
+  const decision = {
+    action: "start", prompt: "sensitive prompt",
+    scripts: [{ name: "01-work.py", status: "start", content: "sensitive content" }],
+  };
+  const selected = profile("agent", "one");
+  const calls = [];
+  const opts = options({
+    repositoriesJson: JSON.stringify([urls[0]]),
+    launch: async (...args) => { calls.push(args); return "gone"; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [selected],
+      prepareRuntime: async () => ({ botRoot: "one", dispose: async () => {} }),
+      preflight: async () => decision,
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  await opts.dispatcher.drain();
+  assert.equal(result.repositories[0].profiles[0].status, "started");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], selected);
+  assert.equal(calls[0][1], decision.prompt);
+  assert.equal(calls[0][2], decision);
+  assert.deepEqual(calls[0][2].scripts, decision.scripts);
+  assert.doesNotMatch(JSON.stringify(result), /sensitive|01-work/);
+});
+
 test("each agent waits five minutes between checks, including skip and error", async () => {
   let now = 0;
   const calls = [];

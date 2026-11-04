@@ -4,17 +4,44 @@ import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
 import { createLifecycleLogger, writeStartupGreeting } from "./logging.js";
 import { parseConfigRepositories } from "./config-repositories.js";
-import { runDispatcherLoop } from "./dispatcher-loop.js";
+import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { verifyPreflightTools } from "./work-preflight.js";
+import { SandboxSession } from "./sandbox-session.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
 const keepAlive = setInterval(() => {}, 60_000);
 const stopController = new AbortController();
-const shutdownDeadlineMs = 25_000;
+// Each session cleanup has a shared 20-minute deadline, leaving two minutes
+// for shutdown bookkeeping. Runtime termination grace must exceed this drain
+// deadline (documented in README); no workload manifest lives here to set it.
+const shutdownDeadlineMs = 22 * 60_000;
 let shuttingDown = false;
-let startPromise: Promise<void>;
+let startPromise = Promise.resolve();
 let loopPromise: Promise<void> | undefined;
+const sessionRuns = new Set<Promise<unknown>>();
+let unresolvedSessionResult = false;
+
+async function drainOperations(): Promise<void> {
+  // Startup may register the loop after shutdown begins. The loop may itself
+  // register sessions, so drain in producer order rather than taking a snapshot.
+  let failed = false;
+  try { await startPromise; } catch { failed = true; }
+  try { await loopPromise; } catch { failed = true; }
+  while (sessionRuns.size) {
+    const results = await Promise.allSettled([...sessionRuns]);
+    if (results.some((result) => result.status === "rejected"
+      || (result.status === "fulfilled" && isUnresolvedSession(result.value)))) failed = true;
+  }
+  if (unresolvedSessionResult) failed = true;
+  if (failed) throw new Error("Dispatcher operations failed");
+}
+
+function isUnresolvedSession(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const result = value as { completion?: unknown; cleanup?: unknown };
+  return result.completion === "unknown" || result.cleanup === "unknown";
+}
 
 const shutdown = (): void => {
   if (shuttingDown) {
@@ -24,7 +51,7 @@ const shutdown = (): void => {
   shuttingDown = true;
   const stopping = logger.start("shutdown");
   clearInterval(keepAlive);
-  process.exitCode = 0;
+  process.exitCode ??= 0;
   stopController.abort();
   const deadline = setTimeout(() => {
     stopping.failure("internal");
@@ -32,13 +59,13 @@ const shutdown = (): void => {
     // successful shutdown if it has not drained by the deadline.
     process.exit(1);
   }, shutdownDeadlineMs);
-  void Promise.all([startPromise, loopPromise]).then(() => {
+  void drainOperations().then(() => {
     clearTimeout(deadline);
     stopping.success();
   }, () => {
     clearTimeout(deadline);
     stopping.failure("internal");
-    process.exitCode = 1;
+    if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = 1;
   });
 };
 
@@ -85,12 +112,10 @@ async function start(): Promise<void> {
     return;
   }
   if (shuttingDown) return;
+  let gateway: Awaited<ReturnType<typeof connectGateway>> | undefined;
   try {
-    // Authentication only: connectGateway verifies the gateway and discards
-    // its client. The preflight loop must depend on the configuration objects,
-    // never on a client value, so it starts exactly when repositories,
-    // memory and gateway are all configured and authenticated.
-    if (gatewayConfig) await connectGateway(gatewayConfig, logger, stopController.signal);
+    // Authenticate once; production sessions use the connected client.
+    if (gatewayConfig) gateway = await connectGateway(gatewayConfig, logger, stopController.signal);
   } catch {
     if (shuttingDown) return;
     startup.failure("internal");
@@ -101,13 +126,41 @@ async function start(): Promise<void> {
     startup.success();
     logger.log("ready", "success");
     writeStartupGreeting();
-    if (repositoriesJson && gatewayConfig && authConfig && provider) {
+    if (repositoriesJson && gatewayConfig && authConfig && provider && gateway) {
+      const session = new SandboxSession(gateway.raw, { url: authConfig.memoryUrl, credentialProvider: provider });
+      const signal = stopController.signal;
       loopPromise = runDispatcherLoop({
-        repositoriesJson,
-        signal: stopController.signal,
+        repositoriesJson, signal,
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,
+        launch: async (profile, _prompt, decision) => {
+          if (signal.aborted) return "not-created";
+          const environment: Record<string, string> = {};
+          for (const [name, value] of Object.entries({ ...preflightEnvironment(), ...profile.preflightEnv })) {
+            if (name !== "PATH" && value !== undefined) environment[name] = value;
+          }
+          // Register before invoking session code, including synchronous errors
+          // or a shutdown signal raised during admission.
+          const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));
+          sessionRuns.add(work);
+          const running = logger.start("sandbox.session");
+          try {
+            const record = await work;
+            if (isUnresolvedSession(record)) unresolvedSessionResult = true;
+            if (record.outcome === "passed") running.success();
+            else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
+            if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success");
+            else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode });
+            return record.completion;
+          } catch {
+            running.failure("internal");
+            logger.log("sandbox.cleanup", "failure", { category: "internal" });
+            return "unknown";
+          } finally {
+            sessionRuns.delete(work);
+          }
+        },
       });
     }
   }

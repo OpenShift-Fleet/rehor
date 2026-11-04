@@ -3,7 +3,7 @@ import { discoverAgentProfiles } from "./agent-profiles.js";
 import type { AgentProfile } from "./agent-profiles.js";
 import { parseConfigRepositories, syncConfigRepositories } from "./config-repositories.js";
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
-import { runWorkPreflight } from "./work-preflight.js";
+import { runWorkPreflight, type WorkPreflightResult } from "./work-preflight.js";
 import { preparePreflightRuntime } from "./preflight-runtime.js";
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
@@ -19,7 +19,7 @@ export type DispatcherCycleOptions = {
   /** Complete caller-supplied environment, or a per-profile environment resolver. */
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
-  launch: (profile: AgentProfile, prompt: string) => Promise<SessionCompletion>;
+  launch: (profile: AgentProfile, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>) => Promise<SessionCompletion>;
   /**
    * Mints the short-lived memory credential forwarded to preflight scripts as
    * BOT_MEMORY_TOKEN. Called once per cycle; a minting failure fails every
@@ -56,7 +56,7 @@ function agentId(repositoryUrl: string, profileName: string): string {
 }
 
 /**
- * Execute one proof cycle. Only statuses and opaque IDs leave this function;
+ * Execute one dispatcher cycle. Only statuses and opaque IDs leave this function;
  * script output, prompts, paths, environment and exception details do not.
  * Session completion is deliberately not awaited. As with SessionDispatcher,
  * reservations are process-local and unknown outcomes stay reserved.
@@ -146,7 +146,10 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             await runtime.dispose();
           }
           if (options.signal?.aborted) return "shutdown" as const;
-          const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => options.launch(profile, prompt));
+          const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => {
+            if (decision.action !== "start") return "not-created";
+            return options.launch(profile, prompt, decision);
+          });
           if (dispatched.status === "started") {
             // Defensive even if a future dispatcher implementation rejects completion.
             void dispatched.completion.catch(() => {});

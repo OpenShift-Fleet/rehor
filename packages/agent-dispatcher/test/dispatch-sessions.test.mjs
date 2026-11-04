@@ -5,11 +5,38 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { runWorkPreflight } from "../dist/work-preflight.js";
+import { MAX_INPUT_BYTES } from "../dist/input-envelope.js";
 
 const start = (prompt = "work") => ({ action: "start", prompt, scripts: [] });
 const skip = { action: "skip", transcript: "no work", scripts: [] };
 const error = { action: "error", transcript: "preflight failed", scripts: [] };
 const noScripts = { action: "no-scripts", scripts: [] };
+
+test("empty start skips and invalid or oversized input errors before reservation", async () => {
+  const dispatcher = new SessionDispatcher();
+  let calls = 0;
+  const run = () => { calls++; return "gone"; };
+  for (const prompt of ["", " \n\t "]) {
+    assert.deepEqual(dispatcher.dispatch("a", start(prompt), run), { status: "skip" });
+    assert.equal(dispatcher.size, 0);
+  }
+  for (const decision of [
+    { ...start(), prompt: undefined },
+    { ...start(), prompt: 123 },
+    { ...start(), scripts: null },
+    start("x".repeat(MAX_INPUT_BYTES)),
+    { ...start(), scripts: [{ name: "x".repeat(MAX_INPUT_BYTES), status: "start" }] },
+  ]) {
+    assert.deepEqual(dispatcher.dispatch("a", decision, run), { status: "error" });
+    assert.equal(dispatcher.size, 0);
+  }
+  await Promise.resolve();
+  assert.equal(calls, 0);
+  const admitted = dispatcher.dispatch("a", start(), run);
+  assert.equal(admitted.status, "started");
+  assert.equal(await admitted.completion, "gone");
+  assert.equal(calls, 1);
+});
 
 function deferred() {
   let resolve;

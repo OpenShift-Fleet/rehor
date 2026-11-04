@@ -6,7 +6,7 @@ import { createLifecycleLogger } from "../dist/logging.js";
 const events = [
   "startup", "configuration", "kubernetes.token_request", "memory.missing_token",
   "memory.invalid_token", "memory.token", "gateway.authentication", "gateway.oidc",
-  "ready", "shutdown",
+  "sandbox.session", "sandbox.cleanup", "ready", "shutdown",
 ];
 
 function fixture() {
@@ -18,9 +18,9 @@ function fixture() {
 
 // pino adds its level to each record; everything else is our lifecycle schema.
 const fields = (line) => {
-  const { event, status, durationMs, category } = JSON.parse(line);
-  return durationMs !== undefined || category !== undefined
-    ? { event, status, ...(durationMs !== undefined && { durationMs }), ...(category !== undefined && { category }) }
+  const { event, status, durationMs, category, stage, errorCode } = JSON.parse(line);
+  return durationMs !== undefined || category !== undefined || stage !== undefined || errorCode !== undefined
+    ? { event, status, ...(durationMs !== undefined && { durationMs }), ...(category !== undefined && { category }), ...(stage !== undefined && { stage }), ...(errorCode !== undefined && { errorCode }) }
     : { event, status };
 };
 
@@ -48,13 +48,23 @@ test("runtime rejects arbitrary event names, statuses, categories, and malformed
     assert.doesNotThrow(() => logger.start(event).failure("internal"));
   }
   for (const status of ["secret", "__proto__", null, 0, {}]) logger.log("startup", status);
-  for (const options of [null, "secret", 1, { category: "secret" }, { category: {} },
+  for (const options of [null, "secret", 1, { category: "secret" }, { category: {} }, { stage: "secret" }, { errorCode: "secret" },
     { durationMs: "1" }, { durationMs: NaN }, { durationMs: Infinity },
     { get category() { throw new Error("secret"); } },
     new Proxy({}, { get() { throw new Error("secret"); } })]) {
     assert.doesNotThrow(() => logger.log("startup", "failure", options));
   }
   assert.deepEqual(lines, []);
+});
+
+test("session diagnostics expose only fixed stage and error codes", () => {
+  const { logger, lines } = fixture();
+  const session = logger.start("sandbox.session");
+  session.failure("internal", { stage: "runner", errorCode: "unavailable" });
+  assert.deepEqual(lines.map(fields), [
+    { event: "sandbox.session", status: "start" },
+    { event: "sandbox.session", status: "failure", durationMs: 0, category: "internal", stage: "runner", errorCode: "unavailable" },
+  ]);
 });
 
 test("durations are bounded, rounded and measured with an injectable clock", () => {
@@ -110,6 +120,83 @@ test("writer errors never escape or get logged, including rejected async writers
   assert.deepEqual(output, []);
 });
 
+test("production wiring preserves decision, filters runner env, and drains signal-racing sessions with mocks only", { timeout: 8000 }, async () => {
+  const modules = {
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') });`,
+    "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
+    "gateway-config.js": `export const readGatewayConfig = () => ({});`,
+    "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
+    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "dispatcher-loop.js": `
+      export const preflightEnvironment = () => ({ PATH: '/host/bin', BOT_LABEL: 'host-label', BOT_INSTANCE_ID: 'host-instance', JIRA_MCP_URL: 'https://jira.example' });
+      export async function runDispatcherLoop(options) {
+        process.send({ event: 'minted', token: await options.memoryCredential() });
+        const decision = { action: 'start', prompt: 'sensitive-prompt', scripts: [{ name: '01-work.py', status: 'start', content: 'sensitive-content' }] };
+        const profile = { configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label' } };
+        const completed = options.launch(profile, decision.prompt, decision);
+        void completed.then(completion => process.send({ event: 'completion', completion }));
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    `,
+    "sandbox-session.js": `
+      export class SandboxSession {
+        constructor(raw, memory) { if (!memory.credentialProvider.mint || memory.url.hostname !== 'memory.example') throw new Error('invalid session wiring'); }
+        run(image, decision, environment, signal) {
+          process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
+          process.exitCode = 7;
+          process.kill(process.pid, 'SIGTERM');
+          return new Promise(resolve => setTimeout(() => {
+            process.send({ event: 'settled', aborted: signal.aborted });
+            resolve({ completion: 'gone', outcome: 'passed', cleanup: 'deleted' });
+          }, 80));
+        }
+      }
+    `,
+  };
+  const preload = `
+    import { registerHooks } from 'node:module';
+    const modules = ${JSON.stringify(modules)};
+    registerHooks({ load(url, context, nextLoad) {
+      const name = url.split('/').pop();
+      if (url.includes('/dist/') && Object.hasOwn(modules, name)) return { format: 'module', source: modules[name], shortCircuit: true };
+      return nextLoad(url, context);
+    } });
+  `;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
+    cwd: new URL("..", import.meta.url), stdio: ["ignore", "pipe", "pipe", "ipc"],
+    env: {
+      AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]',
+      BOT_MEMORY_TOKEN: 'must-not-forward', OPENSHELL_OIDC_CLIENT_SECRET: 'must-not-forward',
+      KUBERNETES_SERVICE_HOST: 'must-not-forward',
+    },
+  });
+  const messages = [];
+  let stdout = "";
+  let stderr = "";
+  child.on("message", (message) => messages.push(message));
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  try {
+    const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+    assert.deepEqual(result, { code: 7, signal: null });
+    assert.equal(stderr, "");
+    assert.deepEqual(messages.map(({ event }) => event), ["minted", "run", "settled", "completion"]);
+    assert.equal(messages[0].token, "mock-memory-credential");
+    assert.equal(messages[1].image, "registry.example/agent:runner");
+    assert.deepEqual(messages[1].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
+    assert.deepEqual(messages[1].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", JIRA_MCP_URL: "https://jira.example" });
+    assert.equal(messages[1].aborted, false);
+    assert.equal(messages[2].aborted, true);
+    assert.equal(messages[3].completion, "gone");
+    const records = stdout.trim().split("\n").map(JSON.parse);
+    const shutdownSuccess = records.findIndex(({ event, status }) => event === "shutdown" && status === "success");
+    const sessionSuccess = records.findIndex(({ event, status }) => event === "sandbox.session" && status === "success");
+    assert.ok(sessionSuccess >= 0 && shutdownSuccess > sessionSuccess);
+    assert.doesNotMatch(stdout, /sensitive|config\.yaml|memory-credential|must-not-forward|registry\.example/);
+  } finally { child.kill("SIGKILL"); }
+});
+
 test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 8000 }, async () => {
   const preload = `
     import { writeSync } from 'node:fs';
@@ -135,6 +222,63 @@ test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 
     assert.deepEqual(result, { code: 0, signal: null });
     assert.equal(stderr, "");
   } finally { child.kill("SIGKILL"); child.stdout.destroy(); }
+});
+
+test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
+  const modules = {
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') });`,
+    "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
+    "gateway-config.js": `export const readGatewayConfig = () => ({});`,
+    "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
+    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "dispatcher-loop.js": `
+      export const preflightEnvironment = () => ({});
+      export async function runDispatcherLoop(options) {
+        const decision = { action: 'start', prompt: 'work', scripts: [] };
+        const profile = { image: { reference: 'registry.example/agent:runner' }, preflightEnv: {} };
+        const completion = await options.launch(profile, decision.prompt, decision);
+        process.send({ event: 'completion', completion });
+      }
+    `,
+    "sandbox-session.js": `
+      export class SandboxSession {
+        constructor() {}
+        run() {
+          process.exitCode = 7;
+          process.kill(process.pid, 'SIGTERM');
+          return new Promise(resolve => setTimeout(() => resolve({ completion: 'unknown', outcome: 'unknown', cleanup: 'unknown' }), 40));
+        }
+      }
+    `,
+  };
+  const preload = `
+    import { registerHooks } from 'node:module';
+    const modules = ${JSON.stringify(modules)};
+    registerHooks({ load(url, context, nextLoad) {
+      const name = url.split('/').pop();
+      if (url.includes('/dist/') && Object.hasOwn(modules, name)) return { format: 'module', source: modules[name], shortCircuit: true };
+      return nextLoad(url, context);
+    } });
+  `;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
+    cwd: new URL("..", import.meta.url), stdio: ["ignore", "pipe", "pipe", "ipc"], env: {
+      AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]',
+    },
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  try {
+    const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+    assert.deepEqual(result, { code: 7, signal: null });
+    assert.equal(stderr, "");
+    const records = stdout.trim().split("\n").map(JSON.parse);
+    assert.ok(records.some(({ event, status }) => event === "sandbox.cleanup" && status === "failure"));
+    assert.ok(records.some(({ event, status, category }) => event === "shutdown" && status === "failure" && category === "internal"));
+    assert.equal(records.some(({ event, status }) => event === "shutdown" && status === "success"), false);
+  } finally { child.kill("SIGKILL"); }
 });
 
 test("SIGTERM during memory preflight drains current work without starting Gateway", { timeout: 8000 }, async () => {
