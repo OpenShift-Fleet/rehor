@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
@@ -17,6 +21,12 @@ const absent = () => { throw new ConnectError("private error", Code.NotFound); }
 function fixture(options = {}) {
   const calls = [];
   let workspace, sandbox, provider, profile, suppliedPolicy;
+  let sandboxDeleteAttempts = 0;
+  let cleanupStarted = false;
+  let workspaceCleanupReadFailures = options.cleanupReadFailures ?? 0;
+  let sandboxCleanupReadFailures = options.cleanupSandboxReadFailures ?? 0;
+  let configFailures = options.configFailures ?? 0;
+  let providerStatusFailures = options.providerStatusFailures ?? 0;
   const raw = {
     async createWorkspace(request) {
       const created = { metadata: { id: randomUUID(), name: request.name, labels: request.labels } };
@@ -27,7 +37,10 @@ function fixture(options = {}) {
       workspace = created;
       return { workspace };
     },
-    async getWorkspace() { return workspace ? { workspace } : absent(); },
+    async getWorkspace() {
+      if (cleanupStarted && !sandbox && workspace && workspaceCleanupReadFailures-- > 0) throw new ConnectError("private read error", Code.Unavailable);
+      return workspace ? { workspace } : absent();
+    },
     async listWorkspaceMembers() { return { members: [] }; },
     async importProviderProfiles(request) {
       const imported = create(ProviderProfileSchema, { ...request.profiles[0].profile, scope: "workspace", source: "user", resourceVersion: 1n });
@@ -69,9 +82,16 @@ function fixture(options = {}) {
       if (options.ambiguousCreate) throw new ConnectError("private create error", Code.Unavailable);
       return { sandbox };
     },
-    async getSandbox() { return sandbox ? { sandbox } : absent(); },
-    async getSandboxConfig() { return { configurationAdmitted: true, policy: suppliedPolicy, providerAttachmentEpoch: 1n, configRevision: 1n, policyHash: "hash", providerEnvRevision: 1n }; },
+    async getSandbox() {
+      if (cleanupStarted && !sandbox && sandboxCleanupReadFailures-- > 0) throw new ConnectError("private sandbox read error", Code.Unavailable);
+      return sandbox ? { sandbox } : absent();
+    },
+    async getSandboxConfig() {
+      if (configFailures-- > 0) throw new ConnectError("private config error", Code.Unavailable);
+      return { configurationAdmitted: true, policy: suppliedPolicy, providerAttachmentEpoch: 1n, configRevision: 1n, policyHash: "hash", providerEnvRevision: 1n };
+    },
     async getSandboxProviderStatus() {
+      if (providerStatusFailures-- > 0) throw new ConnectError("private provider status error", Code.DeadlineExceeded);
       const revision = { attachmentEpoch: 1n, configRevision: 1n, policyHash: "hash", providerEnvRevision: 1n };
       return { status: { state: ProviderReadinessState.READY, receipt: { desired: { ...revision, sandboxId: sandbox.metadata.id, providerId: provider.metadata.id, providerResourceVersion: 1n } }, observed: { ...revision, credentialsInstalled: true, policyActive: true, launchEnvironmentInstalled: true } } };
     },
@@ -89,7 +109,9 @@ function fixture(options = {}) {
       yield { payload: { case: "exit", value: { exitCode: request.command[0] === "/usr/bin/bash" ? (options.exit ?? 0) : (options.writeExit ?? 0) } } };
     },
     async deleteSandbox() {
+      cleanupStarted = true;
       if (options.cleanupError) throw new ConnectError(`private ${token}`, Code.Unavailable);
+      if (options.transientDelete && sandboxDeleteAttempts++ === 0) throw new ConnectError("private delete error", Code.Unavailable);
       const sandboxId = sandbox.metadata.id;
       sandbox = undefined;
       return { sandboxId, outcome: DeletionOutcome.COMPLETED };
@@ -148,6 +170,38 @@ test("safe stdin writer then exact runner with per-exec pointers, unique request
   for (const call of f.calls.filter((call) => call.name !== "execSandbox")) {
     assert.ok(call.options.timeoutMs > 0, `${call.name} missing RPC deadline`);
     assert.ok(call.options.signal instanceof AbortSignal);
+  }
+});
+
+test("production writer creates exact bytes at mode 0600 and refuses existing files or symlinks", async () => {
+  const f = fixture();
+  await f.session.run(image, decision, {});
+  const writer = f.calls.find((call) => call.name === "execSandbox").request;
+  const directory = mkdtempSync(join(tmpdir(), "rehor-input-writer-"));
+  const target = join(directory, "input.json");
+  const command = writer.command[2].replace(JSON.stringify(INPUT_FILE_PATH), JSON.stringify(target));
+  const bytes = writer.stdin;
+  try {
+    execFileSync("python3", ["-c", command], { input: bytes });
+    assert.deepEqual(readFileSync(target), bytes);
+    assert.equal(statSync(target).mode & 0o777, 0o600);
+
+    const existing = Buffer.from("preserve existing file");
+    writeFileSync(target, existing, { mode: 0o644 });
+    assert.equal(spawnSync("python3", ["-c", command], { input: bytes }).status, 1);
+    assert.deepEqual(readFileSync(target), existing);
+
+    const victim = join(directory, "victim");
+    const link = join(directory, "linked-input.json");
+    const victimBytes = Buffer.from("do not follow symlink");
+    writeFileSync(victim, victimBytes);
+    symlinkSync(victim, link);
+    const linkCommand = writer.command[2].replace(JSON.stringify(INPUT_FILE_PATH), JSON.stringify(link));
+    assert.equal(spawnSync("python3", ["-c", linkCommand], { input: bytes }).status, 1);
+    assert.equal(lstatSync(link).isSymbolicLink(), true);
+    assert.deepEqual(readFileSync(victim), victimBytes);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -226,6 +280,17 @@ test("runner nonzero fails; missing exit/transport errors remain unknown", async
     assert.equal(result.completion, "gone");
     assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
   }
+});
+
+test("transient readiness and cleanup errors retry without losing the session", async () => {
+  const f = fixture({ configFailures: 1, providerStatusFailures: 1, cleanupReadFailures: 1, cleanupSandboxReadFailures: 1, transientDelete: true });
+  const result = await f.session.run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  const deletes = f.calls.filter((call) => call.name === "deleteSandbox");
+  assert.equal(deletes.length, 2);
+  assert.equal(deletes[0].request.requestId, deletes[1].request.requestId);
 });
 
 test("writer failure prevents runner launch", async () => {

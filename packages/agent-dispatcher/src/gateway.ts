@@ -26,9 +26,10 @@ export async function connectGateway(config: GatewayConfig, lifecycle?: Lifecycl
     // the actual work without a signal and drain it before returning, including
     // when the RPC aborts while discovery or the token response is in flight.
     const pending = new Set<Promise<string>>();
+    let startupComplete = false;
     const trackedProvider = {
       async getToken(requestSignal?: AbortSignal): Promise<string> {
-        if (signal?.aborted || requestSignal?.aborted) throw new Error();
+        if ((!startupComplete && signal?.aborted) || requestSignal?.aborted) throw new Error();
         const acquisition = logger.start("gateway.oidc");
         let token: string;
         try {
@@ -41,7 +42,7 @@ export async function connectGateway(config: GatewayConfig, lifecycle?: Lifecycl
           acquisition.failure("internal");
           throw error;
         }
-        if (signal?.aborted || requestSignal?.aborted) throw new Error();
+        if ((!startupComplete && signal?.aborted) || requestSignal?.aborted) throw new Error();
         return token;
       },
     };
@@ -58,6 +59,10 @@ export async function connectGateway(config: GatewayConfig, lifecycle?: Lifecycl
     } finally {
       await Promise.allSettled([...pending]);
     }
+    if (signal?.aborted) throw new Error();
+    // The startup signal only governs preflight. Runtime Gateway requests
+    // carry their own signals; shutdown must still authenticate cleanup RPCs.
+    startupComplete = true;
     authentication.success();
     return client;
   } catch {

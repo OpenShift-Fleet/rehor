@@ -32,6 +32,20 @@ export type SandboxSessionResult = {
 
 const rpcTimeoutMs = 10_000;
 const callOptions = (signal?: AbortSignal) => ({ timeoutMs: rpcTimeoutMs, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(rpcTimeoutMs)]) : AbortSignal.timeout(rpcTimeoutMs) });
+const isTransient = (error: unknown) => error instanceof ConnectError && (error.code === Code.Unavailable || error.code === Code.DeadlineExceeded);
+
+async function retryTransient<T>(operation: () => Promise<T>, options: { attempts?: number; signal?: AbortSignal } = {}): Promise<T> {
+  const attempts = options.attempts ?? 5;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt + 1 >= attempts || !isTransient(error) || options.signal?.aborted) throw error;
+      await sleep(Math.min(500 * 2 ** attempt, 4000), undefined, options.signal ? { signal: options.signal } : undefined);
+    }
+  }
+}
+
 const idleCommand = ["/usr/bin/python3.12", "-c", "import threading; threading.Event().wait()"];
 // Delivery exec: stdin → fixed path, created with mode 0600 (REHOR-226 contract).
 const writeCommand = ["/usr/bin/python3.12", "-c", `import os,stat,sys
@@ -76,7 +90,7 @@ function errorCode(error: unknown, signal?: AbortSignal): NonNullable<SandboxSes
 /** Absence requires explicit NotFound; empty/malformed responses are ambiguous. */
 async function readOptional<T>(read: () => Promise<T | undefined>): Promise<T | undefined> {
   try {
-    const value = await read();
+    const value = await retryTransient(read);
     if (!value) throw new Error();
     return value;
   } catch (error) {
@@ -197,9 +211,11 @@ export class SandboxSession {
       while (performance.now() < readinessDeadline) {
         let current;
         try {
-          current = (await this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions(signal))).sandbox;
+          current = (await retryTransient(
+            () => this.raw.getSandbox({ workspaceScope: scope, name: sandbox.name }, callOptions(signal)), { signal },
+          )).sandbox;
         } catch (error) {
-          if (error instanceof ConnectError && (error.code === Code.Unavailable || error.code === Code.DeadlineExceeded) && !signal?.aborted) {
+          if (isTransient(error) && !signal?.aborted) {
             await sleep(1000, undefined, { signal });
             continue;
           }
@@ -219,8 +235,12 @@ export class SandboxSession {
       {
         let providerReady = false;
         while (performance.now() < readinessDeadline) {
-          const config = await this.raw.getSandboxConfig({ workspaceScope: scope, name: sandbox.name }, callOptions(signal));
-          const status = (await this.raw.getSandboxProviderStatus({ workspaceScope: scope, sandbox: sandbox.name, provider: record.provider.name }, callOptions(signal))).status;
+          const config = await retryTransient(
+            () => this.raw.getSandboxConfig({ workspaceScope: scope, name: sandbox.name }, callOptions(signal)), { signal },
+          );
+          const status = (await retryTransient(
+            () => this.raw.getSandboxProviderStatus({ workspaceScope: scope, sandbox: sandbox.name, provider: record.provider.name }, callOptions(signal)), { signal },
+          )).status;
           const desired = status?.receipt?.desired, observed = status?.observed;
           if (config.configurationAdmitted && status?.state === ProviderReadinessState.READY && desired?.sandboxId === sandbox.id && desired.providerId === record.provider.id && desired.providerResourceVersion === providerVersion && desired.attachmentEpoch === config.providerAttachmentEpoch && desired.configRevision === config.configRevision && desired.policyHash === config.policyHash && desired.providerEnvRevision === config.providerEnvRevision && observed?.attachmentEpoch === config.providerAttachmentEpoch && observed.configRevision === config.configRevision && observed.policyHash === config.policyHash && observed.providerEnvRevision === config.providerEnvRevision && observed.credentialsInstalled && observed.policyActive && observed.launchEnvironmentInstalled) {
             const expected = create(SandboxPolicySchema, policy);
@@ -322,7 +342,10 @@ export class SandboxSession {
           if (!sandboxMatches(currentSandbox.metadata) || (sandbox.id && currentSandbox.metadata?.id !== sandbox.id)) throw new Error();
           sandbox.id = currentSandbox.metadata!.id;
           sandbox.state = "created";
-          const deleted = await this.raw.deleteSandbox({ workspaceScope: scope, name: sandbox.name, requestId: randomUUID() }, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) });
+          const request = { workspaceScope: scope, name: sandbox.name, requestId: randomUUID() };
+          const deleted = await retryTransient(
+            () => this.raw.deleteSandbox(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }), { attempts: 2 },
+          );
           if (deleted.sandboxId !== sandbox.id || (deleted.outcome !== DeletionOutcome.ACCEPTED && deleted.outcome !== DeletionOutcome.COMPLETED)) throw new Error();
           await waitAbsent(readSandbox, (current) => sandboxMatches(current.metadata) && current.metadata?.id === sandbox.id);
         } else if (sandbox.state === "unknown") {
@@ -332,9 +355,9 @@ export class SandboxSession {
         }
         sandbox.state = "deleted";
 
-        const members = await this.raw.listWorkspaceMembers({ workspaceScope: scope, pageSize: 100 }, callOptions());
+        const members = await retryTransient(() => this.raw.listWorkspaceMembers({ workspaceScope: scope, pageSize: 100 }, callOptions()));
         if (members.members.length || members.nextPageToken) throw new Error();
-        const remainingSandboxes = await this.raw.listSandboxes({ workspaceScope: scope, pageSize: 100 }, callOptions());
+        const remainingSandboxes = await retryTransient(() => this.raw.listSandboxes({ workspaceScope: scope, pageSize: 100 }, callOptions()));
         if (remainingSandboxes.sandboxes.length || remainingSandboxes.nextPageToken) throw new Error();
 
         if (record.provider.state === "created" || record.provider.state === "unknown") {
@@ -348,7 +371,8 @@ export class SandboxSession {
               || (record.provider.id && current.metadata.id !== record.provider.id)) throw new Error();
             record.provider.id = current.metadata.id;
             record.provider.state = "created";
-            await this.raw.deleteProvider({ workspaceScope: scope, name: record.provider.name, allowMissing: false, requestId: randomUUID() }, callOptions());
+            const request = { workspaceScope: scope, name: record.provider.name, allowMissing: false, requestId: randomUUID() };
+            await retryTransient(() => this.raw.deleteProvider(request, callOptions()), { attempts: 2 });
           }
           if (await readOptional(readProvider)) throw new Error();
           record.provider.state = "deleted";
@@ -363,21 +387,25 @@ export class SandboxSession {
               || (record.profile.version !== undefined && current.resourceVersion.toString() !== record.profile.version)
               || current.category !== ProviderProfileCategory.OTHER || current.endpoints.length || current.binaries.length || current.files.length) throw new Error();
             record.profile.state = "created";
-            await this.raw.deleteProviderProfile({ workspaceScope: scope, id: record.profile.name, allowMissing: false, requestId: randomUUID() }, callOptions());
+            const request = { workspaceScope: scope, id: record.profile.name, allowMissing: false, requestId: randomUUID() };
+            await retryTransient(() => this.raw.deleteProviderProfile(request, callOptions()), { attempts: 2 });
           }
           if (await readOptional(readProfile)) throw new Error();
           record.profile.state = "deleted";
         }
 
         const [providers, profiles] = await Promise.all([
-          this.raw.listProviders({ workspaceScope: scope, pageSize: 100 }, callOptions()),
-          this.raw.listProviderProfiles({ workspaceScope: scope, pageSize: 100 }, callOptions()),
+          retryTransient(() => this.raw.listProviders({ workspaceScope: scope, pageSize: 100 }, callOptions())),
+          retryTransient(() => this.raw.listProviderProfiles({ workspaceScope: scope, pageSize: 100 }, callOptions())),
         ]);
         if (providers.providers.length || providers.nextPageToken || profiles.profiles.length || profiles.nextPageToken) throw new Error();
 
-        const finalWorkspace = (await this.raw.getWorkspace({ name: workspace.name }, callOptions())).workspace;
+        const finalWorkspace = (await retryTransient(() => this.raw.getWorkspace({ name: workspace.name }, callOptions()))).workspace;
         if (!workspaceMatches(finalWorkspace?.metadata) || finalWorkspace?.metadata?.id !== workspace.id) throw new Error();
-        await this.raw.deleteWorkspace({ name: workspace.name, allowMissing: false, requestId: randomUUID() }, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) });
+        const request = { name: workspace.name, allowMissing: false, requestId: randomUUID() };
+        await retryTransient(
+          () => this.raw.deleteWorkspace(request, { timeoutMs: 180_000, signal: AbortSignal.timeout(180_000) }), { attempts: 2 },
+        );
         await waitAbsent(readWorkspace, (remaining) => workspaceMatches(remaining.metadata) && remaining.metadata?.id === workspace.id);
         workspace.state = "deleted";
         record.cleanup = "deleted";

@@ -78,6 +78,26 @@ test("preflight returns the authenticated client with a renewable provider; no s
   assert.equal(f.calls.length, 3);
 });
 
+test("startup cancellation does not disable authentication for later cleanup RPCs", async (t) => {
+  const f = fixture();
+  const startup = new AbortController();
+  let provider;
+  f.sdk.connect = async ({ oidcTokenProvider }) => {
+    provider = oidcTokenProvider;
+    return { raw: {
+      getCurrentUser: async (_, options) => {
+        assert.equal(await provider.getToken(options.signal), "test-token");
+        return { subject: "example-subject", identityProvider: "oidc" };
+      },
+      deleteSandbox: async (_, options) => provider.getToken(options.signal),
+    } };
+  };
+  useSdk(t, f.sdk);
+  const client = await connectGateway(config(), undefined, startup.signal);
+  startup.abort();
+  assert.equal(await client.raw.deleteSandbox({}, { signal: new AbortController().signal }), "test-token");
+});
+
 test("identity required and subject mismatch fails closed; SDK exceptions are sanitized", async (t) => {
   for (const subject of ["", "different-subject"]) {
     const f = fixture(); f.raw.getCurrentUser = async () => ({ subject, identityProvider: "oidc" });
