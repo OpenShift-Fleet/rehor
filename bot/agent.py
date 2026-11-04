@@ -312,7 +312,8 @@ async def run_cycle(
 
     instance_line = (
         f' Your instance ID is: {instance_id}. Pass instance_id="{instance_id}"'
-        f" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update)."
+        f" to task tool calls that accept it (task_list, task_add, task_check_capacity)."
+        f" Do NOT pass instance_id to bot_status_update — it is bound to the MCP connection."
         if instance_id
         else ""
     )

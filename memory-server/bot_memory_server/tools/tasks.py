@@ -1,9 +1,13 @@
 import json
+import logging
+import time
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
 
 from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
@@ -13,6 +17,47 @@ from ..task_outcomes import ARCHIVE_EVIDENCE_GUIDANCE, ARCHIVE_RECOVERY, archive
 
 ACTIVE_STATUSES = ("in_progress", "pr_open", "pr_changes")
 MAX_ACTIVE = 10
+
+logger = logging.getLogger(__name__)
+
+# Instance identity travels on the MCP HTTP connection (injected from
+# BOT_INSTANCE_ID by entrypoint.sh), never through LLM-supplied parameters.
+INSTANCE_ID_HEADER = "x-bot-instance-id"
+_MISSING_HEADER_WARN_INTERVAL = 3600.0
+_last_missing_header_warn = 0.0
+
+
+def resolve_instance_id() -> str | None:
+    """Resolve the bot instance identity bound to the current MCP connection.
+
+    Reads the X-Bot-Instance-Id request header so instance_id never round-trips
+    through the LLM (homoglyph typos previously created phantom bot_instances
+    rows). Header bytes arrive latin-1-decoded from the ASGI transport; the
+    UTF-8 payload is re-decoded so non-ASCII instance names survive. Returns
+    None outside an HTTP context (in-memory tests, other MCP clients) or when
+    the header is missing/empty.
+    """
+    global _last_missing_header_warn
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        request = None
+    value = request.headers.get(INSTANCE_ID_HEADER) if request is not None else None
+    if value:
+        with suppress(UnicodeDecodeError):
+            value = value.encode("latin-1").decode("utf-8")
+        return value
+    now = time.monotonic()
+    if now - _last_missing_header_warn >= _MISSING_HEADER_WARN_INTERVAL:
+        _last_missing_header_warn = now
+        logger.warning(
+            "No %s header on the MCP connection; bot instance rows are not updated. "
+            "Set BOT_INSTANCE_ID so entrypoint.sh can bind instance identity to the connection.",
+            INSTANCE_ID_HEADER,
+        )
+    return None
+
+
 _OUTCOME_ARCHIVE_GUIDANCE = f"{ARCHIVE_RECOVERY} {ARCHIVE_EVIDENCE_GUIDANCE}"
 # Only these metadata keys describe scheduling/progress bookkeeping, not evidence.
 # Every other key is conservatively evidence-relevant, including prs, related_items,
@@ -532,7 +577,6 @@ def register_task_tools(mcp: FastMCP):
         message: str,
         external_key: str | None = None,
         repo: str | None = None,
-        instance_id: str | None = None,
     ) -> dict:
         """Update the bot's current activity status. Call this at the start and end of each cycle,
         and when switching between tasks.
@@ -540,8 +584,9 @@ def register_task_tools(mcp: FastMCP):
         message: Human-readable description of what the bot is doing right now.
         external_key: The ticket/task being worked on (e.g. Jira key 'RHCLOUD-12345').
         repo: The repo being worked in (if any).
-        instance_id: Bot instance name for multi-instance setups."""
+        Do NOT pass an instance_id parameter: the bot instance identity is bound to the MCP connection."""
         pool = get_pool()
+        instance_id = resolve_instance_id()
         source_type = "jira" if external_key else None
         row = await pool.fetchrow(
             """

@@ -74,13 +74,12 @@ Provided at startup: "Your primary label is: <label>". Determines ticket scope. 
 
 If provided at startup: "Your instance ID is: <id>". Used for multi-instance isolation — multiple bot instances can share the same label without cannibalizing each other's tasks.
 
-**CRITICAL**: When instance_id is set, you MUST pass `instance_id` to ALL task tool calls:
+**CRITICAL**: When instance_id is set, pass `instance_id` to task tools that accept it:
 - `task_list(instance_id=...)` — only see tasks owned by this instance
 - `task_add(instance_id=...)` — claim task for this instance
 - `task_check_capacity(instance_id=...)` — check capacity scoped to this instance
-- `bot_status_update(instance_id=...)` — identify which instance is reporting
 
-`task_update` and `task_get` don't need instance_id (they work by external_key).
+`bot_status_update`, `task_update` and `task_get` don't take instance_id. `bot_status_update` identifies the instance from the MCP connection itself.
 
 If no instance_id is set, all task tools work globally (backward compatible).
 
@@ -99,7 +98,7 @@ MCP server `bot-memory` provides task tracking (cap 10 active) + RAG memory (vec
 | `task_outcome_report` | Record required `artifacts`, `evidence`, `notes` (string or null) before archival; every evidence item shares required `source`, `reference`, `resolution` (`accepted`, `rejected`, `unknown`), `disposition`, `reason`, optional `kind` (`state`, `comment`; default `state`) and `authorType`; optional `verified_at`, `run_id`, `reporting_cycle_id`, `attempt`, `workflow`, `reported_by`; set `correction=true` for append-only correction |
 | `task_remove` | Archive only after an outcome report is staged; fails closed if no report exists |
 | `task_check_capacity` | `{active, max: 10, has_capacity}`. Params: `instance_id?` |
-| `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`, `instance_id?` |
+| `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`. Instance identity comes from the MCP connection, not a parameter |
 
 Active: `in_progress`, `pr_open`, `pr_changes`. Terminal: `done`, `archived`, `paused`.
 
