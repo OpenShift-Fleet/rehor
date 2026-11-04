@@ -13,13 +13,18 @@ RUN go mod download \
 
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
+# Refresh installed RPMs too: the pinned base can contain vulnerable CA/system packages.
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
+    && dnf clean all
+
 # System deps + Python 3.12 + Chromium runtime libraries
-RUN dnf install -y --nodocs --allowerasing \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --allowerasing \
     python3.12 python3.12-pip python3.12-devel \
     git \
     curl \
     jq \
     socat \
+    zstd \
     gcc \
     make \
     sqlite-devel \
@@ -60,8 +65,8 @@ RUN ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && ln -sf /usr/bin/python3.12 /usr/bin/python
 
 # Go — multiple versions via GOVERSIONS build arg
-# Default Go is the first version listed. Bot switches with: eval "$(use-go 1.25.13)"
-ARG GOVERSIONS="1.24.13 1.25.13"
+# Default Go is the first version listed. Bot switches with: eval "$(use-go 1.27.3)"
+ARG GOVERSIONS="1.26.10 1.27.3"
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && for v in $GOVERSIONS; do \
          echo "Installing Go $v..." \
@@ -73,7 +78,7 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
     && ln -s /usr/local/go${DEFAULT} /usr/local/go
 ENV PATH="/usr/local/go/bin:$PATH"
 
-# use-go helper: eval "$(use-go 1.25.13)"
+# use-go helper: eval "$(use-go 1.27.3)"
 RUN printf '#!/bin/bash\nV=${1:?Usage: use-go <version>}\nif [ ! -d "/usr/local/go${V}" ]; then echo "Go $V not installed. Available:" >&2; ls -d /usr/local/go[0-9]* | sed "s|/usr/local/go||" >&2; exit 1; fi\necho "export PATH=/usr/local/go${V}/bin:\${PATH#/usr/local/go*/bin:}"\n' > /usr/local/bin/use-go \
     && chmod +x /usr/local/bin/use-go
 
@@ -89,7 +94,7 @@ RUN ln /usr/local/bin/executor-client /usr/local/bin/gh \
     && ln /usr/local/bin/executor-client /usr/local/bin/gpg
 
 # bubblewrap (sandbox runtime for Claude Code)
-RUN dnf install -y --nodocs libcap-devel \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs libcap-devel \
     && pip3.12 install meson ninja \
     && git clone --depth 1 --branch v0.11.1 https://github.com/containers/bubblewrap.git /tmp/bwrap \
     && cd /tmp/bwrap \
@@ -101,7 +106,7 @@ RUN dnf install -y --nodocs libcap-devel \
     && dnf clean all
 
 # Buildah (rootless container image builder — no daemon, works in OpenShift)
-RUN dnf install -y --nodocs buildah fuse-overlayfs \
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs \
     && dnf clean all
 
 # tini — proper init process that reaps zombie children
@@ -124,7 +129,7 @@ RUN chmod +x /usr/local/bin/start-dev-proxy.sh
 RUN npm install -g chrome-devtools-mcp@latest @redhat-cloud-services/hcc-pf-mcp
 
 # uv
-RUN pip3.12 install uv
+RUN pip3.12 install 'uv>=0.13.4'
 
 # mcp-atlassian runs in the proxy container (streamable-http transport).
 # Bot connects via HTTP — no local install needed.
@@ -143,8 +148,28 @@ ENV CLAUDE_CODE_USE_VERTEX=1
 ENV CLOUD_ML_REGION=global
 ENV BUILDAH_ISOLATION=chroot
 
+# Build the coordinator locally as well as in Dockerfile.runner so Compose can
+# exercise the same explicit engine switch before deployment packaging.
+COPY coordinator/package.json coordinator/package-lock.json ./coordinator/
+COPY coordinator/ ./coordinator/
+# Ignore any host node_modules/ or dist/ that may be present in the build
+# context; install dependencies for the image platform from the lockfile.
+RUN rm -rf coordinator/node_modules coordinator/dist \
+    && cd coordinator \
+    && npm ci --no-audit --no-fund \
+    && npm run build \
+    && npm prune --omit=dev
+# Native OpenAI providers are bundled in the pinned OpenCode executable.
+# The custom Vertex adapter is part of the coordinator bundle/dependencies.
+RUN npm install --global --omit=dev --no-audit --no-fund \
+    @opencode/cli@2.1.2 \
+    && opencode --version | tr -d '\r' | grep -Eq '^(opencode v|v)?2\.1\.2$'
+ENV OPENCODE_EXPECTED_VERSION=2.1.2
+ENV COORDINATOR_METRICS_PORT=9091
+EXPOSE 9091
+
 # Copy bot config files
-COPY config.json CLAUDE.md .mcp.json entrypoint.sh ./
+COPY config.json .mcp.json entrypoint.sh ./
 COPY .claude/ .claude/
 COPY presets/ presets/
 

@@ -1,7 +1,7 @@
 """Example tests using shared fixtures."""
 
 import pytest
-from fixtures import TASKS, memory, task
+from fixtures import CYCLE_RUNS, TASKS, memory, task
 
 
 def test_task_fixture_structure():
@@ -33,6 +33,14 @@ def test_memory_fixture_with_tags():
     assert m["category"] == "bug"
     assert "urgent" in m["tags"]
     assert "regression" in m["tags"]
+
+
+def test_cycle_runs_cover_files_changed_shapes():
+    """Verify mock cycles include both a filename list and a count."""
+    shapes = [run["progress"].get("files_changed") for run in CYCLE_RUNS]
+
+    assert any(isinstance(value, list) for value in shapes)
+    assert any(isinstance(value, int) for value in shapes)
 
 
 def test_default_tasks_dataset():

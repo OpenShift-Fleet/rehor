@@ -15,16 +15,20 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
 from filelock import FileLock, Timeout
 from prometheus_client import start_http_server
 
 from . import idle_reminder
-from .agent import push_status, run_cycle
+from .agent import CycleContext, push_status, run_cycle
 from .config import (
     ALLOWED_TOOLS,
+    DEFAULT_PROVIDER_ID,
+    DEFAULT_RUNTIME_ID,
     Config,
     InstanceConfig,
     load_config,
@@ -36,6 +40,7 @@ from .config import (
     sanitize_env,
     validate_instance_config,
     validate_manifest,
+    validate_runtime_provider_selection,
 )
 from .costs import record_cost
 from .log import bind, clear, setup_logging
@@ -312,8 +317,11 @@ def assemble_claude_md(
     logger.info("Assembled CLAUDE.md from core + %s (%d bytes)", workflow, output.stat().st_size)
 
 
-def cleanup_between_cycles(script_dir: Path) -> None:
-    """Free disk space between cycles if below threshold."""
+def cleanup_between_cycles(script_dir: Path) -> int | None:
+    """Free disk space between cycles if below threshold.
+
+    Returns the last free-space reading in MB, or None when it is unavailable.
+    """
     logger = logging.getLogger(__name__)
 
     SLEEP_SIGNAL_FILE.unlink(missing_ok=True)
@@ -322,12 +330,12 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         usage = shutil.disk_usage(str(script_dir))
         free_mb = usage.free // (1024 * 1024)
     except OSError:
-        return
+        return None
     DISK_FREE_MB.set(free_mb)
 
     if free_mb >= LOW_DISK_THRESHOLD_MB:
         logger.info("Disk OK: %dM free (threshold %dM)", free_mb, LOW_DISK_THRESHOLD_MB)
-        return
+        return free_mb
 
     logger.warning(
         "Low disk: %dM free (threshold %dM) — cleaning up",
@@ -365,18 +373,123 @@ def cleanup_between_cycles(script_dir: Path) -> None:
         logger.info("Cleanup done. Free space: %dM", free_mb)
     except OSError:
         pass
+    return free_mb
 
 
-def handle_cycle_timeout(timeout_seconds: int, label: str) -> tuple[None, None]:
-    """Log timeout and warn about lost cost data. Returns (None, None) for result, ctx."""
-    logger = logging.getLogger(__name__)
-    logger.error(
-        "Cycle timed out after %ds — skipping to next cycle",
-        timeout_seconds,
+def _timeout_result(ctx: CycleContext, timeout_seconds: int) -> SimpleNamespace:
+    """Synthetic ResultMessage-like object for timed-out cycles."""
+    now = datetime.now(UTC)
+    if ctx.started_at is not None:
+        duration_ms = max(0, int((now - ctx.started_at).total_seconds() * 1000))
+    else:
+        duration_ms = timeout_seconds * 1000
+
+    usage = (
+        dict(ctx.partial_usage)
+        if ctx.partial_usage
+        else {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+        }
     )
-    logger.warning("Cost data for timed-out cycle lost (SDK does not expose partial usage)")
+    return SimpleNamespace(
+        session_id=ctx.session_id or "",
+        subtype="error",
+        duration_ms=duration_ms,
+        num_turns=ctx.num_turns,
+        usage=usage,
+        model_usage=dict(ctx.model_usage) if ctx.model_usage else {},
+        total_cost_usd=0,
+        result="",
+        cost_status="unknown",
+        cost_incomplete=True,
+    )
+
+
+def handle_cycle_timeout(
+    timeout_seconds: int,
+    label: str,
+    *,
+    ctx: CycleContext | None = None,
+    cwd: str = "",
+    instance_id: str | None = None,
+    input_prompt: str | None = None,
+    costs_file: Path | None = None,
+    workflow: str = "unknown",
+) -> tuple[None, CycleContext | None]:
+    """Log timeout, post error cycle_run + best-effort cost, return (None, ctx)."""
+    logger = logging.getLogger(__name__)
+    reason = f"Cycle timed out after {timeout_seconds}s"
+    logger.error("%s — skipping to next cycle", reason)
     CYCLE_TIMEOUT_TOTAL.labels(label).inc()
-    return None, None
+
+    if ctx is None:
+        ctx = CycleContext()
+
+    ctx.work_type = ctx.work_type or "error"
+    ctx.summary = reason
+    ctx.notes = reason
+
+    synthetic = _timeout_result(ctx, timeout_seconds)
+    if not synthetic.session_id:
+        logger.warning("Timed-out cycle has no session_id — cycle_run/transcript cannot be recovered")
+    else:
+        record_transcript(
+            label=label,
+            result=synthetic,
+            ctx=ctx,
+            cwd=cwd,
+            instance_id=instance_id,
+            input_prompt=input_prompt,
+            started_at=ctx.started_at,
+        )
+
+    if costs_file is not None:
+        if not ctx.partial_usage:
+            logger.warning("Cost data for timed-out cycle incomplete (no partial usage from stream)")
+        record_cost(
+            costs_file=costs_file,
+            label=label,
+            result=synthetic,
+            ctx=ctx,
+            instance_id=instance_id,
+            workflow=workflow,
+        )
+    else:
+        logger.warning("Cost data for timed-out cycle lost (no costs file configured)")
+
+    push_status("error", reason, instance_id=instance_id, jira_key=ctx.jira_key, repo=ctx.repo)
+    return None, ctx
+
+
+def validate_python_runner_selection(instance_config: InstanceConfig) -> None:
+    """Fail closed instead of silently ignoring a coordinator selection.
+
+    The legacy Python loop owns only the Claude/Vertex path. The TypeScript
+    coordinator consumes non-default selections; an old image must not run an
+    OpenCode config through the Claude SDK by accident.
+    """
+    logger = logging.getLogger(__name__)
+    errors = validate_runtime_provider_selection(instance_config.runtime, instance_config.provider)
+    if errors:
+        for error in errors:
+            logger.error("FATAL: %s", error)
+        sys.exit(1)
+    if (instance_config.runtime, instance_config.provider) != (
+        DEFAULT_RUNTIME_ID,
+        DEFAULT_PROVIDER_ID,
+    ):
+        logger.error(
+            "Runtime/provider selection %s/%s requires the TypeScript coordinator; "
+            "the Python runner supports only %s/%s",
+            instance_config.runtime,
+            instance_config.provider,
+            DEFAULT_RUNTIME_ID,
+            DEFAULT_PROVIDER_ID,
+        )
+        sys.exit(1)
 
 
 def main() -> None:
@@ -431,6 +544,7 @@ def main() -> None:
             model_tiers=config.model_tiers,
         )
         validate_instance_config(SCRIPT_DIR, instance_config, initial_agent_dir)
+        validate_python_runner_selection(instance_config)
 
         # Remove secrets from env so Bash subprocesses can't leak them.
         # MCP servers already have resolved values. gh/glab use config files.
@@ -483,6 +597,7 @@ def main() -> None:
                         apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
                     instance_config = load_instance_config(remote_agent_dir)
+                    validate_python_runner_selection(instance_config)
                     install_skills(
                         SCRIPT_DIR,
                         resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, remote_agent_dir),
@@ -552,24 +667,31 @@ def main() -> None:
                     logger.info("Running agent cycle with model %s...", cycle_model)
 
                     cycle_start = time.monotonic()
-                    try:
-                        result, ctx = asyncio.run(
-                            asyncio.wait_for(
-                                run_cycle(
-                                    label=args.label,
-                                    config=config,
-                                    mcp_servers=mcp_servers,
-                                    allowed_tools=ALLOWED_TOOLS,
-                                    cwd=str(SCRIPT_DIR),
-                                    instance_id=instance_id,
-                                    preflight_prompt=preflight_prompt,
-                                    model=cycle_model,
-                                ),
-                                timeout=config.cycle_timeout,
-                            )
+                    ctx = CycleContext()
+                    result, ctx = asyncio.run(
+                        run_cycle(
+                            label=args.label,
+                            config=config,
+                            mcp_servers=mcp_servers,
+                            allowed_tools=ALLOWED_TOOLS,
+                            cwd=str(SCRIPT_DIR),
+                            instance_id=instance_id,
+                            preflight_prompt=preflight_prompt,
+                            model=cycle_model,
+                            ctx=ctx,
                         )
-                    except TimeoutError:
-                        result, ctx = handle_cycle_timeout(config.cycle_timeout, args.label)
+                    )
+                    if ctx.timed_out:
+                        result, ctx = handle_cycle_timeout(
+                            config.cycle_timeout,
+                            args.label,
+                            ctx=ctx,
+                            cwd=str(SCRIPT_DIR),
+                            instance_id=instance_id,
+                            input_prompt=preflight_prompt,
+                            costs_file=DATA_DIR / "costs.jsonl",
+                            workflow=instance_config.workflow,
+                        )
                     cycle_duration = time.monotonic() - cycle_start
                     work_type = (ctx.work_type if ctx else None) or "unknown"
                     CYCLE_DURATION_SECONDS.labels(args.label, work_type).observe(cycle_duration)
@@ -594,9 +716,10 @@ def main() -> None:
                             cwd=str(SCRIPT_DIR),
                             instance_id=instance_id,
                             input_prompt=preflight_prompt,
+                            started_at=ctx.started_at if ctx else None,
                         )
-                    else:
-                        if ctx and ctx.jira_key:
+                    elif not ctx.timed_out:
+                        if ctx.jira_key:
                             bind(task_key=ctx.jira_key)
                         logger.warning("Cycle produced no result")
 

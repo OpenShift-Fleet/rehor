@@ -249,7 +249,7 @@ No. The new env vars (`BOT_WORKFLOW_PRESET`, `BOT_ENV_PRESETS`) are optional fal
 
 ### What about the `setup.sh` in my runner repo?
 
-Still works. The build chain runs: preset install scripts → instance `setup.sh`. Your instance-specific installs run last and can depend on anything presets installed.
+Still works. The build chain runs preset install scripts, then instance `setup.sh` as root. Preset/Dockerfile repo flags do not carry into the script; every custom DNF install must explicitly use `--disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'`, for example `dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs <package>`.
 
 ### Will new presets be added?
 

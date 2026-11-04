@@ -20,12 +20,16 @@ services:
       dockerfile: memory-server/Dockerfile
     ports:
       - "8080:8080"
+      - "127.0.0.1:8081:8081"
     env_file:
       - .env
     environment:
       DATABASE_URL: postgresql://bot:bot@postgres:5432/bot_memory
       TRUSTED_BOT_ACCOUNTS: "${TRUSTED_BOT_ACCOUNTS:-}"
       KUBEARCHIVE_TOKEN: "${KUBEARCHIVE_TOKEN:-}"
+      # Registry credentials from .env belong only to the proxy.
+      REGISTRY_REDHAT_USERNAME: ""
+      REGISTRY_REDHAT_TOKEN: ""
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +64,8 @@ services:
       - GCP_REGION=${VERTEX_LOCATION:-us-east5}
       - VERTEX_ALLOWED_MODELS=${VERTEX_ALLOWED_MODELS:-}
       - OPENAI_API_KEY
+      - REGISTRY_REDHAT_USERNAME
+      - REGISTRY_REDHAT_TOKEN
       - OPENAI_ALLOWED_MODELS=${OPENAI_ALLOWED_MODELS:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - JIRA_URL=${JIRA_URL:-https://redhat.atlassian.net}
@@ -86,7 +92,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        GOVERSIONS: "1.24.13 1.25.13"
+        GOVERSIONS: "1.26.10 1.27.3"
     security_opt:
       - no-new-privileges
     shm_size: 512m
@@ -109,14 +115,23 @@ services:
       - SSO_PASSWORD
       - BOT_LABEL=${BOT_LABEL:-hcc-ai-framework}
       - BOT_INSTANCE_ID=${BOT_INSTANCE_ID:-}
+      - BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE:-python}
       - BOT_CONFIG_REPO=${BOT_CONFIG_REPO:-https://github.com/RedHatInsights/platform-frontend-ai-dev}
       - BOT_CONFIG_PATH=${BOT_CONFIG_PATH:-rehor-config}
       - BOT_MEMORY_URL=http://memory-server:8080/mcp
       - COSTS_API_URL=http://memory-server:8080/api/costs
+      - CYCLE_RUNS_API_URL=http://memory-server:8080/api/cycle-runs
       - BOT_DASHBOARD_URL=http://memory-server:8080/api/bot-status
+      - REHOR_MODEL_PROXY_URL=${REHOR_MODEL_PROXY_URL:-http://proxy:8450/v1}
+      - REHOR_MODEL_PROXY_TOKEN=${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}
+      - OPENCODE_COMMAND=/usr/local/bin/opencode
+      - OPENCODE_EXPECTED_VERSION=2.1.2
       - CLAUDE_CODE_SKIP_VERTEX_AUTH=true
       # Empty so .env's OPENAI_API_KEY does not leak into the bot.
       - OPENAI_API_KEY=
+      # Registry credentials from .env belong only to the proxy.
+      - REGISTRY_REDHAT_USERNAME=
+      - REGISTRY_REDHAT_TOKEN=
       - ANTHROPIC_VERTEX_BASE_URL=http://proxy:8443
       - ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-dummy-project}
       - CLOUD_ML_REGION=global

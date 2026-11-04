@@ -75,7 +75,7 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "label": label,
-        "session_id": getattr(result, "session_id", ""),
+        "session_id": getattr(result, "session_id", "") or (ctx.session_id if ctx else "") or "",
         "num_turns": getattr(result, "num_turns", 0),
         "duration_ms": getattr(result, "duration_ms", 0),
         "cost_usd": getattr(result, "total_cost_usd", 0) or 0,
@@ -88,6 +88,15 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
         "is_error": getattr(result, "subtype", "") != "success",
         "no_work": _is_no_work(result_text),
     }
+
+    cost_status = getattr(result, "cost_status", None)
+    if isinstance(cost_status, str) and cost_status:
+        entry["cost_status"] = cost_status
+    cost_incomplete = getattr(result, "cost_incomplete", None)
+    if isinstance(cost_incomplete, bool):
+        entry["cost_incomplete"] = cost_incomplete
+    elif entry.get("cost_status") == "unknown":
+        entry["cost_incomplete"] = True
 
     if ctx:
         entry["external_key"] = ctx.jira_key

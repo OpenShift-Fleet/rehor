@@ -4,12 +4,20 @@ import asyncio
 import io
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
+import pytest
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    SystemMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
-from bot.agent import run_cycle
+from bot.agent import CycleContext, _extract_context, _extract_task_id_from_result, run_cycle
 from bot.config import Config
 from bot.costs import summarize_result
 
@@ -51,7 +59,7 @@ def _result(
     )
 
 
-async def _run(messages):
+async def _run(messages, ctx: CycleContext | None = None):
     async def fake_query(*, prompt, options):
         for message in messages:
             yield message
@@ -59,8 +67,9 @@ async def _run(messages):
     with (
         patch("bot.agent.query", fake_query),
         patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._make_sdk_transport", return_value=None),
     ):
-        return await run_cycle("test-label", _config(), {}, [], cwd=".")
+        return await run_cycle("test-label", _config(), {}, [], cwd=".", ctx=ctx)
 
 
 def test_summarize_result_ratio():
@@ -93,15 +102,25 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     caplog.set_level(logging.INFO)
     tool = ToolUseBlock(id="tool_1", name="Bash", input={"command": "gh pr checks 123"})
     tool_result = ToolResultBlock(tool_use_id="tool_1", content="ok")
-    asyncio.run(
+    ctx = CycleContext()
+    result, out_ctx = asyncio.run(
         _run(
             [
+                SystemMessage(
+                    subtype="init",
+                    data={"session_id": "sess-from-init", "mcp_servers": []},
+                ),
                 AssistantMessage(content=[tool], model="claude-opus-4"),
                 AssistantMessage(content=[tool_result], model="claude-opus-4"),
                 _result(),
-            ]
+            ],
+            ctx=ctx,
         )
     )
+    assert result is not None
+    assert out_ctx is ctx
+    assert ctx.session_id == "sess-from-init"
+    assert ctx.started_at is not None
     assert "[tool] Bash: gh pr checks 123" in caplog.text
     assert "[tool] Bash: gh pr checks 123 completed in" in caplog.text
     assert "ms" in caplog.text
@@ -111,6 +130,29 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     assert "cache_write=100" in caplog.text
     assert "ratio=2.00" in caplog.text
     assert "tokens in=1000 out=500" in caplog.text
+
+
+def test_stream_hang_after_result_still_returns_result(caplog):
+    """A stream that never closes after ResultMessage must not stall the cycle."""
+    caplog.set_level(logging.WARNING)
+    result_msg = _result()
+
+    async def hanging_after_result(*, prompt, options):
+        yield SystemMessage(subtype="init", data={"session_id": "sess-hang", "mcp_servers": []})
+        yield result_msg
+        await asyncio.sleep(30)
+
+    with (
+        patch("bot.agent.query", hanging_after_result),
+        patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._make_sdk_transport", return_value=None),
+        patch("bot.agent._POST_RESULT_GRACE_SECONDS", 0.2),
+    ):
+        result, ctx = asyncio.run(run_cycle("test-label", _config(), {}, [], cwd="."))
+
+    assert result is result_msg
+    assert ctx.timed_out is False
+    assert "did not close" in caplog.text
 
 
 def test_cycle_logs_ratio_na_when_no_cache_write(caplog):
@@ -182,16 +224,26 @@ def test_cycle_done_json_formatter_keys():
     tool = ToolUseBlock(
         id="tool_1",
         name="mcp__bot-memory__bot_status_update",
-        input={"jira_key": "REHOR-41", "repo": "test-repo"},
+        input={"external_key": "ACTIVE", "repo": "active-repo", "summary": "Active work"},
     )
     tool_result = ToolResultBlock(tool_use_id="tool_1", content="ok")
+    lookup = ToolUseBlock(
+        id="tool_2",
+        name="mcp__bot-memory__task_get",
+        input={"external_key": "OTHER", "repo": "other-repo", "summary": "Other work"},
+    )
 
     try:
-        asyncio.run(
+        _, context = asyncio.run(
             _run(
                 [
                     AssistantMessage(content=[tool], model="claude-opus-4"),
                     AssistantMessage(content=[tool_result], model="claude-opus-4"),
+                    AssistantMessage(content=[lookup], model="claude-opus-4"),
+                    AssistantMessage(
+                        content=[ToolResultBlock(tool_use_id="tool_2", content='{"id":99,"external_key":"OTHER"}')],
+                        model="claude-opus-4",
+                    ),
                     _result(),
                 ]
             )
@@ -212,7 +264,128 @@ def test_cycle_done_json_formatter_keys():
     assert len(cycle_done_lines) == 1
     record = cycle_done_lines[0]
     assert record["run_id"] == "test-run-uuid"
-    assert record["task_key"] == "REHOR-41"
+    assert record["task_key"] == "ACTIVE"
+    assert context.jira_key == "ACTIVE"
+    assert context.repo == "active-repo"
+    assert context.summary == "Active work"
+    assert context.task_id is None
+    lookup_done = next(json.loads(line) for line in lines if "task_get" in line and "completed in" in line)
+    assert lookup_done["task_key"] == "ACTIVE"
     assert record["model"] == "claude-opus-4"
     assert record["cost"] == 0.25
     assert record["level"] == "INFO"
+
+
+def test_task_outcome_report_context_uses_generic_external_key():
+    context = CycleContext(jira_key="OLD", task_id=12)
+    _extract_context(
+        SimpleNamespace(
+            name="mcp__bot-memory__task_outcome_report",
+            input={"external_key": "DEMO-OUTCOME-1", "jira_key": "LEGACY", "repo": "org/demo"},
+        ),
+        context,
+    )
+    assert context.jira_key == "DEMO-OUTCOME-1"
+    assert context.repo == "org/demo"
+    assert context.task_id is None
+
+
+@pytest.mark.parametrize("tool", ["task_get", "task_list", "slack_notify", "memory_search"])
+def test_unrelated_memory_calls_preserve_selected_work(tool):
+    context = CycleContext(jira_key="ACTIVE", repo="org/active", summary="Active work", task_id=7)
+    _extract_context(
+        SimpleNamespace(
+            name=f"mcp__bot-memory__{tool}",
+            input={
+                "external_key": "OTHER",
+                "repo": "org/other",
+                "summary": "Other work",
+                "progress": {"external_key": "OTHER", "repo": "org/other"},
+            },
+        ),
+        context,
+    )
+    assert (context.jira_key, context.repo, context.summary, context.task_id) == (
+        "ACTIVE",
+        "org/active",
+        "Active work",
+        7,
+    )
+
+
+@pytest.mark.parametrize("tool", ["bot_status_update", "task_add", "task_update", "task_outcome_report", "task_remove"])
+def test_work_selection_accepts_legacy_key(tool):
+    context = CycleContext(jira_key="OLD", task_id=7)
+    _extract_context(
+        SimpleNamespace(
+            name=f"mcp__bot-memory__{tool}",
+            input={"jira_key": "LEGACY", "repo": "org/legacy", "summary": "Selected work"},
+        ),
+        context,
+    )
+    assert (context.jira_key, context.repo, context.summary, context.task_id) == (
+        "LEGACY",
+        "org/legacy",
+        "Selected work",
+        None,
+    )
+
+
+@pytest.mark.parametrize("key_field", ["external_key", "jira_key"])
+def test_progress_fills_missing_context_and_preserves_selected_work(key_field):
+    context = CycleContext()
+    _extract_context(
+        SimpleNamespace(
+            name="mcp__bot-memory__progress_store",
+            input={"progress": {key_field: "ACTIVE", "repo": "org/active"}},
+        ),
+        context,
+    )
+    assert (context.jira_key, context.repo) == ("ACTIVE", "org/active")
+    context.repo = None
+    _extract_context(
+        SimpleNamespace(
+            name="mcp__bot-memory__progress_store",
+            input={
+                "external_key": "OTHER",
+                "repo": "org/other",
+                "summary": "Other work",
+                "progress": {"external_key": "OTHER", "jira_key": "ACTIVE", "repo": "org/other"},
+            },
+        ),
+        context,
+    )
+    assert (context.jira_key, context.repo, context.summary) == ("ACTIVE", None, None)
+
+
+def test_progress_prefers_external_key_over_legacy_alias():
+    context = CycleContext()
+    _extract_context(
+        SimpleNamespace(
+            name="mcp__bot-memory__progress_store",
+            input={"progress": {"external_key": "GENERIC", "jira_key": "LEGACY"}},
+        ),
+        context,
+    )
+    assert context.jira_key == "GENERIC"
+
+
+@pytest.mark.parametrize("key_field", ["external_key", "jira_key"])
+@pytest.mark.parametrize("id_field", ["id", "task_id"])
+def test_task_result_correlates_with_selected_key(key_field, id_field):
+    context = CycleContext(jira_key="ACTIVE", task_id=7)
+    for key, task_id, expected in [("OTHER", 99, 7), ("ACTIVE", 8, 8)]:
+        _extract_task_id_from_result(
+            ToolResultBlock(tool_use_id="lookup", content=json.dumps({key_field: key, id_field: task_id})),
+            context,
+        )
+        assert context.task_id == expected
+
+
+def test_progress_result_without_identity_keeps_existing_task_id_contract():
+    context = CycleContext(jira_key="ACTIVE")
+    _extract_task_id_from_result(
+        ToolResultBlock(tool_use_id="progress", content='{"task_id":7,"cycle_type":"pr_review"}'),
+        context,
+    )
+    assert context.task_id == 7

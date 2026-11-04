@@ -8,6 +8,7 @@ import {
   type SleepSignal,
   sleep,
 } from "./scheduler";
+import { combineAbortSignals } from "./utils";
 
 export enum LoopStopReason {
   Shutdown = "shutdown",
@@ -20,7 +21,9 @@ export enum LoopStopReason {
 export enum LoopErrorPhase {
   Admission = "admission",
   Prepare = "prepare",
+  Decision = "decision",
   Run = "run",
+  Cleanup = "cleanup",
   Sleep = "sleep",
 }
 
@@ -29,12 +32,22 @@ export interface CoordinatorLoopOptions<TResult> {
   scheduler: CycleScheduler;
   prepare(signal: AbortSignal): Promise<PreparedCycleInput>;
   run(prepared: PreparedCycleInput, signal: AbortSignal): Promise<TResult>;
+  /**
+   * Post-run housekeeping. It runs after the sleep signal is read, because
+   * cleanup may delete that signal, and it runs even when shutdown interrupted
+   * the attempt. A failure is reported but does not fail the completed run.
+   */
+  afterRun?(): Promise<void>;
   sleepSignal?: () => Promise<SleepSignal | null>;
   sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   shutdownSignal?: AbortSignal;
   signal?: AbortSignal;
   maxCycles?: number;
-  onDecision?(plan: CyclePlan, prepared?: PreparedCycleInput): LoopWriteResult;
+  onDecision?(
+    plan: CyclePlan,
+    prepared?: PreparedCycleInput,
+    signal?: AbortSignal,
+  ): LoopWriteResult;
   onError?(error: unknown, phase: LoopErrorPhase): LoopWriteResult;
 }
 
@@ -42,6 +55,7 @@ export interface CoordinatorLoopResult<TResult> {
   stopReason: LoopStopReason;
   cycles: number;
   results: readonly TResult[];
+  failures: number;
   error?: unknown;
 }
 
@@ -57,42 +71,31 @@ export interface LoopSignalController {
 export function createLoopSignals(
   options: { shutdownSignal?: AbortSignal; signal?: AbortSignal } = {},
 ): LoopSignalController {
-  const controller = new AbortController();
+  const combined = combineAbortSignals(options);
   let stopReason: LoopStopReason.Shutdown | LoopStopReason.Cancelled | undefined;
-  const listeners: Array<() => void> = [];
-
-  const trigger = (
-    kind: LoopStopReason.Shutdown | LoopStopReason.Cancelled,
-    reason?: unknown,
-  ): void => {
-    if (controller.signal.aborted) return;
-    stopReason = kind;
-    controller.abort(reason);
+  const onAbort = (): void => {
+    stopReason =
+      combined.cause?.kind === "shutdown" &&
+      (options.shutdownSignal?.aborted || !options.signal?.aborted)
+        ? LoopStopReason.Shutdown
+        : LoopStopReason.Cancelled;
   };
-  const watch = (
-    signal: AbortSignal | undefined,
-    kind: LoopStopReason.Shutdown | LoopStopReason.Cancelled,
-  ): void => {
-    if (!signal) return;
-    const onAbort = (): void => trigger(kind, signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    listeners.push(() => signal.removeEventListener("abort", onAbort));
-    if (signal.aborted) onAbort();
-  };
+  if (combined.signal.aborted) onAbort();
+  else combined.signal.addEventListener("abort", onAbort, { once: true });
 
-  watch(options.shutdownSignal, LoopStopReason.Shutdown);
-  watch(options.signal, LoopStopReason.Cancelled);
+  const trigger = (kind: "shutdown" | "cancelled", reason?: unknown): void => {
+    combined.abort({ kind, reason });
+  };
 
   return {
-    signal: controller.signal,
+    signal: combined.signal,
     get stopReason() {
       return stopReason;
     },
-    requestShutdown: (reason) => trigger(LoopStopReason.Shutdown, reason),
-    requestCancel: (reason) => trigger(LoopStopReason.Cancelled, reason),
+    requestShutdown: (reason) => trigger("shutdown", reason),
+    requestCancel: (reason) => trigger("cancelled", reason),
     dispose: () => {
-      for (const remove of listeners) remove();
-      listeners.length = 0;
+      combined.dispose();
     },
   };
 }
@@ -133,21 +136,32 @@ export async function runCoordinatorLoop<TResult>(
   });
   const results: TResult[] = [];
   let cycles = 0;
+  let failures = 0;
   let lease: CycleAdmissionLease | null = null;
+  // Reporting hooks write to external sinks; their failures must never stop the loop.
+  const reportError = (error: unknown, phase: LoopErrorPhase): Promise<void> =>
+    safely(() => options.onError?.(error, phase));
+  const decide = async (plan: CyclePlan, prepared?: PreparedCycleInput): Promise<void> => {
+    try {
+      await options.onDecision?.(plan, prepared, signals.signal);
+    } catch (error) {
+      await reportError(error, LoopErrorPhase.Decision);
+    }
+  };
 
   try {
     try {
       lease = await options.admission.acquire(signals.signal);
     } catch (error) {
-      if (signals.signal.aborted) return stopped(signals, cycles, results);
-      await options.onError?.(error, LoopErrorPhase.Admission);
-      return { stopReason: LoopStopReason.Failed, cycles, results, error };
+      if (signals.signal.aborted) return stopped(signals, cycles, results, failures);
+      await reportError(error, LoopErrorPhase.Admission);
+      return { stopReason: LoopStopReason.Failed, cycles, results, failures: 1, error };
     }
-    if (!lease) return { stopReason: LoopStopReason.AdmissionDenied, cycles, results };
+    if (!lease) return { stopReason: LoopStopReason.AdmissionDenied, cycles, results, failures };
 
     while (!signals.signal.aborted) {
       if (options.maxCycles !== undefined && cycles >= options.maxCycles) {
-        return { stopReason: LoopStopReason.MaxCycles, cycles, results };
+        return { stopReason: LoopStopReason.MaxCycles, cycles, results, failures };
       }
 
       let prepared: PreparedCycleInput;
@@ -156,50 +170,65 @@ export async function runCoordinatorLoop<TResult>(
       } catch (error) {
         if (signals.signal.aborted) break;
         cycles += 1;
-        await options.onError?.(error, LoopErrorPhase.Prepare);
+        failures += 1;
+        await reportError(error, LoopErrorPhase.Prepare);
         const plan = options.scheduler.planForPreflight(errorPreflight(error));
-        await options.onDecision?.(plan);
-        if (!(await waitForPlan(plan, options, signals.signal))) break;
+        await decide(plan);
+        if (!(await waitForPlan(plan, options, signals.signal, reportError))) break;
         continue;
       }
 
       const plan = options.scheduler.planForPreflight(prepared.preflight);
       cycles += 1;
-      await options.onDecision?.(plan, prepared);
+      if (plan.decision === CycleDecision.Error) failures += 1;
+      await decide(plan, prepared);
       if (plan.decision !== CycleDecision.Run) {
-        if (!(await waitForPlan(plan, options, signals.signal))) break;
+        if (!(await waitForPlan(plan, options, signals.signal, reportError))) break;
         continue;
       }
 
       try {
         results.push(await options.run(prepared, signals.signal));
       } catch (error) {
-        if (signals.signal.aborted) break;
-        await options.onError?.(error, LoopErrorPhase.Run);
+        if (!signals.signal.aborted) {
+          failures += 1;
+          await reportError(error, LoopErrorPhase.Run);
+        }
       }
 
-      if (signals.signal.aborted) break;
+      // Read the sleep signal before cleanup: cleanup deletes it.
       let signal: SleepSignal | null = null;
-      if (options.sleepSignal) {
+      if (options.sleepSignal && !signals.signal.aborted) {
         try {
           signal = await options.sleepSignal();
         } catch (error) {
-          await options.onError?.(error, LoopErrorPhase.Sleep);
+          failures += 1;
+          await reportError(error, LoopErrorPhase.Sleep);
         }
       }
+      if (options.afterRun) {
+        try {
+          await options.afterRun();
+        } catch (error) {
+          await reportError(error, LoopErrorPhase.Cleanup);
+        }
+      }
+
+      if (signals.signal.aborted) break;
       const sleepPlan = options.scheduler.planAfterRun(signal);
       if (
         !(await waitForPlan(
           { decision: CycleDecision.Run, sleep: sleepPlan, consecutivePreflightErrors: 0 },
           options,
           signals.signal,
+          reportError,
         ))
       ) {
         break;
       }
     }
 
-    return stopped(signals, cycles, results);
+    return stopped(signals, cycles, results, failures);
   } finally {
     try {
       await lease?.release();
@@ -213,6 +242,7 @@ async function waitForPlan<TResult>(
   plan: CyclePlan,
   options: CoordinatorLoopOptions<TResult>,
   signal: AbortSignal,
+  reportError: (error: unknown, phase: LoopErrorPhase) => Promise<void>,
 ): Promise<boolean> {
   if (!plan.sleep) return !signal.aborted;
   try {
@@ -220,8 +250,18 @@ async function waitForPlan<TResult>(
     return !signal.aborted;
   } catch (error) {
     if (signal.aborted) return false;
-    await options.onError?.(error, LoopErrorPhase.Sleep);
+    await reportError(error, LoopErrorPhase.Sleep);
     return false;
+  }
+}
+
+async function safely(hook: () => LoopWriteResult): Promise<void> {
+  try {
+    await hook();
+  } catch (error) {
+    console.warn(
+      `coordinator loop reporting hook failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -229,11 +269,13 @@ function stopped<TResult>(
   signals: LoopSignalController,
   cycles: number,
   results: readonly TResult[],
+  failures: number,
 ): CoordinatorLoopResult<TResult> {
   return {
     stopReason: signals.stopReason ?? LoopStopReason.Failed,
     cycles,
     results,
+    failures,
   };
 }
 

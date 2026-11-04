@@ -57,7 +57,7 @@ For more examples (cross-repo features, CVE triage, UI changes with screenshots)
 
 **DNS port is 5353, not 53.** OpenShift uses a custom DNS server on port 5353 in the `openshift-dns` namespace. Standard port 53 or `kube-dns` selectors cause pods to hang on name resolution.
 
-**Missing `ScaledObject.keda.sh` in managedResourceTypes.** Without this, app-interface prunes the KEDA cron scaler on every sync, and your bot won't auto-scale. See [Scheduling](scheduling.md).
+**Missing `ScaledObject.keda.sh` in managedResourceTypes.** OpenShell `SandboxWarmPool` instances use KEDA to scale warm-pool replicas. See [Scheduling](scheduling.md).
 
 **Unused env presets waste build time.** The `node` and `go` presets install version managers and compilers. Skip them if your repos don't need them. See [Env Presets](presets/envs.md).
 
@@ -107,7 +107,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | [Custom Workflows](presets/custom-workflows.md) | Building your own workflow for specialized automation |
 | [Custom Preflight Scripts](presets/custom-preflight.md) | Writing pre-session data-gathering scripts |
 | [Preset Migration Guide](migrations/preset-migration-guide.md) | Migrating existing instances to the preset system |
-| [OpenCode Migration Design](migrations/opencode-migration.md) | Migrating from Claude Code and Vertex auth to OpenCode and direct OpenAI keys |
+| [OpenCode V2 Migration](migrations/opencode-migration.md) | Direct Claude SDK migration, native profiles/policies, validation, and Claude rollback |
 | [Roadmap](roadmap.md) | Planned improvements and new capabilities |
 | [Operations Overview](operations/index.md) | Daily operations and verification runbooks |
 

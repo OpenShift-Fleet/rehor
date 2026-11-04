@@ -7,7 +7,9 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from claude_agent_sdk import (
@@ -38,16 +40,39 @@ DASHBOARD_URL = os.environ.get("BOT_DASHBOARD_URL", f"{MEMORY_API_BASE}/bot-stat
 _status_fail_count = 0
 _STATUS_FAIL_WARNING_THRESHOLD = 5
 
+_USAGE_TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+# Grace period for the SDK stream to close after the ResultMessage arrives;
+# bounds the post-result wait so a hung stream can't stall the runner forever.
+_POST_RESULT_GRACE_SECONDS = 60.0
+
 
 @dataclass
 class CycleContext:
-    """Tracks what work was done during a cycle."""
+    """Tracks what work was done during a cycle.
+
+    Mutable fields like session_id / started_at / partial_usage are updated
+    during the SDK stream so they survive asyncio.wait_for cancellation.
+    """
 
     jira_key: str | None = None
     repo: str | None = None
     work_type: str | None = None
     summary: str | None = None
     task_id: int | None = None
+    session_id: str | None = None
+    started_at: datetime | None = None
+    partial_usage: dict[str, int] = field(default_factory=dict)
+    model_usage: dict[str, Any] = field(default_factory=dict)
+    num_turns: int = 0
+    notes: str | None = None
+    timed_out: bool = False
+    _usage_by_response: dict[str, tuple[str, dict[str, int]]] = field(default_factory=dict, repr=False)
 
 
 async def _push_status(
@@ -195,6 +220,60 @@ def _make_turn_budget_hook(max_turns: int, label: str):
     return hook
 
 
+def _capture_stream_meta(message: object, ctx: CycleContext) -> None:
+    """Capture session_id and first-message started_at from any SDK message."""
+    if ctx.started_at is None:
+        ctx.started_at = datetime.now(UTC)
+
+    sid = getattr(message, "session_id", None)
+    if not sid and isinstance(message, SystemMessage):
+        data = getattr(message, "data", None) or {}
+        if isinstance(data, dict):
+            sid = data.get("session_id")
+    if sid and not ctx.session_id:
+        ctx.session_id = str(sid)
+
+
+def _usage_counts(raw: object) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    counts: dict[str, int] = {}
+    for key in _USAGE_TOKEN_KEYS:
+        value = raw.get(key)
+        if value is not None:
+            counts[key] = int(value or 0)
+    return counts or None
+
+
+def _record_assistant_usage(message: AssistantMessage, ctx: CycleContext) -> None:
+    """Accumulate per-response usage from assistant messages (best-effort)."""
+    usage = _usage_counts(getattr(message, "usage", None))
+    if not usage:
+        return
+
+    model = str(getattr(message, "model", None) or "unknown")
+    # Prefer message_id so repeated content-block streams replace, not sum.
+    message_id = getattr(message, "message_id", None)
+    if message_id:
+        key = str(message_id)
+    else:
+        # Without an id, keep one slot per model so streaming duplicates replace.
+        key = f"anonymous:{model}"
+    ctx._usage_by_response[key] = (model, usage)
+
+    totals: dict[str, int] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    for response_model, response_usage in ctx._usage_by_response.values():
+        model_totals = by_model.setdefault(response_model, {})
+        for token_key, value in response_usage.items():
+            totals[token_key] = totals.get(token_key, 0) + value
+            model_totals[token_key] = model_totals.get(token_key, 0) + value
+    ctx.partial_usage = totals
+    ctx.model_usage = by_model
+
+    ctx.num_turns = max(ctx.num_turns, len(ctx._usage_by_response))
+
+
 async def run_cycle(
     label: str,
     config: Config,
@@ -204,6 +283,7 @@ async def run_cycle(
     instance_id: str | None = None,
     preflight_prompt: str | None = None,
     model: str | None = None,
+    ctx: CycleContext | None = None,
 ) -> tuple[ResultMessage | None, CycleContext]:
     """Run a single bot cycle via the Claude Agent SDK."""
     if model:
@@ -264,14 +344,52 @@ async def run_cycle(
         )
 
     result = None
-    ctx = CycleContext()
+    if ctx is None:
+        ctx = CycleContext()
+
+    cycle_timeout = max(1, int(config.cycle_timeout))
+    deadline = time.monotonic() + cycle_timeout
 
     async with httpx.AsyncClient() as http:
         # Signal cycle start to dashboard
         await _push_status(http, "working", "Starting cycle...", instance_id=instance_id)
 
+        transport = _make_sdk_transport(prompt, options)
+        if transport is not None:
+            stream = query(prompt=prompt, options=options, transport=transport)
+        else:
+            stream = query(prompt=prompt, options=options)
         try:
-            async for message in query(prompt=prompt, options=options):
+            while True:
+                if result is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        ctx.timed_out = True
+                        logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                        break
+                else:
+                    # Result received — the SDK should close the stream right
+                    # after, but bound the wait so a hung stream can't stall
+                    # the runner forever.
+                    remaining = _POST_RESULT_GRACE_SECONDS
+
+                try:
+                    message = await asyncio.wait_for(stream.__anext__(), timeout=remaining)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    if result is None:
+                        ctx.timed_out = True
+                        logger.error("Cycle timed out after %ds — closing SDK session", cycle_timeout)
+                    else:
+                        logger.warning(
+                            "SDK stream did not close within %.0fs after result — abandoning it",
+                            _POST_RESULT_GRACE_SECONDS,
+                        )
+                    break
+
+                _capture_stream_meta(message, ctx)
+
                 if isinstance(message, SystemMessage) and message.subtype == "init":
                     mcp_status = message.data.get("mcp_servers", [])
                     connected = []
@@ -285,8 +403,11 @@ async def run_cycle(
                             connected.append(name)
                     if connected:
                         logger.info("MCP connected: %s", ", ".join(connected))
+                    if ctx.session_id:
+                        logger.info("Session started: %s", ctx.session_id)
 
                 elif isinstance(message, AssistantMessage):
+                    _record_assistant_usage(message, ctx)
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text = block.text.strip()
@@ -308,6 +429,10 @@ async def run_cycle(
 
                 elif isinstance(message, ResultMessage):
                     result = message
+                    if getattr(message, "session_id", None) and not ctx.session_id:
+                        ctx.session_id = str(message.session_id)
+                    if getattr(message, "num_turns", None) is not None:
+                        ctx.num_turns = int(message.num_turns)
                     cost = f"${message.total_cost_usd:.4f}" if message.total_cost_usd is not None else "N/A"
                     summary = summarize_result(message)
                     model_name = summary.get("model") or getattr(result, "model", None)
@@ -339,6 +464,22 @@ async def run_cycle(
         except Exception:
             logger.exception("Agent cycle failed")
             await _push_status(http, "error", "Cycle failed — check bot.log", instance_id=instance_id)
+        finally:
+            try:
+                await stream.aclose()  # type: ignore[attr-defined]  # query() is AsyncGenerator at runtime
+            except Exception:
+                logger.debug("SDK stream aclose failed", exc_info=True)
+            if transport is not None:
+                # aclose() can be a no-op when the stream was cancelled
+                # mid-read (cycle timeout). transport.close() is idempotent
+                # and performs session flush → SIGTERM → SIGKILL escalation.
+                try:
+                    await transport.close()  # type: ignore[attr-defined]
+                except Exception:
+                    logger.debug("SDK transport close failed", exc_info=True)
+
+        if ctx.timed_out:
+            return None, ctx
 
         # Determine work type from context
         result_text = getattr(result, "result", "") or ""
@@ -362,30 +503,57 @@ async def run_cycle(
     return result, ctx
 
 
+def _make_sdk_transport(prompt: str, options: ClaudeAgentOptions):
+    """Create the subprocess CLI transport ourselves so run_cycle owns it.
+
+    The SDK only cleans the CLI process up when the query generator unwinds
+    normally. A stream cancelled mid-read (cycle timeout via asyncio.wait_for)
+    can skip that cleanup and leak the CLI process, which keeps consuming
+    tokens in the background. Holding the transport lets the finally block
+    call close() explicitly — the SDK close() lets the CLI flush its session
+    file, then escalates SIGTERM → SIGKILL, and is a safe no-op when called
+    twice. Falls back to the SDK default transport if the internal import
+    moves in a future SDK release.
+    """
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import (  # type: ignore[attr-defined]
+            SubprocessCLITransport,
+        )
+
+        return SubprocessCLITransport(prompt=prompt, options=options)
+    except Exception:
+        logger.warning("Cannot construct SubprocessCLITransport — relying on SDK default cleanup")
+        return None
+
+
 def _extract_context(block, ctx: CycleContext) -> None:
-    """Extract jira_key, repo, and work_type from MCP tool calls."""
+    """Extract external task identity, repo, and work_type from tool calls."""
     name = getattr(block, "name", "")
     inp = getattr(block, "input", {}) or {}
 
-    # bot_status_update carries jira_key and repo
-    if name == "mcp__bot-memory__bot_status_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
+    if name in {
+        "mcp__bot-memory__bot_status_update",
+        "mcp__bot-memory__task_add",
+        "mcp__bot-memory__task_update",
+        "mcp__bot-memory__task_outcome_report",
+        "mcp__bot-memory__task_remove",
+    }:
+        external_key = inp.get("external_key") or inp.get("jira_key")
+        if external_key:
+            if external_key != ctx.jira_key:
+                ctx.task_id = None
+            ctx.jira_key = external_key
         if inp.get("repo"):
             ctx.repo = inp["repo"]
+        if inp.get("summary"):
+            ctx.summary = inp["summary"][:200]
 
     # task_add tells us it's a new ticket
-    elif name == "mcp__bot-memory__task_add":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
-        if inp.get("repo"):
-            ctx.repo = inp["repo"]
+    if name == "mcp__bot-memory__task_add":
         ctx.work_type = ctx.work_type or "new_ticket"
 
     # task_update with status changes tells us what kind of work
     elif name == "mcp__bot-memory__task_update":
-        if inp.get("jira_key"):
-            ctx.jira_key = inp["jira_key"]
         status = inp.get("status")
         if status == "pr_open":
             ctx.work_type = "new_ticket"
@@ -393,9 +561,6 @@ def _extract_context(block, ctx: CycleContext) -> None:
             ctx.work_type = "pr_review"
         elif status == "done":
             ctx.work_type = ctx.work_type or "pr_review"
-        summary = inp.get("summary")
-        if summary:
-            ctx.summary = summary[:200]
 
     # PR/MR commands hint at review work
     elif name == "Bash":
@@ -413,13 +578,15 @@ def _extract_context(block, ctx: CycleContext) -> None:
     elif name == "mcp__bot-memory__memory_delete":
         ctx.work_type = ctx.work_type or "memory_housekeeping"
 
-    # progress_store carries jira_key in progress dict
+    # Saved progress fills missing context without replacing selected work.
     elif name == "mcp__bot-memory__progress_store":
         progress = inp.get("progress") or {}
         if isinstance(progress, dict):
-            if progress.get("jira_key"):
-                ctx.jira_key = ctx.jira_key or progress["jira_key"]
-            if progress.get("repo"):
+            external_key = progress.get("external_key") or progress.get("jira_key")
+            if external_key and not ctx.jira_key:
+                ctx.task_id = None
+                ctx.jira_key = ctx.jira_key or external_key
+            if progress.get("repo") and (not external_key or external_key == ctx.jira_key):
                 ctx.repo = ctx.repo or progress["repo"]
 
     if ctx.jira_key:
@@ -441,6 +608,9 @@ def _extract_task_id_from_result(block: ToolResultBlock, ctx: CycleContext) -> N
             return
         data = json.loads(text)
         if not isinstance(data, dict):
+            return
+        external_key = data.get("external_key") or data.get("jira_key")
+        if ctx.jira_key and external_key and external_key != ctx.jira_key:
             return
         # Task objects: {id: int, external_key: ...}
         if isinstance(data.get("id"), int) and ("external_key" in data or "jira_key" in data):

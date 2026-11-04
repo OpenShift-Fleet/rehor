@@ -1,1 +1,1 @@
-export * from "./opencode-v1";
+export * from "./opencode";

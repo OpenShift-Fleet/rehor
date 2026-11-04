@@ -62,3 +62,8 @@ site/
 
 # Dashboard Playwright output
 dashboard/test-results/
+
+# Root-only Nx tooling dependencies and cache
+/node_modules/
+/.nx/
+packages/*/dist/

@@ -39,6 +39,8 @@ def _extract_mock_routes() -> set[tuple[str, str]]:
         routes.add(("/api/memories/{id}", "GET"))
     if 'path.startswith("/api/cycle-runs/")' in get_body and "/transcript" in get_body:
         routes.add(("/api/cycle-runs/{id}/transcript", "GET"))
+    if 'path.startswith("/api/task-outcomes/tasks/")' in get_body:
+        routes.add(("/api/task-outcomes/tasks/{task_id}", "GET"))
 
     for path in EXACT_PATH_RE.findall(bodies.get("do_POST", "")):
         routes.add((path, "POST"))

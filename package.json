@@ -1,0 +1,19 @@
+{
+  "name": "rehor-nx-foundation",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "overrides": {
+    "nx": {
+      "undici": "7.30.1"
+    }
+  },
+  "devDependencies": {
+    "nx": "24.0.1"
+  }
+}

@@ -22,6 +22,42 @@ beforeEach(() => {
 });
 
 describe("Costs page", () => {
+  it("distinguishes unknown, estimated, incomplete and legacy costs", async () => {
+    const base = {
+      timestamp: "2026-10-20T12:00:00Z",
+      cost_usd: 0,
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      duration_ms: 1000,
+      num_turns: 1,
+    };
+    mockFetchCosts.mockResolvedValue({
+      items: [
+        { ...base, id: 1, cost_status: "unknown", cost_incomplete: true },
+        { ...base, id: 2, cost_status: "estimated", cost_usd: 0.15 },
+        { ...base, id: 3, cost_status: "estimated", cost_usd: 0.25, cost_incomplete: true },
+        { ...base, id: 4, cost_usd: 0.35 },
+      ],
+      daily: [],
+    } as never);
+    mockFetchAnalytics.mockResolvedValue({} as never);
+    render(
+      <MemoryRouter>
+        <Costs />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("Unknown")).toBeInTheDocument();
+    expect(screen.getByText("≈$0.15")).toBeInTheDocument();
+    expect(screen.getByText("≈$0.25 (incomplete)")).toBeInTheDocument();
+    expect(screen.getByText("$0.35")).toBeInTheDocument();
+    expect(screen.getByText("About cost reporting")).toBeInTheDocument();
+    expect(
+      screen.getByText(/runtime or catalog estimates, not verified invoice totals/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/incomplete records show known subtotals/)).toBeInTheDocument();
+  });
   it("handles malformed analytics response", async () => {
     // Mock API returns costs but analytics is missing fields
     mockFetchCosts.mockResolvedValue({

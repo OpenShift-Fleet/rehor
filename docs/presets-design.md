@@ -91,7 +91,7 @@ presets/
 │       └── manifest.yaml
 │
 └── core/                              # Always included — the "kernel"
-    ├── CLAUDE.md                      # Security rules, memory system, output mode, turn budget
+    ├── CLAUDE.md                      # Security rules, memory system, output mode, cost budget
     ├── skills/                        # Core shared skills (if any)
     ├── hooks/                         # Security hooks (validate-bash, block-secrets, scan-secrets)
     ├── settings.json                  # Base sandbox + permissions
@@ -195,7 +195,7 @@ Runs as root during `docker build`. Installs system packages, binaries, and npm 
 set -e
 
 # Chromium runtime libraries
-dnf install -y --nodocs \
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs \
     alsa-lib atk at-spi2-atk at-spi2-core cairo cups-libs dbus-libs \
     libdrm mesa-libgbm glib2 nspr nss pango \
     libX11 libxcb libXcomposite libXdamage libXext libXfixes \
@@ -221,7 +221,7 @@ curl -fsSL "https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.
     | tar -xz -C /usr/local/bin grype
 
 # Buildah (rootless container builder)
-dnf install -y --nodocs buildah fuse-overlayfs && dnf clean all
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs && dnf clean all
 ```
 
 ### Runtime: `entrypoint.d/*.sh`
@@ -279,7 +279,7 @@ exec uv run dev-bot --label "$BOT_LABEL"
 
 ### Instance `setup.sh` Still Works
 
-Instance repos keep their `setup.sh` for instance-specific installs that don't fit any preset. The build chain runs: preset install scripts → instance `setup.sh`. Instance setup runs last so it can depend on anything presets installed.
+Instance repos keep their `setup.sh` for instance-specific installs that don't fit any preset. The build chain runs: preset install scripts → instance `setup.sh`. `setup.sh` runs as root after preset installs, but Dockerfile repo flags do not carry into it; every custom DNF install must explicitly use `--disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*'`.
 
 ### What Moves Out of the Core Dockerfile
 
@@ -914,7 +914,7 @@ Incremental delivery — each phase is independently shippable and non-breaking.
 
 Split the monolithic CLAUDE.md and add validation infrastructure so the decomposition gains safety, not just file reorganization.
 
-1. Create `presets/core/CLAUDE.md` with security rules, memory system, output mode, turn budget, general rules
+1. Create `presets/core/CLAUDE.md` with security rules, memory system, output mode, cost budget, general rules
 2. Create `presets/workflows/jira-sprint/CLAUDE.md` with the workflow loop (triage, priorities, implement)
 3. Add `assemble_claude_md()` to `run.py` that concatenates core + workflow into the existing CLAUDE.md location
 4. Add `manifest.yaml` for the jira-sprint workflow with `requires` validation (MCP servers, env vars)

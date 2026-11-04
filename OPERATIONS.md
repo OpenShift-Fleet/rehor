@@ -4,6 +4,18 @@ How to manage and monitor the bot in day-to-day use.
 
 ## Monitoring
 
+### OpenShell deployment
+
+Production bot workloads run as OpenShell `SandboxWarmPool` resources, not bot `Deployment` replicas. KEDA scales the warm pool during configured work windows. Inspect template, pool, and managed pods:
+
+```bash
+oc get sandboxtemplate,sandboxwarmpool,scaledobject -l app.kubernetes.io/part-of=devbot
+oc get pods -l app.kubernetes.io/component=bot
+oc logs -l app.kubernetes.io/component=bot --tail=100
+```
+
+Sandbox agent filesystem contract: `/home/botuser/repos`, `/home/botuser/data`, and `/tmp` are writable; `/home/botuser/app` is runner code/config and only bootstrap may update runtime files. System and credential paths stay read-only or denied. Direct internet egress is blocked; HTTP traffic uses `devbot-proxy`.
+
 ### Jira Filter
 
 All bot-eligible tickets across teams are tracked via a shared Jira filter:
@@ -315,6 +327,10 @@ Check the bot logs for which server failed:
 - `bot-memory` — is the memory server running? (`make memory-server`)
 - `mcp-atlassian` — are Jira credentials set in `.env`?
 - `chrome-devtools` — is Chromium running? (only in Docker; on host, run `./start-chromium.sh`)
+
+For the **team-memory** read-only MCP (`:8081`):
+- Local: `curl -s http://localhost:8081/health` should return `{"status":"ok"}`
+- See [docs/team-memory.md](docs/team-memory.md)
 
 ### Bot is stuck on a ticket
 

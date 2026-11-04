@@ -10,6 +10,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from asyncpg import CheckViolationError
 from conftest import SCHEMA_PATH
 
 os.environ.setdefault("JIRA_URL", "https://redhat.atlassian.net")
@@ -99,6 +100,67 @@ async def _insert_cycle(
 
 
 # --- Costs: record + list ---
+
+
+@pytest.mark.asyncio
+async def test_cost_status_roundtrip_and_daily_subtotals(db, monkeypatch):
+    from bot_memory_server import api
+    from starlette.requests import Request
+
+    await _apply_schema(db)
+    # Reapplying the schema must also work for existing installations.
+    await _apply_schema(db)
+    monkeypatch.setattr(api, "get_pool", lambda: db)
+
+    async def post(body):
+        async def receive():
+            return {"type": "http.request", "body": json.dumps(body).encode()}
+
+        return await api.api_costs(
+            Request({"type": "http", "method": "POST", "path": "/api/costs", "headers": []}, receive)
+        )
+
+    for status, amount in [("estimated", 0.15), ("unknown", 0), ("provider", 0), (None, 0.35)]:
+        response = await post({"cost_status": status, "cost_usd": amount, "model": "test-model"})
+        assert response.status_code == 201
+        saved = json.loads(bytes(response.body))
+        assert saved["cost_status"] == status
+        assert saved["cost_incomplete"] is (status == "unknown")
+        assert saved["cost_usd"] == pytest.approx(amount)
+    response = await api.api_costs(
+        Request({"type": "http", "method": "GET", "path": "/api/costs", "query_string": b"days=1", "headers": []})
+    )
+    data = json.loads(bytes(response.body))
+    assert {item["cost_status"] for item in data["items"]} == {"estimated", "unknown", "provider", None}
+    assert data["daily"][0]["estimated_cycles"] == 1
+    assert data["daily"][0]["incomplete_cycles"] == 1
+    assert data["daily"][0]["total_cost"] == pytest.approx(0.5)
+    assert (await post({"cost_status": "verified-free"})).status_code == 400
+    assert (await post({"cost_status": "unknown", "cost_usd": 9})).status_code == 400
+    for amount in [-1, "0"]:
+        assert (await post({"cost_status": "unknown", "cost_usd": amount})).status_code == 400
+
+    for body in [{"cost_usd": None}, {"cost_usd": 0}, {}]:
+        response = await post({"cost_status": "unknown", **body})
+        assert response.status_code == 201
+        saved = json.loads(bytes(response.body))
+        assert saved["cost_usd"] == 0
+        assert saved["cost_incomplete"] is True
+        persisted = await db.fetchrow("SELECT cost_usd, cost_incomplete FROM cycles WHERE id = $1", saved["id"])
+        assert persisted["cost_usd"] == 0
+        assert persisted["cost_incomplete"] is True
+
+    # Simulate inconsistent pre-fix data. Schema repair must exclude it from all
+    # existing aggregate queries and prevent future bypasses of POST validation.
+    await db.execute("ALTER TABLE cycles DROP CONSTRAINT cycles_unknown_cost_zero")
+    await db.execute("INSERT INTO cycles (label, cost_status, cost_usd) VALUES ('pre-fix', 'unknown', 9)")
+    await _apply_schema(db)
+    repaired = await db.fetchrow("SELECT cost_usd, cost_incomplete FROM cycles WHERE label = 'pre-fix'")
+    assert repaired["cost_usd"] == 0
+    assert repaired["cost_incomplete"] is True
+    assert await db.fetchval("SELECT SUM(cost_usd) FROM cycles") == pytest.approx(0.5)
+    with pytest.raises(CheckViolationError):
+        await db.execute("INSERT INTO cycles (label, cost_status, cost_usd) VALUES ('invalid', 'unknown', 9)")
 
 
 @pytest.mark.asyncio

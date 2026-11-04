@@ -18,6 +18,7 @@ permissions:
 jobs:
   coordinator:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: ./coordinator
@@ -41,6 +42,17 @@ jobs:
       - name: Install Python bridge dependency
         run: python -m pip install pyyaml==6.0.3
 
+      - name: Read executor Go toolchain
+        id: go-toolchain
+        run: |
+          python -c 'from pathlib import Path; print("version=" + next(line.split()[1].removeprefix("go") for line in Path("../proxy/executor/go.mod").read_text().splitlines() if line.startswith("toolchain ")))' >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: ${{ steps.go-toolchain.outputs.version }}
+          cache-dependency-path: proxy/executor/go.sum
+
       - name: Install dependencies
         run: npm ci
 
@@ -52,3 +64,20 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Install pinned native OpenCode CLI
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/opencode" --no-package-lock @opencode/cli@2.1.2
+          binary="$RUNNER_TEMP/opencode/bin/opencode"
+          test -x "$binary"
+          version="$("$binary" --version)"
+          printf '%s\n' "$version"
+          test "$version" = 'opencode v2.1.2'
+
+      - name: Run native OpenCode suites and lifecycle
+        env:
+          REHOR_TEST_OPENCODE_BINARY: ${{ runner.temp }}/opencode/bin/opencode
+        run: |
+          test -x "$REHOR_TEST_OPENCODE_BINARY"
+          test "$("$REHOR_TEST_OPENCODE_BINARY" --version)" = 'opencode v2.1.2'
+          npm test -- test/*-native.test.ts test/runtime-opencode.test.ts --maxWorkers=1

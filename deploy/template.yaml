@@ -27,6 +27,9 @@ parameters:
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
   value: devbot-secrets
+- name: REGISTRY_SECRET_NAME
+  description: Optional Vault-backed Secret with registry-redhat-username and registry-redhat-token
+  value: redhat-registry-credentials
 - name: GIT_AUTH_ENABLED
   value: "false"
 - name: GITLAB_TLS_SKIP_VERIFY
@@ -38,7 +41,9 @@ objects:
 
 # ============================================================================
 # Shared infrastructure for dev-bot instances (memory-server + proxy).
-# Bot pods are deployed by instance-specific repos/templates.
+# Bot workloads are deployed by instance-specific OpenShell SandboxTemplate /
+# SandboxWarmPool templates, usually with KEDA scheduling.
+# See deploy/sandbox-template.example.yaml. This template owns shared services.
 #
 # Prerequisites:
 #
@@ -170,6 +175,9 @@ objects:
           - containerPort: 8080
             name: http
             protocol: TCP
+          - containerPort: 8081
+            name: readonly
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -254,6 +262,10 @@ objects:
       targetPort: http
       protocol: TCP
       name: http
+    - port: 8081
+      targetPort: readonly
+      protocol: TCP
+      name: readonly
     - port: 9091
       targetPort: metrics
       protocol: TCP
@@ -341,6 +353,9 @@ objects:
           - containerPort: 8450
             name: openai-auth
             protocol: TCP
+          - containerPort: 8451
+            name: registry-auth
+            protocol: TCP
           - containerPort: 9091
             name: metrics
             protocol: TCP
@@ -388,6 +403,19 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: openai-api-key
+                optional: true
+          # Both keys absent: registry listener remains disabled.
+          - name: REGISTRY_REDHAT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: ${REGISTRY_SECRET_NAME}
+                key: registry-redhat-username
+                optional: true
+          - name: REGISTRY_REDHAT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: ${REGISTRY_SECRET_NAME}
+                key: registry-redhat-token
                 optional: true
           - name: OPENAI_ALLOWED_MODELS
             value: ${OPENAI_ALLOWED_MODELS}
@@ -490,6 +518,10 @@ objects:
       targetPort: openai-auth
       protocol: TCP
       name: openai-auth
+    - port: 8451
+      targetPort: registry-auth
+      protocol: TCP
+      name: registry-auth
     - port: 9091
       targetPort: metrics
       protocol: TCP
@@ -529,6 +561,8 @@ objects:
       - port: 8448
         protocol: TCP
       - port: 8450
+        protocol: TCP
+      - port: 8451
         protocol: TCP
     - from:
       - namespaceSelector:

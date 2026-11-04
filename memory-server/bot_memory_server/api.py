@@ -13,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 from .db import get_pool
 from .embeddings import embed
 from .events import Event, bus
+from .task_outcomes import TaskArchiveError, archive_task
 from .tools.tasks import ACTIVE_STATUSES
 
 logger = logging.getLogger(__name__)
@@ -133,18 +134,23 @@ async def api_tasks(request: Request) -> JSONResponse:
 
 
 async def api_task_delete(request: Request) -> JSONResponse:
-    """Archive a task by key (soft delete — preserves history)."""
+    """Archive a reported workflow task; manual=true explicitly archives unreported."""
     pool = get_pool()
     key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
-    row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 RETURNING *",
-        key,
-    )
-    if not row:
-        return JSONResponse({"error": f"Task {key} not found"}, status_code=404)
-    await bus.publish(Event("task_archived", {"external_key": key}))
+    manual = request.query_params.get("manual", "false").casefold()
+    if manual not in {"true", "false"}:
+        return JSONResponse({"error": "manual must be true or false"}, status_code=400)
+    source_type = request.query_params.get("source_type")
+    if source_type == "":
+        return JSONResponse({"error": "source_type must not be empty"}, status_code=400)
+    try:
+        row, _, changed = await archive_task(pool, external_key=key, source_type=source_type, manual=manual == "true")
+    except TaskArchiveError as exc:
+        return JSONResponse(exc.payload, status_code=exc.status_code)
+    if changed:
+        await bus.publish(Event("task_archived", {"external_key": key, "source_type": row["source_type"]}))
     return JSONResponse({"archived": True, "external_key": key, "task": _task(row)})
 
 
@@ -165,6 +171,8 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " archived_at = NULL, outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'archived'::task_status"
         " RETURNING *",
@@ -202,6 +210,8 @@ async def api_task_pause(request: Request) -> JSONResponse:
 
     row = await pool.fetchrow(
         "UPDATE tasks SET status = 'paused'::task_status,"
+        " outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " paused_reason = $2,"
         " metadata = jsonb_set(COALESCE(metadata, '{}'), '{status_before_pause}', to_jsonb(status::text))"
         " WHERE external_key = $1 AND status = ANY($3)"
@@ -238,6 +248,8 @@ async def api_task_unpause(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'paused'::task_status"
         " RETURNING *",
@@ -701,7 +713,9 @@ async def api_costs(request: Request) -> JSONResponse:
                SUM(duration_ms) AS total_duration,
                SUM(num_turns) AS total_turns,
                SUM(CASE WHEN no_work THEN 1 ELSE 0 END) AS idle_cycles,
-               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles
+               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles,
+               COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_cycles,
+               COUNT(*) FILTER (WHERE cost_incomplete OR cost_status = 'unknown') AS incomplete_cycles
         FROM cycles
         WHERE {date_filter}
         GROUP BY DATE(timestamp)
@@ -722,6 +736,8 @@ async def api_costs(request: Request) -> JSONResponse:
             "total_turns": r["total_turns"],
             "idle_cycles": r["idle_cycles"],
             "error_cycles": r["error_cycles"],
+            "estimated_cycles": r["estimated_cycles"],
+            "incomplete_cycles": r["incomplete_cycles"],
         }
         for r in daily_rows
     ]
@@ -736,20 +752,29 @@ async def _api_costs_add(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    cost_status = body.get("cost_status")
+    if cost_status not in (None, "provider", "estimated", "unknown"):
+        return JSONResponse({"error": "Invalid cost_status"}, status_code=400)
+    cost_usd = body.get("cost_usd", 0)
+    if cost_status == "unknown":
+        if cost_usd not in (None, 0):
+            return JSONResponse({"error": "Unknown cost must have cost_usd = 0"}, status_code=400)
+        cost_usd = 0
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary, instance_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                            external_key, source_type, repo, work_type, summary, instance_id,
+                            cost_status, cost_incomplete)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING *
         """,
         body.get("label", ""),
         body.get("session_id", ""),
         body.get("num_turns", 0),
         body.get("duration_ms", 0),
-        body.get("cost_usd", 0),
+        cost_usd,
         body.get("input_tokens", 0),
         body.get("output_tokens", 0),
         body.get("cache_read_tokens", 0),
@@ -763,6 +788,8 @@ async def _api_costs_add(request: Request) -> JSONResponse:
         body.get("work_type"),
         body.get("summary"),
         body.get("instance_id"),
+        cost_status,
+        bool(body.get("cost_incomplete", False)) or cost_status == "unknown",
     )
     cycle = _cycle(row)
 
@@ -1117,10 +1144,23 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
             UPDATE cycle_runs
             SET transcript = COALESCE($1, transcript),
                 finished_at = COALESCE($2, finished_at, NOW()),
-                tool_calls = COALESCE($3, tool_calls),
-                tokens_used = COALESCE($4, tokens_used),
+                tool_calls = COALESCE(NULLIF($3, 0), tool_calls),
+                tokens_used = COALESCE(NULLIF($4, 0), tokens_used),
                 task_id = COALESCE(task_id, $5),
-                input_prompt = COALESCE($7, input_prompt)
+                input_prompt = COALESCE($7, input_prompt),
+                started_at = CASE
+                    WHEN $8::timestamptz IS NULL THEN started_at
+                    WHEN started_at IS NULL THEN $8
+                    WHEN $8 < started_at THEN $8
+                    ELSE started_at
+                END,
+                cycle_type = CASE
+                    WHEN $9::text IS NULL THEN cycle_type
+                    WHEN $9::text = 'error' THEN 'error'
+                    ELSE COALESCE(cycle_type, $9)
+                END,
+                progress = COALESCE(progress, '{{}}'::jsonb)
+                           || COALESCE($10::jsonb, '{{}}'::jsonb)
             WHERE id = (
                 SELECT id FROM cycle_runs
                 WHERE instance_id = $6
@@ -1138,6 +1178,9 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
             task_id,
             instance_id_val,
             input_prompt,
+            parsed_started,
+            body.get("cycle_type"),
+            json.dumps(progress) if progress is not None else None,
         )
 
     if row is None:
@@ -1200,8 +1243,10 @@ async def api_cycle_run_transcript(request: Request) -> Response:
         try:
             import zstandard as zstd
 
-            decompressor = zstd.ZstdDecompressor()
+            decompressor = zstd.ZstdDecompressor().decompressobj()
             decompressed = decompressor.decompress(transcript)
+            if not decompressor.eof or decompressor.unused_data:
+                raise zstd.ZstdError("incomplete zstd frame")
             return Response(
                 content=decompressed,
                 media_type="application/x-ndjson",
@@ -1313,6 +1358,7 @@ def _task(row, slack_notif=None) -> dict:
         "source_url": row.get("source_url"),
         "artifacts": artifacts,
         "status": row["status"],
+        "category": row.get("category", "delivery"),
         "repo": row["repo"],
         "branch": row["branch"],
         "title": row.get("title"),
@@ -1337,6 +1383,8 @@ def _cycle(row) -> dict:
         "num_turns": row["num_turns"],
         "duration_ms": row["duration_ms"],
         "cost_usd": float(row["cost_usd"]),
+        "cost_status": row.get("cost_status"),
+        "cost_incomplete": row.get("cost_incomplete", False),
         "input_tokens": row["input_tokens"],
         "output_tokens": row["output_tokens"],
         "cache_read_tokens": row["cache_read_tokens"],

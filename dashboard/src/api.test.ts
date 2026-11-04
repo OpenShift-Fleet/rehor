@@ -89,10 +89,29 @@ describe("fetchTasks", () => {
 });
 
 describe("deleteTask", () => {
-  it("sends DELETE with encoded key", async () => {
+  it("sends DELETE with encoded key and explicit manual archive opt-in", async () => {
     mockFetch.mockResolvedValue({ ok: true });
     await deleteTask("RHCLOUD/001");
-    expect(mockFetch).toHaveBeenCalledWith("/api/tasks/RHCLOUD%2F001", { method: "DELETE" });
+    expect(mockFetch).toHaveBeenCalledWith("/api/tasks/RHCLOUD%2F001?manual=true", {
+      method: "DELETE",
+    });
+  });
+
+  it("includes source_type when provided", async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+    await deleteTask("RHCLOUD-001", "jira");
+    expect(mockFetch).toHaveBeenCalledWith("/api/tasks/RHCLOUD-001?manual=true&source_type=jira", {
+      method: "DELETE",
+    });
+  });
+
+  it("encodes source_type query values", async () => {
+    mockFetch.mockResolvedValue({ ok: true });
+    await deleteTask("RHCLOUD/001", "custom/source&other");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/tasks/RHCLOUD%2F001?manual=true&source_type=custom%2Fsource%26other",
+      { method: "DELETE" },
+    );
   });
 });
 

@@ -10,7 +10,7 @@ import {
   FlexItem,
   Label,
   MenuToggle,
-  MenuToggleElement,
+  type MenuToggleElement,
   Select,
   SelectList,
   SelectOption,
@@ -39,6 +39,12 @@ import type { AnalyticsData, CycleEntry, DailyAggregate } from "../types";
 import { displayKey, formatDuration, formatTokens, sourceUrl } from "../utils";
 
 const DAYS_OPTIONS = [7, 14, 30, 90];
+
+function costLabel(c: Pick<CycleEntry, "cost_usd" | "cost_status" | "cost_incomplete">): string {
+  if (c.cost_status === "unknown") return "Unknown";
+  const amount = `$${c.cost_usd.toFixed(2)}`;
+  return `${c.cost_status === "estimated" ? "≈" : ""}${amount}${c.cost_incomplete ? " (incomplete)" : ""}`;
+}
 
 type CycleMetric = "cost" | "output_tokens" | "duration" | "turns";
 
@@ -120,7 +126,7 @@ function CycleChartTooltip({ active, payload }: any) {
         <div style={{ color: "var(--accent)" }}>{WORK_TYPE_LABELS[d.work_type] || d.work_type}</div>
       )}
       <div>
-        ${Number(d.cost).toFixed(2)} &middot; {d.turns} turns &middot; {formatDuration(d.duration)}
+        {costLabel(d)} &middot; {d.turns} turns &middot; {formatDuration(d.duration)}
       </div>
       <div>
         {formatTokens(d.output_tokens)} output &middot; {formatTokens(d.cache_read)} cache
@@ -224,7 +230,7 @@ function CycleRow({ c }: { c: CycleEntry }) {
         {c.repo && <span className="cycle-repo">{c.repo}</span>}
       </div>
       <div className="cycle-cost" style={{ color: costColor }}>
-        ${c.cost_usd.toFixed(2)}
+        {costLabel(c)}
       </div>
       <div className="cycle-turns">{c.num_turns} turns</div>
       <div className="cycle-duration">{formatDuration(c.duration_ms)}</div>
@@ -350,7 +356,10 @@ export default function Costs({ instanceId }: { instanceId?: string }) {
         ts.toLocaleDateString([], { month: "short", day: "numeric" }) +
         " " +
         ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      cost: c.cost_usd,
+      cost: c.cost_status === "unknown" ? null : c.cost_usd,
+      cost_usd: c.cost_usd,
+      cost_status: c.cost_status,
+      cost_incomplete: c.cost_incomplete,
       output_tokens: c.output_tokens,
       cache_read: c.cache_read_tokens,
       duration: c.duration_ms,
@@ -428,6 +437,21 @@ export default function Costs({ instanceId }: { instanceId?: string }) {
         </Alert>
       )}
       {/* Date controls */}
+      {(daily.some((d) => d.estimated_cycles || d.incomplete_cycles) ||
+        cycles.some(
+          (c) => c.cost_status === "estimated" || c.cost_status === "unknown" || c.cost_incomplete,
+        )) && (
+        <Alert
+          variant="info"
+          isInline
+          title="About cost reporting"
+          style={{ marginBottom: "16px" }}
+        >
+          Approximate (≈) amounts are runtime or catalog estimates, not verified invoice totals.
+          Unknown records have no known dollar amount and are excluded from dollar totals;
+          incomplete records show known subtotals and may be missing usage.
+        </Alert>
+      )}
       <Flex
         gap={{ default: "gapMd" }}
         alignItems={{ default: "alignItemsCenter" }}

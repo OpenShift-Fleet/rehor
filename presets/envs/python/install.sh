@@ -13,7 +13,7 @@ fi
 
 # Build deps for pyenv to compile Python versions (readline-devel is CRB-only on RHEL;
 # Python builds fine without readline support for bot/CI use)
-dnf install -y --nodocs \
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs \
     patch zlib-devel bzip2-devel openssl-devel libffi-devel sqlite-devel ncurses-devel xz-devel
 dnf clean all
 

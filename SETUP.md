@@ -43,19 +43,19 @@ For org repos, an org admin must invite the bot account to the appropriate team.
 
 ## 2. Environment Variables
 
-### 2.1 Secrets
+### 2.1 Credentials and deployment settings
 
-These secrets are needed for deployment. All live in the **proxy container** (including Jira credentials — mcp-atlassian runs in the proxy on port 8444).
+Credentials live in the **proxy container** (including Jira credentials — mcp-atlassian runs in the proxy on port 8444). The Vertex model allowlist also goes to the bot when the coordinator runs OpenCode with Vertex.
 
-| Secret | How to generate | Lives in | Used for |
+| Credential or setting | How to generate / configure | Lives in | Used for |
 |--------|----------------|----------|----------|
 | `GH_TOKEN` | PAT from step 1.3 | **Proxy** | gh CLI + git credential helper (HTTPS) |
 | `GITLAB_TOKEN` | GitLab PAT (api + write_repository) | **Proxy** | glab CLI + git credential helper (HTTPS) |
 | `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | **Proxy** | commit signing |
 | `GOOGLE_SA_KEY_B64` | `base64 -w 0 ~/.config/gcloud/application_default_credentials.json` (or `base64 < sa-key.json`) | **Proxy** | Vertex AI auth (Claude API). See [2.3](#23-vertex-ai-personal-credentials) |
-| `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Proxy** | Model allowlist for Vertex AI |
+| `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Bot + Proxy** | Required by coordinator for OpenCode Vertex; proxy enforces allowlist for all Vertex calls |
 | `OPENAI_API_KEY` | API key from the OpenAI dashboard (Vault key `openai-api-key`) | **Proxy** | OpenAI-compatible gateway on port 8450. Never set on the bot; rotate by updating Vault/`.env` and restarting the **proxy** (no bot image rebuild) |
-| `OPENAI_ALLOWED_MODELS` | Comma-separated model IDs (e.g. `gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol`) | **Proxy** | Model allowlist for the OpenAI gateway. Required whenever `OPENAI_API_KEY` is set |
+| `OPENAI_ALLOWED_MODELS` | Comma-separated model IDs (e.g. `gpt-6-luna,gpt-4.1,gpt-4.1-mini,gpt-4o`) | **Proxy** | Model allowlist for the OpenAI gateway. Required whenever `OPENAI_API_KEY` is set |
 
 ### 2.2 Set environment variables
 
@@ -66,7 +66,7 @@ export GH_TOKEN=<pat-token>
 export GITLAB_TOKEN=<gitlab-pat>
 export GPG_PRIVATE_KEY_B64=$(base64 -i .ssh/gpg-private.asc)
 export GOOGLE_SA_KEY_B64=$(base64 -w 0 ~/.config/gcloud/application_default_credentials.json)
-export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
+export VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5,claude-haiku-4-5@20251001
 ```
 
 For persistent use, add these to a `.env` file (already gitignored):
@@ -76,7 +76,7 @@ GH_TOKEN=<pat-token>
 GITLAB_TOKEN=<gitlab-pat>
 GPG_PRIVATE_KEY_B64=<base64-encoded-gpg-key>
 GOOGLE_SA_KEY_B64=<base64-encoded-adc-or-sa-json>
-VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5
+VERTEX_ALLOWED_MODELS=claude-sonnet-4-6,claude-opus-4-6,claude-haiku-4-5,claude-haiku-4-5@20251001
 ```
 
 The compose file automatically reads `.env` from the project root.

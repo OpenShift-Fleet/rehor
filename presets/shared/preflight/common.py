@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -25,12 +26,27 @@ def _instance_param():
     return ""
 
 
+def _auth_headers():
+    """Bearer headers when the runtime supplies a memory credential."""
+    token = os.environ.get("BOT_MEMORY_TOKEN", "")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def http_get(url, timeout=10):
-    """GET JSON from a URL. Returns parsed dict or None on error."""
-    req = urllib.request.Request(url)
+    """GET JSON from a URL. Returns parsed dict or None on error.
+
+    Authorization failures raise instead of returning None: a rejected
+    request must never be mistaken for an empty task list.
+    """
+    req = urllib.request.Request(url, headers=_auth_headers())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            raise RuntimeError(f"authenticated request rejected ({error.code})") from error
+        print(f"ERR GET {url}: {error}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"ERR GET {url}: {e}", file=sys.stderr)
         return None

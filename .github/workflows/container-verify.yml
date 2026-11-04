@@ -24,6 +24,8 @@ on:
     paths:
       # bot image inputs
       - "Dockerfile.runner"
+      - "coordinator/**"
+      - "tests/container-e2e/checks/**"
       - "entrypoint.sh"
       - "config.json"
       - ".mcp.json"
@@ -47,6 +49,8 @@ on:
     paths:
       # bot image inputs
       - "Dockerfile.runner"
+      - "coordinator/**"
+      - "tests/container-e2e/checks/**"
       - "entrypoint.sh"
       - "config.json"
       - ".mcp.json"
@@ -95,6 +99,9 @@ jobs:
             - container-scan
           EOF
           docker build --build-arg GOVERSIONS="1.24.13 1.25.13" -t bot:verify -f "$BUILD_ROOT/dev-bot/Dockerfile.runner" "$BUILD_ROOT"
+
+      - name: Verify packaged OpenCode defaults
+        run: bash tests/container-e2e/checks/verify-opencode-image.sh docker bot:verify
 
       - name: Verify required tooling is present
         # The bot image's real entrypoint (entrypoint.sh) unconditionally waits

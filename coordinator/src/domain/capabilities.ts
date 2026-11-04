@@ -6,6 +6,7 @@ export interface RuntimeCapabilities {
   configVersion: string;
   streaming: boolean;
   interruption: boolean;
+  enforcesTurnLimit: boolean;
   childSessions: boolean;
   toolSupport: boolean;
   mcpSupport: boolean;

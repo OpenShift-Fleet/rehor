@@ -2,6 +2,12 @@
 # Bot container entrypoint — decode secrets, run env presets, launch bot.
 set -e
 
+# OpenCode talks to the shared proxy with a placeholder token; the proxy injects
+# the real provider credential. PROXY_HOST is set by OpenShift; Compose uses its
+# proxy service name.
+export REHOR_MODEL_PROXY_URL="${REHOR_MODEL_PROXY_URL:-http://${PROXY_HOST:-proxy}:8450/v1}"
+export REHOR_MODEL_PROXY_TOKEN="${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}"
+
 # --- Verify required CLI tools ---
 MISSING=""
 for tool in gh glab git gpg; do
@@ -232,4 +238,20 @@ fi
 shopt -u nullglob
 
 echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
-exec uv run dev-bot --label "$BOT_LABEL"
+case "${BOT_EXECUTION_ENGINE:-python}" in
+    python)
+        exec uv run dev-bot --label "$BOT_LABEL"
+        ;;
+    coordinator)
+        if [ ! -f /home/botuser/app/coordinator/dist/cli.js ]; then
+            echo "FATAL: coordinator bundle is not installed" >&2
+            exit 1
+        fi
+        exec node /home/botuser/app/coordinator/dist/cli.js --label "$BOT_LABEL"
+        ;;
+    *)
+        echo "FATAL: unsupported BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE}" >&2
+        echo "Supported engines: python, coordinator" >&2
+        exit 64
+        ;;
+esac

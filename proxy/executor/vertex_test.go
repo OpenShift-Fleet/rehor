@@ -44,7 +44,9 @@ func TestRewritePath(t *testing.T) {
 
 func TestHealthz(t *testing.T) {
 	ts := &staticTokenSource{token: "test-token"}
-	policy := NewVertexPolicy([]string{"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"})
+	policy := NewVertexPolicy([]string{
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-haiku-4-5@20251001",
+	})
 	handler := NewVertexProxy("proj", "us-east5", ts, policy)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
@@ -58,7 +60,9 @@ func TestHealthz(t *testing.T) {
 
 func TestBlockedModel(t *testing.T) {
 	ts := &staticTokenSource{token: "test-token"}
-	policy := NewVertexPolicy([]string{"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"})
+	policy := NewVertexPolicy([]string{
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-haiku-4-5@20251001",
+	})
 	handler := NewVertexProxy("proj", "us-east5", ts, policy)
 
 	req := httptest.NewRequest("POST",
@@ -74,7 +78,9 @@ func TestBlockedModel(t *testing.T) {
 
 func TestMalformedPath(t *testing.T) {
 	ts := &staticTokenSource{token: "test-token"}
-	policy := NewVertexPolicy([]string{"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"})
+	policy := NewVertexPolicy([]string{
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5", "claude-haiku-4-5@20251001",
+	})
 	handler := NewVertexProxy("proj", "us-east5", ts, policy)
 
 	req := httptest.NewRequest("POST", "/v1/bad/path", strings.NewReader("{}"))
