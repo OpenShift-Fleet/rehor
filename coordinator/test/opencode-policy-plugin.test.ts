@@ -14,7 +14,7 @@ it.each([
   [undefined, ""],
   ["", undefined],
 ])(
-  "restores shell XDG config %j and data %j and strips runner config/auth only",
+  "restores shell XDG config %j and data %j and strips runner config/auth and npm offline only",
   async (config, data) => {
     const directory = await mkdtemp(join(tmpdir(), "opencode-policy-"));
     try {
@@ -73,6 +73,8 @@ it.each([
         OPENCODE_SERVER_PASSWORD: "synthetic-server-password",
         OPENCODE_TERMINAL: "1",
         OPENCODE_DISABLE_MODELS_FETCH: "1",
+        NPM_CONFIG_OFFLINE: "true",
+        npm_config_offline: "true",
       };
       const serverEnv = { ...env };
       await Effect.runPromise(registrations[0].callback({ env }));
@@ -85,6 +87,11 @@ it.each([
         "OPENCODE_AUTH_CONTENT",
         "OPENCODE_PASSWORD",
         "OPENCODE_SERVER_PASSWORD",
+        // Supervisor-forced npm offline flags scope to the server's own package
+        // resolution; shell commands must keep the pre-migration network path
+        // through the approved proxy (REHOR-220).
+        "NPM_CONFIG_OFFLINE",
+        "npm_config_offline",
       ]) {
         expect(env).not.toHaveProperty(name);
         expect(serverEnv).toHaveProperty(name);
