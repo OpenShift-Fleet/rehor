@@ -193,6 +193,9 @@ objects:
             value: ${SLACK_WEBHOOK_URL}
           - name: PROXY_HOST
             value: devbot-proxy
+          # Route GitHub/GitLab Git transport through the authenticated proxy.
+          - name: GIT_AUTH_PROXY_HOST
+            value: devbot-proxy
           - name: HTTP_PROXY
             value: http://devbot-proxy:3128
           - name: HTTPS_PROXY
