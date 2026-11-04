@@ -64,10 +64,11 @@ test("gateway config is opt-in, complete, HTTPS only and rejects unsafe TLS", ()
   assert.equal(readGatewayConfig(noSubject).subject, undefined);
 });
 
-test("preflight wires renewable provider and authenticated identity; no sandbox operations", async (t) => {
+test("preflight returns the authenticated client with a renewable provider; no sandbox operations", async (t) => {
   const f = fixture();
   useSdk(t, f.sdk);
-  await connectGateway(config());
+  const client = await connectGateway(config());
+  assert.equal(client.raw, f.raw);
   assert.deepEqual(f.calls[0], ["credentials", { issuer: env.OPENSHELL_OIDC_ISSUER, clientId: env.OPENSHELL_CLIENT_ID, clientSecret: env.OPENSHELL_OIDC_CLIENT_SECRET, audience: env.OPENSHELL_OIDC_AUDIENCE, timeoutMs: 30_000 }]);
   assert.equal(f.calls[1][1].gateway, env.OPENSHELL_GATEWAY_ENDPOINT);
   assert.equal(f.calls[1][1].insecureSkipVerify, false);
@@ -75,6 +76,26 @@ test("preflight wires renewable provider and authenticated identity; no sandbox 
   assert.equal(f.calls[2][0], "identity");
   assert.ok(f.calls[2][2].signal instanceof AbortSignal);
   assert.equal(f.calls.length, 3);
+});
+
+test("startup cancellation does not disable authentication for later cleanup RPCs", async (t) => {
+  const f = fixture();
+  const startup = new AbortController();
+  let provider;
+  f.sdk.connect = async ({ oidcTokenProvider }) => {
+    provider = oidcTokenProvider;
+    return { raw: {
+      getCurrentUser: async (_, options) => {
+        assert.equal(await provider.getToken(options.signal), "test-token");
+        return { subject: "example-subject", identityProvider: "oidc" };
+      },
+      deleteSandbox: async (_, options) => provider.getToken(options.signal),
+    } };
+  };
+  useSdk(t, f.sdk);
+  const client = await connectGateway(config(), undefined, startup.signal);
+  startup.abort();
+  assert.equal(await client.raw.deleteSandbox({}, { signal: new AbortController().signal }), "test-token");
 });
 
 test("identity required and subject mismatch fails closed; SDK exceptions are sanitized", async (t) => {
@@ -235,8 +256,8 @@ test("runtime exits 1 on a real gateway identity mismatch instead of hanging", {
   let server;
   try {
     execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(directory, "key.pem"), "-out", join(directory, "cert.pem"), "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost"], { stdio: "ignore" });
-    // The gateway preflight discards its client (the SDK exposes no close()),
-    // so this test proves end to end that a mismatched identity still exits:
+    // The SDK exposes no close(), so this test proves end to end that a
+    // mismatched identity still exits before returning a client:
     // connect-node unrefs the HTTP/2 session once the identity RPC's stream
     // closes, and no other socket or timer holds the event loop.
     const { OpenShell } = await import("@nvidia/openshell-sdk/raw");
@@ -357,7 +378,7 @@ test("SIGTERM during OIDC waits for in-flight work before one successful shutdow
 test("SIGTERM reports unsuccessful shutdown if in-flight work exceeds deadline", { timeout: 8000 }, async () => {
   const script = `
     const original = globalThis.setTimeout;
-    globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms === 25000 ? 400 : ms, ...args);
+    globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms >= 20 * 60_000 ? 400 : ms, ...args);
     globalThis.fetch = async () => new Promise(() => {});
   `;
   const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {

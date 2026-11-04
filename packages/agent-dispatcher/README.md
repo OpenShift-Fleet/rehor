@@ -25,7 +25,25 @@ Shared Python workflow scripts and helpers come from the repository's pinned `de
 
 Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3 and Git from the Node.js base image, but not the Python MCP client (hermetic builds cannot install it over the network) and not the agent executor's `gh`/`glab` shims; skills that import the `mcp` package do not run in deployments until it is vendored. Only trusted repositories should be configured: their scripts execute in the dispatcher.
 
-Sandbox launch is not part of this change: no sandbox is created yet, and a `start` decision completes its session without launching one. Real preflight-output delivery to a sandbox agent runner is tracked separately.
+## Sandbox dispatch
+
+A normal `start` decision creates a per-run workspace, provider, profile, and sandbox. The configured profile image is used without fallback; it must include Python 3.12 and Bash for the idle command and input-file write. Sandbox creation overrides the image's default entrypoint with an idle command and sets `restartPolicy: NEVER`. After the sandbox reaches `READY`, the dispatcher sends preflight output, then invokes the existing `Dockerfile.runner` entrypoint from `/home/botuser/app`.
+
+The dispatcher writes one UTF-8 JSON envelope to `/tmp/rehor-input.json` using exec stdin, creating the file with mode `0600`:
+
+```json
+{"schemaVersion":1,"runId":"…","prompt":"…","metadata":{"action":"start","scripts":[{"name":"…","status":"…"}]}}
+```
+
+The 64 KiB limit applies to the complete serialized envelope. An oversized or invalid envelope fails dispatch without creating a sandbox. Empty or whitespace-only prompts and `skip` or `error` decisions do not create a sandbox. Runs with no scripts are rejected earlier by work-preflight as `no-scripts`; the envelope builder does not enforce that rule. Prompt contents travel through stdin, not environment variables, argv, sandbox configuration, or logs. The runner exec receives fixed per-exec controls, `REHOR_INPUT_SOURCE=sandbox` and `REHOR_INPUT_FILE=/tmp/rehor-input.json`, alongside its non-secret runtime settings; its output is discarded by the dispatcher. OpenShell SDK supports environment, argv, and stdin input, but stdin keeps prompt content out of inspectable configuration and process arguments. Each runner exec has a unique durable request ID; sandbox creation and exec are not automatically retried.
+
+Non-secret `BOT_` settings and explicitly allowed service/proxy settings are forwarded to the sandbox, with agent-profile settings applied per agent. The dispatcher does not copy its raw process environment, `PATH`, or authentication credentials into the sandbox; the memory credential is delivered through its OpenShell provider. Existing memory and Gateway authentication variables below remain unchanged.
+
+On completion, the dispatcher verifies resource ownership and confirms sandbox absence before dependent cleanup, then removes all run-owned resources. Ambiguous cleanup fails closed and retains the agent's in-flight reservation. `SessionDispatcher` allows one in-flight run per agent per process; reservations are process-local and cannot be recovered after a dispatcher restart.
+
+The current bootstrap policy authorizes only Python access to the configured HTTPS memory `/health` endpoint. It keeps `/home/botuser/app` read-only and permits writes under `/tmp`, `/home/botuser/repos`, and `/home/botuser/data`. Full memory MCP/proxy connectivity and runtime permissions remain REHOR-215 dependencies; the dispatcher does not infer broad egress from environment variables. Do not deploy for real agent work until those dependencies and runner consumption are ready.
+
+Runner-side consumption is separate work tracked by REHOR-233: the runner must consume the prepared prompt once, bypass its preflights and subsequent polling for that invocation, then exit. Non-dispatcher deployments retain the runner's legacy behavior when `REHOR_INPUT_SOURCE` is unset. Delivery validation has verified envelope readback, mode `0600`, memory health, and cleanup; it has not demonstrated an agent session or full runner end-to-end behavior.
 
 ## Memory credential preflight
 
@@ -48,7 +66,7 @@ env:
 
 Configure the full externally reachable memory endpoint including the path, not only the route hostname. The URL must be HTTPS without userinfo, query, or fragment, and its certificate must be trusted by Node.
 
-The dispatcher mints the token through the Kubernetes TokenRequest API using the standard in-cluster host and the projected service-account token and CA files. The dispatcher's own service account needs `create` permission on the target `serviceaccounts/token` resource; the two service accounts need not be the same. The requested token lifetime is one hour; the API server may return a different expiry.
+The dispatcher mints the token through the Kubernetes TokenRequest API using the standard in-cluster host and the projected service-account token and CA files. The dispatcher's own service account needs `create` permission on the target `serviceaccounts/token` resource; the two service accounts need not be the same. The requested token lifetime is one hour; the API server may return a different expiry. A per-session memory-provider credential is minted once and is not refreshed; it must remain valid for the runner lifetime. Credential refresh is a REHOR-215 follow-up and shorter-lived tokens can expire during long runs.
 
 A preflight passes only when the endpoint rejects a request without credentials and a request with a deliberately invalid bearer token with 401 or 403, and returns 2xx for the minted token. Requests have a five-second deadline, verify TLS, never follow redirects or retry, and never log credentials or response bodies. `createCredentialProvider` mints and revalidates a fresh credential on each `get()`; startup calls it once.
 
@@ -92,7 +110,7 @@ Failures at any stage report a fixed message naming the stage, never SDK error d
 
 ## Lifecycle logs
 
-The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose default stdout destination is synchronous (sonic-boom `sync: true`) and EPIPE-safe. Synchronous writes are what is wanted before the `process.exit(1)` at the shutdown deadline: no record is lost. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), and an optional fixed `category` on failure. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
+The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose default stdout destination is synchronous (sonic-boom `sync: true`) and EPIPE-safe. Synchronous writes are what is wanted before the `process.exit(1)` at the shutdown deadline: no record is lost. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), an optional fixed `category` on failure, and closed-set session `stage`/`errorCode` fields. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
 
 | Event | Meaning |
 | --- | --- |
@@ -104,12 +122,14 @@ The dispatcher writes one JSON object per lifecycle event to stdout through [pin
 | `memory.token` | Credential expiry validation and authenticated endpoint check. |
 | `gateway.authentication` | Gateway preflight, including the OIDC identity and optional subject checks. |
 | `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
+| `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail. |
+| `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous. |
 | `ready` | Startup completed. |
 | `shutdown` | Shutdown after a signal or startup failure. |
 
 Failure records carry a fixed `category` from a closed set, assigned at the failure site so startup problems are diagnosable without exposing details: `configuration` (invalid variables), `credentials` (missing projected service-account files), `network` (connect or timeout failures), `authorization` (TokenRequest or endpoint rejection of a missing/invalid credential), `authentication` (endpoint rejection of a valid credential, or a Gateway identity mismatch), `response` (unparseable TokenRequest response), and `internal` (anything else).
 
-Only attempted steps are logged: disabled preflights produce no events, and a failure prevents later checks. On SIGTERM or SIGINT during startup, the dispatcher cancels the Gateway RPC, drains in-flight memory and SDK token work, and reports shutdown. If startup has not stopped within 25 seconds of the signal, shutdown fails and the process exits with code 1.
+Only attempted steps are logged: disabled preflights produce no events, and a failure prevents later checks. On SIGTERM or SIGINT, the dispatcher cancels active work and drains in-flight sessions, including Gateway cleanup. Each cleanup uses one shared 20-minute budget across reads, retries, deletes, and absence checks; exhaustion records cleanup as unknown. The shutdown drain deadline is 22 minutes, leaving two minutes for bookkeeping. Deployments must set runtime termination grace to at least 23 minutes; this repository has no dispatcher workload manifest to configure that value. An unresolved session or a drain deadline logs shutdown failure and keeps process exit nonzero.
 
 ## Container image
 
