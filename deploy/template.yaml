@@ -43,11 +43,15 @@ parameters:
     front of the proxy :8450 OpenAI-compatible gateway). Empty lets the router
     assign a hostname; consumed by cross-cluster sandboxed agents.
   value: ""
-- name: DISPATCHER_SERVICE_ACCOUNT
+- name: MODEL_PROXY_TOKEN_SERVICE_ACCOUNT
   description: >
-    service account whose minted tokens the model-gateway oauth-proxy admits
-    (the agent dispatcher's token-minting identity, used as the SAR check).
-  value: rehor-agent-dispatcher
+    service-account identity of the dispatcher-minted credential (the SA the
+    dispatcher mints tokens for, not the dispatcher's own runtime SA). The
+    model-gateway oauth-proxy SAR admits exactly the identities that can
+    mint tokens for this SA. Requires a Role/RoleBinding granting this SA
+    create on serviceaccounts/token for itself, mirroring the dispatcher's
+    token-request role in app-interface.
+  value: devbot-memory-server
 objects:
 
 # ============================================================================
@@ -85,10 +89,12 @@ objects:
 # 5. Secret "devbot-secrets" with key session_secret
 #      (provision via Vault in app-interface namespace YAML; shared by the
 #      memory-server and proxy oauth-proxy sidecars for cookie signing)
-# 6. ServiceAccount "rehor-agent-dispatcher" (DISPATCHER_SERVICE_ACCOUNT)
-#      with create permission on serviceaccounts/token for itself — the
-#      model-gateway oauth-proxy SAR admits exactly this identity, matching
-#      the token the dispatcher mints and delivers to sandboxed agents.
+# 6. Role/RoleBinding (app-interface) granting the token-identity SA
+#      (MODEL_PROXY_TOKEN_SERVICE_ACCOUNT, default devbot-memory-server)
+#      create on serviceaccounts/token for itself — the model-gateway
+#      oauth-proxy SAR admits exactly this identity, matching the
+#      dispatcher-minted token delivered to sandboxed agents. Mirror of
+#      the existing agent-dispatcher/token-request.role.yml.
 #
 # ============================================================================
 
@@ -383,9 +389,10 @@ objects:
           - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
           # Tighter than the memory dashboard's projects/list SAR: the model
           # gateway is machine-only and spends money, so only identities that
-          # can mint tokens as the dispatcher service account pass — exactly
-          # the credential the dispatcher delivers to sandboxed agents.
-          - '--openshift-sar={"resource": "serviceaccounts", "verb": "create", "name": "${DISPATCHER_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          # can mint serviceaccounts/token for the token-identity SA pass —
+          # exactly the credential the dispatcher delivers to sandboxed agents
+          # (the minted token's own identity, plus the dispatcher runtime SA).
+          - '--openshift-sar={"resource": "serviceaccounts", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
           - --cookie-secret-file=/etc/secrets/session_secret
           - --cookie-samesite=none
           - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
