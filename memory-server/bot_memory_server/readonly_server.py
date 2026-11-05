@@ -1,11 +1,14 @@
 """Read-only Team Memory MCP — memory_search, memory_list, and task-outcome metrics.
 
-Exposes read-only task-outcome endpoints behind an optional API key so that
+Exposes read-only task-outcome endpoints behind an API key so that
 remote sites (e.g. EPD generators) can pull metrics without a cluster credential.
 
-Auth behaviour:
-  READONLY_API_KEY env set → require matching X-API-Key header (except /health).
-  READONLY_API_KEY env unset → no auth required (local dev / backward compat).
+Auth behaviour (scoped to /api/task-outcomes/ only):
+  READONLY_API_KEY env set → require matching X-API-Key header, else 401.
+  READONLY_API_KEY env unset → 401 on all protected paths (fail-closed).
+
+MCP tools (memory_search / memory_list), /health, and other paths are
+never guarded by this middleware.
 """
 
 import os
@@ -23,23 +26,25 @@ from .task_outcomes import (
 )
 from .tools.rag import register_rag_read_tools
 
-_HEALTH_PATH = "/health"
+_PROTECTED_PREFIX = "/api/task-outcomes/"
 _UNAUTHORIZED = JSONResponse({"error": "unauthorized"}, status_code=401)
 
 
 class ApiKeyMiddleware:
-    """Require X-API-Key header on all routes except /health."""
+    """Require X-API-Key on /api/task-outcomes/* routes. Fail-closed when no key is configured."""
 
     def __init__(self, app: ASGIApp, *, api_key: str) -> None:
         self.app = app
         self.api_key = api_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["path"] != _HEALTH_PATH:
+        if scope["type"] == "http" and scope["path"].startswith(_PROTECTED_PREFIX):
+            if not self.api_key:
+                await _UNAUTHORIZED(scope, receive, send)
+                return
             request = Request(scope, receive)
             if request.headers.get("x-api-key") != self.api_key:
-                response = _UNAUTHORIZED
-                await response(scope, receive, send)
+                await _UNAUTHORIZED(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
