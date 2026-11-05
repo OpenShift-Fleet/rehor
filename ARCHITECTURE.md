@@ -479,6 +479,7 @@ The proxy:
 | GPG signing | Private key | **Proxy** | Imported from `GPG_PRIVATE_KEY_B64` at proxy startup |
 | Memory server (dashboard) | OpenShift oauth-proxy SSO on Route | — | Route → oauth-proxy :8443 → memory-server :8080 |
 | Memory server (MCP/API) | None (cluster-internal) | — | `http://devbot-memory-server:8080` (OpenShift) or `http://memory-server:8080` (Docker) |
+| OpenAI gateway (cross-cluster) | OpenShift oauth-proxy, TokenReview + token-mint SAR | **Proxy** | Route → oauth-proxy :8452 → OpenAI gateway :8450; for sandboxed agents in the Hypershell spoke cluster that cannot reach in-namespace services |
 | Chrome DevTools | None (localhost) | Bot | `http://127.0.0.1:9222` |
 
 ## Deployment Considerations (Cluster)

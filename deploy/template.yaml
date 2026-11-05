@@ -37,6 +37,21 @@ parameters:
 - name: DASHBOARD_URL
   description: public hostname for the memory server dashboard
   required: true
+- name: MODEL_PROXY_URL
+  description: >
+    public hostname for the authenticated model-gateway Route (oauth-proxy in
+    front of the proxy :8450 OpenAI-compatible gateway). Empty lets the router
+    assign a hostname; consumed by cross-cluster sandboxed agents.
+  value: ""
+- name: MODEL_PROXY_TOKEN_SERVICE_ACCOUNT
+  description: >
+    service-account identity of the dispatcher-minted credential (the SA the
+    dispatcher mints tokens for, not the dispatcher's own runtime SA). The
+    model-gateway oauth-proxy SAR admits exactly the identities that can
+    mint tokens for this SA. Requires a Role/RoleBinding granting this SA
+    create on serviceaccounts/token for itself, mirroring the dispatcher's
+    token-request role in app-interface.
+  value: devbot-memory-server
 objects:
 
 # ============================================================================
@@ -72,7 +87,14 @@ objects:
 # 4. ServiceAccount "devbot-memory-server" with oauth-redirecturi annotation
 #      (requires DASHBOARD_URL parameter matching the Route hostname)
 # 5. Secret "devbot-secrets" with key session_secret
-#      (provision via Vault in app-interface namespace YAML)
+#      (provision via Vault in app-interface namespace YAML; shared by the
+#      memory-server and proxy oauth-proxy sidecars for cookie signing)
+# 6. Role/RoleBinding (app-interface) granting the token-identity SA
+#      (MODEL_PROXY_TOKEN_SERVICE_ACCOUNT, default devbot-memory-server)
+#      create on serviceaccounts/token for itself — the model-gateway
+#      oauth-proxy SAR admits exactly this identity, matching the
+#      dispatcher-minted token delivered to sandboxed agents. Mirror of
+#      the existing agent-dispatcher/token-request.role.yml.
 #
 # ============================================================================
 
@@ -294,6 +316,32 @@ objects:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
 
+# --- Proxy ServiceAccount (OAuth client for the model-gateway oauth-proxy) ---
+# Bearer-only: the model gateway is machine-to-machine (sandboxed agents send
+# a dispatcher-minted service-account token), so no oauth-redirecturi
+# annotation is needed; the browser flow is never used.
+- kind: ServiceAccount
+  apiVersion: v1
+  metadata:
+    name: devbot-proxy
+    labels:
+      app.kubernetes.io/name: devbot-proxy
+      app.kubernetes.io/part-of: devbot
+
+# --- Model gateway oauth-proxy API delegation (TokenReview for bearers) ---
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: devbot-proxy-auth-delegator
+  subjects:
+  - kind: ServiceAccount
+    name: devbot-proxy
+    namespace: ${NAMESPACE}
+  roleRef:
+    kind: ClusterRole
+    name: system:auth-delegator
+    apiGroup: rbac.authorization.k8s.io
+
 # --- Proxy Deployment (Squid + Executor server — holds all CLI secrets) ---
 - apiVersion: apps/v1
   kind: Deployment
@@ -318,7 +366,54 @@ objects:
           app.kubernetes.io/name: ${PROXY_NAME}
           app.kubernetes.io/part-of: devbot
       spec:
+        serviceAccountName: devbot-proxy
+        volumes:
+        - name: oauth-proxy-cookie-secret
+          secret:
+            secretName: devbot-secrets
+            items:
+            - key: session_secret
+              path: session_secret
         containers:
+        - name: oauth-proxy
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.18.0-202506230505.p0.gcbd44ad.assembly.stream.el9
+          ports:
+          - containerPort: 8452
+            name: model-auth
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8452
+          - -upstream=http://localhost:8450
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          # Tighter than the memory dashboard's projects/list SAR: the model
+          # gateway is machine-only and spends money, so only identities that
+          # can create serviceaccounts/token for the token-identity SA pass —
+          # exactly the credential the dispatcher delivers to sandboxed agents
+          # (the minted token's own identity, plus the dispatcher runtime SA).
+          # --openshift-delegate-urls is what enables delegated bearer-token
+          # authentication (TokenReview + per-path authorization); without it
+          # oauth-proxy only authorizes the browser OAuth flow. Its value is
+          # parsed as k8s authorizationv1.ResourceAttributes (field "name").
+          # --openshift-sar guards the OAuth login flow and is posted to the
+          # legacy authorization.openshift.io API (field "resourceName").
+          - '--openshift-sar={"resource": "serviceaccounts", "subresource": "token", "verb": "create", "resourceName": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          - '--openshift-delegate-urls={"/": {"resource": "serviceaccounts", "subresource": "token", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
         - name: proxy
           image: ${PROXY_IMAGE}:${PROXY_IMAGE_TAG}
           securityContext:
@@ -518,6 +613,10 @@ objects:
       targetPort: openai-auth
       protocol: TCP
       name: openai-auth
+    - port: 8452
+      targetPort: model-auth
+      protocol: TCP
+      name: model-auth
     - port: 8451
       targetPort: registry-auth
       protocol: TCP
@@ -526,6 +625,32 @@ objects:
       targetPort: metrics
       protocol: TCP
       name: metrics
+
+# --- Model Gateway Route (oauth-proxy :8452, authenticated) ---
+# Cross-cluster sandboxed agents cannot reach in-namespace service DNS or
+# IPs; the OpenAI-compatible :8450 gateway is exposed through an
+# authenticated Route instead. Clients present a dispatcher-minted
+# service-account bearer (validated via TokenReview + the token-mint SAR);
+# the gateway itself never validates incoming bearers, so the oauth-proxy IS
+# the authentication boundary. In-namespace callers keep using
+# http://devbot-proxy:8450 directly.
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: ${PROXY_NAME}-model
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${MODEL_PROXY_URL}
+    to:
+      kind: Service
+      name: ${PROXY_NAME}
+    port:
+      targetPort: model-auth
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
 
 # --- NetworkPolicy: Proxy accepts ingress from bot pods ---
 - apiVersion: networking.k8s.io/v1
@@ -563,6 +688,13 @@ objects:
       - port: 8450
         protocol: TCP
       - port: 8451
+        protocol: TCP
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
+      ports:
+      - port: 8452
         protocol: TCP
     - from:
       - namespaceSelector:
