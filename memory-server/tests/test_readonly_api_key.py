@@ -93,13 +93,13 @@ async def test_health_bypasses_auth():
 
 
 @pytest.mark.anyio
-async def test_non_protected_path_bypasses_auth():
-    """Paths outside /api/task-outcomes/ are not guarded (e.g. MCP tools)."""
+async def test_non_exposed_path_returns_404():
+    """Paths outside /health and /api/task-outcomes/ return 404 (e.g. MCP tools)."""
     app = _build_app("secret-key")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/other")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "not found"}
 
 
 @pytest.mark.anyio
@@ -111,12 +111,12 @@ async def test_health_works_when_key_unset():
 
 
 @pytest.mark.anyio
-async def test_non_protected_path_works_when_key_unset():
-    """Non-outcome paths work even when no key is configured."""
+async def test_non_exposed_path_returns_404_when_key_unset():
+    """Non-outcome paths return 404 regardless of key configuration."""
     app = _build_app("")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/other")
-    assert resp.status_code == 200
+    assert resp.status_code == 404
 
 
 # -- route registration tests --

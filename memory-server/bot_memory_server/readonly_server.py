@@ -3,12 +3,12 @@
 Exposes read-only task-outcome endpoints behind an API key so that
 remote sites (e.g. EPD generators) can pull metrics without a cluster credential.
 
-Auth behaviour (scoped to /api/task-outcomes/ only):
-  READONLY_API_KEY env set → require matching X-API-Key header, else 401.
-  READONLY_API_KEY env unset → 401 on all protected paths (fail-closed).
+When the ApiKeyMiddleware is applied (external Route exposure):
+  /health → always open (probes).
+  /api/task-outcomes/* → require X-API-Key; fail-closed when key is unset.
+  Everything else (MCP tools, etc.) → 404.
 
-MCP tools (memory_search / memory_list), /health, and other paths are
-never guarded by this middleware.
+This ensures the Route only exposes the intended endpoints.
 """
 
 import os
@@ -27,18 +27,37 @@ from .task_outcomes import (
 from .tools.rag import register_rag_read_tools
 
 _PROTECTED_PREFIX = "/api/task-outcomes/"
+_HEALTH_PATH = "/health"
 _UNAUTHORIZED = JSONResponse({"error": "unauthorized"}, status_code=401)
+_NOT_FOUND = JSONResponse({"error": "not found"}, status_code=404)
 
 
 class ApiKeyMiddleware:
-    """Require X-API-Key on /api/task-outcomes/* routes. Fail-closed when no key is configured."""
+    """Gate the readonly server for external exposure via Route.
+
+    Only /health and /api/task-outcomes/* are allowed through.
+    Task-outcome paths require a valid X-API-Key (fail-closed when unset).
+    Everything else (including MCP tools) returns 404.
+    """
 
     def __init__(self, app: ASGIApp, *, api_key: str) -> None:
         self.app = app
         self.api_key = api_key
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["path"].startswith(_PROTECTED_PREFIX):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+
+        # /health — always open (probes)
+        if path == _HEALTH_PATH:
+            await self.app(scope, receive, send)
+            return
+
+        # /api/task-outcomes/* — require API key, fail-closed
+        if path.startswith(_PROTECTED_PREFIX):
             if not self.api_key:
                 await _UNAUTHORIZED(scope, receive, send)
                 return
@@ -46,7 +65,11 @@ class ApiKeyMiddleware:
             if request.headers.get("x-api-key") != self.api_key:
                 await _UNAUTHORIZED(scope, receive, send)
                 return
-        await self.app(scope, receive, send)
+            await self.app(scope, receive, send)
+            return
+
+        # everything else (MCP tools, etc.) — not exposed
+        await _NOT_FOUND(scope, receive, send)
 
 
 readonly_mcp = FastMCP(name="Team Memory")
