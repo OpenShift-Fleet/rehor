@@ -37,6 +37,9 @@ parameters:
 - name: DASHBOARD_URL
   description: public hostname for the memory server dashboard
   required: true
+- name: OUTCOMES_URL
+  description: public hostname for the read-only task-outcome metrics Route (port 8081)
+  required: true
 - name: MODEL_PROXY_URL
   description: >
     public hostname for the authenticated model-gateway Route (oauth-proxy in
@@ -243,6 +246,12 @@ objects:
                 name: devbot-secrets
                 key: konflux-read-token
                 optional: true
+          - name: READONLY_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: readonly-api-key
+                optional: true
           startupProbe:
             httpGet:
               path: /health
@@ -312,6 +321,25 @@ objects:
       name: devbot-memory-server
     port:
       targetPort: dashboard
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+# --- Read-only Outcomes Route (API-key protected, port 8081) ---
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: devbot-memory-outcomes
+    labels:
+      app.kubernetes.io/name: memory-server
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${OUTCOMES_URL}
+    to:
+      kind: Service
+      name: devbot-memory-server
+    port:
+      targetPort: readonly
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
@@ -731,6 +759,8 @@ objects:
             network.openshift.io/policy-group: ingress
       ports:
       - port: 8443
+        protocol: TCP
+      - port: 8081
         protocol: TCP
     - from:
       - namespaceSelector:
