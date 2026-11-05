@@ -389,10 +389,17 @@ objects:
           - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
           # Tighter than the memory dashboard's projects/list SAR: the model
           # gateway is machine-only and spends money, so only identities that
-          # can mint serviceaccounts/token for the token-identity SA pass —
+          # can create serviceaccounts/token for the token-identity SA pass —
           # exactly the credential the dispatcher delivers to sandboxed agents
           # (the minted token's own identity, plus the dispatcher runtime SA).
-          - '--openshift-sar={"resource": "serviceaccounts", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          # --openshift-delegate-urls is what enables delegated bearer-token
+          # authentication (TokenReview + per-path authorization); without it
+          # oauth-proxy only authorizes the browser OAuth flow. Its value is
+          # parsed as k8s authorizationv1.ResourceAttributes (field "name").
+          # --openshift-sar guards the OAuth login flow and is posted to the
+          # legacy authorization.openshift.io API (field "resourceName").
+          - '--openshift-sar={"resource": "serviceaccounts", "subresource": "token", "verb": "create", "resourceName": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          - '--openshift-delegate-urls={"/": {"resource": "serviceaccounts", "subresource": "token", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}}'
           - --cookie-secret-file=/etc/secrets/session_secret
           - --cookie-samesite=none
           - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
