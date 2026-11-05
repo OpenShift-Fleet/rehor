@@ -18,9 +18,12 @@ and `coordinator/opencode-deployment.example.json`. The Responses provider uses
 | `gpt-6.1-terra` | GPT-6.1 Terra | Supported | Declared |
 
 The repo's packaged defaults include Luna and Terra under `rehor-openai`, but
-not Sol. Sol has a pricing entry and is declared in instance-owned deployment
-configurations (for example the onboarding instance's Sol/Luna routing).
-Selecting Sol therefore requires a deployment config that declares it. See
+not Sol. Existing instances close that gap in their own deployment configs:
+the onboarding instance and the framework-agent instances all declare both Sol
+and Luna under `rehor-openai`, with Sol selected as the root model on
+onboarding and Luna as the root model elsewhere, and both models used by
+native subagents. Selecting Sol therefore requires a deployment config that
+declares it. See
 `coordinator/opencode-deployment.default.json`,
 `coordinator/src/runtimes/opencode/pricing.json`, and the Sol/Luna migration
 inventory in `docs/migrations/opencode-migration.md`.
