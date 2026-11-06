@@ -1,5 +1,7 @@
 import { performance } from "node:perf_hooks";
+import { fstatSync, writeSync } from "node:fs";
 import { pino } from "pino";
+import type { DispatcherCycleResult } from "./dispatcher-cycle.js";
 
 const EVENTS = [
   "startup",
@@ -76,12 +78,48 @@ export function isolateLifecycleLogger(logger?: LifecycleLogger): LifecycleLogge
 
 const MAX_DURATION_MS = 24 * 60 * 60 * 1000;
 
-// pino writes JSON lines to stdout through a synchronous (sonic-boom
-// `sync: true`), EPIPE-safe destination. Synchronous writes are what is wanted
-// before the `process.exit(1)` at the shutdown deadline: no record is lost.
-// Base fields and timestamps are disabled so a record carries
-// only the lifecycle fields plus pino's level.
-const stdout = pino({ base: undefined, timestamp: false });
+// Never leave an asynchronous stdout write or Pino exit flush waiting on a
+// full pipe. Nonblocking writes are best effort: a saturated or broken sink
+// drops records rather than preventing shutdown.
+let stdoutAvailable = false;
+try {
+  const handle = (process.stdout as typeof process.stdout & {
+    _handle?: { setBlocking?: (blocking: boolean) => unknown };
+  })._handle;
+  if (typeof handle?.setBlocking === "function") {
+    // Node's internal libuv handle returns zero on success. Unknown return
+    // values must not be assumed to mean the descriptor is nonblocking.
+    stdoutAvailable = handle.setBlocking(false) === 0;
+  }
+} catch { /* Fall back only if stdout is a regular file. */ }
+if (!stdoutAvailable) {
+  // Regular file writes cannot wait for a pipe reader, but may block on slow
+  // storage. Unknown descriptors remain disabled unless made nonblocking.
+  try { stdoutAvailable = fstatSync(1).isFile(); } catch { /* Drop logs. */ }
+}
+
+function writeStdoutLine(line: string): void {
+  if (!stdoutAvailable) return;
+  let offset = 0;
+  try {
+    const data = Buffer.from(line);
+    while (offset < data.length) {
+      const written = writeSync(1, data, offset);
+      if (written === 0) throw new Error("stdout write made no progress");
+      offset += written;
+    }
+  } catch {
+    // Do not append later records to a partially written JSON line.
+    if (offset > 0) stdoutAvailable = false;
+  }
+}
+
+const stdout = pino({ base: undefined, timestamp: false }, { write: writeStdoutLine });
+
+/** Cycle results contain only statuses and opaque IDs; never emit preflight output. */
+export function writePreflightCycle(result: DispatcherCycleResult): void {
+  try { writeStdoutLine(`${JSON.stringify({ event: "preflight.cycle", result })}\n`); } catch { /* Best effort. */ }
+}
 
 /** Preserve the scaffold greeting on the same sink as lifecycle records. */
 export function writeStartupGreeting(): void {

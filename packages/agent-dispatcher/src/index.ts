@@ -7,6 +7,7 @@ import { parseConfigRepositories } from "./config-repositories.js";
 import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { verifyPreflightTools } from "./work-preflight.js";
 import { SandboxSession } from "./sandbox-session.js";
+import { readRuntimeLayout } from "./runtime-layout.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
@@ -76,6 +77,7 @@ async function start(): Promise<void> {
   let provider: ReturnType<typeof createCredentialProvider> | undefined;
   let authConfig: AuthConfig | undefined;
   let gatewayConfig: ReturnType<typeof readGatewayConfig>;
+  let runtimeLayout: ReturnType<typeof readRuntimeLayout>;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
@@ -89,6 +91,7 @@ async function start(): Promise<void> {
   }
   try {
     gatewayConfig = readGatewayConfig(process.env);
+    runtimeLayout = readRuntimeLayout(process.env);
     if (repositoriesJson !== undefined) {
       if (!gatewayConfig || !authConfig || !provider || !parseConfigRepositories(repositoriesJson).length) throw new Error();
       // Work preflights execute Python from the base image; config repository
@@ -127,7 +130,11 @@ async function start(): Promise<void> {
     logger.log("ready", "success");
     writeStartupGreeting();
     if (repositoriesJson && gatewayConfig && authConfig && provider && gateway) {
-      const session = new SandboxSession(gateway.raw, { url: authConfig.memoryUrl, credentialProvider: provider });
+      const session = new SandboxSession({
+        raw: gateway.raw,
+        memory: { url: authConfig.memoryUrl, credentialProvider: provider },
+        runtime: runtimeLayout,
+      });
       const signal = stopController.signal;
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,

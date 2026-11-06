@@ -16,6 +16,8 @@ export interface CompatibilitySinkOptions {
   statusUrl?: string;
   costsUrl?: string;
   cycleRunsUrl?: string;
+  /** Non-secret OpenShell provider marker, scoped to the configured memory Route. */
+  memoryRoute?: { url: string; placeholder: string };
   fetch?: typeof globalThis.fetch;
   logger?: Pick<Console, "warn">;
   zstdCommand?: string;
@@ -64,7 +66,7 @@ export function createCompatibilitySink(options: CompatibilitySinkOptions): Comp
   const writeStatus = async (update: StatusUpdate): Promise<void> => {
     const payload = toStatusPayload(update);
     await writeLocal("status.jsonl", payload);
-    await postJson(options.statusUrl, payload, fetchImpl, logger);
+    await postJson(options.statusUrl, payload, fetchImpl, logger, options.memoryRoute);
   };
 
   const appendTranscript = async (record: TranscriptEventRecord): Promise<void> => {
@@ -111,13 +113,13 @@ export function createCompatibilitySink(options: CompatibilitySinkOptions): Comp
       attempt_id: record.attemptId,
       transcript_path: join("transcripts", transcriptFile),
     });
-    await postJson(options.cycleRunsUrl, payload, fetchImpl, logger);
+    await postJson(options.cycleRunsUrl, payload, fetchImpl, logger, options.memoryRoute);
   };
 
   const writeCost = async (record: CostRecord): Promise<void> => {
     const payload = toLegacyCostEntry(record);
     await writeLocal("costs.jsonl", payload);
-    await postJson(options.costsUrl, payload, fetchImpl, logger);
+    await postJson(options.costsUrl, payload, fetchImpl, logger, options.memoryRoute);
   };
 
   const metrics = new PrometheusMetricStore();
@@ -162,7 +164,13 @@ export function createCompatibilitySink(options: CompatibilitySinkOptions): Comp
       }
       const { transcript_b64: _transcript, ...localPayload } = payload;
       await writeLocal("cycle-runs.jsonl", localPayload);
-      await postJson(options.cycleRunsUrl, omitUndefined(payload), fetchImpl, logger);
+      await postJson(
+        options.cycleRunsUrl,
+        omitUndefined(payload),
+        fetchImpl,
+        logger,
+        options.memoryRoute,
+      );
       await writeStatus({
         state: input.state,
         message:
@@ -378,18 +386,46 @@ async function postJson(
   payload: Record<string, unknown>,
   fetchImpl: typeof globalThis.fetch,
   logger: Pick<Console, "warn">,
+  memoryRoute?: CompatibilitySinkOptions["memoryRoute"],
 ): Promise<void> {
   if (!url) return;
   try {
+    const authorization = memoryRouteAuthorization(url, memoryRoute);
     const response = await fetchImpl(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+      ...(authorization ? { redirect: "error" as const } : {}),
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
   } catch (error) {
     logger.warn(`coordinator compatibility POST ${url} failed: ${describe(error)}`);
+  }
+}
+
+function memoryRouteAuthorization(
+  url: string,
+  route?: CompatibilitySinkOptions["memoryRoute"],
+): string | undefined {
+  if (!route || !/^openshell:resolve:env:[A-Za-z0-9_]+$/.test(route.placeholder)) return undefined;
+  try {
+    const base = new URL(route.url);
+    const target = new URL(url);
+    if (
+      base.protocol !== "https:" ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash ||
+      target.username ||
+      target.password ||
+      target.origin !== base.origin
+    )
+      return undefined;
+    return `Bearer ${route.placeholder}`;
+  } catch {
+    return undefined;
   }
 }
 

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createLifecycleLogger } from "../dist/logging.js";
 
 const events = [
@@ -141,7 +144,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor(raw, memory) { if (!memory.credentialProvider.mint || memory.url.hostname !== 'memory.example') throw new Error('invalid session wiring'); }
+        constructor({ raw, memory, runtime, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
         run(image, decision, environment, signal) {
           process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
           process.exitCode = 7;
@@ -203,8 +206,15 @@ test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 
     process.stdout._handle.setBlocking(false);
     try { for (;;) writeSync(1, Buffer.alloc(4096)); }
     catch (error) { if (error.code !== 'EAGAIN') throw error; }
+    try { for (;;) writeSync(1, Buffer.alloc(1)); }
+    catch (error) { if (error.code !== 'EAGAIN') throw error; }
     process.stdout._handle.setBlocking(true);
-    setTimeout(() => process.send('full'), 200);
+    const on = process.on;
+    process.on = function(event, listener) {
+      const result = on.call(this, event, listener);
+      if (event === 'SIGTERM') process.nextTick(() => process.send('full'));
+      return result;
+    };
   `;
   const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
     cwd: new URL("..", import.meta.url), env: {}, stdio: ["ignore", "pipe", "pipe", "ipc"],
@@ -213,7 +223,7 @@ test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 
   child.stderr.on("data", (chunk) => { stderr += chunk; });
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
   try {
-    await new Promise((resolve) => child.once("message", resolve));
+    assert.equal(await new Promise((resolve) => child.once("message", resolve)), "full");
     child.kill("SIGTERM");
     const result = await Promise.race([
       exited,
@@ -222,6 +232,146 @@ test("dispatcher exits after SIGTERM with stdout pipe already full", { timeout: 
     assert.deepEqual(result, { code: 0, signal: null });
     assert.equal(stderr, "");
   } finally { child.kill("SIGKILL"); child.stdout.destroy(); }
+});
+
+test("dispatcher exits after SIGTERM with stdout pipe closed", { timeout: 8000 }, async () => {
+  const preload = `
+    const on = process.on;
+    process.on = function(event, listener) {
+      const result = on.call(this, event, listener);
+      if (event === 'SIGTERM') process.nextTick(() => process.send('ready'));
+      return result;
+    };
+  `;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
+    cwd: new URL("..", import.meta.url), env: {}, stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  child.stdout.destroy();
+  try {
+    assert.equal(await new Promise((resolve) => child.once("message", resolve)), "ready");
+    child.kill("SIGTERM");
+    assert.deepEqual(await exited, { code: 0, signal: null });
+    assert.equal(stderr, "");
+  } finally { child.kill("SIGKILL"); }
+});
+
+for (const mode of ["readable", "full", "closed", "missing setBlocking", "missing handle", "failed setBlocking", "undefined setBlocking"]) {
+  test(`default cycle output survives ${mode} stdout`, { timeout: 8000 }, async () => {
+    const preload = `
+      import { writeSync } from 'node:fs';
+      import { registerHooks } from 'node:module';
+      if (!['closed', 'readable'].includes(${JSON.stringify(mode)})) {
+        process.stdout._handle.setBlocking(false);
+        try { for (;;) writeSync(1, Buffer.alloc(4096)); }
+        catch (error) { if (error.code !== 'EAGAIN') throw error; }
+        try { for (;;) writeSync(1, Buffer.alloc(1)); }
+        catch (error) { if (error.code !== 'EAGAIN') throw error; }
+        process.stdout._handle.setBlocking(true);
+        if (${JSON.stringify(mode)} === 'missing setBlocking') {
+          Object.defineProperty(process.stdout._handle, 'setBlocking', { value: undefined });
+        }
+        if (${JSON.stringify(mode)} === 'missing handle') {
+          Object.defineProperty(process.stdout, '_handle', { value: undefined });
+        }
+        if (${JSON.stringify(mode)} === 'failed setBlocking') {
+          Object.defineProperty(process.stdout._handle, 'setBlocking', { value: () => -1 });
+        }
+        if (${JSON.stringify(mode)} === 'undefined setBlocking') {
+          Object.defineProperty(process.stdout._handle, 'setBlocking', { value: () => undefined });
+        }
+      }
+      registerHooks({ load(url, context, nextLoad) {
+        if (url.endsWith('/dist/dispatcher-cycle.js')) return { format: 'module', shortCircuit: true, source: \`
+          export async function runDispatcherCycle() {
+            return { get status() { process.send('cycle-emitted'); return 'invalid-config'; }, repositories: [] };
+          }
+        \` };
+        return nextLoad(url, context);
+      } });
+    `;
+    const script = `
+      const { createLifecycleLogger } = await import('./dist/logging.js');
+      const { runDispatcherLoop } = await import('./dist/dispatcher-loop.js');
+      const controller = new AbortController();
+      process.on('SIGTERM', () => controller.abort());
+      createLifecycleLogger().log('startup', 'start');
+      await runDispatcherLoop({ repositoriesJson: 'secret-config', signal: controller.signal });
+      process.disconnect();
+    `;
+    const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "--input-type=module", "-e", script], {
+      cwd: new URL("..", import.meta.url), env: {}, stdio: ["ignore", "pipe", "pipe", "ipc"],
+    });
+    let stderr = "";
+    let stdout = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    if (mode === "readable") child.stdout.on("data", (chunk) => { stdout += chunk; });
+    const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    const closed = new Promise((resolve) => child.once("close", resolve));
+    const emitted = new Promise((resolve) => child.once("message", resolve));
+    const deadline = new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("cycle or shutdown stalled")), 3000); timer.unref(); });
+    if (mode === "closed") child.stdout.destroy();
+    try {
+      assert.equal(await Promise.race([emitted, exited, deadline]), "cycle-emitted");
+      child.kill("SIGTERM");
+      assert.deepEqual(await Promise.race([exited, deadline]), { code: 0, signal: null });
+      assert.equal(stderr, "");
+      if (mode === "readable") {
+        await Promise.race([closed, deadline]);
+        const records = stdout.trim().split("\n").map(JSON.parse);
+        assert.deepEqual(records.find(({ event }) => event === "preflight.cycle"), { event: "preflight.cycle", result: { status: "invalid-config", repositories: [] } });
+        assert.doesNotMatch(stdout, /secret-config/);
+      }
+    } finally { child.kill("SIGKILL"); child.stdout.destroy(); }
+  });
+}
+
+test("dispatcher writes lifecycle and default cycle events to a regular stdout file", { timeout: 8000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "dispatcher-stdout-"));
+  const path = join(directory, "stdout.jsonl");
+  const file = await open(path, "wx", 0o600);
+  t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
+  const modules = {
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') });`,
+    "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
+    "gateway-config.js": `export const readGatewayConfig = () => ({});`,
+    "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
+    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "dispatcher-cycle.js": `export async function runDispatcherCycle() { return { get status() { process.send('cycle-emitted'); return 'invalid-config'; }, repositories: [] }; }`,
+  };
+  const preload = `
+    import { registerHooks } from 'node:module';
+    const modules = ${JSON.stringify(modules)};
+    registerHooks({ load(url, context, nextLoad) {
+      const name = url.split('/').pop();
+      if (url.includes('/dist/') && Object.hasOwn(modules, name)) return { format: 'module', source: modules[name], shortCircuit: true };
+      return nextLoad(url, context);
+    } });
+  `;
+  const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, "dist/index.js"], {
+    cwd: new URL("..", import.meta.url), stdio: ["ignore", file.fd, "pipe", "ipc"],
+    env: { AGENT_DISPATCHER_CONFIG_REPOS: 'secret-config', BOT_MEMORY_TOKEN: 'secret-token' },
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const exited = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
+  const emitted = new Promise((resolve) => child.once("message", resolve));
+  const deadline = new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("cycle or shutdown stalled")), 3000); timer.unref(); });
+  try {
+    assert.equal(await Promise.race([emitted, exited, deadline]), "cycle-emitted");
+    child.kill("SIGTERM");
+    assert.deepEqual(await Promise.race([exited, deadline]), { code: 0, signal: null });
+    assert.equal(stderr, "");
+    const output = await readFile(path, "utf8");
+    const records = output.trim().split("\n").map(JSON.parse);
+    assert.ok(records.some(({ event, status }) => event === "startup" && status === "start"));
+    assert.ok(records.some(({ event, status }) => event === "shutdown" && status === "success"));
+    assert.deepEqual(records.find(({ event }) => event === "preflight.cycle"), { event: "preflight.cycle", result: { status: "invalid-config", repositories: [] } });
+    assert.doesNotMatch(output, /secret-config|secret-token|secret-credential|memory\.example/);
+  } finally { child.kill("SIGKILL"); }
 });
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
@@ -243,7 +393,7 @@ test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps no
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor() {}
+        constructor({ raw, memory, runtime }) { if (!raw || !memory.credentialProvider.mint || runtime.kind !== 'legacy') throw new Error('invalid session wiring'); }
         run() {
           process.exitCode = 7;
           process.kill(process.pid, 'SIGTERM');

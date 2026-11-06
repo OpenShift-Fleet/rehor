@@ -9,6 +9,7 @@ import type { PreparedCycleInput } from "../src/cycle-input";
 import { InstructionStrategy } from "../src/instructions";
 import { validateOpenCodeDeployment } from "../src/runner";
 import { parseVertexAllowedModels } from "../src/runtimes/opencode/model-defaults";
+import type { OpenCodeDeploymentConfig } from "../src/runtimes/opencode/types";
 
 const temporaryDirectories: string[] = [];
 
@@ -65,6 +66,7 @@ describe("OpenCode deployment defaults", () => {
     const deployment = await loadOpenCodeDeploymentConfig(undefined);
 
     expect(deployment).not.toHaveProperty("model");
+    expect(deployment.modelGatewayPorts).toEqual({ http: 8450, https: 443 });
     expect(deployment.providers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -94,6 +96,7 @@ describe("OpenCode deployment defaults", () => {
       deployment,
     );
     expect(defaultRendered.config.model).toBe("rehor-openai/gpt-6-luna");
+    expect(defaultRendered.config).not.toHaveProperty("modelGatewayPorts");
     expect(defaultRendered.config.agents).toMatchObject({
       title: { model: "rehor-openai/gpt-6-luna" },
     });
@@ -298,6 +301,50 @@ describe("OpenCode deployment defaults", () => {
     }
   });
 
+  it("rejects malformed gateway port configuration from files and direct callers", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-opencode-ports-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "deployment.json");
+    const deployment = await loadOpenCodeDeploymentConfig(undefined);
+    for (const modelGatewayPorts of [
+      null,
+      [],
+      "8450",
+      8450,
+      { other: 443 },
+      { http: "8450" },
+      { http: 0 },
+      { http: -1 },
+      { http: 65536 },
+      { https: 443.5 },
+      { https: null },
+    ]) {
+      await writeFile(path, JSON.stringify({ modelGatewayPorts }));
+      await expect(loadOpenCodeDeploymentConfig(path)).rejects.toThrow("modelGatewayPorts");
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...deployment, modelGatewayPorts } as OpenCodeDeploymentConfig,
+          gatewayEnvironment,
+        ),
+      ).toThrow("modelGatewayPorts");
+    }
+    for (const modelGatewayPorts of [
+      { http: NaN },
+      { https: Infinity },
+      { https: undefined },
+      new Date(),
+    ]) {
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...deployment, modelGatewayPorts } as OpenCodeDeploymentConfig,
+          gatewayEnvironment,
+        ),
+      ).toThrow("modelGatewayPorts");
+    }
+  });
+
   it("rejects a missing or invalid gateway before starting OpenCode", async () => {
     const deployment = await loadOpenCodeDeploymentConfig(undefined);
 
@@ -315,5 +362,190 @@ describe("OpenCode deployment defaults", () => {
         REHOR_MODEL_PROXY_URL: "not a URL",
       }),
     ).toThrow("gateway URL");
+  });
+
+  it("accepts only valid sandbox HTTPS gateway routes", async () => {
+    const deployment = await loadOpenCodeDeploymentConfig(undefined);
+    const environment = {
+      ...gatewayEnvironment,
+      REHOR_INPUT_SOURCE: "sandbox",
+      REHOR_MODEL_PROXY_TOKEN: "openshell:resolve:env:v1_REHOR_MODEL_PROXY_TOKEN",
+    };
+    for (const url of ["https://model.example.test/v1", "https://model.example.test:443/v1"]) {
+      expect(() =>
+        validateOpenCodeDeployment(prepared, deployment, {
+          ...environment,
+          REHOR_MODEL_PROXY_URL: url,
+        }),
+      ).not.toThrow();
+      expect(() =>
+        validateOpenCodeDeployment(prepared, deployment, {
+          ...environment,
+          REHOR_INPUT_SOURCE: "legacy",
+          REHOR_MODEL_PROXY_URL: url,
+        }),
+      ).toThrow("gateway URL");
+    }
+    for (const url of [
+      "https://model.example.test:8443/v1",
+      "https://model.example.test/v2",
+      "https://model.example.test/v1?query=1",
+      "https://model.example.test/v1?",
+      "https://model.example.test/v1#fragment",
+      "https://model.example.test/v1#",
+      "https://user:password@model.example.test/v1",
+      "http://model.example.test/v1",
+    ]) {
+      expect(() =>
+        validateOpenCodeDeployment(prepared, deployment, {
+          ...environment,
+          REHOR_MODEL_PROXY_URL: url,
+        }),
+      ).toThrow("gateway URL");
+    }
+    expect(() =>
+      validateOpenCodeDeployment(prepared, deployment, {
+        ...environment,
+        REHOR_MODEL_PROXY_URL: "http://proxy:8450/v1",
+      }),
+    ).not.toThrow();
+  });
+
+  it("uses deployment-owned ports independently from the gateway URL", async () => {
+    const defaults = await loadOpenCodeDeploymentConfig(undefined);
+    const directory = await mkdtemp(join(tmpdir(), "rehor-opencode-custom-ports-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "deployment.json");
+    await writeFile(
+      path,
+      JSON.stringify({ ...defaults, modelGatewayPorts: { http: 8080, https: 8443 } }),
+    );
+    const deployment = await loadOpenCodeDeploymentConfig(path);
+    const check = (url: string, sandbox = false) =>
+      validateOpenCodeDeployment(prepared, deployment, {
+        ...gatewayEnvironment,
+        REHOR_MODEL_PROXY_URL: url,
+        REHOR_INPUT_SOURCE: sandbox ? "sandbox" : "legacy",
+      });
+
+    expect(() => check("http://proxy:8080/v1")).not.toThrow();
+    expect(() => check("http://proxy:8080/v1", true)).not.toThrow();
+    expect(() => check("https://proxy:8443/v1", true)).not.toThrow();
+    expect(() => check("https://proxy:8443/v1")).toThrow("http://<proxy-host>:8080/v1");
+    expect(() => check("http://proxy:8450/v1", true)).toThrow(
+      "http://<proxy-host>:8080/v1 or https://<proxy-host>:8443/v1",
+    );
+    for (const url of [
+      "https://proxy/v1",
+      "https://proxy:8443/v2",
+      "https://proxy:8443/v1?",
+      "https://proxy:8443/v1#",
+      "https://user:password@proxy:8443/v1",
+    ]) {
+      expect(() => check(url, true)).toThrow("gateway URL");
+    }
+
+    const chat = {
+      ...prepared,
+      config: { ...prepared.config, providerId: "rehor-openai-chat", model: "gpt-4.1" },
+    };
+    expect(() =>
+      validateOpenCodeDeployment(chat, deployment, {
+        ...gatewayEnvironment,
+        REHOR_MODEL_PROXY_URL: "https://proxy:8443/v1",
+        REHOR_INPUT_SOURCE: "sandbox",
+      }),
+    ).not.toThrow();
+    const vertex = {
+      ...prepared,
+      config: { ...prepared.config, providerId: "vertex", model: "claude-opus-4-6" },
+    };
+    expect(() => validateOpenCodeDeployment(vertex, deployment, gatewayEnvironment)).not.toThrow();
+    expect(() =>
+      validateOpenCodeDeployment(vertex, deployment, {
+        ...gatewayEnvironment,
+        ANTHROPIC_VERTEX_BASE_URL: "http://proxy:8080",
+      }),
+    ).toThrow("proxy URL must be http://<proxy-host>:8443");
+  });
+
+  it("preserves fallback ports and handles normalized HTTP and HTTPS default ports", async () => {
+    const defaults = await loadOpenCodeDeploymentConfig(undefined);
+    const { modelGatewayPorts: _ports, ...legacyDeployment } = defaults;
+    for (const deployment of [legacyDeployment, { ...defaults, modelGatewayPorts: {} }]) {
+      expect(() =>
+        validateOpenCodeDeployment(prepared, deployment, gatewayEnvironment),
+      ).not.toThrow();
+      for (const url of ["https://proxy/v1", "https://proxy:443/v1"]) {
+        expect(() =>
+          validateOpenCodeDeployment(prepared, deployment, {
+            ...gatewayEnvironment,
+            REHOR_INPUT_SOURCE: "sandbox",
+            REHOR_MODEL_PROXY_URL: url,
+          }),
+        ).not.toThrow();
+      }
+    }
+    for (const url of ["http://proxy/v1", "http://proxy:80/v1"]) {
+      expect(() =>
+        validateOpenCodeDeployment(prepared, defaults, {
+          ...gatewayEnvironment,
+          REHOR_MODEL_PROXY_URL: url,
+        }),
+      ).toThrow("gateway URL");
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...defaults, modelGatewayPorts: { http: 80 } },
+          {
+            ...gatewayEnvironment,
+            REHOR_MODEL_PROXY_URL: url,
+          },
+        ),
+      ).not.toThrow();
+    }
+    for (const port of [1, 65535]) {
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...defaults, modelGatewayPorts: { http: port } },
+          {
+            ...gatewayEnvironment,
+            REHOR_MODEL_PROXY_URL: `http://proxy:${port}/v1`,
+          },
+        ),
+      ).not.toThrow();
+    }
+    expect(() =>
+      validateOpenCodeDeployment(
+        prepared,
+        { ...defaults, modelGatewayPorts: { https: 8443 } },
+        gatewayEnvironment,
+      ),
+    ).not.toThrow();
+    for (const url of ["https://proxy/v1", "https://proxy:443/v1"]) {
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...defaults, modelGatewayPorts: { https: 8443 } },
+          {
+            ...gatewayEnvironment,
+            REHOR_INPUT_SOURCE: "sandbox",
+            REHOR_MODEL_PROXY_URL: url,
+          },
+        ),
+      ).toThrow("gateway URL");
+      expect(() =>
+        validateOpenCodeDeployment(
+          prepared,
+          { ...defaults, modelGatewayPorts: { http: 80 } },
+          {
+            ...gatewayEnvironment,
+            REHOR_INPUT_SOURCE: "sandbox",
+            REHOR_MODEL_PROXY_URL: url,
+          },
+        ),
+      ).not.toThrow();
+    }
   });
 });

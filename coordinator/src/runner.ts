@@ -5,9 +5,10 @@ import { promisify } from "node:util";
 import type { CompatibilitySink, PreflightCycleInput } from "./adapters/compatibility";
 import { FileCycleAdmission } from "./adapters/file-admission";
 import { PythonCoordinatorBridge } from "./bridges/python";
-import type { CoordinatorResult } from "./coordinator";
-import type { PreparedCycleInput } from "./cycle-input";
+import { type CoordinatorResult, RuntimeCleanupError } from "./coordinator";
+import type { PreparedCycleInput, SandboxCycleInput } from "./cycle-input";
 import { prepareCycleInput } from "./cycle-input";
+import { resolveModelGatewayPorts } from "./deployment-config";
 import { providerDiagnostic, runtimeErrorDetails } from "./diagnostics";
 import type { RehorRun, RepositorySnapshot, TaskIdentity } from "./domain/run";
 import { isOpenCodeRuntime } from "./domain/runtime-selection";
@@ -96,6 +97,8 @@ export interface CoordinatorRunnerOptions {
   maxPreflightBackoffSeconds?: number;
   maxCycles?: number;
   once?: boolean;
+  /** Dispatcher sandbox input (REHOR-233): one delivered prompt, no preflight. */
+  sandboxInput?: SandboxCycleInput;
   signal?: AbortSignal;
   shutdownSignal?: AbortSignal;
   onReady?: () => void;
@@ -151,6 +154,7 @@ export function validateOpenCodeDeployment(
   environment: NodeJS.ProcessEnv = process.env,
 ): void {
   if (!isOpenCodeRuntime(prepared.config.runtimeId)) return;
+  const gatewayPorts = resolveModelGatewayPorts(deployment.modelGatewayPorts);
   if (deployment.providerId !== undefined && deployment.providerId !== prepared.config.providerId) {
     throw new Error(
       `OpenCode deployment provider '${deployment.providerId}' does not match prepared provider '${prepared.config.providerId}'`,
@@ -206,7 +210,7 @@ export function validateOpenCodeDeployment(
     }
   }
   if (selectedProvider.id === "rehor-openai" || selectedProvider.id === "rehor-openai-chat") {
-    validateOpenAIGatewayConfig(selectedProvider, environment);
+    validateOpenAIGatewayConfig(selectedProvider, environment, gatewayPorts);
   }
   if (selectedProvider.id === "vertex") {
     validateVertexProxyConfig(selectedProvider, environment);
@@ -256,9 +260,24 @@ function validateVertexProxyConfig(
   }
 }
 
+function isSandboxHttpsGateway(
+  parsedGateway: URL,
+  gatewayValue: string,
+  environment: NodeJS.ProcessEnv,
+  httpsPort: number,
+): boolean {
+  return (
+    environment.REHOR_INPUT_SOURCE === "sandbox" &&
+    parsedGateway.protocol === "https:" &&
+    Number(parsedGateway.port || 443) === httpsPort &&
+    !/[?#]/.test(gatewayValue.trim())
+  );
+}
+
 function validateOpenAIGatewayConfig(
   provider: OpenCodeProviderConfig,
   environment: NodeJS.ProcessEnv,
+  ports: { http: number; https: number },
 ): void {
   const baseURL = provider.settings?.baseURL;
   if (typeof baseURL !== "string" || !baseURL.trim()) {
@@ -278,19 +297,29 @@ function validateOpenAIGatewayConfig(
   } catch {
     throw new Error(`OpenCode deployment provider '${provider.id}' has an invalid gateway URL`);
   }
+  // URL normalizes explicit default ports (:80 and :443) to an empty port.
+  const internalGateway =
+    parsedGateway.protocol === "http:" && Number(parsedGateway.port || 80) === ports.http;
+  const sandboxGateway = isSandboxHttpsGateway(
+    parsedGateway,
+    gatewayValue,
+    environment,
+    ports.https,
+  );
   if (
-    parsedGateway.protocol !== "http:" ||
+    (!internalGateway && !sandboxGateway) ||
     !parsedGateway.hostname ||
-    parsedGateway.port !== "8450" ||
     parsedGateway.pathname !== "/v1" ||
     parsedGateway.username ||
     parsedGateway.password ||
     parsedGateway.search ||
     parsedGateway.hash
   ) {
-    throw new Error(
-      `OpenCode deployment provider '${provider.id}' gateway URL must be http://<proxy-host>:8450/v1`,
-    );
+    const allowed =
+      environment.REHOR_INPUT_SOURCE === "sandbox"
+        ? `http://<proxy-host>:${ports.http}/v1 or https://<proxy-host>:${ports.https}/v1`
+        : `http://<proxy-host>:${ports.http}/v1`;
+    throw new Error(`OpenCode deployment provider '${provider.id}' gateway URL must be ${allowed}`);
   }
 
   const tokenEnvironment = exactEnvironmentReference(provider.settings?.apiKey);
@@ -408,6 +437,7 @@ export async function runCoordinator(
         label: options.label,
         instanceId: options.instanceId,
         signal,
+        ...(options.sandboxInput === undefined ? {} : { sandboxInput: options.sandboxInput }),
       });
       scheduler.updateIntervals({
         intervalMs: secondsToMs(prepared.config.intervalSeconds, "intervalSeconds"),
@@ -505,6 +535,7 @@ export async function runCoordinator(
         }
       });
     },
+    isRunFailureOnAbort: (error) => error instanceof RuntimeCleanupError,
     afterRun: cleanupBetweenCycles,
     sleepSignal: () => consumeSleepSignal(options.sleepSignalPath),
     sleep: async (delayMs, signal) => {
