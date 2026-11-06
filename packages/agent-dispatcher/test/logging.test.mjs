@@ -141,7 +141,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor(raw, memory) { if (!memory.credentialProvider.mint || memory.url.hostname !== 'memory.example') throw new Error('invalid session wiring'); }
+        constructor({ raw, memory, runtime, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
         run(image, decision, environment, signal) {
           process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
           process.exitCode = 7;
@@ -243,7 +243,7 @@ test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps no
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor() {}
+        constructor({ raw, memory, runtime }) { if (!raw || !memory.credentialProvider.mint || runtime.kind !== 'legacy') throw new Error('invalid session wiring'); }
         run() {
           process.exitCode = 7;
           process.kill(process.pid, 'SIGTERM');

@@ -124,6 +124,17 @@ SandboxTemplate): `python` (the default) uses the legacy Python runner, while
 `coordinator` opts that runner into the TypeScript coordinator. Step 4 shows how to scope this
 setting to one app-interface deployment.
 
+`REHOR_INPUT_SOURCE` and `REHOR_INPUT_FILE` are set per exec by the agent
+dispatcher when it delivers prepared work to a sandbox (`sandbox` mode: one
+dispatch, then exit, with fail-closed validation of the delivered envelope).
+Sandbox onboarding requires `BOT_EXECUTION_ENGINE=coordinator` explicitly and
+an instance configured for the OpenCode runtime; the Python engine cannot consume
+dispatcher input. Python remains available for non-sandbox deployments and
+coordinator helpers.
+Operators must not set them on runner deployments — unset keeps the normal
+polling loop. See the [bot workflow loop](bot-workflow-loop.md#dispatcher-sandbox-input-rehor-233).
+The PR #620 reviewed-head route smoke is not production onboarding acceptance: it forced real preflight skips into `start` and used temporary policy changes. It did not validate a clean production image or production networking; see the dispatcher's [E2E evidence and limits](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/agent-dispatcher/README.md#reviewed-head-e2e-evidence-pr-620).
+
 **Workflows:** The built-in `jira-sprint` workflow handles the full autonomous development loop (triage → implement → PR → maintain). For specialized use cases — monitoring, review-only, scheduled tasks — you can create custom workflows in your instance config repo using `workflow: ./workflows/<name>`. See [Creating Custom Workflows](presets/custom-workflows.md) for the full guide.
 
 **Env presets** add tools and runtimes to the bot image. List only what your instance needs — unused presets waste build time and image size.

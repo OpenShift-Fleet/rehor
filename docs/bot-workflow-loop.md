@@ -123,6 +123,26 @@ One session receives all data — not one session per `"start"`. This lets Claud
 
 Preflight scripts only **read** tasks — they never create, update, or archive them. This separation is intentional: preflights are pure functions over external state. They can never corrupt the task system, even if they crash. See [the design doc](presets-design.md) for the rationale.
 
+### Dispatcher Sandbox Input (REHOR-233)
+
+When the agent dispatcher delivers prepared work to a per-run sandbox, the runner does not poll and does not rerun preflights. The dispatcher writes a UTF-8 JSON envelope to a fixed path and execs the runner entrypoint with two per-exec environment variables:
+
+| Variable | Meaning |
+|----------|---------|
+| `REHOR_INPUT_SOURCE` | For the coordinator, `sandbox` consumes the delivered envelope; unset, empty, or `legacy` keeps the polling loop. Other values fail closed. |
+| `REHOR_INPUT_FILE` | Path to the delivered envelope. The dispatcher always uses `/tmp/rehor-input.json`. |
+
+Sandbox dispatch requires explicit `BOT_EXECUTION_ENGINE=coordinator`; the entrypoint rejects the default Python engine and other values before setup. Configure sandbox onboarding for the OpenCode runtime. The envelope carries `{schemaVersion: 1, runId, prompt, metadata: {action: "start", scripts: [...]}}`; the complete serialized envelope is capped at 64 KiB. Coordinator behavior in `sandbox` mode:
+
+- **One dispatch, then exit.** The runner performs the usual config sync, instruction assembly, and model selection, then runs exactly one agent cycle with the delivered prompt as its pre-flight data and exits. There is no polling loop and no sleep-signal handling.
+- **Fail closed.** A missing, unreadable, malformed, unsupported, or oversized envelope — or an unrecognized `REHOR_INPUT_SOURCE` value — logs an error (never the prompt content) and exits nonzero. The runner never falls back to local preflights or agent launch.
+- **Empty prompt means no work.** A whitespace-only prompt skips the launch entirely and exits zero.
+- **The prompt never leaks.** It is read only from the input file; it never appears in argv, environment variables, or logs. Only the source and path pointers above live in env.
+
+Non-dispatcher deployments are unchanged: with `REHOR_INPUT_SOURCE` unset (or `legacy`), the existing preflight → session-or-sleep loop runs as documented in the rest of this page. Dispatcher deployments set the input variables per exec; configure the coordinator engine separately. See the [agent dispatcher README](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/agent-dispatcher/README.md) for the delivery contract.
+
+The PR #620 reviewed-head route smoke forced three real preflight `skip` results into `start` to exercise dispatch. This test-only override does not change production skip behavior or prove actionable task work; see the dispatcher's [E2E evidence and limits](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/agent-dispatcher/README.md#reviewed-head-e2e-evidence-pr-620).
+
 ### What a Preflight Script Must Do
 
 Every preflight script follows a two-phase pattern. The order matters — check tasks first, then check for work.

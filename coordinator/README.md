@@ -343,8 +343,11 @@ becomes `RehorRun.provider.id`.
 
 Preflight `skip` and `error` actions remain coordinator-owned no-session
 paths. Existing aggregation is preserved: a mixed error/start result is still
-`start`, while an all-error result is `error`. Only a `start` result, or the
-no-preflight pass-through case, produces an agent prompt.
+`start`, while an all-error result is `error`. A local-preflight cycle produces
+an agent prompt for a `start` result or the no-preflight pass-through case. A
+dispatcher-delivered sandbox prompt is a separate one-shot input: it replaces
+local preflight and runs once. See the [Agent Dispatcher README](../packages/agent-dispatcher/README.md#reviewed-head-e2e-evidence-pr-620)
+for reviewed-head E2E evidence and its test-only limitations.
 
 ## Local coordinator launch
 
@@ -383,8 +386,15 @@ never `small_model`.
 Both OpenAI routes use `REHOR_MODEL_PROXY_URL` and
 `REHOR_MODEL_PROXY_TOKEN`. The Vertex route uses `REHOR_VERTEX_PROXY_URL`,
 resolved from existing `ANTHROPIC_VERTEX_BASE_URL` or the shared
-`devbot-proxy:8443` service. The gateway must be
-`http://<proxy-host>:8450/v1`; missing or invalid gateway/token settings fail
+`devbot-proxy:8443` service. By default, the OpenAI gateway must be
+`http://<proxy-host>:8450/v1`; sandbox input also permits
+`https://<proxy-host>:443/v1`. Trusted deployment configuration may set
+`modelGatewayPorts` to `{ "http": 8450, "https": 443 }` with different integer
+ports (1–65535). Each supplied port replaces that protocol's allowed port;
+omitted fields retain defaults. This allowlist is independent of the gateway URL,
+and HTTPS remains sandbox-only. URLs must use `/v1` without credentials, query,
+or fragment; sandbox HTTPS also rejects empty `?` and `#` delimiters. Vertex's
+separate port 8443 is unaffected. Missing or invalid gateway/token settings fail
 before OpenCode starts. The token is only the bot-side API-key value that the
 proxy overwrites; the real OpenAI key remains proxy-only. Compose sets both
 values directly. OpenShift defaults the gateway host from `PROXY_HOST` and uses
