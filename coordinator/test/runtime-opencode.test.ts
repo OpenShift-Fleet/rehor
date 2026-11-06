@@ -521,6 +521,23 @@ const blocked = [
   "UNKNOWN_AMBIENT",
 ];
 describe("OpenCode environment", () => {
+  it("preserves OpenShell CA settings only for sandbox runs", () => {
+    const ca = {
+      NODE_EXTRA_CA_CERTS: "/run/openshell-supervisor-ca/material/ca.crt",
+      SSL_CERT_FILE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      CURL_CA_BUNDLE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      REQUESTS_CA_BUNDLE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      GIT_SSL_CAINFO: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+    };
+    const base = { ...ca, NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_OPTIONS: "--require=evil" };
+    const sandbox = buildOpenCodeEnvironment({ base: { ...base, REHOR_INPUT_SOURCE: "sandbox" } });
+    expect(sandbox).toMatchObject(ca);
+    expect(sandbox.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
+    expect(sandbox.NODE_OPTIONS).toBeUndefined();
+    const legacy = buildOpenCodeEnvironment({ base });
+    for (const name of Object.keys(ca)) expect(legacy[name]).toBeUndefined();
+  });
+
   it("copies only explicit runtime variables and preserves deterministic proxy routing", () => {
     const base = Object.freeze({
       PATH: "/bin",
@@ -1044,7 +1061,7 @@ describe("OpenCode V2 runtime lifecycle", () => {
     expect(result.error).toBeUndefined();
     expect(calls.prompt[0]?.signal?.aborted).toBe(true);
     expect(calls.remove[0]?.signal?.aborted).toBe(false);
-    expect(calls.stop).toBe(2);
+    expect(calls.stop).toBe(1);
   });
   it("leaves direct-run timeout enforcement to the coordinator", async () => {
     const events: OpenCodeEvent[] = [];

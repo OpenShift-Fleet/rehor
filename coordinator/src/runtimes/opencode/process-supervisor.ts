@@ -17,6 +17,7 @@ import {
 } from "../shared";
 import { buildOpenCodeEnvironment, type OpenCodeEnvironmentOptions } from "./environment";
 import { renderOpenCodePolicyPlugin } from "./policy-plugin";
+import { OpenCodeProcessLeakError, OpenCodeStartupCleanupError } from "./process-leak-error";
 import {
   HttpOpenCodeReadiness,
   matchesVersion,
@@ -24,6 +25,7 @@ import {
   OpenCodeReadinessError,
 } from "./readiness";
 import { writeOpenCodeConfig } from "./render";
+import { isBrokenPipe, shutdownSandboxChild } from "./sandbox-shutdown";
 import type { OpenCodePermissionRule, RenderedOpenCodeConfig } from "./types";
 import { OpenCodeWorkspaceOwnershipError, resolveApprovedWorkspace } from "./workspace";
 
@@ -56,7 +58,7 @@ export interface OpenCodeSupervisorOptions extends OpenCodeEnvironmentOptions {
   workspaceRoot?: string;
   /** Expected owner UID for the canonical worktree directory. */
   workspaceOwnerUid?: number;
-  /** Bound verification after SIGKILL when a group ignores the grace signal. */
+  /** Bound verification after SIGKILL when the target ignores the grace signal. */
   killVerificationTimeoutMs?: number;
   /** Optional caller-owned state directory; otherwise one is created per start. */
   stateDirectory?: string;
@@ -75,14 +77,6 @@ type RequiredOpenCodeSupervisorOption =
   | "startupTimeoutMs"
   | "shutdownTimeoutMs"
   | "killVerificationTimeoutMs";
-
-/** The OpenCode process group survived SIGKILL; its processes may leak. */
-export class OpenCodeProcessLeakError extends Error {
-  constructor(message = "OpenCode process group remained alive after SIGKILL") {
-    super(message);
-    this.name = "OpenCodeProcessLeakError";
-  }
-}
 
 export interface OpenCodeServerController {
   readonly diagnostics?: string;
@@ -103,6 +97,9 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private stopPromise?: Promise<void>;
   private exited = false;
   private termSent = false;
+  private sandbox = false;
+  private spawnFailed = false;
+  private childError?: Error;
   private _crashError?: Error;
   private crashController = new AbortController();
   private outputCleanup?: () => void;
@@ -187,6 +184,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     const configHash = this.renderedConfig?.hash;
 
     const stateDirectory = await this.prepareStateDirectory();
+    this.sandbox = (this.options.base ?? process.env).REHOR_INPUT_SOURCE === "sandbox";
     const environment = buildOpenCodeEnvironment({
       ...this.options,
       // GitOps resources live under isolated XDG_CONFIG_HOME/opencode so
@@ -266,7 +264,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
         cwd: workspaceDirectory,
         env: environment,
         stdio: ["pipe", "pipe", "pipe"],
-        detached: process.platform !== "win32",
+        detached: !this.sandbox && process.platform !== "win32",
       });
     } catch (error) {
       await this.cleanupStateDirectory();
@@ -275,10 +273,21 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
     this.child = child;
     this.exited = false;
     this.termSent = false;
+    this.spawnFailed = false;
+    this.childError = undefined;
     this._crashError = undefined;
     this.crashController = new AbortController();
+    if (this.sandbox) {
+      // A closed child pipe can emit EPIPE asynchronously, even after exit.
+      // Keep a listener through destruction so it cannot crash the runner.
+      child.stdin?.on("error", (error: Error) => {
+        if (this.child !== child || (this.exited && isBrokenPipe(error))) return;
+        this.childError ??= redactError(error);
+      });
+    }
 
-    const exitPromise = this.observeExit(child);
+    // Attach immediately: startup may remain pending after a spawn error.
+    void this.observeExit(child).catch(() => undefined);
     const startupSignal = AbortSignal.any([signal, this.crashSignal]);
     const startupDeadline = Date.now() + this.options.startupTimeoutMs;
     try {
@@ -305,12 +314,13 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       return this.server;
     } catch (error) {
       const startupError = this.withStartupOutput(error);
-      await this.stop();
+      try {
+        await this.stop();
+      } catch (cleanupError) {
+        if (!this.sandbox) throw cleanupError;
+        throw new OpenCodeStartupCleanupError(startupError, cleanupError);
+      }
       throw startupError;
-    } finally {
-      // Keep exitPromise referenced so a rejected child-exit observation cannot
-      // become an unhandled rejection after startup has already failed.
-      void exitPromise.catch(() => undefined);
     }
   }
 
@@ -345,6 +355,28 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
       return;
     }
     const child = this.child;
+    if (this.sandbox) {
+      await shutdownSandboxChild({
+        child,
+        shutdownTimeoutMs: this.options.shutdownTimeoutMs,
+        killVerificationTimeoutMs: this.options.killVerificationTimeoutMs,
+        childError: this.childError,
+        isExited: () => this.exited,
+        isSpawnFailed: () => this.spawnFailed,
+        markTermSent: () => {
+          this.termSent = true;
+        },
+        cleanupOutput: () => {
+          this.server = undefined;
+          this.outputCleanup?.();
+        },
+        cleanupVerifiedChild: async () => {
+          this.child = undefined;
+          await this.cleanupStateDirectory();
+        },
+      });
+      return;
+    }
     try {
       const groupExists = (): boolean => {
         if (process.platform === "win32" || !child.pid) return false;
@@ -395,6 +427,7 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
   private observeExit(child: ChildProcess): Promise<void> {
     return new Promise((resolve, reject) => {
       const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+        if (this.child !== child) return;
         this.exited = true;
         if (!this.termSent && !this._crashError) {
           const error = new Error(
@@ -404,22 +437,27 @@ export class OpenCodeServerSupervisor implements OpenCodeServerController {
           );
           this._crashError = this.withStartupOutput(error);
           this.crashController.abort(this._crashError);
-          this.signalChild(child, "SIGTERM");
+          if (!this.sandbox) this.signalChild(child, "SIGTERM");
         }
         resolve();
       };
       const onError = (error: Error): void => {
-        this.exited = true;
+        if (this.child !== child) return;
+        if (this.sandbox) {
+          this.spawnFailed = !child.pid;
+          this.childError = redactError(error);
+        } else this.exited = true;
         const safeError = redactError(error);
         if (!this.termSent && !this._crashError) {
           this._crashError = this.withStartupOutput(safeError);
           this.crashController.abort(this._crashError);
-          this.signalChild(child, "SIGTERM");
+          if (!this.sandbox) this.signalChild(child, "SIGTERM");
         }
         reject(this._crashError ?? safeError);
       };
       child.once("exit", onExit);
-      child.once("error", onError);
+      if (this.sandbox) child.on("error", onError);
+      else child.once("error", onError);
     });
   }
 
