@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import type { CompatibilitySink, PreflightCycleInput } from "./adapters/compatibility";
 import { FileCycleAdmission } from "./adapters/file-admission";
 import { PythonCoordinatorBridge } from "./bridges/python";
-import type { CoordinatorResult } from "./coordinator";
+import { type CoordinatorResult, RuntimeCleanupError } from "./coordinator";
 import type { PreparedCycleInput, SandboxCycleInput } from "./cycle-input";
 import { prepareCycleInput } from "./cycle-input";
 import { resolveModelGatewayPorts } from "./deployment-config";
@@ -535,6 +535,7 @@ export async function runCoordinator(
         }
       });
     },
+    isRunFailureOnAbort: (error) => error instanceof RuntimeCleanupError,
     afterRun: cleanupBetweenCycles,
     sleepSignal: () => consumeSleepSignal(options.sleepSignalPath),
     sleep: async (delayMs, signal) => {

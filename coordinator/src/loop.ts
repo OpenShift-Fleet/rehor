@@ -32,6 +32,8 @@ export interface CoordinatorLoopOptions<TResult> {
   scheduler: CycleScheduler;
   prepare(signal: AbortSignal): Promise<PreparedCycleInput>;
   run(prepared: PreparedCycleInput, signal: AbortSignal): Promise<TResult>;
+  /** Failures independent of cancellation must still be recorded during shutdown. */
+  isRunFailureOnAbort?(error: unknown): boolean;
   /**
    * Post-run housekeeping. It runs after the sleep signal is read, because
    * cleanup may delete that signal, and it runs even when shutdown interrupted
@@ -190,7 +192,7 @@ export async function runCoordinatorLoop<TResult>(
       try {
         results.push(await options.run(prepared, signals.signal));
       } catch (error) {
-        if (!signals.signal.aborted) {
+        if (!signals.signal.aborted || options.isRunFailureOnAbort?.(error)) {
           failures += 1;
           await reportError(error, LoopErrorPhase.Run);
         }
