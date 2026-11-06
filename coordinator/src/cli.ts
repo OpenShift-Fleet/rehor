@@ -73,6 +73,14 @@ async function main(): Promise<number> {
     statusUrl: process.env.BOT_DASHBOARD_URL ?? endpoint(memoryApiBase, "/api/bot-status"),
     costsUrl: process.env.COSTS_API_URL ?? endpoint(memoryApiBase, "/api/costs"),
     cycleRunsUrl: process.env.CYCLE_RUNS_API_URL ?? endpoint(memoryApiBase, "/api/cycle-runs"),
+    ...(inputMode === "sandbox" && process.env.BOT_MEMORY_URL && process.env.BOT_MEMORY_TOKEN
+      ? {
+          memoryRoute: {
+            url: process.env.BOT_MEMORY_URL,
+            placeholder: process.env.BOT_MEMORY_TOKEN,
+          },
+        }
+      : {}),
   });
   const health = new CoordinatorHealthServer({
     port: options.metricsPort,

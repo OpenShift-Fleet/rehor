@@ -8,6 +8,19 @@ set -e
 export REHOR_MODEL_PROXY_URL="${REHOR_MODEL_PROXY_URL:-http://${PROXY_HOST:-proxy}:8450/v1}"
 export REHOR_MODEL_PROXY_TOKEN="${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}"
 
+# Dispatcher sandbox dispatch (REHOR-233): the runner executes one delivered
+# input and exits. The sandbox has no executor sidecar, GPG keys, or writable
+# app directory, so deployment-only setup is skipped for that invocation.
+SANDBOX_DISPATCH=0
+if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
+    if [ "${BOT_EXECUTION_ENGINE:-}" != "coordinator" ]; then
+        echo "FATAL: sandbox dispatch requires BOT_EXECUTION_ENGINE=coordinator" >&2
+        exit 64
+    fi
+    SANDBOX_DISPATCH=1
+    echo "Sandbox dispatch mode: skipping executor/git/auth setup"
+fi
+
 # --- Verify required CLI tools ---
 MISSING=""
 for tool in gh glab git gpg; do
@@ -46,6 +59,7 @@ fi
 
 if [ -n "${GITLAB_CA_CERT_PEM:-}" ] && [ -z "${GITLAB_CA_CERT_FILE:-}" ]; then
     GITLAB_CA_CERT_FILE="/home/botuser/.config/gitlab-ca-cert.pem"
+    [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && GITLAB_CA_CERT_FILE="${HOME}/.config/gitlab-ca-cert.pem"
     mkdir -p "$(dirname "$GITLAB_CA_CERT_FILE")"
     printf '%s\n' "$GITLAB_CA_CERT_PEM" > "$GITLAB_CA_CERT_FILE"
     chmod 600 "$GITLAB_CA_CERT_FILE"
@@ -59,10 +73,12 @@ fi
 
 # Write SSO credentials file for stage auth (chrome-devtools)
 if [ -n "${SSO_USERNAME:-}" ] && [ -n "${SSO_PASSWORD:-}" ]; then
-    cat > /home/botuser/app/.credentials <<EOF
+    credential_path="/home/botuser/app/.credentials"
+    [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && credential_path="${PWD}/.credentials"
+    cat > "$credential_path" <<EOF
 {"sso": {"username": "${SSO_USERNAME}", "password": "${SSO_PASSWORD}"}}
 EOF
-    chmod 600 /home/botuser/app/.credentials
+    chmod 600 "$credential_path"
     unset SSO_USERNAME SSO_PASSWORD
 fi
 
@@ -80,96 +96,116 @@ _log_json() {
 }
 
 EXECUTOR_ADDR="${EXECUTOR_ADDR:-unix:///var/run/devbot/executor.sock}"
-_log_json "INFO" "Waiting for executor at ${EXECUTOR_ADDR}..."
-elapsed=0
-if [[ "$EXECUTOR_ADDR" == unix://* ]]; then
-    SOCK_PATH="${EXECUTOR_ADDR#unix://}"
-    until [ -S "$SOCK_PATH" ]; do
-        elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor socket not ready after 30s"; exit 1; }
-        sleep 1
-    done
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: no executor sidecar, skipping executor wait"
 else
-    EXEC_HOST="${EXECUTOR_ADDR%%:*}"
-    EXEC_PORT="${EXECUTOR_ADDR##*:}"
-    until bash -c "echo > /dev/tcp/${EXEC_HOST}/${EXEC_PORT}" 2>/dev/null; do
-        elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s"; exit 1; }
-        sleep 1
-    done
+    _log_json "INFO" "Waiting for executor at ${EXECUTOR_ADDR}..."
+    elapsed=0
+    if [[ "$EXECUTOR_ADDR" == unix://* ]]; then
+        SOCK_PATH="${EXECUTOR_ADDR#unix://}"
+        until [ -S "$SOCK_PATH" ]; do
+            elapsed=$((elapsed + 1))
+            [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor socket not ready after 30s"; exit 1; }
+            sleep 1
+        done
+    else
+        EXEC_HOST="${EXECUTOR_ADDR%%:*}"
+        EXEC_PORT="${EXECUTOR_ADDR##*:}"
+        until bash -c "echo > /dev/tcp/${EXEC_HOST}/${EXEC_PORT}" 2>/dev/null; do
+            elapsed=$((elapsed + 1))
+            [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s"; exit 1; }
+            sleep 1
+        done
+    fi
+    _log_json "INFO" "Executor ready."
 fi
-_log_json "INFO" "Executor ready."
 
 # Per-platform git identity via includeIf (git 2.36+)
 # Each platform gets its own name, email, and GPG signing key.
-GH_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GH_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
-GL_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GL_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
+# Skipped for sandbox dispatch: no GPG keys are projected and the one-shot
+# runner does not configure deployment git identity.
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: skipping git identity and platform verification"
+else
+    GH_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GH_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
+    GL_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GL_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
 
-# Export so run.py's setup_git() writes them into GIT_CONFIG_GLOBAL gitconfig
-export GH_GPG_SIGNING_KEY="$GH_GPG_KEY"
-export GL_GPG_SIGNING_KEY="$GL_GPG_KEY"
+    # Export so run.py's setup_git() writes them into GIT_CONFIG_GLOBAL gitconfig
+    export GH_GPG_SIGNING_KEY="$GH_GPG_KEY"
+    export GL_GPG_SIGNING_KEY="$GL_GPG_KEY"
 
-cat > /home/botuser/.gitconfig-gh <<EOF
+    cat > /home/botuser/.gitconfig-gh <<EOF
 [user]
 	name = ${GH_USER_NAME}
 	email = ${GH_USER_EMAIL}
 	signingkey = ${GH_GPG_KEY}
 EOF
 
-cat > /home/botuser/.gitconfig-gl <<EOF
+    cat > /home/botuser/.gitconfig-gl <<EOF
 [user]
 	name = ${GL_USER_NAME}
 	email = ${GL_USER_EMAIL}
 	signingkey = ${GL_GPG_KEY}
 EOF
 
-git config --global 'includeIf.hasconfig:remote.*.url:https://github.com/**.path' /home/botuser/.gitconfig-gh
-git config --global 'includeIf.hasconfig:remote.*.url:https://gitlab.cee.redhat.com/**.path' /home/botuser/.gitconfig-gl
+    git config --global 'includeIf.hasconfig:remote.*.url:https://github.com/**.path' /home/botuser/.gitconfig-gh
+    git config --global 'includeIf.hasconfig:remote.*.url:https://gitlab.cee.redhat.com/**.path' /home/botuser/.gitconfig-gl
 
-# Verify per-platform identity + GPG signing (warn-only, never fatal)
-verify_platform_signing() {
-    local platform="$1" url="$2" expected_email="$3"
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    git init -q "$tmpdir"
-    git -C "$tmpdir" remote add origin "$url"
-    local resolved_email resolved_key
-    resolved_email=$(git -C "$tmpdir" config user.email)
-    resolved_key=$(git -C "$tmpdir" config user.signingkey)
-    rm -rf "$tmpdir"
+    # Verify per-platform identity + GPG signing (warn-only, never fatal)
+    verify_platform_signing() {
+        local platform="$1" url="$2" expected_email="$3"
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        git init -q "$tmpdir"
+        git -C "$tmpdir" remote add origin "$url"
+        local resolved_email resolved_key
+        resolved_email=$(git -C "$tmpdir" config user.email)
+        resolved_key=$(git -C "$tmpdir" config user.signingkey)
+        rm -rf "$tmpdir"
 
-    if [ -z "$resolved_email" ]; then
-        echo "WARNING: ${platform} — includeIf did not resolve identity"
-        return
-    fi
-    if [ "$resolved_email" != "$expected_email" ]; then
-        echo "WARNING: ${platform} — email mismatch: got ${resolved_email}, expected ${expected_email}"
-        return
-    fi
-    if [ -z "$resolved_key" ]; then
-        echo "WARNING: ${platform} — no GPG signing key resolved"
-        return
-    fi
-    if echo "test" | gpg --local-user "$resolved_key" --sign > /dev/null 2>&1; then
-        echo "${platform} identity + GPG signing OK (${resolved_email})"
-    else
-        echo "WARNING: ${platform} — GPG key cannot sign (missing or expired)"
-    fi
-}
-verify_platform_signing "GitHub" "https://github.com/test/repo.git" "${GH_USER_EMAIL}"
-verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "${GL_USER_EMAIL}"
+        if [ -z "$resolved_email" ]; then
+            echo "WARNING: ${platform} — includeIf did not resolve identity"
+            return
+        fi
+        if [ "$resolved_email" != "$expected_email" ]; then
+            echo "WARNING: ${platform} — email mismatch: got ${resolved_email}, expected ${expected_email}"
+            return
+        fi
+        if [ -z "$resolved_key" ]; then
+            echo "WARNING: ${platform} — no GPG signing key resolved"
+            return
+        fi
+        if echo "test" | gpg --local-user "$resolved_key" --sign > /dev/null 2>&1; then
+            echo "${platform} identity + GPG signing OK (${resolved_email})"
+        else
+            echo "WARNING: ${platform} — GPG key cannot sign (missing or expired)"
+        fi
+    }
+    verify_platform_signing "GitHub" "https://github.com/test/repo.git" "${GH_USER_EMAIL}"
+    verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "${GL_USER_EMAIL}"
+fi
 
 # Jira credentials are in the proxy container (mcp-atlassian on port 8444).
 # Python skills use JIRA_MCP_URL env var to connect via MCP protocol.
 
 # Point MCP config to the memory server
-sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
+# Skipped for sandbox dispatch: the bootstrap sandbox policy keeps the app
+# directory read-only, so .mcp.json cannot be rewritten in place.
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: keeping baked .mcp.json"
+else
+    sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
+fi
 
-# --- Verify auth (via thin client → proxy) ---
-echo "Verifying GitHub auth..."
-gh auth status 2>&1 | head -3 || { echo "WARNING: gh auth failed"; }
-echo "Verifying GitLab auth..."
-glab auth status --hostname gitlab.cee.redhat.com 2>&1 | head -3 || { echo "WARNING: glab auth failed"; }
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: skipping gh/glab auth verification"
+else
+    # --- Verify auth (via thin client → proxy) ---
+    echo "Verifying GitHub auth..."
+    gh auth status 2>&1 | head -3 || { echo "WARNING: gh auth failed"; }
+    echo "Verifying GitLab auth..."
+    glab auth status --hostname gitlab.cee.redhat.com 2>&1 | head -3 || { echo "WARNING: glab auth failed"; }
+fi
 
 # --- Wait for dependent services (OpenShift deploys all pods concurrently) ---
 wait_for_http() {
@@ -237,17 +273,34 @@ else
 fi
 shopt -u nullglob
 
+if [ "$SANDBOX_DISPATCH" -eq 1 ] && [ "${BOT_EXECUTION_ENGINE:-}" != "coordinator" ]; then
+    echo "FATAL: sandbox dispatch requires BOT_EXECUTION_ENGINE=coordinator" >&2
+    exit 64
+fi
+
 echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
 case "${BOT_EXECUTION_ENGINE:-python}" in
     python)
-        exec uv run dev-bot --label "$BOT_LABEL"
+        if [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ]; then
+            exec .venv/bin/python -c 'from bot.run import main; main()' --label "$BOT_LABEL"
+        else
+            exec uv run dev-bot --label "$BOT_LABEL"
+        fi
         ;;
     coordinator)
-        if [ ! -f /home/botuser/app/coordinator/dist/cli.js ]; then
+        COORDINATOR_CLI="/home/botuser/app/coordinator/dist/cli.js"
+        [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && COORDINATOR_CLI="${PWD}/coordinator/dist/cli.js"
+        if [ ! -f "$COORDINATOR_CLI" ]; then
             echo "FATAL: coordinator bundle is not installed" >&2
             exit 1
         fi
-        exec node /home/botuser/app/coordinator/dist/cli.js --label "$BOT_LABEL"
+        # Dispatcher sandbox dispatches (REHOR_INPUT_SOURCE=sandbox) run
+        # exactly one cycle and exit; the CLI loads the delivered envelope.
+        COORDINATOR_ARGS=(--label "$BOT_LABEL")
+        if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
+            COORDINATOR_ARGS+=(--once)
+        fi
+        exec node "$COORDINATOR_CLI" "${COORDINATOR_ARGS[@]}"
         ;;
     *)
         echo "FATAL: unsupported BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE}" >&2

@@ -1,4 +1,5 @@
 {
+  "modelGatewayPorts": { "http": 8450, "https": 443 },
   "providers": [
     {
       "id": "rehor-openai",

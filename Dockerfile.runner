@@ -160,6 +160,15 @@ RUN chmod +x /tmp/instance-setup.sh \
     && bash /tmp/instance-setup.sh \
     && rm /tmp/instance-setup.sh
 
+# Separate immutable package for arbitrary-UID sandbox processes. Keep the
+# original installation and ownership for existing deployments. This duplicates
+# dependencies in the image, not in each per-sandbox writable workspace.
+COPY dev-bot/scripts/package-sandbox-runtime.py /tmp/package-sandbox-runtime.py
+COPY dev-bot/scripts/sandbox-bootstrap.py /opt/rehor/sandbox-bootstrap.py
+RUN python3.12 /tmp/package-sandbox-runtime.py \
+    && chmod 755 /opt/rehor/sandbox-bootstrap.py \
+    && rm /tmp/package-sandbox-runtime.py
+
 # Fix ownership — must run last
 RUN chown -R botuser:0 /home/botuser \
     && chmod -R g+rwX /home/botuser

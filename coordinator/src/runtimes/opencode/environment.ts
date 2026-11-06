@@ -82,6 +82,14 @@ const OPERATIONAL_ENVIRONMENT_ALLOWLIST = OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOW
 const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
   OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
 );
+/** OpenShell supplies public interception CA paths for sandbox HTTPS traffic. */
+const OPENSHELL_CA_ENVIRONMENT = [
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+] as const;
 
 export const DEFAULT_NO_PROXY_HOSTS = [
   "127.0.0.1",
@@ -142,6 +150,9 @@ export function buildOpenCodeEnvironment(
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
   for (const name of OPERATIONAL_ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
+  if (base.REHOR_INPUT_SOURCE === "sandbox") {
+    for (const name of OPENSHELL_CA_ENVIRONMENT) copyIfPresent(environment, base, name);
+  }
   for (const name of options.passthrough ?? []) {
     if (
       PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&
