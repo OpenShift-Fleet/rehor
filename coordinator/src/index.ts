@@ -16,4 +16,5 @@ export * from "./runner";
 export * from "./runtime-factory";
 export * from "./runtimes";
 export * from "./runtimes/claude-agent";
+export * from "./sandbox-input";
 export * from "./scheduler";

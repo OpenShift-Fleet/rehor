@@ -6,9 +6,11 @@ import { resolve } from "node:path";
 import { createCompatibilitySink } from "./adapters/compatibility";
 import { CoordinatorHealthServer } from "./adapters/health";
 import { coordinatorExitCode } from "./cli-result";
+import type { SandboxCycleInput } from "./cycle-input";
 import { loadOpenCodeDeploymentConfig } from "./deployment-config";
 import { createFileLogger, createStructuredLogger, type Logger } from "./log";
 import { runCoordinator } from "./runner";
+import { loadSandboxInput, resolveSandboxInputMode } from "./sandbox-input";
 import { shutdownAbortReason } from "./utils";
 
 let logger: Logger = createStructuredLogger();
@@ -44,6 +46,26 @@ async function main(): Promise<number> {
     instance_id: options.instanceId,
     label: options.label,
   });
+
+  // Dispatcher sandbox input (REHOR-233): a delivered envelope replaces the
+  // polling loop with one dispatched cycle. Invalid input fails closed; an
+  // empty prompt skips the launch entirely.
+  let sandboxInput: SandboxCycleInput | undefined;
+  const inputMode = resolveSandboxInputMode(process.env);
+  if (inputMode === "sandbox") {
+    const outcome = await loadSandboxInput(process.env);
+    if (outcome.status === "error") {
+      logger.log("ERROR", "Sandbox input invalid", { reason: outcome.reason });
+      return 1;
+    }
+    if (outcome.status === "skip") {
+      logger.log("INFO", "Sandbox input prompt is empty — skipping cycle");
+      return 0;
+    }
+    sandboxInput = { runId: outcome.runId, prompt: outcome.prompt };
+    options.once = true;
+  }
+
   const deployment = await loadOpenCodeDeploymentConfig(options.deploymentConfigPath);
   const memoryApiBase = process.env.BOT_MEMORY_URL?.replace(/\/mcp\/?$/, "");
   const compatibility = createCompatibilitySink({
@@ -66,6 +88,7 @@ async function main(): Promise<number> {
   try {
     const result = await runCoordinator({
       ...options,
+      ...(sandboxInput === undefined ? {} : { sandboxInput }),
       logger,
       writers: compatibility.writers,
       compatibility,

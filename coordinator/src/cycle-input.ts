@@ -22,12 +22,21 @@ import {
 } from "./runtimes/opencode/project-config";
 import { stableJson } from "./runtimes/shared";
 
+export interface SandboxCycleInput {
+  /** Dispatcher-minted run ID from the delivered envelope. */
+  runId: string;
+  /** Prepared prompt delivered by the dispatcher; replaces local preflights. */
+  prompt: string;
+}
+
 export interface PrepareCycleInputOptions {
   scriptDir: string;
   label: string;
   instanceId?: string | null;
   strategy?: InstructionStrategy;
   signal?: AbortSignal;
+  /** Dispatcher sandbox input (REHOR-233): consume it without a preflight. */
+  sandboxInput?: SandboxCycleInput;
 }
 
 export interface PreparedCycleInput {
@@ -55,6 +64,9 @@ export async function prepareCycleInput(
     { scriptDir: options.scriptDir, label: options.label },
     options.signal,
   );
+  if (options.sandboxInput !== undefined && !isOpenCodeRuntime(config.runtimeId)) {
+    throw new Error("Sandbox input requires the OpenCode runtime");
+  }
   const nativeConfig = isOpenCodeRuntime(config.runtimeId)
     ? await loadOpenCodeProjectConfig(config.remoteAgentDir, {
         scriptDir: options.scriptDir,
@@ -85,21 +97,29 @@ export async function prepareCycleInput(
     remoteAgentDir: config.remoteAgentDir,
     instanceId: options.instanceId,
   };
-  const preflight = await bridge.preflight(preflightRequest, options.signal);
+  // A delivered sandbox prompt replaces the local preflight entirely.
+  const preflight =
+    options.sandboxInput === undefined
+      ? await bridge.preflight(preflightRequest, options.signal)
+      : null;
   const prompt =
-    preflight === null || preflight.action === PreflightAction.Start
+    options.sandboxInput !== undefined ||
+    preflight === null ||
+    preflight.action === PreflightAction.Start
       ? buildCyclePrompt({
           label: options.label,
           instanceId: options.instanceId,
-          preflightPrompt: preflight?.prompt,
+          preflightPrompt: options.sandboxInput ? options.sandboxInput.prompt : preflight?.prompt,
           runtimeId: config.runtimeId,
         })
       : undefined;
 
   const preflightPayloadRef =
-    preflight?.action === PreflightAction.Start
-      ? `preflight://sha256/${sha256Hash(JSON.stringify(preflight)).value}`
-      : null;
+    options.sandboxInput !== undefined
+      ? `sandbox://run/${options.sandboxInput.runId}`
+      : preflight?.action === PreflightAction.Start
+        ? `preflight://sha256/${sha256Hash(JSON.stringify(preflight)).value}`
+        : null;
   const configHash = sha256Hash(
     JSON.stringify({
       model: config.model,
