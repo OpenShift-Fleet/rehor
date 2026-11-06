@@ -526,6 +526,103 @@ describe("production runner boundary", () => {
     expect(sdkOptions?.allowedTools).toEqual(["Read", "Bash", "mcp__mcp-atlassian__*"]);
   });
 
+  it("runs the delivered sandbox dispatch once without a bridge preflight", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-sandbox-"));
+    const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun").mockResolvedValue({
+      terminal: { payload: { state: "completed" } },
+    } as CoordinatorResult);
+    const preflight = vi.fn(async () => {
+      throw new Error("bridge preflight must not run for sandbox input");
+    });
+    const bridge = {
+      prepareConfig: async () => ({
+        ...prepared.config,
+        claudeMdPath: join(directory, "CLAUDE.md"),
+        claudeMdStrategy: InstructionStrategy.Ignore,
+      }),
+      preflight,
+      cleanupBetweenCycles: async () => undefined,
+    };
+    const runId = "01234567-89ab-cdef-0123-456789abcdef";
+
+    try {
+      const result = await runCoordinator({
+        scriptDir: resolve(process.cwd(), ".."),
+        label: "hcc-ai-framework",
+        instanceId: "instance-1",
+        dataDirectory: directory,
+        lockPath: join(directory, ".lock"),
+        sleepSignalPath: join(directory, "cycle-sleep.json"),
+        bridge,
+        openCodeDeployment: deployment,
+        environment: { ...proxyEnvironment },
+        writers: {},
+        once: true,
+        sandboxInput: { runId, prompt: "delivered sandbox work" },
+        initialIntervalSeconds: 0,
+        initialIdleIntervalSeconds: 0,
+      });
+
+      expect(result).toMatchObject({ stopReason: "max_cycles", cycles: 1, failures: 0 });
+      expect(result.results).toHaveLength(1);
+      expect(preflight).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledOnce();
+      const run = execute.mock.calls[0]?.[1];
+      expect(run?.runtimeId).toBe("opencode");
+      expect(run?.prompt).toContain("delivered sandbox work");
+      expect(run?.preflightPayloadRef).toBe(`sandbox://run/${runId}`);
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
+  it("rejects a default Claude sandbox configuration before preflight or runtime execution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-runner-sandbox-"));
+    const execute = vi.spyOn(runtimeFactory, "executeConfiguredRun");
+    const preflight = vi.fn();
+    const errors: Array<{ error: unknown; phase: string }> = [];
+    const result = await runCoordinator({
+      scriptDir: resolve(process.cwd(), ".."),
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      dataDirectory: directory,
+      lockPath: join(directory, ".lock"),
+      sleepSignalPath: join(directory, "cycle-sleep.json"),
+      bridge: {
+        prepareConfig: async () => ({
+          ...prepared.config,
+          runtimeId: runtimeFactory.DEFAULT_RUNTIME_ID,
+          providerId: "vertex",
+          model: "claude-opus-4-6",
+          claudeMdPath: join(directory, "CLAUDE.md"),
+        }),
+        preflight,
+      },
+      writers: {},
+      once: true,
+      sandboxInput: {
+        runId: "01234567-89ab-cdef-0123-456789abcdef",
+        prompt: "delivered sandbox work",
+      },
+      onError: (error, phase) => {
+        errors.push({ error, phase });
+      },
+      initialIntervalSeconds: 0,
+      initialIdleIntervalSeconds: 0,
+    });
+
+    expect(result).toMatchObject({ stopReason: "max_cycles", cycles: 1, failures: 1, results: [] });
+    expect(errors).toEqual([
+      {
+        error: expect.objectContaining({ message: "Sandbox input requires the OpenCode runtime" }),
+        phase: "prepare",
+      },
+    ]);
+    expect(preflight).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it("runs one prepared preflight cycle without starting a runtime on skip", async () => {
     const directory = await mkdtemp(join(tmpdir(), "rehor-runner-"));
     const events: string[] = [];

@@ -6,7 +6,7 @@ import type { CompatibilitySink, PreflightCycleInput } from "./adapters/compatib
 import { FileCycleAdmission } from "./adapters/file-admission";
 import { PythonCoordinatorBridge } from "./bridges/python";
 import type { CoordinatorResult } from "./coordinator";
-import type { PreparedCycleInput } from "./cycle-input";
+import type { PreparedCycleInput, SandboxCycleInput } from "./cycle-input";
 import { prepareCycleInput } from "./cycle-input";
 import { providerDiagnostic, runtimeErrorDetails } from "./diagnostics";
 import type { RehorRun, RepositorySnapshot, TaskIdentity } from "./domain/run";
@@ -96,6 +96,8 @@ export interface CoordinatorRunnerOptions {
   maxPreflightBackoffSeconds?: number;
   maxCycles?: number;
   once?: boolean;
+  /** Dispatcher sandbox input (REHOR-233): one delivered prompt, no preflight. */
+  sandboxInput?: SandboxCycleInput;
   signal?: AbortSignal;
   shutdownSignal?: AbortSignal;
   onReady?: () => void;
@@ -408,6 +410,7 @@ export async function runCoordinator(
         label: options.label,
         instanceId: options.instanceId,
         signal,
+        ...(options.sandboxInput === undefined ? {} : { sandboxInput: options.sandboxInput }),
       });
       scheduler.updateIntervals({
         intervalMs: secondsToMs(prepared.config.intervalSeconds, "intervalSeconds"),

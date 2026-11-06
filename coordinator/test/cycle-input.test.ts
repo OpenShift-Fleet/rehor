@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   assembleInstructions,
@@ -163,6 +163,62 @@ describe("cycle preparation", () => {
     expect(result.preflightPayloadRef).toBeNull();
   });
 
+  it("consumes dispatcher sandbox input without running the bridge preflight", async () => {
+    const root = await createCycleRoot();
+    const bridge: PythonBridge = {
+      prepareConfig: async () => ({
+        ...config,
+        runtimeId: "opencode",
+        claudeMdPath: join(root, "CLAUDE.md"),
+      }),
+      preflight: async () => {
+        throw new Error("bridge preflight must not run for sandbox input");
+      },
+    };
+    const runId = "01234567-89ab-cdef-0123-456789abcdef";
+
+    const result = await prepareCycleInput(bridge, {
+      scriptDir: root,
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+      sandboxInput: { runId, prompt: "delivered sandbox work" },
+    });
+
+    expect(result.preflight).toBeNull();
+    expect(result.prompt).toContain("## Pre-flight Data");
+    expect(result.prompt).toContain("delivered sandbox work");
+    expect(result.preflightPayloadRef).toBe(`sandbox://run/${runId}`);
+    expect(result.config.runtimeId).toBe("opencode");
+    expect(result.nativeConfig).toBeDefined();
+  });
+
+  it.each(["claude", ""])(
+    "rejects sandbox runtime %j before preflight or instruction assembly",
+    async (runtimeId) => {
+      const root = await createCycleRoot();
+      const claudeMdPath = join(root, "CLAUDE.md");
+      await writeFile(claudeMdPath, "unchanged guidance");
+      const preflight = vi.fn();
+      const bridge: PythonBridge = {
+        prepareConfig: async () => ({ ...config, runtimeId, claudeMdPath }),
+        preflight,
+      };
+
+      await expect(
+        prepareCycleInput(bridge, {
+          scriptDir: root,
+          label: "hcc-ai-framework",
+          sandboxInput: {
+            runId: "01234567-89ab-cdef-0123-456789abcdef",
+            prompt: "delivered sandbox work",
+          },
+        }),
+      ).rejects.toThrow("Sandbox input requires the OpenCode runtime");
+      expect(preflight).not.toHaveBeenCalled();
+      expect(await readFile(claudeMdPath, "utf8")).toBe("unchanged guidance");
+    },
+  );
+
   it("builds prompt and audit reference for preflight start", async () => {
     const root = await createCycleRoot();
     const result = await prepareCycleInput(new FakeBridge(preflight(PreflightAction.Start)), {
@@ -174,6 +230,7 @@ describe("cycle preparation", () => {
     expect(result.prompt).toContain("## Pre-flight Data");
     expect(result.prompt).toContain("work found");
     expect(result.preflightPayloadRef).toMatch(/^preflight:\/\/sha256\/[a-f0-9]{64}$/);
+    expect(result.config.runtimeId).toBe("claude");
   });
 
   it("persists instructionHash content when strategy overrides Python config", async () => {
