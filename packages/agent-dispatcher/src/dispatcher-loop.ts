@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
 import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
 import { isForwardedPreflightVariable } from "./preflight-env.js";
+import { writePreflightCycle } from "./logging.js";
 
 export type DispatcherLoopOptions = {
   repositoriesJson: string;
@@ -39,7 +40,7 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const signal = options.signal;
   const intervalMs = options.intervalMs ?? 5 * 60_000;
   const cacheRoot = process.env.AGENT_DISPATCHER_CONFIG_DIR || join(tmpdir(), "rehor-agent-dispatcher");
-  const emit = options.onCycle ?? ((result) => console.log(JSON.stringify({ event: "preflight.cycle", result })));
+  const emit = options.onCycle ?? writePreflightCycle;
   const env = options.env ?? preflightEnvironment();
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
