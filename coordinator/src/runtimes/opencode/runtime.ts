@@ -33,9 +33,9 @@ import {
   type NormalizationContext,
   normalizeOpenCodeEvent,
 } from "./normalizer";
+import { OpenCodeProcessLeakError, OpenCodeStartupCleanupError } from "./process-leak-error";
 import {
   OPENCODE_VERSION,
-  OpenCodeProcessLeakError,
   type OpenCodeServerController,
   type OpenCodeServerInfo,
   OpenCodeServerSupervisor,
@@ -74,6 +74,7 @@ export type OpenCodeClientFactory = (
 
 interface ActiveRun {
   controller: AbortController;
+  startup?: Promise<OpenCodeServerInfo>;
   client?: OpenCodeClient;
   sessionId?: string;
   directory?: string;
@@ -122,6 +123,9 @@ export class OpenCodeRuntime implements AgentRuntime {
   private stopped = false;
   private hasRun = false;
   private active?: ActiveRun;
+  private cleanupPromise?: Promise<Error | undefined>;
+  private supervisorStopPromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
 
   constructor(options: OpenCodeRuntimeOptions = {}) {
     this.logger = options.logger ?? nullLogger;
@@ -226,10 +230,13 @@ export class OpenCodeRuntime implements AgentRuntime {
       // Emit before any setup can fail so every attempt, including one that
       // never reaches a session, has a started record.
       yield factory("run", { state: "started" });
+      if (active.controller.signal.aborted) throw abortReason(active.controller.signal);
       if (renderedConfig === undefined || effectiveModel === undefined) {
         throw renderError ?? new Error("OpenCode configuration could not be rendered");
       }
-      const server = await this.supervisor.start(input.worktree.path, active.controller.signal);
+      active.startup = this.supervisor.start(input.worktree.path, active.controller.signal);
+      const server = await active.startup;
+      if (active.controller.signal.aborted) throw abortReason(active.controller.signal);
       detachCrash = linkAbort(this.supervisor.crashSignal, active.controller, () =>
         context?.onAbortCause?.(OPENCODE_CRASH),
       );
@@ -399,7 +406,6 @@ export class OpenCodeRuntime implements AgentRuntime {
       detachAbort();
       detachCrash();
       cleanupFailure = await this.cleanup(active);
-      if (!failure && cleanupFailure) failure = cleanupFailure;
       if (this.active === active) this.active = undefined;
     }
 
@@ -427,22 +433,24 @@ export class OpenCodeRuntime implements AgentRuntime {
       );
     }
 
-    if (outcome.state === "completed") {
-      // The session's work finished; a cleanup failure does not undo it. Report
-      // it as a diagnostic so the event stream never pairs an `error` event
-      // with a completed terminal.
-      if (cleanupFailure) {
-        yield factory(
-          "cleanup",
-          {
-            state: "failed",
-            message: errorMessage(cleanupFailure) ?? "OpenCode cleanup failed",
-            ...(isResourceLeak(cleanupFailure) ? { resourceLeak: true } : {}),
-          },
-          { runtimeSessionRef: active.sessionId },
-        );
-      }
-    } else if (failure && (this.supervisor.crashError || !active.controller.signal.aborted)) {
+    // Cleanup is independent of the work outcome, including cancellation. Do
+    // not copy untrusted cleanup error messages into the transcript.
+    if (cleanupFailure) {
+      yield factory(
+        "cleanup",
+        {
+          state: "failed",
+          message: `OpenCode cleanup failed: ${providerDiagnostic(cleanupFailure)}`,
+          ...(isResourceLeak(cleanupFailure) ? { resourceLeak: true } : {}),
+        },
+        { runtimeSessionRef: active.sessionId },
+      );
+    }
+    if (
+      outcome.state !== "completed" &&
+      failure &&
+      (this.supervisor.crashError || !active.controller.signal.aborted)
+    ) {
       yield factory(
         "error",
         { message: errorMessage(failure) ?? "OpenCode runtime failed" },
@@ -464,11 +472,26 @@ export class OpenCodeRuntime implements AgentRuntime {
     );
   }
 
-  async stop(): Promise<void> {
-    if (this.stopped) return;
+  stop(): Promise<void> {
+    this.stopPromise ??= this.stopInternal();
+    return this.stopPromise;
+  }
+
+  private async stopInternal(): Promise<void> {
     this.stopped = true;
-    this.active?.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
-    await this.supervisor.stop();
+    const active = this.active;
+    if (active) {
+      active.controller.abort({ kind: "shutdown", reason: "runtime stopped" });
+      // Join the run's bounded API cleanup before shutting down its server.
+      // Starting cleanup here also handles a generator paused at a yield.
+      const failure = await this.cleanup(active);
+      if (failure) throw failure;
+    } else await this.stopSupervisor();
+  }
+
+  private stopSupervisor(): Promise<void> {
+    this.supervisorStopPromise ??= Promise.resolve().then(() => this.supervisor.stop());
+    return this.supervisorStopPromise;
   }
 
   /**
@@ -528,8 +551,20 @@ export class OpenCodeRuntime implements AgentRuntime {
     }
   }
 
-  private async cleanup(active: ActiveRun): Promise<Error | undefined> {
+  private cleanup(active: ActiveRun): Promise<Error | undefined> {
+    this.cleanupPromise ??= this.cleanupInternal(active);
+    return this.cleanupPromise;
+  }
+
+  private async cleanupInternal(active: ActiveRun): Promise<Error | undefined> {
     const failures: Error[] = [];
+    // Supervisor startup owns its bounded startup/shutdown path. Do not race
+    // it with final teardown, or permit setup to continue after teardown.
+    await active.startup?.catch((error: unknown) => {
+      // A later successful stop cannot erase startup's earlier shutdown failure.
+      // Ordinary startup errors remain work failures, not cleanup failures.
+      if (error instanceof OpenCodeStartupCleanupError) failures.push(error);
+    });
     const deadline = Date.now() + this.cleanupTimeoutMs;
     const deadlineController = new AbortController();
     const deadlineTimer = setTimeout(
@@ -579,10 +614,13 @@ export class OpenCodeRuntime implements AgentRuntime {
     } finally {
       clearTimeout(deadlineTimer);
       try {
-        await this.supervisor.stop();
+        await this.stopSupervisor();
       } catch (error) {
         failures.push(toError(error));
       }
+    }
+    if (failures.length > 1) {
+      return new AggregateError(failures, "OpenCode cleanup failed", { cause: failures[0] });
     }
     return failures[0];
   }
@@ -612,10 +650,14 @@ function linkAbort(source: AbortSignal, target: AbortController, before?: () => 
 
 function isResourceLeak(value: unknown): boolean {
   const seen = new Set<unknown>();
-  for (let current = value; current instanceof Error && !seen.has(current); ) {
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!(current instanceof Error) || seen.has(current)) continue;
     if (current instanceof OpenCodeProcessLeakError) return true;
     seen.add(current);
-    current = current.cause;
+    pending.push(current.cause);
+    if (current instanceof AggregateError) pending.push(...current.errors);
   }
   return false;
 }

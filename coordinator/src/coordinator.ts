@@ -1,3 +1,4 @@
+import { providerDiagnostic } from "./diagnostics";
 import {
   type AbortCause,
   createEventFactory,
@@ -55,6 +56,24 @@ export class CoordinatorError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CoordinatorError";
+  }
+}
+
+/** Runtime cleanup failed independently of the work terminal state. */
+export class RuntimeCleanupError extends Error {
+  constructor(
+    readonly previousFailures: readonly unknown[] = [],
+    diagnosticCause?: string,
+  ) {
+    super(
+      "Runtime cleanup failed",
+      previousFailures.length
+        ? { cause: previousFailures[0] }
+        : diagnosticCause
+          ? { cause: diagnosticCause }
+          : undefined,
+    );
+    this.name = "RuntimeCleanupError";
   }
 }
 
@@ -210,6 +229,7 @@ export async function executeRunWithValidatedInput(
   let capabilities: RuntimeCapabilities | undefined;
   let failure: unknown;
   let cleanupError: unknown;
+  let cleanupFailed = false;
   let acceptingEvents = true;
   let stopPromise: Promise<void> | undefined;
   const stopRuntime = (): Promise<void> => {
@@ -280,6 +300,7 @@ export async function executeRunWithValidatedInput(
     try {
       await stopRuntime();
     } catch (error) {
+      cleanupFailed = true;
       cleanupError = error;
       if (!failure) failure = error;
     }
@@ -309,7 +330,25 @@ export async function executeRunWithValidatedInput(
 
   const terminal = ledger.requireTerminal();
   const cause = abortState.cause;
-  const surfacedError = cleanupError ?? (shouldSurface(failure, cause) ? failure : undefined);
+  const surfacedFailure = shouldSurface(failure, cause) ? failure : undefined;
+  const runtimeCleanupFailure = ledger.events.find(
+    (event) => event.kind === "cleanup" && event.payload.state === "failed",
+  );
+  // Stop failures are independent of work and abort causes. Always classify
+  // them so the loop can count them even if shutdown races with a failed run.
+  const previousFailures: unknown[] = surfacedFailure === undefined ? [] : [surfacedFailure];
+  if (cleanupFailed && !previousFailures.includes(cleanupError))
+    previousFailures.push(cleanupError);
+  // Cleanup event messages are untrusted; retain only a fixed classification as fallback.
+  const surfacedError =
+    runtimeCleanupFailure || cleanupFailed
+      ? new RuntimeCleanupError(
+          previousFailures,
+          previousFailures.length === 0 && runtimeCleanupFailure
+            ? providerDiagnostic(runtimeCleanupFailure.payload.message)
+            : undefined,
+        )
+      : surfacedFailure;
 
   return {
     run,

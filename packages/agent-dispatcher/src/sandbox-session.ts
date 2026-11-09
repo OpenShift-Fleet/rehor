@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { posix } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { OpenShellClient } from "@nvidia/openshell-sdk";
 import { DeletionOutcome, NetworkPolicyRuleSchema, ProviderProfileCategory, ProviderReadinessState, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
@@ -8,9 +7,16 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import type { WorkPreflightResult } from "./work-preflight.js";
 import { buildInputEnvelope, INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "./input-envelope.js";
 import { createMemoryPolicy } from "./memory-policy.js";
+import { isNormalizedAbsolutePath, pathsOverlap, type RuntimeLayout } from "./runtime-layout.js";
 
 type Raw = Pick<OpenShellClient["raw"], "createWorkspace" | "getWorkspace" | "deleteWorkspace" | "listWorkspaceMembers" | "createSandbox" | "getSandbox" | "listSandboxes" | "deleteSandbox" | "execSandbox" | "importProviderProfiles" | "getProviderProfile" | "deleteProviderProfile" | "listProviderProfiles" | "getProvider" | "createProvider" | "deleteProvider" | "listProviders" | "getSandboxProviderStatus" | "getSandboxConfig">;
 export type SandboxMemory = { url: URL; credentialProvider: { mint(): Promise<{ token: string; expiresAt: number }> } };
+export type SandboxSessionOptions = {
+  raw: Raw;
+  memory: SandboxMemory;
+  cleanupBudgetMs?: number;
+  runtime?: RuntimeLayout;
+};
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
 
@@ -80,15 +86,6 @@ except Exception:
     sys.exit(1)`];
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function unsafeWritePath(path: string): boolean {
-  // Treat ambiguous glob/expansion paths as unsafe instead of guessing their
-  // Gateway semantics. Exact additive runtime paths remain supported.
-  if (!posix.isAbsolute(path) || [...path].some((char) => "*?[]{}\\!()".includes(char))) return true;
-  const normalized = posix.normalize(path).replace(/\/$/, "") || "/";
-  const app = "/home/botuser/app";
-  return normalized === "/" || normalized === app || app.startsWith(`${normalized}/`) || normalized.startsWith(`${app}/`);
-}
-
 function snapshot(value: SandboxSessionResult): SandboxSessionResult {
   return { ...value, workspace: { ...value.workspace }, sandbox: { ...value.sandbox }, profile: { ...value.profile }, provider: { ...value.provider } };
 }
@@ -132,7 +129,22 @@ async function waitAbsent<T>(read: () => Promise<T | undefined>, matches: (value
  * runtime compatibility: service policy mapping remains REHOR-215; input
  * consumption and filesystem/runtime validation remain REHOR-233. */
 export class SandboxSession {
-  constructor(private readonly raw: Raw, private readonly memory: SandboxMemory, private readonly cleanupBudgetMs = defaultCleanupBudgetMs) {}
+  private readonly raw: Raw;
+  private readonly memory: SandboxMemory;
+  private readonly cleanupBudgetMs: number;
+  private readonly runtime: RuntimeLayout;
+
+  constructor({
+    raw,
+    memory,
+    cleanupBudgetMs = defaultCleanupBudgetMs,
+    runtime = { kind: "legacy" },
+  }: SandboxSessionOptions) {
+    this.raw = raw;
+    this.memory = memory;
+    this.cleanupBudgetMs = cleanupBudgetMs;
+    this.runtime = runtime;
+  }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
   async run(image: string, decision: Extract<WorkPreflightResult, { action: "start" }>, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
@@ -166,7 +178,7 @@ export class SandboxSession {
     try {
       signal?.throwIfAborted();
       record.stage = "policy";
-      const policy = createMemoryPolicy(this.memory.url, record.provider.name);
+      const policy = createMemoryPolicy(this.memory.url, record.provider.name, this.runtime);
       record.stage = "workspace";
       workspace.state = "unknown";
       const createdWorkspace = (await this.raw.createWorkspace({ name: workspace.name, labels, requestId: workspace.requestId }, callOptions(signal))).workspace;
@@ -267,7 +279,7 @@ export class SandboxSession {
                 }
               }
             }
-            // Gateway enriches effective policy with safe baseline/defaults.
+            // Gateway may enrich effective policy with baseline/defaults.
             // Preserve exact supplied credential rules, not whole-policy equality.
             if (!memoryBound || !config.policy) throw new Error();
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {
@@ -275,10 +287,14 @@ export class SandboxSession {
               if (!actual || !equals(NetworkPolicyRuleSchema, rule, actual)) throw new Error();
             }
             const filesystem = config.policy.filesystem;
-            if (!filesystem || filesystem.includeWorkdir
+            if (!filesystem
               || expected.filesystem?.readOnly.some((path) => !filesystem.readOnly.includes(path))
               || expected.filesystem?.readWrite.some((path) => !filesystem.readWrite.includes(path))
-              || filesystem.readWrite.some(unsafeWritePath)) throw new Error();
+              || (filesystem.includeWorkdir && !expected.filesystem?.includeWorkdir)
+              // Landlock grants are additive: a read-only rule cannot revoke
+              // an overlapping write grant. Permit only exact, disjoint additions.
+              || filesystem.readWrite.some((path) => !isNormalizedAbsolutePath(path)
+                || expected.filesystem?.readOnly.some((readOnly) => pathsOverlap(path, readOnly)))) throw new Error();
             providerReady = true;
             break;
           }
@@ -292,7 +308,8 @@ export class SandboxSession {
       const execute = async (command: string[], input: Buffer, requestId: string, runner = false) => {
         let exit: number | undefined;
         const stream = this.raw.execSandbox({ workspaceScope: scope, sandbox: sandbox.name, command, stdin: input,
-          environment: runner ? { ...environment, ...INPUT_ENVIRONMENT } : {}, workdir: "/home/botuser/app", noLoginShell: true,
+          environment: runner ? { ...environment, ...INPUT_ENVIRONMENT, ...(this.runtime.kind === "private" ? { REHOR_RUNTIME_SOURCE: this.runtime.source, REHOR_RUNTIME_PARENT: this.runtime.parent } : {}) } : {},
+          workdir: this.runtime.kind === "private" ? this.runtime.parent : "/home/botuser/app", noLoginShell: true,
           ...(runner ? {} : { executionTimeout: { seconds: 30n } }), requestId,
         }, runner ? { signal } : callOptions(signal));
         for await (const event of stream) {
@@ -313,7 +330,10 @@ export class SandboxSession {
       else {
         record.stage = "runner";
         signal?.throwIfAborted();
-        const exit = await execute(["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"], Buffer.alloc(0), record.runnerRequestId, true);
+        const command = this.runtime.kind === "private"
+          ? ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]
+          : ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"];
+        const exit = await execute(command, Buffer.alloc(0), record.runnerRequestId, true);
         record.outcome = exit === 0 ? "passed" : "failed";
       }
       record.stage = "complete";

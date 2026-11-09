@@ -11,6 +11,7 @@ import { DeletionOutcome, ProviderReadinessState, ProviderProfileSchema, Sandbox
 import { SandboxSession } from "../dist/sandbox-session.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "../dist/input-envelope.js";
+import { readRuntimeLayout } from "../dist/runtime-layout.js";
 
 const prompt = "sensitive prepared prompt 🦊";
 const token = "synthetic-secret-never-workload";
@@ -102,7 +103,8 @@ function fixture(options = {}) {
       return { status: { state: ProviderReadinessState.READY, receipt: { desired: { ...revision, sandboxId: sandbox.metadata.id, providerId: provider.metadata.id, providerResourceVersion: 1n } }, observed: { ...revision, credentialsInstalled: true, policyActive: true, launchEnvironmentInstalled: true } } };
     },
     async *execSandbox(request, callOptions) {
-      if (request.command[0] === "/usr/bin/bash") {
+      const isRunner = request.command[0] === "/usr/bin/bash" || request.command[1] === "/opt/rehor/sandbox-bootstrap.py";
+      if (isRunner) {
         yield { payload: { case: "stdout", value: { data: Buffer.from(prompt) } } };
         yield { payload: { case: "stderr", value: { data: Buffer.from(token) } } };
         if (options.runnerError) throw new ConnectError(`private ${token}`, Code.PermissionDenied);
@@ -112,7 +114,7 @@ function fixture(options = {}) {
         }
         if (options.missingExit) return;
       }
-      yield { payload: { case: "exit", value: { exitCode: request.command[0] === "/usr/bin/bash" ? (options.exit ?? 0) : (options.writeExit ?? 0) } } };
+      yield { payload: { case: "exit", value: { exitCode: isRunner ? (options.exit ?? 0) : (options.writeExit ?? 0) } } };
     },
     async deleteSandbox() {
       cleanupStarted = true;
@@ -136,9 +138,26 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession(raw, memory, options.cleanupBudgetMs), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}) }), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
+
+test("session options preserve default, explicit undefined, and custom values", () => {
+  const { raw, memory } = fixture();
+  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined }]) {
+    const session = new SandboxSession({ raw, memory, ...options });
+    assert.equal(session.raw, raw);
+    assert.equal(session.memory, memory);
+    assert.equal(session.cleanupBudgetMs, 20 * 60_000);
+    assert.deepEqual(session.runtime, { kind: "legacy" });
+  }
+  const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
+  for (const cleanupBudgetMs of [0, 1234]) {
+    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime });
+    assert.equal(session.cleanupBudgetMs, cleanupBudgetMs);
+    assert.equal(session.runtime, runtime);
+  }
+});
 
 test("safe stdin writer then exact runner with per-exec pointers, unique request IDs, no payload leaks", async () => {
   const f = fixture();
@@ -224,7 +243,7 @@ test("empty, oversized and non-start decisions never allocate or mint", async ()
 
 test("default policy remains constrained HTTPS health-only, not inferred runner egress", async () => {
   const f = fixture();
-  const result = await new SandboxSession(f.raw, f.memory).run(image, decision, {});
+  const result = await new SandboxSession({ raw: f.raw, memory: f.memory }).run(image, decision, {});
   assert.equal(result.completion, "gone");
   const policy = f.calls.find((call) => call.name === "createSandbox").request.spec.policy;
   assert.deepEqual(Object.keys(policy.networkPolicies), ["memory_health"]);
@@ -246,6 +265,99 @@ test("canonical unqualified profile image dispatches under additive Gateway poli
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
 });
 
+test("private runtime uses configurable paths and accepts safe exact Gateway filesystem additions", async () => {
+  const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_SOURCE: "/opt/custom/app", AGENT_DISPATCHER_RUNTIME_PARENT: "/sandbox" });
+  const f = fixture({ enrichPolicy: (policy) => {
+    policy.filesystem.readWrite.push("/run", "/var/cache");
+  } });
+  const result = await new SandboxSession({ raw: f.raw, memory: f.memory, runtime }).run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  const spec = f.calls.find((call) => call.name === "createSandbox").request.spec;
+  assert.deepEqual(spec.policy.filesystem.readOnly, ["/opt/rehor", "/opt/opencode", "/opt/custom/app"]);
+  assert.deepEqual(spec.policy.filesystem.readWrite, ["/tmp", "/sandbox"]);
+  const [writer, runner] = f.calls.filter((call) => call.name === "execSandbox");
+  assert.equal(writer.request.workdir, "/sandbox");
+  assert.deepEqual(runner.request.command, ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]);
+  assert.equal(runner.request.workdir, "/sandbox");
+  assert.deepEqual(runner.request.environment, { ...INPUT_ENVIRONMENT, REHOR_RUNTIME_SOURCE: "/opt/custom/app", REHOR_RUNTIME_PARENT: "/sandbox" });
+});
+
+for (const runtime of [
+  { kind: "legacy" },
+  readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_SOURCE: "/opt/custom/app" }),
+]) {
+  test(`${runtime.kind} runtime accepts non-overlapping exact Gateway defaults`, async () => {
+    const f = fixture({ enrichPolicy: (policy) => policy.filesystem.readWrite.push("/sandbox", "/run", "/var/cache", "/home/botuser/app-cache", "/opt/rehor-cache") });
+    const result = await new SandboxSession({ raw: f.raw, memory: f.memory, runtime }).run(image, decision, {});
+    assert.equal(result.outcome, "passed");
+    assert.equal(result.cleanup, "deleted");
+    assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
+  });
+
+  test(`${runtime.kind} runtime rejects unsafe effective writes before any exec and cleans up`, async (t) => {
+    const protectedPaths = runtime.kind === "legacy" ? ["/home/botuser/app"] : ["/opt/rehor", "/opt/opencode", runtime.source];
+    const paths = [
+      "/", ...(runtime.kind === "legacy" ? ["/home", "/home/botuser"] : ["/opt", "/opt/custom"]),
+      ...protectedPaths.flatMap((path) => [path, `${path}/child`]),
+      "relative", "~/cache", "/run/$CACHE", "/run/${CACHE}", "/run/$(id)", "/run/`id`", "/run/~cache",
+      "/run/*", "/run/?", "/run/[ab]", "/run/{a,b}", "/run/!(cache)", "/run/+(cache)",
+      "/run/../home/botuser/app", "/run/./cache", "/run//cache", "//run", "/run/", "/run/\\cache",
+      "/run/\u0000cache", "/run/\ncache", "/run/\u007fcache", "/run/\u0085cache",
+    ];
+    for (const path of paths) await t.test(JSON.stringify(path), async () => {
+      const f = fixture({ enrichPolicy: (policy) => policy.filesystem.readWrite.push(path) });
+      const result = await new SandboxSession({ raw: f.raw, memory: f.memory, runtime }).run(image, decision, {});
+      assert.equal(result.stage, "readiness");
+      assert.equal(result.outcome, "unknown");
+      assert.equal(result.completion, "gone");
+      assert.equal(result.cleanup, "deleted");
+      assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+      assert.deepEqual(f.resources(), { workspace: undefined, sandbox: undefined, provider: undefined, profile: undefined });
+    });
+  });
+
+  test(`${runtime.kind} runtime rejects unexpected includeWorkdir before any exec`, async () => {
+    const f = fixture({ enrichPolicy: (policy) => { policy.filesystem.includeWorkdir = true; } });
+    const result = await new SandboxSession({ raw: f.raw, memory: f.memory, runtime }).run(image, decision, {});
+    assert.equal(result.stage, "readiness");
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.cleanup, "deleted");
+    assert.equal(result.completion, "gone");
+    assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+  });
+}
+
+test("runtime layout rejects invalid, ambiguous or overlapping paths", () => {
+  assert.deepEqual(readRuntimeLayout({}), { kind: "legacy" });
+  for (const env of [
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "unknown" },
+    { AGENT_DISPATCHER_RUNTIME_PARENT: "/tmp" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/opt" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/opt/opencode/state" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_SOURCE: "/tmp/app" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/tmp/*" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/" },
+    { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_SOURCE: "relative" },
+  ]) assert.throws(() => readRuntimeLayout(env));
+});
+
+test("private runtime fails closed when requested filesystem policy is missing", async () => {
+  const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
+  for (const enrichPolicy of [
+    ...["/opt/rehor", "/opt/opencode", runtime.source].map((missing) => (policy) => { policy.filesystem.readOnly = policy.filesystem.readOnly.filter((path) => path !== missing); }),
+    (policy) => { policy.filesystem.readWrite = policy.filesystem.readWrite.filter((path) => path !== "/tmp"); },
+    (policy) => { policy.filesystem = undefined; },
+  ]) {
+    const f = fixture({ enrichPolicy });
+    const result = await new SandboxSession({ raw: f.raw, memory: f.memory, runtime }).run(image, decision, {});
+    assert.equal(result.stage, "readiness");
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.cleanup, "deleted");
+    assert.equal(result.completion, "gone");
+    assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+  }
+});
+
 test("supplied credential-rule drift fails before writer or runner", async () => {
   for (const enrichPolicy of [
     (policy) => { policy.networkPolicies.memory_health.endpoints[0].rules[0].allow.path = "/**"; },
@@ -262,18 +374,19 @@ test("supplied credential-rule drift fails before writer or runner", async () =>
   }
 });
 
-test("effective filesystem rejects app writes/ancestors/globs and missing supplied constraints", async () => {
+test("effective filesystem rejects missing supplied constraints", async () => {
   const mutations = [
-    ...["/", "/home", "/home/botuser", "/home/botuser/app", "/home/botuser/app/state", "/home/botuser/app/", "/tmp/../home/botuser", "/home/*", "/home/botuser/ap?", "/**"].map((path) => (policy) => policy.filesystem.readWrite.push(path)),
-    (policy) => { policy.filesystem.includeWorkdir = true; },
     (policy) => { policy.filesystem.readOnly = policy.filesystem.readOnly.filter((path) => path !== "/home/botuser/app"); },
-    (policy) => { policy.filesystem.readWrite = policy.filesystem.readWrite.filter((path) => path !== "/home/botuser/data"); },
+    ...["/home/botuser/repos", "/home/botuser/data", "/tmp"].map((missing) => (policy) => { policy.filesystem.readWrite = policy.filesystem.readWrite.filter((path) => path !== missing); }),
+    (policy) => { policy.filesystem = undefined; },
   ];
   for (const enrichPolicy of mutations) {
     const f = fixture({ enrichPolicy });
     const result = await f.session.run(image, decision, {});
     assert.equal(result.outcome, "unknown");
     assert.equal(result.stage, "readiness");
+    assert.equal(result.cleanup, "deleted");
+    assert.equal(result.completion, "gone");
     assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
   }
 });
@@ -330,6 +443,28 @@ test("ambiguous sandbox delete retains unknown completion and dependent resource
   assert.equal(result.completion, "unknown");
   assert.equal(result.cleanup, "unknown");
   assert.equal(result.errorCode, "unavailable");
+  assert.equal(f.calls.some((call) => ["deleteProvider", "deleteProviderProfile", "deleteWorkspace"].includes(call.name)), false);
+});
+
+test("accepted deletion without confirmed sandbox absence retains resources and admission", async () => {
+  const f = fixture({ cleanupBudgetMs: 100 });
+  f.raw.deleteSandbox = async (request) => {
+    f.calls.push({ name: "deleteSandbox", request });
+    return { sandboxId: f.resources().sandbox.metadata.id, outcome: DeletionOutcome.ACCEPTED };
+  };
+  const dispatcher = new SessionDispatcher();
+  let result;
+  const admitted = dispatcher.dispatch("agent", decision, async () => {
+    result = await f.session.run(image, decision, {});
+    return result.completion;
+  });
+  assert.equal(admitted.status, "started");
+  assert.equal(await admitted.completion, "unknown");
+  assert.equal(result.outcome, "unknown");
+  assert.equal(result.cleanup, "unknown");
+  assert.equal(result.errorCode, "deadline_exceeded");
+  assert.equal(dispatcher.status("agent"), "retained");
+  assert.ok(f.resources().sandbox);
   assert.equal(f.calls.some((call) => ["deleteProvider", "deleteProviderProfile", "deleteWorkspace"].includes(call.name)), false);
 });
 
