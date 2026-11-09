@@ -16,6 +16,7 @@ export type SandboxSessionOptions = {
   memory: SandboxMemory;
   cleanupBudgetMs?: number;
   runtime?: RuntimeLayout;
+  modelProxyUrl?: URL;
 };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
@@ -133,17 +134,20 @@ export class SandboxSession {
   private readonly memory: SandboxMemory;
   private readonly cleanupBudgetMs: number;
   private readonly runtime: RuntimeLayout;
+  private readonly modelProxyUrl: URL | undefined;
 
   constructor({
     raw,
     memory,
     cleanupBudgetMs = defaultCleanupBudgetMs,
     runtime = { kind: "legacy" },
+    modelProxyUrl,
   }: SandboxSessionOptions) {
     this.raw = raw;
     this.memory = memory;
     this.cleanupBudgetMs = cleanupBudgetMs;
     this.runtime = runtime;
+    this.modelProxyUrl = modelProxyUrl;
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
@@ -178,7 +182,9 @@ export class SandboxSession {
     try {
       signal?.throwIfAborted();
       record.stage = "policy";
-      const policy = createMemoryPolicy(this.memory.url, record.provider.name, this.runtime);
+      const policy = createMemoryPolicy(
+        this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl,
+      );
       record.stage = "workspace";
       workspace.state = "unknown";
       const createdWorkspace = (await this.raw.createWorkspace({ name: workspace.name, labels, requestId: workspace.requestId }, callOptions(signal))).workspace;
@@ -270,18 +276,18 @@ export class SandboxSession {
           const desired = status?.receipt?.desired, observed = status?.observed;
           if (config.configurationAdmitted && status?.state === ProviderReadinessState.READY && desired?.sandboxId === sandbox.id && desired.providerId === record.provider.id && desired.providerResourceVersion === providerVersion && desired.attachmentEpoch === config.providerAttachmentEpoch && desired.configRevision === config.configRevision && desired.policyHash === config.policyHash && desired.providerEnvRevision === config.providerEnvRevision && observed?.attachmentEpoch === config.providerAttachmentEpoch && observed.configRevision === config.configRevision && observed.policyHash === config.policyHash && observed.providerEnvRevision === config.providerEnvRevision && observed.credentialsInstalled && observed.policyActive && observed.launchEnvironmentInstalled) {
             const expected = create(SandboxPolicySchema, policy);
-            let memoryBound = false;
+            let credentialBound = false;
             for (const rule of Object.values(expected.networkPolicies)) {
               for (const endpoint of rule.endpoints) {
                 if (endpoint.credentialBinding?.provider === record.provider.name) {
                   endpoint.providerCredentialed = true;
-                  memoryBound = true;
+                  credentialBound = true;
                 }
               }
             }
             // Gateway may enrich effective policy with baseline/defaults.
             // Preserve exact supplied credential rules, not whole-policy equality.
-            if (!memoryBound || !config.policy) throw new Error();
+            if (!credentialBound || !config.policy) throw new Error();
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {
               const actual = config.policy.networkPolicies[name];
               if (!actual || !equals(NetworkPolicyRuleSchema, rule, actual)) throw new Error();

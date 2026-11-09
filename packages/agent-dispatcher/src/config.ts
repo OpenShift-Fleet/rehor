@@ -45,3 +45,30 @@ export function readAuthConfig(env: NodeJS.ProcessEnv): AuthConfig | undefined {
   }
   return { namespace, serviceAccount, audience, memoryUrl: parseHttpsUrl(memory, `${prefix}MEMORY_URL`) };
 }
+
+const modelProxyUrlVariable = "AGENT_DISPATCHER_MODEL_PROXY_URL";
+
+// Optional model-gateway Route (REHOR-237), standalone rather than part of
+// the auth group above: unset keeps the sandbox policy memory-only, while a
+// set value must be the exact HTTPS /v1 endpoint the model-proxy rule admits.
+export function readModelProxyUrl(env: NodeJS.ProcessEnv): URL | undefined {
+  const value = env[modelProxyUrlVariable];
+  if (value === undefined) return undefined;
+  if (!value.trim()) throw new Error(`${modelProxyUrlVariable}, when set, must be a non-empty string`);
+  const url = parseHttpsUrl(value, modelProxyUrlVariable);
+  if (url.pathname !== "/v1") throw new Error(`${modelProxyUrlVariable} must point at the exact /v1 path`);
+  // WHATWG URL leaves search/hash empty for a trailing delimiter while href
+  // keeps it; the coordinator rejects those, so startup must too (fail closed
+  // at configuration instead of failing a sandbox after it exists).
+  if (/[?#]$/.test(url.href)) {
+    throw new Error(`${modelProxyUrlVariable} must not end with an empty query or fragment delimiter`);
+  }
+  if (!/^[a-z0-9.-]+$/.test(url.hostname)) {
+    throw new Error(`${modelProxyUrlVariable} hostname must be lowercase letters, digits, dots, or hyphens`);
+  }
+  const port = Number(url.port);
+  if (url.port !== "" && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+    throw new Error(`${modelProxyUrlVariable} port must be an integer between 1 and 65535`);
+  }
+  return url;
+}
