@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   loadSandboxInput,
   MAX_INPUT_BYTES,
+  resolveCoordinatorEnvironment,
   resolveSandboxInputMode,
   SandboxInputModeError,
   type SandboxInputOutcome,
@@ -54,6 +55,33 @@ describe("sandbox input mode", () => {
         SandboxInputModeError,
       );
     }
+  });
+});
+
+describe("coordinator environment", () => {
+  it("maps the sandbox memory placeholder onto the model proxy token", () => {
+    const environment = resolveCoordinatorEnvironment("sandbox", {
+      BOT_MEMORY_TOKEN: "openshell:resolve:env:BOT_MEMORY_TOKEN",
+      BOT_MEMORY_URL: "https://memory.example.test/mcp",
+      REHOR_MODEL_PROXY_TOKEN: "ambient-deployment-value",
+      BOT_LABEL: "onboarding-test",
+    });
+    expect(environment).toEqual({
+      BOT_MEMORY_TOKEN: "openshell:resolve:env:BOT_MEMORY_TOKEN",
+      BOT_MEMORY_URL: "https://memory.example.test/mcp",
+      REHOR_MODEL_PROXY_TOKEN: "openshell:resolve:env:BOT_MEMORY_TOKEN",
+      BOT_LABEL: "onboarding-test",
+    });
+  });
+
+  it("keeps legacy mode and sandbox mode without a placeholder unchanged", () => {
+    const legacy = { REHOR_MODEL_PROXY_TOKEN: "ambient-value", BOT_MEMORY_TOKEN: "token" };
+    expect(resolveCoordinatorEnvironment("legacy", legacy)).toBe(legacy);
+    expect(resolveCoordinatorEnvironment("legacy", {})).toEqual({});
+
+    const tokenless = { REHOR_MODEL_PROXY_TOKEN: "ambient-value" };
+    expect(resolveCoordinatorEnvironment("sandbox", tokenless)).toBe(tokenless);
+    expect(resolveCoordinatorEnvironment("sandbox", {})).toEqual({});
   });
 });
 

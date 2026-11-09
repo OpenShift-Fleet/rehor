@@ -45,6 +45,22 @@ export function resolveSandboxInputMode(environment: NodeJS.ProcessEnv): Sandbox
   );
 }
 
+/**
+ * Compose the environment handed to the coordinator run (REHOR-237). In
+ * sandbox mode the OpenCode provider apiKey references
+ * REHOR_MODEL_PROXY_TOKEN, and only the supervisor can substitute the real
+ * credential binding: the BOT_MEMORY_TOKEN placeholder is mapped over any
+ * ambient value, because a deployment cannot deliver the real token into a
+ * sandbox. Legacy mode returns the input environment unchanged.
+ */
+export function resolveCoordinatorEnvironment(
+  inputMode: SandboxInputMode,
+  environment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  if (inputMode !== "sandbox" || !environment.BOT_MEMORY_TOKEN) return environment;
+  return { ...environment, REHOR_MODEL_PROXY_TOKEN: environment.BOT_MEMORY_TOKEN };
+}
+
 /** Read and validate the delivered envelope without exposing its prompt. */
 export async function loadSandboxInput(
   environment: NodeJS.ProcessEnv,

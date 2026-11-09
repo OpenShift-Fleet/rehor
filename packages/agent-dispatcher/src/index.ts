@@ -1,4 +1,4 @@
-import { readAuthConfig, type AuthConfig } from "./config.js";
+import { readAuthConfig, readModelProxyUrl, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
@@ -78,10 +78,12 @@ async function start(): Promise<void> {
   let authConfig: AuthConfig | undefined;
   let gatewayConfig: ReturnType<typeof readGatewayConfig>;
   let runtimeLayout: ReturnType<typeof readRuntimeLayout>;
+  let modelProxyUrl: URL | undefined;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
     authConfig = readAuthConfig(process.env);
+    modelProxyUrl = readModelProxyUrl(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
     configuration.failure("configuration");
@@ -134,6 +136,7 @@ async function start(): Promise<void> {
         raw: gateway.raw,
         memory: { url: authConfig.memoryUrl, credentialProvider: provider },
         runtime: runtimeLayout,
+        ...(modelProxyUrl ? { modelProxyUrl } : {}),
       });
       const signal = stopController.signal;
       loopPromise = runDispatcherLoop({
@@ -147,6 +150,9 @@ async function start(): Promise<void> {
           for (const [name, value] of Object.entries({ ...preflightEnvironment(), ...profile.preflightEnv })) {
             if (name !== "PATH" && value !== undefined) environment[name] = value;
           }
+          // Only the validated configuration value reaches the sandbox; the
+          // ambient dispatcher environment never forwards this variable.
+          if (modelProxyUrl) environment.REHOR_MODEL_PROXY_URL = modelProxyUrl.href;
           // Register before invoking session code, including synchronous errors
           // or a shutdown signal raised during admission.
           const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));
