@@ -177,7 +177,7 @@ if __name__ == "__main__":
     setup_logging()
 
     try:
-        from .readonly_server import readonly_mcp
+        from .readonly_server import ApiKeyMiddleware, get_readonly_api_key, readonly_mcp
 
         app, metrics_app = build_app()
 
@@ -193,6 +193,14 @@ if __name__ == "__main__":
             lifespan=readonly_lifespan,
             routes=[Mount("/", app=readonly_mcp_app)],
         )
+
+        # always wrap — middleware is fail-closed (401 when key is unset)
+        api_key = get_readonly_api_key()
+        readonly_app = ApiKeyMiddleware(readonly_app, api_key=api_key)
+        if api_key:
+            logger.info("Readonly server: API key authentication enabled")
+        else:
+            logger.warning("Readonly server: READONLY_API_KEY not set, task-outcome endpoints will return 401")
 
         async def serve():
             # Start main first so model/DB init completes before readonly accepts traffic.

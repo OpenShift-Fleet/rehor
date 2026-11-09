@@ -64,6 +64,7 @@ nav:
     - Scheduling: scheduling.md
   - Architecture:
     - Bot Workflow Loop: bot-workflow-loop.md
+    - Model Configuration: models.md
     - Debugging Cycles and Improving Agents: debugging-cycles-and-agents.md
     - Git Auth Proxy: git-auth-proxy.md
     - Preset System Design: presets-design.md

@@ -87,6 +87,9 @@ for how to scope the engine to one app-interface deployment.
 
 ## Model Resolution Order
 
+For model availability, deployment declarations, pricing, and agent-specific
+selection, see [Model Configuration](../models.md).
+
 When a cycle starts, explicit instance/deployment overrides take precedence;
 workflow tiers apply to Claude and Vertex paths. With no override or tier,
 Claude and OpenCode+Vertex read `claude.model`; OpenCode+`rehor-openai` reads

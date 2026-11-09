@@ -108,9 +108,9 @@ objects:
             matchLabels:
               kubernetes.io/metadata.name: openshift-dns
         ports:
-        - port: 53
+        - port: 5353
           protocol: UDP
-        - port: 53
+        - port: 5353
           protocol: TCP
     podTemplate:
       metadata:
