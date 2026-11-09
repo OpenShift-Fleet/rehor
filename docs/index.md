@@ -94,6 +94,7 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 | Section | What you'll find |
 |---------|-----------------|
 | [Onboarding a New Instance](onboarding-new-instance.md) | Step-by-step guide: runner repo, deploy template, Konflux, app-interface, Jira setup |
+| [Agent Dispatcher Deployment](agent-dispatcher-deployment.md) | App-interface-owned dispatcher Deployment: configuration, rollout, rollback, observability |
 | [Instance Configuration](presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Scheduling](scheduling.md) | KEDA cron scaler configuration for business-hours-only operation |
 | [Bot Workflow Loop](bot-workflow-loop.md) | Cycle architecture, preflight system, task state machine with diagrams |

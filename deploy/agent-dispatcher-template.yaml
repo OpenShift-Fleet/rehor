@@ -1,0 +1,236 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: platform-frontend-ai-dev-agent-dispatcher
+parameters:
+- name: AGENT_DISPATCHER_IMAGE
+  description: >
+    Konflux-published dispatcher image. The Konflux component is
+    platform-frontend-ai-dev-agent-dispatcher; sibling components are
+    renamed on release (platform-frontend-ai-dev-memory-server becomes
+    rehor-memory-server), so verify the released repository name and adjust
+    here and in the app-interface imagePatterns/images entries if needed.
+  value: quay.io/redhat-services-prod/hcc-platex-services/rehor-agent-dispatcher
+- name: IMAGE_TAG
+  required: true
+- name: AGENT_DISPATCHER_REPLICAS
+  description: >
+    Dispatcher pod count. Keep "0" until required parameters are set and
+    devbot-secrets contains the required keys: the dispatcher fails startup
+    on partial configuration (fail-closed) and would crash-loop.
+  value: "1"
+- name: AGENT_DISPATCHER_CONFIG_REPOS
+  description: >
+    JSON array of trusted agent configuration repository URLs consumed by
+    work preflights (see packages/agent-dispatcher/README.md). Must be a
+    non-empty valid array — "[]" or malformed JSON fails startup. Keep
+    unset-equivalent rollout by scaling replicas to "0" instead.
+  required: true
+- name: AGENT_DISPATCHER_RUNTIME_LAYOUT
+  description: >
+    "legacy" (default) or "private". Switch to "private" only after every
+    configured runner image is rebuilt with the matching Dockerfile.runner
+    (REHOR-233); the private layout rejects legacy images.
+  value: legacy
+- name: AGENT_DISPATCHER_RUNTIME_SOURCE
+  description: Private-layout immutable runtime source inside runner images.
+  value: /opt/rehor/app
+- name: AGENT_DISPATCHER_RUNTIME_PARENT
+  description: Private-layout writable runtime parent inside runner sandboxes.
+  value: /tmp
+- name: JIRA_MCP_URL
+  description: >
+    Jira MCP endpoint forwarded to preflights. In-cluster service DNS serves
+    dispatcher-side preflights; the sandbox-visible authenticated Route is
+    coordinated separately (REHOR-237 phase 2 / REHOR-241).
+  value: http://devbot-proxy:8444/mcp
+- name: EXECUTOR_ADDR
+  description: Executor (gh/glab shim) endpoint forwarded to preflights.
+  value: devbot-proxy:9090
+objects:
+
+# ============================================================================
+# Agent dispatcher (REHOR-246).
+#
+# Long-running, non-HTTP Node.js process (packages/agent-dispatcher). It
+# validates memory-server and OpenShell Gateway credentials on startup, runs
+# agent work preflights from AGENT_DISPATCHER_CONFIG_REPOS, and drives
+# sandbox sessions through the Gateway. Deployed by the app-interface
+# platform-frontend-ai-dev SaaS file alongside the shared memory-server and
+# proxy from deploy/template.yaml. Existing bot instances and the legacy
+# onboarding deployment are unaffected by this object set.
+#
+# Prerequisites:
+#
+# 1. Konflux-built and released dispatcher image (component
+#    platform-frontend-ai-dev-agent-dispatcher; pipelines in .tekton/).
+# 2. Secret "devbot-secrets" (Vault, app-interface namespace YAML) with keys
+#    matching the dispatcher env names:
+#      OPENSHELL_GATEWAY_ENDPOINT, OPENSHELL_GATEWAY_NAME,
+#      OPENSHELL_OIDC_ISSUER, OPENSHELL_CLIENT_ID, OPENSHELL_OIDC_AUDIENCE,
+#      OPENSHELL_OIDC_CLIENT_SECRET — Gateway/OIDC configuration and secret
+#      OPENSHELL_SERVICE_ACCOUNT_SUBJECT — optional OIDC subject override
+#      AGENT_DISPATCHER_AUTH_NAMESPACE, AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT,
+#      AGENT_DISPATCHER_AUTH_MEMORY_URL — memory TokenRequest configuration
+#      jira-email — shared Jira identity forwarded to preflights
+#    Stage Vault-synced devbot-secrets version 35 contains these keys.
+# 3. Role/RoleBinding (app-interface, already present) granting the runtime
+#    SA rehor-agent-dispatcher create on serviceaccounts/token for the
+#    AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT (devbot-memory-server).
+# 4. Memory-server Route reachable from the dispatcher pod with a trusted
+#    certificate (AGENT_DISPATCHER_AUTH_MEMORY_URL from devbot-secrets).
+# 5. OpenShell Gateway registration values in devbot-secrets.
+#
+# Semantics:
+#
+# - Fail-closed configuration: partial or malformed auth/Gateway/config-repo
+#   settings exit the process at startup; the Deployment restarts (Always)
+#   and surfaces misconfiguration as CrashLoopBackOff.
+# - No HTTP listener: there are no liveness/readiness probes and no
+#   Service/Route. FATAL process errors exit non-zero and rely on pod
+#   restart; a hung (non-exiting) process is not auto-detected — see the
+#   observability section of docs/agent-dispatcher-deployment.md.
+# - Shutdown: SIGTERM drains in-flight sandbox sessions within an internal
+#   22-minute deadline, so terminationGracePeriodSeconds (1500s) must stay
+#   above it. Do not lower the grace period.
+# - The session registry is process-local (REHOR-218 tracks durable
+#   recovery): a restart abandons in-flight sessions; the Gateway retains
+#   the abandoned sandbox resources, which must be cleaned up manually
+#   following the rollout/rollback runbook.
+#
+# ============================================================================
+
+# --- Agent Dispatcher ServiceAccount (token-mint identity) ---
+# Subject of the existing app-interface rehor-agent-dispatcher-token-request
+# RoleBinding. The name is fixed by that RBAC: do not parameterize it.
+- kind: ServiceAccount
+  apiVersion: v1
+  metadata:
+    name: rehor-agent-dispatcher
+    labels:
+      app.kubernetes.io/name: agent-dispatcher
+      app.kubernetes.io/part-of: devbot
+
+# --- Agent Dispatcher Deployment ---
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: rehor-agent-dispatcher
+    labels:
+      app.kubernetes.io/name: agent-dispatcher
+      app.kubernetes.io/part-of: devbot
+  spec:
+    replicas: ${{AGENT_DISPATCHER_REPLICAS}}
+    strategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 0
+        maxSurge: 1
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: agent-dispatcher
+    template:
+      metadata:
+        labels:
+          app.kubernetes.io/name: agent-dispatcher
+          app.kubernetes.io/part-of: devbot
+      spec:
+        serviceAccountName: rehor-agent-dispatcher
+        # SIGTERM drain deadline inside the process is 22 minutes; keep the
+        # runtime grace strictly above it so cleanup is not SIGKILLed.
+        terminationGracePeriodSeconds: 1500
+        containers:
+        - name: dispatcher
+          image: ${AGENT_DISPATCHER_IMAGE}:${IMAGE_TAG}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          env:
+          - name: AGENT_DISPATCHER_CONFIG_REPOS
+            value: ${AGENT_DISPATCHER_CONFIG_REPOS}
+          - name: AGENT_DISPATCHER_RUNTIME_LAYOUT
+            value: ${AGENT_DISPATCHER_RUNTIME_LAYOUT}
+          - name: AGENT_DISPATCHER_RUNTIME_SOURCE
+            value: ${AGENT_DISPATCHER_RUNTIME_SOURCE}
+          - name: AGENT_DISPATCHER_RUNTIME_PARENT
+            value: ${AGENT_DISPATCHER_RUNTIME_PARENT}
+          # Memory credential preflight: TokenRequest and memory Route
+          # configuration are supplied by Vault-backed devbot-secrets.
+          - name: AGENT_DISPATCHER_AUTH_NAMESPACE
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: AGENT_DISPATCHER_AUTH_NAMESPACE
+          - name: AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT
+          - name: AGENT_DISPATCHER_AUTH_MEMORY_URL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: AGENT_DISPATCHER_AUTH_MEMORY_URL
+          # OpenShell Gateway config comes from Vault; never interpolate it
+          # into the app-interface template or a rendered Deployment.
+          - name: OPENSHELL_GATEWAY_ENDPOINT
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_GATEWAY_ENDPOINT
+          - name: OPENSHELL_GATEWAY_NAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_GATEWAY_NAME
+          - name: OPENSHELL_OIDC_ISSUER
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_OIDC_ISSUER
+          - name: OPENSHELL_CLIENT_ID
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_CLIENT_ID
+          - name: OPENSHELL_OIDC_AUDIENCE
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_OIDC_AUDIENCE
+          - name: OPENSHELL_OIDC_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_OIDC_CLIENT_SECRET
+          - name: OPENSHELL_SERVICE_ACCOUNT_SUBJECT
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: OPENSHELL_SERVICE_ACCOUNT_SUBJECT
+                optional: true
+          # Shared Jira identity as a dispatcher-wide default for preflights;
+          # agent-specific labels, instance IDs, and workflow settings stay in
+          # instance profiles (REHOR-237 follow-up note).
+          - name: BOT_JIRA_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: jira-email
+          # Non-secret service coordinates forwarded to preflights together
+          # with the non-secret BOT_* environment above.
+          - name: JIRA_MCP_URL
+            value: ${JIRA_MCP_URL}
+          - name: EXECUTOR_ADDR
+            value: ${EXECUTOR_ADDR}
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
