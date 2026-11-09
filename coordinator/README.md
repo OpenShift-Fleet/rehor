@@ -253,6 +253,8 @@ GitOps profiles are trusted user configuration: plugins, tools, and formatters c
 Deployment `providers` entries use `id`, `package`, `name`, `settings`, and `models`.
 Supported model fields are `name`, `modelID`, `limit`, `settings`, and `capabilities`;
 reasoning is `capabilities.reasoning: { supported: true }`, not a top-level boolean.
+See [Model Configuration](../docs/models.md) for available models, pricing,
+gateway allowlists, and selection precedence.
 The renderer emits a native `providers` map, `agents.title.model` for the utility
 model, `mcp.servers` with structured startup/catalog/execution timeouts, and ordered
 `permissions` rules. Prepared `Bash`, `Task`, and `Edit`/`Write` grants become native
