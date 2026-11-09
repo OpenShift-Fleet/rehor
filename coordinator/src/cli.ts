@@ -10,7 +10,11 @@ import type { SandboxCycleInput } from "./cycle-input";
 import { loadOpenCodeDeploymentConfig } from "./deployment-config";
 import { createFileLogger, createStructuredLogger, type Logger } from "./log";
 import { runCoordinator } from "./runner";
-import { loadSandboxInput, resolveSandboxInputMode } from "./sandbox-input";
+import {
+  loadSandboxInput,
+  resolveCoordinatorEnvironment,
+  resolveSandboxInputMode,
+} from "./sandbox-input";
 import { shutdownAbortReason } from "./utils";
 
 let logger: Logger = createStructuredLogger();
@@ -104,7 +108,7 @@ async function main(): Promise<number> {
       openCodeWorkspaceOwnerUid:
         parseOptionalInteger(process.env.REHOR_WORKSPACE_OWNER_UID) ?? process.getuid?.(),
       policyVersion: process.env.REHOR_POLICY_VERSION,
-      environment: process.env,
+      environment: resolveCoordinatorEnvironment(inputMode, process.env),
       shutdownSignal: shutdown.signal,
       onReady: () => health.setReady(true),
     });

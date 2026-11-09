@@ -138,24 +138,27 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}) }), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}) }), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
 test("session options preserve default, explicit undefined, and custom values", () => {
   const { raw, memory } = fixture();
-  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined }]) {
+  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined }]) {
     const session = new SandboxSession({ raw, memory, ...options });
     assert.equal(session.raw, raw);
     assert.equal(session.memory, memory);
     assert.equal(session.cleanupBudgetMs, 20 * 60_000);
     assert.deepEqual(session.runtime, { kind: "legacy" });
+    assert.equal(session.modelProxyUrl, undefined);
   }
   const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
+  const modelProxyUrl = new URL("https://model-gateway.example.test/v1");
   for (const cleanupBudgetMs of [0, 1234]) {
-    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime });
+    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl });
     assert.equal(session.cleanupBudgetMs, cleanupBudgetMs);
     assert.equal(session.runtime, runtime);
+    assert.equal(session.modelProxyUrl, modelProxyUrl);
   }
 });
 
@@ -254,6 +257,46 @@ test("default policy remains constrained HTTPS health-only, not inferred runner 
   assert.deepEqual(policy.filesystem.readOnly, ["/home/botuser/app"]);
   assert.deepEqual(policy.filesystem.readWrite, ["/home/botuser/repos", "/home/botuser/data", "/tmp"]);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
+});
+
+test("model proxy URL dispatches with the model-gateway rule verified against the effective policy", async () => {
+  const f = fixture({ modelProxyUrl: new URL("https://model-gateway.example.test/v1") });
+  const result = await f.session.run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  const policy = f.calls.find((call) => call.name === "createSandbox").request.spec.policy;
+  assert.deepEqual(Object.keys(policy.networkPolicies), ["memory_health", "model_proxy"]);
+  const rule = policy.networkPolicies.model_proxy;
+  assert.equal(rule.name, "model-proxy");
+  assert.equal(rule.endpoints[0].host, "model-gateway.example.test");
+  assert.equal(rule.endpoints[0].port, 443);
+  assert.equal(rule.endpoints[0].path, "/v1/**");
+  assert.deepEqual(rule.endpoints[0].rules, [
+    { allow: { method: "GET", path: "/v1/models" } },
+    { allow: { method: "POST", path: "/v1/chat/completions" } },
+    { allow: { method: "POST", path: "/v1/responses" } },
+  ]);
+  assert.deepEqual(rule.endpoints[0].credentialBinding, { provider: result.provider.name });
+  assert.deepEqual(rule.binaries, [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }]);
+  assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
+});
+
+test("model proxy rule drift fails before writer or runner", async () => {
+  for (const enrichPolicy of [
+    (policy) => { policy.networkPolicies.model_proxy.endpoints[0].rules[1].allow.method = "GET"; },
+    (policy) => { policy.networkPolicies.model_proxy.endpoints[0].credentialBinding.provider = "someone-else"; },
+    (policy) => { policy.networkPolicies.model_proxy.endpoints[0].providerCredentialed = false; },
+    (policy) => { delete policy.networkPolicies.model_proxy; },
+  ]) {
+    const f = fixture({ modelProxyUrl: new URL("https://model-gateway.example.test/v1"), enrichPolicy });
+    const result = await f.session.run(image, decision, {});
+    assert.equal(result.outcome, "unknown");
+    assert.equal(result.stage, "readiness");
+    assert.equal(result.completion, "gone");
+    assert.equal(result.cleanup, "deleted");
+    assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+  }
 });
 
 test("canonical unqualified profile image dispatches under additive Gateway policy", async () => {

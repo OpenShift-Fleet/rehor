@@ -5,7 +5,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAuthConfig } from "../dist/config.js";
+import { readAuthConfig, readModelProxyUrl } from "../dist/config.js";
 import { createCredentialProvider, preflightFailureMessage } from "../dist/preflight.js";
 import { HttpRequestError, httpsRequest } from "../dist/https.js";
 import { createLifecycleLogger } from "../dist/logging.js";
@@ -47,6 +47,42 @@ test("configuration is opt-in, complete, strict and HTTPS-only", () => {
     { ...baseEnv, AGENT_DISPATCHER_AUTH_NAMESPACE: "../bad" },
     ...["http://memory.example", "https://user:pass@memory.example", "https://memory.example/?secret=x", "https://memory.example/#x"].map((url) => ({ ...baseEnv, AGENT_DISPATCHER_AUTH_MEMORY_URL: url })),
   ]) assert.throws(() => readAuthConfig(env));
+});
+
+test("model proxy URL is optional, strict, and exactly the /v1 endpoint", () => {
+  assert.equal(readModelProxyUrl({}), undefined);
+  assert.equal(readModelProxyUrl({ AGENT_DISPATCHER_MODEL_PROXY_URL: undefined }), undefined);
+  const plain = readModelProxyUrl({ AGENT_DISPATCHER_MODEL_PROXY_URL: "https://model-gateway.example.test/v1" });
+  assert.ok(plain instanceof URL);
+  assert.equal(plain.href, "https://model-gateway.example.test/v1");
+  const explicitPort = readModelProxyUrl({ AGENT_DISPATCHER_MODEL_PROXY_URL: "https://model-gateway.example.test:8452/v1" });
+  assert.equal(explicitPort.port, "8452");
+  for (const value of [
+    "",
+    "   ",
+    "not-a-url",
+    "http://model-gateway.example.test/v1",
+    "https://model-gateway.example.test",
+    "https://model-gateway.example.test/",
+    "https://model-gateway.example.test/v1/",
+    "https://model-gateway.example.test/api",
+    "https://user:pass@model-gateway.example.test/v1",
+    "https://user@model-gateway.example.test/v1",
+    "https://model-gateway.example.test/v1?model=x",
+    "https://model-gateway.example.test/v1#section",
+    "https://model-gateway.example.test/v1?",
+    "https://model-gateway.example.test/v1#",
+    "https://model-gateway.example.test/v1?#",
+    "https://model_gateway.example.test/v1",
+    "https://model-gateway.example.test:0/v1",
+    "https://model-gateway.example.test:99999/v1",
+  ]) {
+    assert.throws(
+      () => readModelProxyUrl({ AGENT_DISPATCHER_MODEL_PROXY_URL: value }),
+      /AGENT_DISPATCHER_MODEL_PROXY_URL/,
+      JSON.stringify(value),
+    );
+  }
 });
 
 test("TokenRequest uses projected credentials, default audience, and exact memory endpoint; each get() mints fresh", async () => {
