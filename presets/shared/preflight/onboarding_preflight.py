@@ -20,6 +20,7 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    is_newer,
     output_result,
     save_state,
     upstream_repo,
@@ -58,7 +59,7 @@ def _has_new_jira_feedback(comments, last_addressed):
         return False
     if not last_addressed:
         return bool(comments)
-    return any((c.get("created", "") or c.get("t", ""))[:16] > last_addressed[:16] for c in comments)
+    return any(is_newer((c.get("created", "") or c.get("t", "")), last_addressed) for c in comments)
 
 
 def _comments_may_be_truncated(issue, all_comments, last_addressed):
@@ -68,7 +69,7 @@ def _comments_may_be_truncated(issue, all_comments, last_addressed):
     if len(all_comments) < JIRA_COMMENT_LIMIT:
         return False
     updated = issue.get("updated") or (issue.get("fields") or {}).get("updated", "")
-    return updated[:16] > last_addressed[:16] if updated else False
+    return is_newer(updated, last_addressed) if updated else False
 
 
 def _jira_search(jql, limit=10):

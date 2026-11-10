@@ -127,6 +127,25 @@ def test_review_at_exact_last_addressed_ignored():
     assert "review:alice" not in issues
 
 
+def test_review_same_minute_after_last_addressed_kept():
+    """Review submitted seconds after last_addressed in the same minute must count.
+
+    Regression: minute-truncated comparison (submitted[:16] <= last[:16])
+    dropped same-minute reviews (RHCLOUD-53177 — PR comment 14:59:56 vs
+    last_addressed 14:59:05-style masking).
+    """
+    reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T07:37:41Z"}]
+    state, issues = classify_gh(_make_pr(reviews=reviews), last_addressed="2026-07-03T07:37:05+00:00")
+    assert "review:alice" in issues
+
+
+def test_review_same_minute_before_last_addressed_ignored():
+    """Review submitted seconds before last_addressed in the same minute stays filtered."""
+    reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "alice"}, "submittedAt": "2026-07-03T07:37:05Z"}]
+    state, issues = classify_gh(_make_pr(reviews=reviews), last_addressed="2026-07-03T07:37:41+00:00")
+    assert "review:alice" not in issues
+
+
 def test_conflict_and_ci_not_affected_by_last_addressed():
     """Conflicts and CI failures are current-state, not affected by last_addressed."""
     checks = [{"name": "lint", "conclusion": "FAILURE"}]

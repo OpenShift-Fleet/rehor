@@ -20,6 +20,7 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    is_newer,
     load_project_repos,
     match_repo_labels,
     output_result,
@@ -55,8 +56,7 @@ def _jira_issue(key):
 
 def _has_new_jira_feedback(jira_comments, last_addressed):
     for c in jira_comments:
-        ct = c.get("created", "")[:16]
-        if last_addressed and ct > last_addressed[:16]:
+        if last_addressed and is_newer(c.get("created", ""), last_addressed):
             body = c.get("body", "")
             if not ("### " in body or "| " in body or "PR:" in body):
                 return True
@@ -76,7 +76,7 @@ def _comments_may_be_truncated(jira_data, all_comments, last_addressed):
     if len(all_comments) < JIRA_COMMENT_LIMIT:
         return False
     updated = jira_data.get("updated") or (jira_data.get("fields") or {}).get("updated", "")
-    return updated[:16] > last_addressed[:16] if updated else False
+    return is_newer(updated, last_addressed) if updated else False
 
 
 def _fmt_jira(task, jira_data, jira_comments):
@@ -97,7 +97,7 @@ def _fmt_jira(task, jira_data, jira_comments):
         jc = [
             {
                 "author": c.get("author", {}).get("displayName", "?"),
-                "t": c.get("created", "")[:16],
+                "t": c.get("created", ""),
                 "b": c.get("body", ""),
             }
             for c in jira_comments

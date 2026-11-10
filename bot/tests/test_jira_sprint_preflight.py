@@ -45,6 +45,22 @@ def test_empty_comments():
     assert _has_new_jira_feedback([], "2026-06-30T10:00:00") is False
 
 
+def test_same_minute_after_last_addressed_detected():
+    """Comment posted seconds after last_addressed in the same minute counts.
+
+    Regression for RHCLOUD-53177: Jira comment 19450291 at
+    2026-11-10T08:59:41 vs last_addressed 08:59:05 — both truncated to
+    '2026-11-10T08:59' by the [:16] comparison, so feedback was missed.
+    """
+    comments = [{"created": "2026-11-10T08:59:41.053+0000", "body": "can you read it and implement it?"}]
+    assert _has_new_jira_feedback(comments, "2026-11-10T08:59:05.470894+00:00") is True
+
+
+def test_same_minute_before_last_addressed_ignored():
+    comments = [{"created": "2026-11-10T08:59:05.053+0000", "body": "can you read it and implement it?"}]
+    assert _has_new_jira_feedback(comments, "2026-11-10T08:59:41.470894+00:00") is False
+
+
 # --- main() decision logic ---
 
 
