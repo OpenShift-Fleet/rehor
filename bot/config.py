@@ -83,6 +83,7 @@ class InstanceConfig:
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
+    cycle_timeout_seconds: int | None = None  # None = config.json claude.cycleTimeoutSeconds
     model: str | None = None
     runtime: str = DEFAULT_RUNTIME_ID
     provider: str = DEFAULT_PROVIDER_ID
@@ -107,6 +108,7 @@ class InstanceConfig:
             envs=data.get("envs"),
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
+            cycle_timeout_seconds=data.get("cycle_timeout_seconds"),
             model=_nonempty_model(data.get("model")),
             runtime=runtime,
             provider=provider,
@@ -135,13 +137,15 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
             if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
                 ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s, "
+                "cycle_timeout=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
                 ic.runtime,
                 ic.provider,
                 ic.model,
+                ic.cycle_timeout_seconds,
             )
             return ic
 
@@ -155,6 +159,31 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
         ic.model,
     )
     return ic
+
+
+def _valid_cycle_timeout(value: object) -> bool:
+    """cycle_timeout_seconds must be a positive int; YAML bools, strings, and floats are invalid."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def apply_cycle_timeout_override(config: Config, instance_config: InstanceConfig) -> None:
+    """Override the global cycle timeout with instance.yaml ``cycle_timeout_seconds``.
+
+    Effective timeout precedence: instance.yaml ``cycle_timeout_seconds``,
+    then config.json ``claude.cycleTimeoutSeconds`` (loaded into
+    ``config.cycle_timeout``). ``validate_instance_config`` rejects invalid
+    values at startup; the guard here also protects the per-cycle reload in
+    run.py, which does not re-run full instance validation.
+    """
+    logger = logging.getLogger(__name__)
+    value = instance_config.cycle_timeout_seconds
+    if value is None:
+        return
+    if not _valid_cycle_timeout(value):
+        logger.error("Ignoring invalid cycle_timeout_seconds=%r — must be a positive integer", value)
+        return
+    logger.info("Cycle timeout: %ds (source=instance)", value)
+    config.cycle_timeout = value
 
 
 def resolve_workflow_dir(
@@ -217,6 +246,11 @@ def validate_instance_config(
         for error in selection_errors:
             logger.error("FATAL: %s", error)
         logger.error("Runtime/provider selection validation failed. Check instance.yaml or deployment env.")
+        sys.exit(1)
+
+    cycle_timeout = instance_config.cycle_timeout_seconds
+    if cycle_timeout is not None and not _valid_cycle_timeout(cycle_timeout):
+        logger.error("FATAL: cycle_timeout_seconds must be a positive integer, got %r", cycle_timeout)
         sys.exit(1)
 
     wf_dir = resolve_workflow_dir(script_dir, instance_config.workflow, remote_agent_dir)

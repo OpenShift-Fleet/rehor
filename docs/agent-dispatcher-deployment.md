@@ -35,7 +35,7 @@ Secrets come only from the Vault-synced `devbot-secrets` Secret:
 | `AGENT_DISPATCHER_AUTH_NAMESPACE`, `AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT`, `AGENT_DISPATCHER_AUTH_MEMORY_URL` | Memory TokenRequest settings; sourced from `devbot-secrets` using matching key names |
 | `jira-email` | `BOT_JIRA_EMAIL` dispatcher-wide default (shared Jira identity) |
 
-Stage Vault-synced `devbot-secrets` version 35 contains these dispatcher keys. Only `AGENT_DISPATCHER_CONFIG_REPOS` is supplied as a regular app-interface parameter; probes remain removed. No credentials or auth configuration are baked into the image, committed to Git, or exposed as template parameters. Model-gateway ports, cleanup budgets, and sandbox policy remain owned by agent instance profiles and tracked by REHOR-241; the dispatcher forwards only non-secret `BOT_*` variables and the service coordinates above.
+Stage Vault-synced `devbot-secrets` version 35 contains these dispatcher keys. `AGENT_DISPATCHER_CONFIG_REPOS` and the non-secret model-gateway Route URL `AGENT_DISPATCHER_MODEL_PROXY_URL` (REHOR-237; exact HTTPS `/v1` path, validated fail-closed at startup) are supplied as regular app-interface parameters; probes remain removed. No credentials or auth configuration are baked into the image, committed to Git, or exposed as template parameters. Cleanup budgets and sandbox policy remain owned by agent instance profiles and tracked by REHOR-241; the dispatcher forwards only non-secret `BOT_*` variables and the service coordinates above.
 
 ## Deployment semantics
 
