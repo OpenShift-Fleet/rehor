@@ -372,9 +372,15 @@ for (const runtime of [
 
 test("runtime layout rejects invalid, ambiguous or overlapping paths", () => {
   assert.deepEqual(readRuntimeLayout({}), { kind: "legacy" });
+  // The deployment template always renders the private-layout path variables,
+  // including for the default legacy layout; legacy must ignore them.
+  assert.deepEqual(readRuntimeLayout({
+    AGENT_DISPATCHER_RUNTIME_LAYOUT: "legacy",
+    AGENT_DISPATCHER_RUNTIME_SOURCE: "/opt/rehor/app",
+    AGENT_DISPATCHER_RUNTIME_PARENT: "/tmp",
+  }), { kind: "legacy" });
   for (const env of [
     { AGENT_DISPATCHER_RUNTIME_LAYOUT: "unknown" },
-    { AGENT_DISPATCHER_RUNTIME_PARENT: "/tmp" },
     { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/opt" },
     { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_PARENT: "/opt/opencode/state" },
     { AGENT_DISPATCHER_RUNTIME_LAYOUT: "private", AGENT_DISPATCHER_RUNTIME_SOURCE: "/tmp/app" },
