@@ -54,6 +54,11 @@ parameters:
 - name: EXECUTOR_ADDR
   description: Executor (gh/glab shim) endpoint forwarded to preflights.
   value: devbot-proxy:9090
+- name: AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED
+  description: >
+    Opt-in for centrally owned sandbox public egress. Deployment-level
+    flag only, no per-agent override. Default "false".
+  value: "false"
 objects:
 
 # ============================================================================
@@ -169,6 +174,9 @@ objects:
           # coordinate, so it is a plain parameter rather than a secret key.
           - name: AGENT_DISPATCHER_MODEL_PROXY_URL
             value: ${AGENT_DISPATCHER_MODEL_PROXY_URL}
+          # Central opt-in; no per-agent policy knob.
+          - name: AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED
+            value: ${AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED}
           # Memory credential preflight: TokenRequest and memory Route
           # configuration are supplied by Vault-backed devbot-secrets.
           - name: AGENT_DISPATCHER_AUTH_NAMESPACE

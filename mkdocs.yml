@@ -67,6 +67,7 @@ nav:
     - Model Configuration: models.md
     - Debugging Cycles and Improving Agents: debugging-cycles-and-agents.md
     - Git Auth Proxy: git-auth-proxy.md
+    - Agent Proxy Gateway: agent-proxy-gateways.md
     - Preset System Design: presets-design.md
   - Presets:
     - Overview: presets/README.md

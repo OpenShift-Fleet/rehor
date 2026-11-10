@@ -72,3 +72,18 @@ export function readModelProxyUrl(env: NodeJS.ProcessEnv): URL | undefined {
   }
   return url;
 }
+
+const publicEgressFlagVariable = "AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED";
+
+// Global deployment-owned opt-in for the centrally compiled public-egress
+// rule (REHOR-253). Default false keeps the sandbox policy exactly as it is
+// today; this is a dispatcher-deployment rollout switch, never a per-team or
+// per-instance knob. Parsing is fail-closed: only the exact strings "true"
+// and "false" are accepted so a typo cannot silently disable or enable it.
+export function readPublicEgressEnabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env[publicEgressFlagVariable];
+  if (value === undefined) return false;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${publicEgressFlagVariable}, when set, must be exactly "true" or "false"`);
+}
