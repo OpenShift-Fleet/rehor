@@ -503,6 +503,8 @@ const operational = {
   BOT_JIRA_EMAIL: "bot@example.invalid",
   BOT_MEMORY_URL: "http://memory-server:8080",
   EXECUTOR_ADDR: "127.0.0.1:50551",
+  EXECUTOR_HTTP_URL: "https://executor.example.invalid/executor/execute",
+  EXECUTOR_TRANSPORT: "http",
   GH_RELEASE_UPLOAD_URL: "http://proxy:8446/upload",
   GH_USER_NAME: "synthetic-github-bot",
   GL_USER_NAME: "synthetic-gitlab-bot",
@@ -518,6 +520,8 @@ const blocked = [
   "SLACK_OTHER_CREDENTIAL",
   "BOT_SECRET_TOKEN",
   "EXECUTOR_TOKEN",
+  "EXECUTOR_TOKEN_FILE",
+  "EXECUTOR_CA_FILE",
   "UNKNOWN_AMBIENT",
 ];
 describe("OpenCode environment", () => {
@@ -618,6 +622,78 @@ describe("OpenCode environment", () => {
     expect(environment).toMatchObject(operational);
     expect(base).toEqual(snapshot);
     for (const name of blocked) expect(environment[name]).toBeUndefined();
+  });
+  it("forwards the sandbox EXECUTOR_TOKEN placeholder only in sandbox mode and only as the exact marker", () => {
+    const placeholder = "openshell:resolve:env:executor";
+    const rawJwt = "eyJhbGciOiJSUzI1NiJ9.raw.jwt-value";
+    const httpsCoordinate = {
+      EXECUTOR_HTTP_URL: "https://executor.example.invalid/executor/execute",
+    };
+
+    // Valid placeholder + HTTPS coordinate survive only in sandbox mode.
+    const sandbox = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: placeholder, ...httpsCoordinate },
+    });
+    expect(sandbox.EXECUTOR_TOKEN).toBe(placeholder);
+    expect(sandbox.EXECUTOR_HTTP_URL).toBe(httpsCoordinate.EXECUTOR_HTTP_URL);
+
+    // Legacy runs never receive EXECUTOR_TOKEN, even as a valid marker.
+    const legacy = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "legacy", EXECUTOR_TOKEN: placeholder, ...httpsCoordinate },
+    });
+    expect(legacy.EXECUTOR_TOKEN).toBeUndefined();
+    expect(legacy.EXECUTOR_HTTP_URL).toBe(httpsCoordinate.EXECUTOR_HTTP_URL);
+    expect(legacy.EXECUTOR_TRANSPORT).toBeUndefined();
+
+    // Raw credentials never leak, in either mode.
+    for (const source of [
+      { REHOR_INPUT_SOURCE: "sandbox" as const },
+      { REHOR_INPUT_SOURCE: "legacy" as const },
+    ]) {
+      const environment = buildOpenCodeEnvironment({
+        base: {
+          ...source,
+          EXECUTOR_TOKEN: rawJwt,
+          EXECUTOR_TOKEN_FILE: "/run/secret/executor-token",
+          EXECUTOR_CA_FILE: "/run/secret/ca.pem",
+          BOT_MEMORY_TOKEN: rawJwt,
+        },
+      });
+      expect(environment.EXECUTOR_TOKEN).toBeUndefined();
+      expect(environment.EXECUTOR_TOKEN_FILE).toBeUndefined();
+      expect(environment.EXECUTOR_CA_FILE).toBeUndefined();
+      expect(environment.BOT_MEMORY_TOKEN).toBeUndefined();
+    }
+
+    // A malformed marker is dropped rather than forwarded.
+    for (const malformed of [
+      "openshell:resolve:env:",
+      "openshell:resolve:env:has-dash",
+      "bearer openshell:resolve:env:executor",
+    ]) {
+      const environment = buildOpenCodeEnvironment({
+        base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: malformed },
+      });
+      expect(environment.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("derives the sandbox EXECUTOR_TOKEN placeholder from BOT_MEMORY_TOKEN", () => {
+    const placeholder = "openshell:resolve:env:memory_token";
+    const environment = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "sandbox", BOT_MEMORY_TOKEN: placeholder },
+    });
+    expect(environment.EXECUTOR_TOKEN).toBe(placeholder);
+
+    // An explicit (valid) EXECUTOR_TOKEN wins over BOT_MEMORY_TOKEN.
+    const explicit = "openshell:resolve:env:executor";
+    const overridden = buildOpenCodeEnvironment({
+      base: {
+        REHOR_INPUT_SOURCE: "sandbox",
+        EXECUTOR_TOKEN: explicit,
+        BOT_MEMORY_TOKEN: placeholder,
+      },
+    });
+    expect(overridden.EXECUTOR_TOKEN).toBe(explicit);
   });
   it("keeps absent operational values absent and does not mutate the base", () => {
     const base = Object.freeze({ PATH: "/bin", HOME: "/home/bot" });
