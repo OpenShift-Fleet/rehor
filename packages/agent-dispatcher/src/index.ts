@@ -1,4 +1,4 @@
-import { readAuthConfig, readModelProxyUrl, type AuthConfig } from "./config.js";
+import { readAuthConfig, readModelProxyUrl, readPublicEgressEnabled, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
@@ -79,11 +79,13 @@ async function start(): Promise<void> {
   let gatewayConfig: ReturnType<typeof readGatewayConfig>;
   let runtimeLayout: ReturnType<typeof readRuntimeLayout>;
   let modelProxyUrl: URL | undefined;
+  let publicEgress = false;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
     authConfig = readAuthConfig(process.env);
     modelProxyUrl = readModelProxyUrl(process.env);
+    publicEgress = readPublicEgressEnabled(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
     configuration.failure("configuration");
@@ -137,6 +139,7 @@ async function start(): Promise<void> {
         memory: { url: authConfig.memoryUrl, credentialProvider: provider },
         runtime: runtimeLayout,
         ...(modelProxyUrl ? { modelProxyUrl } : {}),
+        ...(publicEgress ? { publicEgress } : {}),
       });
       const signal = stopController.signal;
       loopPromise = runDispatcherLoop({
