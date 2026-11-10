@@ -7,8 +7,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { DeletionOutcome, ProviderReadinessState, ProviderProfileSchema, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
+import { DeletionOutcome, NetworkEnforcementMode, NetworkTlsMode, ProviderReadinessState, ProviderProfileSchema, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { SandboxSession } from "../dist/sandbox-session.js";
+import { createPublicEgressRule } from "../dist/egress-policy.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "../dist/input-envelope.js";
 import { readRuntimeLayout } from "../dist/runtime-layout.js";
@@ -72,14 +73,22 @@ function fixture(options = {}) {
     async createSandbox(request) {
       const created = { metadata: { id: randomUUID(), name: request.name, labels: request.labels, workspace: workspace.metadata.name }, status: { phase: SandboxPhase.READY } };
       suppliedPolicy = create(SandboxPolicySchema, structuredClone(request.spec.policy));
-      for (const rule of Object.values(suppliedPolicy.networkPolicies)) for (const endpoint of rule.endpoints) endpoint.providerCredentialed = true;
+      // The gateway marks only credential-bound endpoints; the static public
+      // egress endpoints carry no credential binding.
+      for (const rule of Object.values(suppliedPolicy.networkPolicies)) for (const endpoint of rule.endpoints) if (endpoint.credentialBinding?.provider) endpoint.providerCredentialed = true;
       // Model Gateway's additive runtime filesystem/default policy enrichment,
       // not an unrealistic verbatim echo of the requested policy.
       suppliedPolicy.filesystem.readOnly.push("/usr", "/lib", "/etc", "/proc", "/dev/urandom");
       suppliedPolicy.filesystem.readWrite.push("/dev/null");
-      suppliedPolicy.networkPolicies.platform_default = create(SandboxPolicySchema, {
-        networkPolicies: { platform_default: { name: "platform-default" } },
-      }).networkPolicies.platform_default;
+      // Additive Gateway network baseline, accepted only while the central
+      // public-egress flag is off; with the flag on, the effective network
+      // rule set must match the requested set exactly (no reviewed builtin
+      // default exists), so the strict-mode fixture adds none.
+      if (!options.publicEgress) {
+        suppliedPolicy.networkPolicies.platform_default = create(SandboxPolicySchema, {
+          networkPolicies: { platform_default: { name: "platform-default" } },
+        }).networkPolicies.platform_default;
+      }
       options.enrichPolicy?.(suppliedPolicy);
       if (options.delayedCreate === "sandbox") {
         setTimeout(() => { sandbox = created; }, 25);
@@ -138,28 +147,106 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}) }), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}) }), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
 test("session options preserve default, explicit undefined, and custom values", () => {
   const { raw, memory } = fixture();
-  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined }]) {
+  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined, publicEgress: undefined }]) {
     const session = new SandboxSession({ raw, memory, ...options });
     assert.equal(session.raw, raw);
     assert.equal(session.memory, memory);
     assert.equal(session.cleanupBudgetMs, 20 * 60_000);
     assert.deepEqual(session.runtime, { kind: "legacy" });
     assert.equal(session.modelProxyUrl, undefined);
+    assert.equal(session.publicEgress, false);
   }
   const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
   const modelProxyUrl = new URL("https://model-gateway.example.test/v1");
   for (const cleanupBudgetMs of [0, 1234]) {
-    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl });
+    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl, publicEgress: true });
     assert.equal(session.cleanupBudgetMs, cleanupBudgetMs);
     assert.equal(session.runtime, runtime);
     assert.equal(session.modelProxyUrl, modelProxyUrl);
+    assert.equal(session.publicEgress, true);
   }
+});
+
+test("public egress flag merges the static rule into the sandbox policy without credential bindings", async () => {
+  const enabled = fixture({ publicEgress: true });
+  const result = await enabled.session.run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  const enabledPolicy = enabled.calls.find((call) => call.name === "createSandbox").request.spec.policy;
+  const egress = enabledPolicy.networkPolicies.public_egress;
+  assert.ok(egress, "public_egress rule must be present when the flag is set");
+  assert.deepEqual(egress, createPublicEgressRule());
+  for (const endpoint of egress.endpoints) {
+    // Security invariant: raw-tunnel L4, no supervisor TLS interception,
+    // no credential binding.
+    assert.equal(endpoint.credentialBinding, undefined);
+    assert.equal(endpoint.providerCredentialed ?? false, false);
+    assert.equal(endpoint.protocol, "");
+    assert.equal(endpoint.tls, NetworkTlsMode.SKIP);
+    assert.equal(endpoint.port, 443);
+  }
+  assert.ok(enabledPolicy.networkPolicies.memory_health, "memory rule is preserved alongside the egress rule");
+
+  const disabled = fixture({ publicEgress: false });
+  const disabledResult = await disabled.session.run(image, decision, {});
+  assert.equal(disabledResult.outcome, "passed");
+  const disabledPolicy = disabled.calls.find((call) => call.name === "createSandbox").request.spec.policy;
+  assert.equal(disabledPolicy.networkPolicies.public_egress, undefined, "flag off must leave the policy unchanged");
+  assert.ok(disabledPolicy.networkPolicies.memory_health);
+
+  const modelProxy = fixture({ publicEgress: true, modelProxyUrl: new URL("https://model-gateway.example.test/v1") });
+  const combined = await modelProxy.session.run(image, decision, {});
+  assert.equal(combined.outcome, "passed");
+  const combinedPolicy = modelProxy.calls.find((call) => call.name === "createSandbox").request.spec.policy;
+  assert.deepEqual(
+    Object.keys(combinedPolicy.networkPolicies),
+    ["memory_health", "model_proxy", "public_egress"],
+  );
+});
+
+test("extra effective network rules fail closed only while public egress is enabled", async () => {
+  // A Gateway-added rule shadowing a public host:port with an intercepted
+  // (non-skip) endpoint could expose globally resolved credentials; the
+  // effective key set must match the requested set exactly.
+  const shadowRule = () => create(SandboxPolicySchema, {
+    networkPolicies: { shadow: { name: "shadow", endpoints: [{ host: "github.com", port: 443, protocol: "rest", tls: NetworkTlsMode.UNSPECIFIED, enforcement: NetworkEnforcementMode.ENFORCE, rules: [{ allow: { method: "GET", path: "/**" } }] }] } },
+  }).networkPolicies.shadow;
+
+  const enabled = fixture({ publicEgress: true, enrichPolicy: (policy) => { policy.networkPolicies.shadow = shadowRule(); } });
+  const enabledResult = await enabled.session.run(image, decision, {});
+  assert.equal(enabledResult.outcome, "unknown");
+  assert.equal(enabledResult.stage, "readiness");
+  assert.equal(enabledResult.errorCode, "other");
+  assert.equal(enabledResult.completion, "gone");
+  assert.equal(enabledResult.cleanup, "deleted");
+
+  // Flag off: additive Gateway baselines keep today's permissive contract.
+  const legacy = fixture({ enrichPolicy: (policy) => { policy.networkPolicies.extra_baseline = shadowRule(); } });
+  const legacyResult = await legacy.session.run(image, decision, {});
+  assert.equal(legacyResult.outcome, "passed");
+  assert.equal(legacyResult.completion, "gone");
+});
+
+test("mutating a public endpoint away from raw TLS skip fails the effective policy check", async () => {
+  // An effective public endpoint whose TLS mode was widened from SKIP
+  // must fail closed.
+  const mutated = fixture({
+    publicEgress: true,
+    enrichPolicy: (policy) => {
+      for (const endpoint of policy.networkPolicies.public_egress.endpoints) endpoint.tls = NetworkTlsMode.UNSPECIFIED;
+    },
+  });
+  const result = await mutated.session.run(image, decision, {});
+  assert.equal(result.outcome, "unknown");
+  assert.equal(result.stage, "readiness");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
 });
 
 test("safe stdin writer then exact runner with per-exec pointers, unique request IDs, no payload leaks", async () => {
