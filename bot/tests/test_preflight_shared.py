@@ -12,6 +12,8 @@ from common import (
     build_repo_lookup,
     fmt_comments,
     is_bot_author,
+    is_newer,
+    parse_iso,
     upstream_repo,
 )
 from gh_pr_status import classify_gh, gh_pr_comments, has_new_feedback
@@ -154,6 +156,59 @@ def test_fmt_comments_no_truncation():
     comments = [{"a": "alice", "t": "2026-07-01T10:00", "b": "hi"}]
     result = fmt_comments(comments, "test", max_comments=30)
     assert "truncated" not in result
+
+
+def test_fmt_comments_since_filter_same_minute():
+    """Comment posted seconds after last_addressed in the same minute must show.
+
+    Regression: minute-truncated comparison hid same-minute comments
+    (RHCLOUD-53177 — Jira comment 08:59:41 vs last_addressed 08:59:05).
+    """
+    comments = [{"a": "karelhala", "t": "2026-11-10T08:59:41.053+0000", "b": "please respond"}]
+    result = fmt_comments(comments, "test", since="2026-11-10T08:59:05.470894+00:00")
+    assert "karelhala" in result
+    assert "none since last_addressed" not in result
+
+
+# --- parse_iso / is_newer ---
+
+
+def test_parse_iso_formats():
+    assert parse_iso("2026-11-10T08:59:41Z") is not None
+    assert parse_iso("2026-11-10T08:59:41.053+0000") is not None
+    assert parse_iso("2026-11-10T08:59:41.053+00:00") is not None
+    assert parse_iso("2026-11-10T08:59:41") is not None
+    assert parse_iso("") is None
+    assert parse_iso(None) is None
+    assert parse_iso("not a timestamp") is None
+
+
+def test_parse_iso_naive_assumed_utc():
+    naive = parse_iso("2026-11-10T08:59:41")
+    aware = parse_iso("2026-11-10T08:59:41+00:00")
+    assert naive == aware
+
+
+def test_is_newer_same_minute():
+    """Full-resolution comparison: 36 seconds apart in the same minute counts."""
+    assert is_newer("2026-11-10T08:59:41.053+0000", "2026-11-10T08:59:05.470894+00:00") is True
+    assert is_newer("2026-11-10T08:59:05.470894+00:00", "2026-11-10T08:59:41.053+0000") is False
+
+
+def test_is_newer_mixed_formats():
+    """Jira (+0000), GitHub (Z), and DB (+00:00) formats interoperate."""
+    assert is_newer("2026-11-09T14:59:56Z", "2026-11-09T14:59:05+00:00") is True
+    assert is_newer("2026-11-09T14:59:56Z", "2026-11-09T15:00:05+0000") is False
+
+
+def test_is_newer_equal_timestamps():
+    assert is_newer("2026-11-10T08:59:41Z", "2026-11-10T08:59:41+00:00") is False
+
+
+def test_is_newer_unparseable_falls_back_to_minute_prefix():
+    """Both values unparseable → legacy minute-prefix string comparison."""
+    assert is_newer("w-2026-11-10T09:00", "w-2026-11-10T08:59") is True
+    assert is_newer("w-2026-11-10T08:59", "w-2026-11-10T09:00") is False
 
 
 # --- classify_gh ---
@@ -552,6 +607,28 @@ def test_gh_has_new_feedback_no_last_addressed():
 
 def test_gh_has_new_feedback_empty():
     enriched = {"task": {}, "pr_comments": []}
+    assert has_new_feedback(enriched) is False
+
+
+def test_gh_has_new_feedback_same_minute_after_last_addressed():
+    """PR comment posted seconds after last_addressed in the same minute counts.
+
+    Regression for RHCLOUD-53177: karelhala's PR #312 comment at
+    2026-11-09T14:59:56Z was masked by last_addressed 2026-11-09T15:03-style
+    minute-prefix comparison when both truncated to the same minute.
+    """
+    enriched = {
+        "task": {"last_addressed": "2026-11-10T08:59:05.470894+00:00"},
+        "pr_comments": [{"a": "karelhala", "t": "2026-11-10T08:59:41Z", "b": "please respond"}],
+    }
+    assert has_new_feedback(enriched) is True
+
+
+def test_gh_has_new_feedback_same_minute_before_last_addressed():
+    enriched = {
+        "task": {"last_addressed": "2026-11-10T08:59:41+00:00"},
+        "pr_comments": [{"a": "karelhala", "t": "2026-11-10T08:59:05Z", "b": "please respond"}],
+    }
     assert has_new_feedback(enriched) is False
 
 
