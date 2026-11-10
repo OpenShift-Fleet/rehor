@@ -38,6 +38,13 @@ parameters:
 - name: AGENT_DISPATCHER_RUNTIME_PARENT
   description: Private-layout writable runtime parent inside runner sandboxes.
   value: /tmp
+- name: AGENT_DISPATCHER_MODEL_PROXY_URL
+  description: >
+    HTTPS /v1 URL of the authenticated model-gateway Route (REHOR-237).
+    Must be the exact /v1 path with no userinfo, query, or fragment. When
+    set, dispatched sandboxes gain a model-proxy network policy rule and
+    the runner environment receives REHOR_MODEL_PROXY_URL.
+  required: true
 - name: JIRA_MCP_URL
   description: >
     Jira MCP endpoint forwarded to preflights. In-cluster service DNS serves
@@ -158,6 +165,10 @@ objects:
             value: ${AGENT_DISPATCHER_RUNTIME_SOURCE}
           - name: AGENT_DISPATCHER_RUNTIME_PARENT
             value: ${AGENT_DISPATCHER_RUNTIME_PARENT}
+          # Authenticated model-gateway Route (REHOR-237); non-secret service
+          # coordinate, so it is a plain parameter rather than a secret key.
+          - name: AGENT_DISPATCHER_MODEL_PROXY_URL
+            value: ${AGENT_DISPATCHER_MODEL_PROXY_URL}
           # Memory credential preflight: TokenRequest and memory Route
           # configuration are supplied by Vault-backed devbot-secrets.
           - name: AGENT_DISPATCHER_AUTH_NAMESPACE

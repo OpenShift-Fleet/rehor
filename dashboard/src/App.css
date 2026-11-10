@@ -1765,6 +1765,15 @@ select:focus,
   font-size: 10px;
   color: var(--text-dim);
 }
+.transcript-model {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: monospace;
+  border: 1px solid var(--border-subtle, #99999955);
+  border-radius: 3px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
 .transcript-tool-name {
   font-size: 11px;
   color: var(--accent);

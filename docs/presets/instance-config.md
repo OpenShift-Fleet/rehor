@@ -29,6 +29,7 @@ envs:
 claude_md:
   strategy: ignore
 idle_cycle_limit: 0
+cycle_timeout_seconds: 7200
 runtime: claude
 provider: vertex
 model: claude-sonnet-4-6
@@ -41,6 +42,7 @@ model: claude-sonnet-4-6
 | `envs` | `null` | `null` enables all env presets; `[]` disables them |
 | `claude_md.strategy` | `ignore` | `ignore`, `append`, or `replace` for instance `CLAUDE.md` |
 | `idle_cycle_limit` | `0` | Optional idle-cycle reminder threshold; `0` disables it |
+| `cycle_timeout_seconds` | `null` | Optional per-instance cycle timeout in seconds; overrides `config.json` `claude.cycleTimeoutSeconds`. Omit for the default. |
 | `runtime` | `claude` | Runtime adapter: `claude` or `opencode` (V2 only) |
 | `provider` | Runtime-dependent | `vertex` (Claude on Vertex through the auth proxy), `rehor-openai` (native Responses), or `rehor-openai-chat` (Chat Completions). Defaults to `vertex` for Claude and `rehor-openai` for OpenCode. |
 | `model` | `null` | Optional model override. Claude/Vertex and OpenCode/Vertex use `claude.model`; OpenCode/`rehor-openai` uses `opencode.model`; Chat Completions requires an explicit model. |

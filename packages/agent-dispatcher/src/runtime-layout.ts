@@ -19,7 +19,13 @@ export function readRuntimeLayout(env: NodeJS.ProcessEnv): RuntimeLayout {
   const source = env.AGENT_DISPATCHER_RUNTIME_SOURCE ?? "/opt/rehor/app";
   const parent = env.AGENT_DISPATCHER_RUNTIME_PARENT ?? "/tmp";
   if (layout === "legacy") {
-    if (env.AGENT_DISPATCHER_RUNTIME_SOURCE !== undefined || env.AGENT_DISPATCHER_RUNTIME_PARENT !== undefined) throw new Error("Private runtime paths require private layout");
+    // OpenShift Template parameters cannot conditionally omit env entries, so
+    // deploy/agent-dispatcher-template.yaml always renders the private-layout
+    // path variables even for the default legacy layout. The legacy layout
+    // consumes neither path; the private branch below stays the fail-closed
+    // guard for them, and a forgotten LAYOUT=private surfaces at sandbox
+    // dispatch (private runner images are rejected under legacy) rather than
+    // at startup.
     return { kind: "legacy" };
   }
   if (layout !== "private" || !isNormalizedAbsolutePath(source) || !isNormalizedAbsolutePath(parent)

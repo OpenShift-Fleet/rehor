@@ -85,6 +85,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     from . import run as runner
     from .config import (
         OPENCODE_RUNTIME_ID,
+        apply_cycle_timeout_override,
         discover_optional_mcp_servers,
         load_config,
         load_instance_config,
@@ -115,6 +116,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         apply_merged_config(script_dir, profile_dir)
 
     instance_config = load_instance_config(profile_dir)
+    apply_cycle_timeout_override(runtime_config, instance_config)
     # Preserve the legacy Claude view: resolved MCP values and no project
     # servers, because Claude discovers .mcp.json through setting_sources.
     mcp_servers = load_mcp_servers(script_dir)
