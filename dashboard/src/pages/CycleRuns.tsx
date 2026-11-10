@@ -251,6 +251,11 @@ function TranscriptViewer({
                   onClick={() => entry.isLarge && toggleCollapse(index)}
                 >
                   <span className="transcript-role">{entry.role}</span>
+                  {entry.model && (
+                    <span className="transcript-model" title="Model that produced this block">
+                      {entry.model}
+                    </span>
+                  )}
                   {entry.label && (
                     <span className="transcript-tool-name">
                       <Highlight text={entry.label} search={search} />

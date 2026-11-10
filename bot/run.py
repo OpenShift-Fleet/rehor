@@ -31,6 +31,7 @@ from .config import (
     DEFAULT_RUNTIME_ID,
     Config,
     InstanceConfig,
+    apply_cycle_timeout_override,
     load_config,
     load_instance_config,
     load_mcp_servers,
@@ -530,6 +531,7 @@ def main() -> None:
         if initial_agent_dir:
             apply_merged_config(SCRIPT_DIR, initial_agent_dir)
         instance_config = load_instance_config(initial_agent_dir)
+        apply_cycle_timeout_override(config, instance_config)
         install_skills(
             SCRIPT_DIR,
             resolve_workflow_dir(SCRIPT_DIR, instance_config.workflow, initial_agent_dir),
@@ -597,6 +599,7 @@ def main() -> None:
                         apply_merged_config(SCRIPT_DIR, remote_agent_dir)
 
                     instance_config = load_instance_config(remote_agent_dir)
+                    apply_cycle_timeout_override(config, instance_config)
                     validate_python_runner_selection(instance_config)
                     install_skills(
                         SCRIPT_DIR,
