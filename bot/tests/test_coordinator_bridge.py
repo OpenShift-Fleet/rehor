@@ -299,6 +299,44 @@ def test_prepare_bridge_reports_resolved_cycle_model(tmp_path, monkeypatch):
     assert handle(request)["model"] == "pinned-model"
 
 
+def test_prepare_bridge_applies_instance_cycle_timeout(tmp_path, monkeypatch):
+    """instance.yaml cycle_timeout_seconds overrides config.json claude.cycleTimeoutSeconds."""
+    import bot.merge as merge
+    import bot.run as runner
+
+    profile_dir = tmp_path / "profile" / "agent"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "instance.yaml").write_text("workflow: test-workflow\ncycle_timeout_seconds: 7200\n")
+    workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
+    workflow_dir.mkdir(parents=True)
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "global-model", "maxTurns": 10, "cycleTimeoutSeconds": 1800}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60}, "jira": {"boardKey": "TEST"}}'
+    )
+
+    monkeypatch.delenv("BOT_MODEL", raising=False)
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(runner, "setup_git", lambda script_dir: None)
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: (profile_dir, None))
+    monkeypatch.setattr(runner, "assemble_claude_md", lambda *args: None)
+    monkeypatch.setattr(merge, "apply_merged_config", lambda *args: None)
+    monkeypatch.setattr(merge, "install_skills", lambda *args: [])
+
+    request = {
+        "protocolVersion": 1,
+        "operation": "prepare",
+        "scriptDir": str(tmp_path),
+        "label": "hcc-ai-framework",
+    }
+
+    # The instance.yaml value wins over config.json claude.cycleTimeoutSeconds.
+    assert handle(request)["cycleTimeoutSeconds"] == 7200
+
+    # Without the instance key, the config.json value flows through unchanged.
+    (profile_dir / "instance.yaml").write_text("workflow: test-workflow\n")
+    assert handle(request)["cycleTimeoutSeconds"] == 1800
+
+
 def test_prepare_bridge_validates_before_installing_skills(tmp_path, monkeypatch):
     """A missing workflow is a structured bridge error and leaves skills untouched."""
     import pytest
