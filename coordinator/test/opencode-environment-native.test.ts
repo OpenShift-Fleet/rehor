@@ -140,7 +140,7 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(["set", "empty", "unset"
       "OPENCODE_SERVER_PASSWORD",
     ];
     const command = (role: string) =>
-      `${runnerEnv.map((name) => `test "\${${name}+present}" != present`).join(" && ")} && printf '%s\\n' "$EXECUTOR_ADDR" "$BOT_JIRA_EMAIL" "$BOT_INSTANCE_ID" "$BOT_MEMORY_URL" "$GH_USER_NAME" "$GL_USER_NAME" "$BOT_CONFIG_PATH" "$SLACK_NOTIFY_MODE" "$GH_RELEASE_UPLOAD_URL" "$BOT_BOARD_ID" "$BOT_BOARD_NAME" "$SLACK_WEBHOOK_URL" > shell-${role}.txt && python3 helper.py ${role}`;
+      `${runnerEnv.map((name) => `test "\${${name}+present}" != present`).join(" && ")} && printf '%s\\n' "$EXECUTOR_ADDR" "$EXECUTOR_TRANSPORT" "$BOT_JIRA_EMAIL" "$BOT_INSTANCE_ID" "$BOT_MEMORY_URL" "$GH_USER_NAME" "$GL_USER_NAME" "$BOT_CONFIG_PATH" "$SLACK_NOTIFY_MODE" "$GH_RELEASE_UPLOAD_URL" "$BOT_BOARD_ID" "$BOT_BOARD_NAME" "$SLACK_WEBHOOK_URL" > shell-${role}.txt && python3 helper.py ${role}`;
     const modelRequests: Record<string, unknown>[] = [];
     const modelTransport: { path: string | undefined; authorization: string | undefined }[] = [];
     const steps = { root: 0, child: 0 };
@@ -266,6 +266,10 @@ it.skipIf(!process.env.REHOR_TEST_OPENCODE_BINARY).each(["set", "empty", "unset"
         throw new Error("Missing mock address");
       const operational = {
         EXECUTOR_ADDR: `127.0.0.1:${grpcAddress.port}`,
+        // The native fixture's executor endpoint is a grpc-only mock, so the
+        // legacy transport is selected explicitly; production defaults to
+        // HTTP on the same listener once the dual-protocol proxy deploys.
+        EXECUTOR_TRANSPORT: "grpc",
         BOT_JIRA_EMAIL: "fixture-bot@example.invalid",
         BOT_INSTANCE_ID: "synthetic-instance-199",
         BOT_MEMORY_URL: "http://127.0.0.1:18080/synthetic-memory",
