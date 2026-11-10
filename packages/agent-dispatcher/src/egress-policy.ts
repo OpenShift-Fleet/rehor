@@ -5,7 +5,7 @@ import { NetworkEnforcementMode, NetworkPolicyRuleSchema, NetworkTlsMode } from 
 /** Centrally compiled public-egress policy (REHOR-253).
  *
  * Ordinary (non-credential-bearing) sandbox egress is migrated from the
- * legacy Squid `allowed_domains` allowlist (`proxy/squid.conf`, 2026-11-04
+ * legacy Squid `allowed_domains` allowlist (`proxy/squid.conf`, 2026-11-10
  * revision) into this static, dispatcher-owned classification. Squid itself
  * stays byte-for-byte unchanged for legacy deployments; this module is the
  * forward-looking supervisor policy, merged into the sandbox bootstrap
@@ -80,6 +80,10 @@ export const PUBLIC_EGRESS_DESTINATIONS: readonly EgressDestination[] = [
   { host: "cdn01.quay.io", match: "exact", service: "Quay layer CDN" },
   { host: "cdn02.quay.io", match: "exact", service: "Quay layer CDN" },
   { host: "cdn03.quay.io", match: "exact", service: "Quay layer CDN" },
+  // Quay blob redirects can bypass the CDN and hand out presigned S3 URLs
+  // on the storage host directly (observed from AWS-origin egress).
+  // Presigned requests carry no credentials.
+  { host: "s3.us-east-1.amazonaws.com", match: "exact", service: "Quay direct S3 layer storage (presigned redirects)" },
   { host: "anchore.io", match: "domain-and-subdomains", service: "Grype vulnerability database" },
   // Distro package mirrors.
   { host: "fedoraproject.org", match: "domain-and-subdomains", service: "Fedora package mirrors" },
