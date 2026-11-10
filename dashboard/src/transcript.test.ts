@@ -63,6 +63,54 @@ describe("parseTranscript", () => {
     ).toBe("Hello world");
   });
 
+  it("labels entries with the model resolved from model/updated events by part message ID", () => {
+    const rootPart = "session-root:msg-root:text:0";
+    const childPart = "session-child:msg-child:reasoning:0";
+    const entries = parseTranscript(
+      jsonl([
+        event(1, "model", { phase: "updated", messageId: "msg-root" }, { model: "gpt-6-luna" }),
+        event(2, "model", { phase: "text", partId: rootPart, text: "Root answer" }),
+        event(
+          3,
+          "model",
+          { phase: "updated", messageId: "msg-child" },
+          { runtimeSessionRef: "session-child", model: "gpt-6.1-terra" },
+        ),
+        event(
+          4,
+          "model",
+          { phase: "reasoning", partId: childPart, text: "Child thinking" },
+          { runtimeSessionRef: "session-child", model: "gpt-6-luna" },
+        ),
+      ]),
+    );
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ content: "Root answer", model: "gpt-6-luna" });
+    // Streamed part stamped with the root model still resolves to the session's real model.
+    expect(entries[1]).toMatchObject({ content: "Child thinking", model: "gpt-6.1-terra" });
+  });
+
+  it("falls back to the event's own model when no updated event matches the part", () => {
+    const entries = parseTranscript(
+      jsonl([
+        event(
+          1,
+          "model",
+          { phase: "text", partId: "flat-id", text: "Answer" },
+          { model: "own-model" },
+        ),
+        event(
+          2,
+          "model",
+          { phase: "text", partId: "session-root:msg-x:text:0", text: "Unmapped" },
+          { model: undefined },
+        ),
+      ]),
+    );
+    expect(entries[0].model).toBe("own-model");
+    expect(entries[1].model).toBeUndefined();
+  });
+
   it("scopes reused model and tool IDs by session, run, and attempt", () => {
     const records: unknown[] = [];
     const scopes = [
