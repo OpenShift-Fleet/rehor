@@ -12,6 +12,7 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    interrupted_retry_due,
     is_newer,
     load_state,
     output_result,
@@ -114,7 +115,15 @@ def main():
             ]
 
         last_addr = t.get("last_addressed", "")
-        is_interrupted = t.get("status") == "in_progress" and not t.get("pr_number") and not meta.get("prs") and not prs
+        is_interrupted = (
+            t.get("status") == "in_progress"
+            and not t.get("pr_number")
+            and not meta.get("prs")
+            and not prs
+            # Blocked tasks waiting on external input only re-trigger after
+            # the retry cooldown; unblocked mid-work resumes immediately.
+            and (not meta.get("blockers") or interrupted_retry_due(t))
+        )
 
         if has_new_jira_feedback(jira_comments, last_addr):
             feedback_tasks.append((t, jira, jira_comments))

@@ -21,6 +21,7 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    interrupted_retry_due,
     is_newer,
     load_project_repos,
     match_repo_labels,
@@ -299,6 +300,11 @@ def main():
                 and not meta.get("prs")
                 and not prs
                 and meta.get("last_step") != "investigation_posted"
+                # Blocked tasks waiting on external input only re-trigger
+                # after the retry cooldown; unblocked mid-work resumes
+                # immediately (crashed cycles leave last_addressed stale
+                # and stay actionable).
+                and (not meta.get("blockers") or interrupted_retry_due(t))
             )
 
             last_addr = t.get("last_addressed", "")

@@ -444,6 +444,119 @@ def test_interrupted_task_returns_start(env_vars, monkeypatch, capsys):
     assert "INTERRUPTED" in out["content"]
 
 
+# --- interrupted blocked-task cooldown ---
+
+
+def test_interrupted_blocked_recently_addressed_waits(env_vars, monkeypatch, capsys):
+    """Blocked task whose last clean cycle just ran must not re-trigger every cycle.
+
+    Regression for the Ctibor/CCXDEV-17030 spin: 37 no-op cycles in 4 hours,
+    each ending with metadata.blockers set and a fresh last_addressed stamp.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    recently = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": recently,
+                "metadata": {"last_step": "assessment_blocked", "blockers": ["prod SBOM copy Forbidden"]},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "INTERRUPTED" not in out["content"]
+    assert "CLEAN" in out["content"]
+
+
+def test_interrupted_blocked_stale_last_addressed_retries(env_vars, monkeypatch, capsys):
+    """Blocked task past the retry cooldown re-triggers (poll for external state)."""
+    from datetime import UTC, datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": stale,
+                "metadata": {"last_step": "assessment_blocked", "blockers": ["prod SBOM copy Forbidden"]},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "INTERRUPTED" in out["content"]
+
+
+def test_interrupted_unblocked_recently_addressed_resumes(env_vars, monkeypatch, capsys):
+    """No declared blockers → mid-work resume stays immediate (no cooldown)."""
+    from datetime import UTC, datetime, timedelta
+
+    recently = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": recently,
+                "metadata": {"last_step": "implemented"},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "INTERRUPTED" in out["content"]
+
+
 # --- _comments_may_be_truncated ---
 
 

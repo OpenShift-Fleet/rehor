@@ -11,6 +11,7 @@ sys.path.insert(0, str(SHARED_DIR))
 from common import (
     build_repo_lookup,
     fmt_comments,
+    interrupted_retry_due,
     is_bot_author,
     is_newer,
     parse_iso,
@@ -209,6 +210,36 @@ def test_is_newer_unparseable_falls_back_to_minute_prefix():
     """Both values unparseable → legacy minute-prefix string comparison."""
     assert is_newer("w-2026-11-10T09:00", "w-2026-11-10T08:59") is True
     assert is_newer("w-2026-11-10T08:59", "w-2026-11-10T09:00") is False
+
+
+# --- interrupted_retry_due ---
+
+
+def test_interrupted_retry_due_never_addressed():
+    """No last_addressed → immediately actionable (first encounter / crash)."""
+    assert interrupted_retry_due({}) is True
+    assert interrupted_retry_due({"last_addressed": None}) is True
+
+
+def test_interrupted_retry_due_fresh_stamp_waits():
+    from datetime import UTC, datetime, timedelta
+
+    recent = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    assert interrupted_retry_due({"last_addressed": recent}) is False
+
+
+def test_interrupted_retry_due_stale_stamp_retries():
+    from datetime import UTC, datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    assert interrupted_retry_due({"last_addressed": stale}) is True
+
+
+def test_interrupted_retry_due_cooldown_boundary():
+    from datetime import UTC, datetime, timedelta
+
+    boundary = (datetime.now(UTC) - timedelta(minutes=30, seconds=5)).isoformat()
+    assert interrupted_retry_due({"last_addressed": boundary}) is True
 
 
 # --- classify_gh ---
