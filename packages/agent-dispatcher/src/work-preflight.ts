@@ -4,11 +4,12 @@ import { basename, delimiter, join, resolve } from "node:path";
 
 /** Fail fast when the stopgap Python preflights cannot run at all: without
  * this check a missing interpreter degrades into permanent, undiagnosable
- * per-script "could not be executed" errors. Git is required for config
- * repository synchronization. */
+ * per-script "could not be executed" errors. The shared preflight scripts
+ * require Python 3.11+, so the check pins that floor. Git is required for
+ * config repository synchronization. */
 export async function verifyPreflightTools(): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn("python3", ["-c", "import sys, urllib.request, json; sys.exit(0)"], { stdio: "ignore" });
+    const child = spawn("python3", ["-c", "import sys, urllib.request, json; sys.exit(0 if sys.version_info >= (3, 11) else 1)"], { stdio: "ignore" });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       rejectPromise(new Error("python3 check timed out"));
@@ -20,7 +21,7 @@ export async function verifyPreflightTools(): Promise<void> {
     child.on("close", (code) => {
       clearTimeout(timer);
       if (code === 0) resolvePromise();
-      else rejectPromise(new Error("python3 is not functional"));
+      else rejectPromise(new Error("python3 3.11+ is required for preflights"));
     });
   });
   await new Promise<void>((resolvePromise, rejectPromise) => {
