@@ -75,6 +75,38 @@ def _run_preflight(request: dict[str, Any]) -> dict[str, Any] | None:
     return _serialize_preflight(result)
 
 
+def _baked_profile(script_dir: Path) -> tuple[Path, Path | None]:
+    """Select an image-local profile without falling back to remote sync."""
+    config_path = os.environ.get("BOT_CONFIG_PATH")
+    if not config_path:
+        raise BridgeError("BOT_CONFIG_PATH is required for a private sandbox")
+    relative = Path(config_path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise BridgeError("BOT_CONFIG_PATH must be relative to the private runtime")
+
+    def inside_runtime(path: Path) -> Path:
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(script_dir)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise BridgeError("BOT_CONFIG_PATH references a missing or unsafe profile") from exc
+        return resolved
+
+    profile = inside_runtime(script_dir / relative)
+    agent = inside_runtime(profile / "agent")
+    config = inside_runtime(agent / "instance.yaml")
+    if not profile.is_dir() or not agent.is_dir() or not config.is_file():
+        raise BridgeError("BOT_CONFIG_PATH must contain agent/instance.yaml")
+
+    shared_path = profile.parent / "shared" / "agent"
+    shared = None
+    if shared_path.exists() or shared_path.is_symlink():
+        shared = inside_runtime(shared_path)
+        if not shared.is_dir():
+            raise BridgeError("shared agent profile must be a directory")
+    return agent, shared
+
+
 def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     """Sync and merge config using the same functions as bot/run.py.
 
@@ -107,8 +139,14 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
 
     label = _required_string(request, "label")
     runtime_config = load_config(script_dir)
+    private_sandbox = (
+        os.environ.get("REHOR_INPUT_SOURCE") == "sandbox" and os.environ.get("REHOR_PRIVATE_RUNTIME") == "1"
+    )
+    if private_sandbox:
+        profile_dir, shared_dir = _baked_profile(script_dir)
     runner.setup_git(script_dir)
-    profile_dir, shared_dir = runner.sync_config_repo(label)
+    if not private_sandbox:
+        profile_dir, shared_dir = runner.sync_config_repo(label)
 
     if shared_dir:
         apply_merged_config(script_dir, shared_dir)

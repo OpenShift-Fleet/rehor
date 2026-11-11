@@ -5,6 +5,7 @@ import { parseConfigRepositories, syncConfigRepositories } from "./config-reposi
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
 import { runWorkPreflight, type WorkPreflightResult } from "./work-preflight.js";
 import { preparePreflightRuntime } from "./preflight-runtime.js";
+import { mergeProfileEnvironment } from "./runtime-environment.js";
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
   syncRepositories: typeof syncConfigRepositories;
@@ -128,7 +129,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           const inherited = typeof options.env === "function" ? await options.env(profile) : options.env;
           // The instance environment cannot override the minted credential:
           // secret-named BOT_ variables are rejected during discovery.
-          const env = { ...inherited, ...(memoryToken === undefined ? {} : { BOT_MEMORY_TOKEN: memoryToken }), ...profile.preflightEnv };
+          const env = mergeProfileEnvironment({ ...inherited, ...(memoryToken === undefined ? {} : { BOT_MEMORY_TOKEN: memoryToken }) }, profile.preflightEnv);
           const runtime = await deps.prepareRuntime(profile);
           let decision;
           try {

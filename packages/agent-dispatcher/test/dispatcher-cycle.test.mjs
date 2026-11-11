@@ -89,6 +89,28 @@ test("per-agent preflight environment overrides shared defaults", async () => {
   assert.deepEqual(seen, [{ BOT_INSTANCE_ID: "one", BOT_LABEL: "one-label" }, { BOT_INSTANCE_ID: "two", BOT_LABEL: "two-label" }]);
 });
 
+test("deployment memory URL cannot be replaced by profile in preflight", async () => {
+  for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
+    const seen = [];
+    const opts = options({
+      env: { BOT_MEMORY_URL: deploymentUrl, JIRA_MCP_URL: "http://jira.internal/mcp", EXECUTOR_ADDR: "executor.internal:9090" },
+      dependencies: {
+        syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+        discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_MEMORY_URL: "https://untrusted.example/mcp" } }],
+        prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
+        preflight: async ({ env }) => { seen.push(env); return { action: "skip", transcript: "", scripts: [] }; },
+      },
+    });
+    await runDispatcherCycle(opts);
+    assert.equal(seen.length, 2);
+    for (const env of seen) {
+      assert.equal(env.BOT_MEMORY_URL, deploymentUrl);
+      assert.equal(env.JIRA_MCP_URL, "http://jira.internal/mcp");
+      assert.equal(env.EXECUTOR_ADDR, "executor.internal:9090");
+    }
+  }
+});
+
 test("sequential preflights, parallel sessions, busy check and stable unique identities", async () => {
   const events = [];
   const waiting = deferred();

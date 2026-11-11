@@ -670,9 +670,10 @@ describe("OpenCode environment", () => {
       "openshell:resolve:env:",
       "openshell:resolve:env:has-dash",
       "bearer openshell:resolve:env:executor",
+      "openshell:resolve:env:executor\n",
     ]) {
       const environment = buildOpenCodeEnvironment({
-        base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: malformed },
+        base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: malformed, ...httpsCoordinate },
       });
       expect(environment.EXECUTOR_TOKEN).toBeUndefined();
     }
@@ -680,9 +681,15 @@ describe("OpenCode environment", () => {
   it("derives the sandbox EXECUTOR_TOKEN placeholder from BOT_MEMORY_TOKEN", () => {
     const placeholder = "openshell:resolve:env:memory_token";
     const environment = buildOpenCodeEnvironment({
-      base: { REHOR_INPUT_SOURCE: "sandbox", BOT_MEMORY_TOKEN: placeholder },
+      base: {
+        REHOR_INPUT_SOURCE: "sandbox",
+        BOT_MEMORY_TOKEN: placeholder,
+        EXECUTOR_HTTP_URL: "https://executor.example/executor/execute",
+      },
     });
     expect(environment.EXECUTOR_TOKEN).toBe(placeholder);
+    expect(environment.BOT_MEMORY_TOKEN).toBe(placeholder);
+    expect(environment.REHOR_INPUT_SOURCE).toBe("sandbox");
 
     // An explicit (valid) EXECUTOR_TOKEN wins over BOT_MEMORY_TOKEN.
     const explicit = "openshell:resolve:env:executor";
@@ -691,10 +698,106 @@ describe("OpenCode environment", () => {
         REHOR_INPUT_SOURCE: "sandbox",
         EXECUTOR_TOKEN: explicit,
         BOT_MEMORY_TOKEN: placeholder,
+        EXECUTOR_HTTP_URL: "https://executor.example/executor/execute",
       },
     });
     expect(overridden.EXECUTOR_TOKEN).toBe(explicit);
   });
+  it("never forwards executor markers without a valid HTTPS endpoint", () => {
+    for (const url of [
+      undefined,
+      "http://executor.example/executor/execute",
+      "https://user@executor.example/executor/execute",
+      "https://executor.example:invalid/executor/execute",
+      "https://executor.example/\n",
+      "https://executor.example/other",
+      "https://executor.example/executor/execute?",
+    ]) {
+      const env = buildOpenCodeEnvironment({
+        base: {
+          REHOR_INPUT_SOURCE: "sandbox",
+          BOT_MEMORY_TOKEN: "openshell:resolve:env:token",
+          EXECUTOR_HTTP_URL: url,
+        },
+      });
+      expect(env.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("rejects all ASCII controls and Unicode whitespace in executor URLs", () => {
+    for (const character of [
+      ...Array.from({ length: 32 }, (_, index) => String.fromCharCode(index)),
+      String.fromCharCode(127),
+      "\u00a0",
+    ]) {
+      const env = buildOpenCodeEnvironment({
+        base: {
+          REHOR_INPUT_SOURCE: "sandbox",
+          BOT_MEMORY_TOKEN: "openshell:resolve:env:token",
+          EXECUTOR_HTTP_URL: `https://executor.example${character}/executor/execute`,
+        },
+      });
+      expect(env.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("exposes only an exact sandbox memory placeholder to helpers", () => {
+    for (const mode of ["legacy", "sandbox"]) {
+      for (const token of [
+        "raw-secret",
+        "openshell:resolve:env:token\n",
+        "openshell:resolve:env:has-dash",
+      ]) {
+        const env = buildOpenCodeEnvironment({
+          base: { REHOR_INPUT_SOURCE: mode, BOT_MEMORY_TOKEN: token },
+          passthrough: ["BOT_MEMORY_TOKEN"],
+        });
+        expect(env.BOT_MEMORY_TOKEN).toBeUndefined();
+      }
+    }
+    const legacy = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "legacy", BOT_MEMORY_TOKEN: "openshell:resolve:env:token" },
+    });
+    expect(legacy.BOT_MEMORY_TOKEN).toBeUndefined();
+    expect(legacy.REHOR_INPUT_SOURCE).toBeUndefined();
+  });
+  it("passes sandbox mode and placeholder through the OpenCode child to Python helpers", () => {
+    const marker = "openshell:resolve:env:MEMORY";
+    const python = [
+      "import importlib.util, os, sys",
+      "for path in sys.argv[1:]:",
+      "    spec = importlib.util.spec_from_file_location('helper', path)",
+      "    helper = importlib.util.module_from_spec(spec)",
+      "    spec.loader.exec_module(helper)",
+      "    headers = (helper._sandbox_auth_headers if hasattr(helper, '_sandbox_auth_headers') else helper._headers)('https://service.example/mcp')",
+      "    print('authorized' if headers.get('Authorization') == 'Bearer openshell:resolve:env:MEMORY' else 'unauthorized')",
+    ].join("\n");
+    const child = [
+      "const { spawnSync } = require('node:child_process');",
+      "const result = spawnSync('python3', ['-c', process.argv[1], ...process.argv.slice(2)], { encoding: 'utf8', env: process.env });",
+      "if (result.error || result.status !== 0) process.exit(1);",
+      "process.stdout.write(result.stdout);",
+    ].join("\n");
+    const paths = [
+      ".claude/skills/jira_mcp.py",
+      ".claude/skills/memory_mcp.py",
+      "bot/memory_mcp.py",
+    ].map((path) => join(TEST_WORKSPACE, "..", path));
+    for (const [mode, token, expected] of [
+      ["sandbox", marker, "authorized"],
+      ["sandbox", "raw-secret", "unauthorized"],
+      ["legacy", marker, "unauthorized"],
+    ]) {
+      const env = buildOpenCodeEnvironment({
+        base: { PATH: process.env.PATH, REHOR_INPUT_SOURCE: mode, BOT_MEMORY_TOKEN: token },
+      });
+      const result = spawnSync(process.execPath, ["-e", child, python, ...paths], {
+        env,
+        encoding: "utf8",
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim().split("\n")).toEqual([expected, expected, expected]);
+      expect(result.stderr).not.toContain(token);
+    }
+  }, 15_000);
   it("keeps absent operational values absent and does not mutate the base", () => {
     const base = Object.freeze({ PATH: "/bin", HOME: "/home/bot" });
     const environment = buildOpenCodeEnvironment({ base });

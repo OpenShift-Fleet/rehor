@@ -12,7 +12,9 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import sys
+from urllib.parse import urlsplit
 
 MEMORY_MCP_URL = os.environ.get("BOT_MEMORY_URL", "").rstrip("/")
 
@@ -21,6 +23,47 @@ _read = None
 _write = None
 _cm_transport = None
 _cm_session = None
+
+
+def _headers(url):
+    headers = {}
+    instance = os.environ.get("BOT_INSTANCE_ID", "")
+    if instance:
+        # HTTPX accepts bytes; the server decodes these header bytes as UTF-8.
+        headers["X-Bot-Instance-Id"] = instance.encode("utf-8")
+    token = os.environ.get("BOT_MEMORY_TOKEN", "")
+    if os.environ.get("REHOR_INPUT_SOURCE") != "sandbox" or not re.fullmatch(
+        r"openshell:resolve:env:[A-Za-z0-9_]+", token
+    ):
+        return headers
+    try:
+        parsed = urlsplit(url)
+        if (
+            any(ord(c) <= 32 or ord(c) == 127 for c in url)
+            or "\\" in url
+            or parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            return headers
+        _ = parsed.port
+    except ValueError:
+        return headers
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _no_redirect_client(headers=None, timeout=None, auth=None):
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+    client.follow_redirects = False
+    # MCP 1.30 follows same-origin redirects itself, ignoring follow_redirects.
+    client.max_redirects = 0
+    return client
 
 
 async def _ensure_session():
@@ -34,7 +77,9 @@ async def _ensure_session():
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    _cm_transport = streamablehttp_client(MEMORY_MCP_URL)
+    headers = _headers(MEMORY_MCP_URL)
+    options = {"httpx_client_factory": _no_redirect_client} if "Authorization" in headers else {}
+    _cm_transport = streamablehttp_client(MEMORY_MCP_URL, headers=headers, **options)
     _read, _write, _ = await _cm_transport.__aenter__()
     _cm_session = ClientSession(_read, _write)
     _session = await _cm_session.__aenter__()

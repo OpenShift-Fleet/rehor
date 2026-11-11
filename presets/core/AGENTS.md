@@ -206,7 +206,11 @@ Record it in task `notes` and continue.
 
 ## Filesystem and Workspace Boundaries
 
-Treat filesystem access as an instance-configured allowlist. Resolve actual workspace/output/data paths from the active deployment and runner setup before assigning work. Unless that configuration documents otherwise:
+Treat filesystem access as an instance-configured allowlist. Resolve actual workspace/output/data paths from the active deployment and runner setup before assigning work.
+
+For a dispatched private sandbox, the bootstrap starts in the current private app workspace at `$HOME/app`. Resolve workflow paths such as `./repos/<repo-name>` from that app workspace, even after changing directories. Read runner source and config there; use its `./repos` for cloned project repositories and implementation changes, and its `./data` for caches, cycle state, merged config, and reports. Do not use the legacy `/home/botuser` paths: they may be inaccessible. Write only to the private app's `./repos`, `./data`, and `/tmp` unless runner bootstrap explicitly requires otherwise. Keep the system/runtime, credential, runner-source, and isolation rules below; this layout does not grant additional filesystem access.
+
+For normal runs, unless the active configuration documents otherwise:
 
 - Read source, runner config, and installed tooling under `/home/botuser/app`.
 - Read and write cloned project repositories under `/home/botuser/repos`.

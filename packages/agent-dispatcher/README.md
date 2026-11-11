@@ -23,7 +23,7 @@ preflight:
 
 Shared Python workflow scripts and helpers come from the repository's pinned `dev-bot` submodule. Python execution is a stopgap: existing preflight scripts run unchanged during migration, but preflights will move to `.mjs` and only `.mjs` preflights will be supported long-term. The instance's `project-repos.json` is used as-is, never merged with the shared map. Checks run sequentially and at most once per agent every five minutes; the in-memory timer resets on restart. Python preflight failures use the existing aggregation contract: an actionable successful script can produce a start decision despite another script's failure. Missing scripts never produce a start decision.
 
-Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3 and Git from the Node.js base image, but not the Python MCP client (hermetic builds cannot install it over the network) and not the agent executor's `gh`/`glab` shims; skills that import the `mcp` package do not run in deployments until it is vendored. Only trusted repositories should be configured: their scripts execute in the dispatcher.
+Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3.12, Git, the Python MCP client, and the executor client's `gh`/`glab` shims. Only trusted repositories should be configured: their scripts execute in the dispatcher.
 
 ## Sandbox dispatch
 
@@ -172,7 +172,7 @@ Only attempted steps are logged: disabled preflights produce no events, and a fa
 
 ## Container image
 
-The SDK does not require GitHub Packages authentication: `package-lock.json` resolves `@nvidia/openshell-sdk` to the local workspace. Hermeto prefetches the lockfile's remaining npm dependencies, and both image install stages run offline.
+The SDK does not require GitHub Packages authentication: `package-lock.json` resolves `@nvidia/openshell-sdk` to the local workspace. Hermeto prefetches the lockfile's remaining npm dependencies, and both npm install stages use `npm ci --offline`. The executor-client stage runs `go mod download`, and the final image installs Python 3.12 and `mcp==1.30.0` with `dnf` and `pip`; these steps are not configured offline, so the build is not fully offline or hermetic.
 
 The Containerfile copies `packages/openshell-sdk` into both dependency stages. The final image copies it to `/app/packages/openshell-sdk` alongside `node_modules`; this path is required by the local workspace link at `node_modules/@nvidia/openshell-sdk`. Copying the link without its target would break SDK resolution at runtime.
 
@@ -185,13 +185,14 @@ tar -cf - package.json package-lock.json nx.json \
   packages/agent-dispatcher/tsconfig.json \
   packages/agent-dispatcher/Containerfile \
   packages/agent-dispatcher/src \
-  packages/openshell-sdk | \
+  packages/openshell-sdk \
+  proxy/executor | \
   podman build \
     -f packages/agent-dispatcher/Containerfile \
     -t registry.example.com/team/agent-dispatcher:dev -
 ```
 
-The multi-stage UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3, and Git, all from the base image: hermetic builds perform no network installs. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
+The final UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3.12, Git, and the executor client, hard-linked as `gh` and `glab`. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
 
 ## Development
 

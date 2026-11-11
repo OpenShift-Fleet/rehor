@@ -1,4 +1,4 @@
-import { readAuthConfig, readModelProxyUrl, readPublicEgressEnabled, type AuthConfig } from "./config.js";
+import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readServiceGatewayUrl, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
@@ -8,6 +8,7 @@ import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { verifyPreflightTools } from "./work-preflight.js";
 import { SandboxSession } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
+import { sandboxEnvironment } from "./runtime-environment.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
@@ -79,12 +80,16 @@ async function start(): Promise<void> {
   let gatewayConfig: ReturnType<typeof readGatewayConfig>;
   let runtimeLayout: ReturnType<typeof readRuntimeLayout>;
   let modelProxyUrl: URL | undefined;
+  let serviceGatewayUrl: URL | undefined;
+  let botMemoryUrl: URL | undefined;
   let publicEgress = false;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
     authConfig = readAuthConfig(process.env);
+    botMemoryUrl = readBotMemoryUrl(process.env, authConfig);
     modelProxyUrl = readModelProxyUrl(process.env);
+    serviceGatewayUrl = readServiceGatewayUrl(process.env, authConfig, modelProxyUrl);
     publicEgress = readPublicEgressEnabled(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
@@ -139,23 +144,24 @@ async function start(): Promise<void> {
         memory: { url: authConfig.memoryUrl, credentialProvider: provider },
         runtime: runtimeLayout,
         ...(modelProxyUrl ? { modelProxyUrl } : {}),
+        memoryRuntime: !!botMemoryUrl,
+        ...(serviceGatewayUrl ? { serviceGatewayUrl } : {}),
         ...(publicEgress ? { publicEgress } : {}),
       });
       const signal = stopController.signal;
+      const hostEnvironment = preflightEnvironment();
+      // Snapshot validated deployment configuration for both execution paths.
+      if (botMemoryUrl) hostEnvironment.BOT_MEMORY_URL = botMemoryUrl.href;
+      else delete hostEnvironment.BOT_MEMORY_URL;
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,
+        env: hostEnvironment,
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,
         launch: async (profile, _prompt, decision) => {
           if (signal.aborted) return "not-created";
-          const environment: Record<string, string> = {};
-          for (const [name, value] of Object.entries({ ...preflightEnvironment(), ...profile.preflightEnv })) {
-            if (name !== "PATH" && value !== undefined) environment[name] = value;
-          }
-          // Only the validated configuration value reaches the sandbox; the
-          // ambient dispatcher environment never forwards this variable.
-          if (modelProxyUrl) environment.REHOR_MODEL_PROXY_URL = modelProxyUrl.href;
+          const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl);
           // Register before invoking session code, including synchronous errors
           // or a shutdown signal raised during admission.
           const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));

@@ -173,6 +173,32 @@ test("session options preserve default, explicit undefined, and custom values", 
   }
 });
 
+test("session passes deployment runtime options to the memory policy builder", () => {
+  const source = `
+    import { registerHooks } from 'node:module';
+    registerHooks({ load(url, context, nextLoad) {
+      if (url.endsWith('/dist/memory-policy.js')) return { format: 'module', shortCircuit: true, source: "export function createMemoryPolicy(...args) { globalThis.policyArguments.push(args); throw new Error('stop before resource creation'); }" };
+      return nextLoad(url, context);
+    }});
+    globalThis.policyArguments = [];
+    const { SandboxSession } = await import('./dist/sandbox-session.js');
+    const memory = { url: new URL('https://memory.example/health'), credentialProvider: { mint: async () => { throw new Error(); } } };
+    for (const options of [{}, { memoryRuntime: true, serviceGatewayUrl: new URL('https://services.example/') }]) {
+      const result = await new SandboxSession({ raw: {}, memory, ...options }).run('image', { action: 'start', prompt: 'x', scripts: [] }, {});
+      if (result.stage !== 'policy' || result.completion !== 'not-created') throw new Error('unexpected session result');
+    }
+    console.log(JSON.stringify(globalThis.policyArguments.map(args => ({ count: args.length, options: args[4] }))));
+  `;
+  const result = spawnSync(process.execPath, ["--import", "./test/register-sdk-hook.mjs", "--input-type=module", "--eval", source], {
+    cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 5000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [
+    { count: 5, options: { memoryRuntime: false } },
+    { count: 5, options: { memoryRuntime: true, serviceGatewayUrl: "https://services.example/" } },
+  ]);
+});
+
 test("public egress flag merges the static rule into the sandbox policy without credential bindings", async () => {
   const enabled = fixture({ publicEgress: true });
   const result = await enabled.session.run(image, decision, {});
@@ -382,6 +408,35 @@ test("model proxy rule drift fails before writer or runner", async () => {
     assert.equal(result.stage, "readiness");
     assert.equal(result.completion, "gone");
     assert.equal(result.cleanup, "deleted");
+    assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+  }
+});
+
+test("Git gateway rule is checked against effective policy before runner starts", async () => {
+  const serviceGatewayUrl = new URL("https://service-gateway.example.test:8454");
+  const valid = fixture();
+  const result = await new SandboxSession({ raw: valid.raw, memory: valid.memory, serviceGatewayUrl }).run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  const git = valid.calls.find((call) => call.name === "createSandbox").request.spec.policy.networkPolicies.service_gateway_git;
+  assert.equal(git.endpoints[0].host, serviceGatewayUrl.hostname);
+  assert.deepEqual(git.endpoints[0].credentialBinding, { provider: result.provider.name });
+  assert.equal(valid.calls.filter((call) => call.name === "execSandbox").length, 2);
+
+  for (const enrichPolicy of [
+    (policy) => { policy.networkPolicies.service_gateway_git.endpoints[0].path = "/**"; },
+    (policy) => { policy.networkPolicies.service_gateway_git.endpoints[0].rules[0].allow.method = "PUT"; },
+    (policy) => { policy.networkPolicies.service_gateway_git.endpoints[0].host = "other.example.test"; },
+    (policy) => { policy.networkPolicies.service_gateway_git.endpoints[0].credentialBinding.provider = "someone-else"; },
+    (policy) => { policy.networkPolicies.service_gateway_git.endpoints[0].providerCredentialed = false; },
+    (policy) => { policy.networkPolicies.service_gateway_git.binaries[0].path = "/usr/bin/curl"; },
+    (policy) => { delete policy.networkPolicies.service_gateway_git; },
+  ]) {
+    const f = fixture({ enrichPolicy });
+    const rejected = await new SandboxSession({ raw: f.raw, memory: f.memory, serviceGatewayUrl }).run(image, decision, {});
+    assert.equal(rejected.outcome, "unknown");
+    assert.equal(rejected.stage, "readiness");
+    assert.equal(rejected.completion, "gone");
+    assert.equal(rejected.cleanup, "deleted");
     assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
   }
 });

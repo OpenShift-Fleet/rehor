@@ -105,3 +105,83 @@ def test_sandbox_coordinator_selection_is_preserved(tmp_path, profile_changes_en
     else:
         assert result.returncode == 0, result.stderr
         assert f"FAKE_NODE:{bundle} --label test --once" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "gateway", "plaintext", "lookup", "missing-key", "identity", "private", "no-identities"]
+)
+def test_sandbox_discovers_platform_key_ids_via_gateway(tmp_path, failure):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    for name in ("gh", "glab", "git"):
+        stub = bindir / name
+        stub.write_text("#!/bin/bash\nexit 0\n")
+        stub.chmod(0o755)
+    gpg = bindir / "gpg"
+    gpg.write_text(
+        "#!/bin/bash\n"
+        'printf "%s %s %s\\n" "$EXECUTOR_HTTP_URL" "$EXECUTOR_TOKEN" "$*" >> "$GPG_TEST_LOG"\n'
+        '[ "$GPG_TEST_FAILURE" = lookup ] && exit 1\n'
+        '[ "$GPG_TEST_FAILURE" = missing-key ] && exit 0\n'
+        'case "$*" in *gh@example.invalid*) printf "sec rsa4096/ABCDEF0123456789\\n";; '
+        '*) printf "sec rsa4096/0123456789ABCDEF\\n";; esac\n'
+    )
+    gpg.chmod(0o755)
+    node = bindir / "node"
+    node.write_text('#!/bin/bash\nprintf "%s\\n" "$GH_GPG_SIGNING_KEY" "$GL_GPG_SIGNING_KEY" > "$NODE_TEST_LOG"\n')
+    node.chmod(0o755)
+    script = tmp_path / "entrypoint.sh"
+    script.write_text(ENTRYPOINT.read_text().replace("/etc/profile.d/*.sh", str(tmp_path / "no-profiles" / "*.sh")))
+    bundle = tmp_path / "coordinator" / "dist" / "cli.js"
+    bundle.parent.mkdir(parents=True)
+    bundle.touch()
+    baseline = tmp_path / ".gitconfig"
+    baseline.write_text("# bootstrap gateway config\n")
+    env = {
+        "PATH": f"{bindir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "BOT_LABEL": "test",
+        "BOT_EXECUTION_ENGINE": "coordinator",
+        "REHOR_INPUT_SOURCE": "sandbox",
+        "REHOR_PRIVATE_RUNTIME": "1",
+        "EXECUTOR_HTTP_URL": "https://gateway.example/executor/execute",
+        "EXECUTOR_TOKEN": "openshell:resolve:env:provider",
+        "GH_USER_NAME": "gh",
+        "GH_USER_EMAIL": "gh@example.invalid",
+        "GL_USER_NAME": "gl",
+        "GL_USER_EMAIL": "gl@example.invalid",
+        "GPG_TEST_LOG": str(tmp_path / "gpg-log"),
+        "NODE_TEST_LOG": str(tmp_path / "node-log"),
+        "GPG_TEST_FAILURE": failure or "",
+    }
+    if failure == "gateway":
+        del env["EXECUTOR_HTTP_URL"]
+    if failure == "plaintext":
+        env["EXECUTOR_HTTP_URL"] = "http://proxy:9090/executor/execute"
+    if failure == "identity":
+        del env["GL_USER_EMAIL"]
+    if failure == "private":
+        del env["REHOR_PRIVATE_RUNTIME"]
+    if failure == "no-identities":
+        for name in ("GH_USER_NAME", "GH_USER_EMAIL", "GL_USER_NAME", "GL_USER_EMAIL"):
+            del env[name]
+    result = subprocess.run(
+        ["/bin/bash", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=5
+    )
+    assert baseline.read_text() == "# bootstrap gateway config\n"
+    if failure:
+        assert result.returncode != 0
+        assert "FATAL: sandbox Git" in result.stderr
+        assert not (tmp_path / "node-log").exists()
+        if failure in ("gateway", "plaintext", "private", "no-identities"):
+            assert not (tmp_path / "gpg-log").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "node-log").read_text().splitlines() == ["ABCDEF0123456789", "0123456789ABCDEF"]
+        log = (tmp_path / "gpg-log").read_text()
+        assert (
+            log.count(
+                "https://gateway.example/executor/execute openshell:resolve:env:provider --list-secret-keys --keyid-format long"
+            )
+            == 2
+        )
