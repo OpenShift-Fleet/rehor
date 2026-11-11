@@ -33,12 +33,13 @@ RUN npm ci --workspace=@rehor/agent-dispatcher --omit=dev --offline --no-audit -
 # MCP client SDK are installed alongside it for the Python preflights: the
 # base image's python3 is 3.9, the shared preflight scripts require 3.11+,
 # and the Jira preflight imports the mcp client (`jira_mcp.py` in
-# .claude/skills). /usr/local/bin precedes /usr/bin on PATH, so `python3`
-# resolves to 3.12.
+# .claude/skills). The mcp pin matches the bot's uv.lock (1.30.0): newer
+# SDKs rename streamablehttp_client and break the preflight import.
+# /usr/local/bin precedes /usr/bin on PATH, so `python3` resolves to 3.12.
 FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
 USER 0
 RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs python3.12 python3.12-pip \
-    && pip3.12 install --no-cache-dir 'mcp>=1.1.0' \
+    && pip3.12 install --no-cache-dir 'mcp==1.30.0' \
     && dnf clean all \
     && ln -s /usr/bin/python3.12 /usr/local/bin/python3
 WORKDIR /app
