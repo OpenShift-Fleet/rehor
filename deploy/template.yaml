@@ -55,6 +55,17 @@ parameters:
     create on serviceaccounts/token for itself, mirroring the dispatcher's
     token-request role in app-interface.
   value: devbot-memory-server
+- name: AGENT_HTTP_GATEWAY_ENABLED
+  description: >
+    Enables the services HTTP gateway (oauth sidecar :8453 -> loopback
+    mux :8454). The executor :9090 listener serves gRPC + HTTP
+    regardless of this flag. Default false until rollout.
+  value: "false"
+- name: SERVICE_GATEWAY_URL
+  description: >
+    Public hostname of the services gateway Route; empty means
+    router-assigned.
+  value: ""
 objects:
 
 # ============================================================================
@@ -98,6 +109,13 @@ objects:
 #      oauth-proxy SAR admits exactly this identity, matching the
 #      dispatcher-minted token delivered to sandboxed agents. Mirror of
 #      the existing agent-dispatcher/token-request.role.yml.
+# 7. Agent gateway wiring (REHOR-251/252), additive and disabled by
+#      default: ONE new public endpoint — the services HTTP gateway
+#      (edge Route -> oauth-proxy :8453 -> loopback mux :8454). The
+#      executor :9090 listener keeps serving legacy gRPC and new HTTP
+#      /executor/execute with unchanged Service/NetworkPolicy; the
+#      loopback mux is never exposed. Legacy Squid and all existing
+#      ports stay unchanged.
 #
 # ============================================================================
 
@@ -442,6 +460,37 @@ objects:
           - name: oauth-proxy-cookie-secret
             mountPath: /etc/secrets
             readOnly: true
+        # Services gateway auth sidecar: TokenReview + token-mint SAR,
+        # same contract as the model-gateway sidecar. Proxies to the
+        # loopback mux :8454; returns 502 while the gateway is disabled.
+        - name: oauth-services
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.18.0-202506230505.p0.gcbd44ad.assembly.stream.el9
+          ports:
+          - containerPort: 8453
+            name: gateway-auth
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8453
+          - -upstream=http://127.0.0.1:8454
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - '--openshift-sar={"resource": "serviceaccounts", "subresource": "token", "verb": "create", "resourceName": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          - '--openshift-delegate-urls={"/": {"resource": "serviceaccounts", "subresource": "token", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
         - name: proxy
           image: ${PROXY_IMAGE}:${PROXY_IMAGE_TAG}
           securityContext:
@@ -574,6 +623,11 @@ objects:
                 name: devbot-secrets
                 key: gitlab-ca-cert-b64
                 optional: true
+          # --- Agent services HTTP gateway (REHOR-251) ---
+          # Gates only the loopback mux :8454; executor :9090 (gRPC +
+          # HTTP) always runs. Auth lives in the oauth-services sidecar.
+          - name: AGENT_HTTP_GATEWAY_ENABLED
+            value: ${AGENT_HTTP_GATEWAY_ENABLED}
           # HTTP /metrics avoids Squid logging TCP kubelet probes as
           # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
@@ -680,6 +734,45 @@ objects:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
 
+# --- Agent Gateways Service (REHOR-251) ---
+# Exposes the oauth-services auth port; TLS terminates at the router.
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: ${PROXY_NAME}-gateways
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    type: ClusterIP
+    selector:
+      app.kubernetes.io/name: ${PROXY_NAME}
+    ports:
+    - port: 8453
+      targetPort: gateway-auth
+      protocol: TCP
+      name: gateway-auth
+
+# --- Services Gateway Route (REHOR-251) ---
+# Public authenticated entry point; plain HTTP redirects to HTTPS.
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: ${PROXY_NAME}-services
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${SERVICE_GATEWAY_URL}
+    to:
+      kind: Service
+      name: ${PROXY_NAME}-gateways
+    port:
+      targetPort: gateway-auth
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
 # --- NetworkPolicy: Proxy accepts ingress from bot pods ---
 - apiVersion: networking.k8s.io/v1
   kind: NetworkPolicy
@@ -723,6 +816,14 @@ objects:
             network.openshift.io/policy-group: ingress
       ports:
       - port: 8452
+        protocol: TCP
+    # Router -> services gateway auth port.
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
+      ports:
+      - port: 8453
         protocol: TCP
     - from:
       - namespaceSelector:

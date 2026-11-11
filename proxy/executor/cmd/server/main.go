@@ -261,6 +261,21 @@ func main() {
 		*metricsListen = v
 	}
 
+	// Opt-in agent HTTP gateway (REHOR-251/252). Default disabled; when
+	// disabled no new configuration is required and legacy startup is
+	// unchanged. Enabled with malformed or incomplete configuration, it
+	// fails here, before any listener is opened.
+	httpGateway, err := httpGatewayEnabled()
+	if err != nil {
+		log.Fatalf("agent gateways: %v", err)
+	}
+	var gateways *agentGateways
+	if httpGateway {
+		if gateways, err = buildAgentGateways(*listen); err != nil {
+			log.Fatalf("agent gateways: %v", err)
+		}
+	}
+
 	registryHandler, err := executor.NewRegistryProxy(os.Getenv("REGISTRY_REDHAT_USERNAME"), os.Getenv("REGISTRY_REDHAT_TOKEN"))
 	if err != nil {
 		log.Fatalf("registry config: %v", err)
@@ -283,14 +298,34 @@ func main() {
 
 	policy := executor.DefaultPolicy()
 
-	grpcSrv := grpc.NewServer()
-	pb.RegisterExecutorServer(grpcSrv, &server{
+	// The same *server instance is registered on the legacy gRPC surface
+	// and served to HTTP clients by the shared executor HTTP wrapper.
+	execSrv := &server{
 		policy:   policy,
 		ghPath:   *ghPath,
 		glabPath: *glabPath,
 		gpgPath:  *gpgPath,
 		timeout:  *timeout,
-	})
+	}
+	grpcSrv := grpc.NewServer()
+	pb.RegisterExecutorServer(grpcSrv, execSrv)
+
+	// The legacy listener now speaks both protocols on one address:
+	// plaintext gRPC (HTTP/2 h2c prior knowledge) is dispatched to the
+	// unchanged legacy grpc.Server, and HTTP/1.1 POST /executor/execute to
+	// the shared wrapper around the same *server.Execute. One http.Server
+	// drives both; grpcSrv.Serve is NOT called on the listener.
+	execHTTP, err := executorGatewayHandler(execSrv)
+	if err != nil {
+		log.Fatalf("executor HTTP wrapper: %v", err)
+	}
+	listenerSrv := &http.Server{
+		Handler: newDualProtocolHandler(grpcSrv, execHTTP),
+		// Only bounds time to receive request headers (including the h2c
+		// PRI preface); streaming bodies and long-lived gRPC streams are
+		// unaffected. Body sizes are bounded by the handler chain.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	var registrySrv *http.Server
 	if registryHandler != nil {
@@ -408,13 +443,38 @@ func main() {
 		}()
 	}
 
+	// Start the opt-in agent gateways. The HTTP gateway routes
+	// /executor/execute to the dual-protocol legacy listener; the public
+	// gRPC surface stays legacy-only.
+	if gateways != nil {
+		if err := gateways.start(); err != nil {
+			log.Fatalf("agent gateways: %v", err)
+		}
+	}
+
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("shutting down...")
-		grpcSrv.GracefulStop()
+		// Stop accepting new public gateway traffic first, with a bounded
+		// grace even if clients keep connections or streams open.
+		if gateways != nil {
+			gateways.shutdown()
+		}
+		// Drain HTTP/1.1 (and server-owned) connections on the
+		// dual-protocol listener. h2c-hijacked gRPC connections are owned
+		// by grpcSrv and are stopped separately with a bounded grace.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := listenerSrv.Shutdown(ctx); err != nil {
+			log.Printf("executor listener shutdown error: %v", err)
+			listenerSrv.Close()
+		}
+		cancel()
+		shutdownGRPCServer(grpcSrv, executorShutdownGrace)
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if vertexSrv != nil {
 			vertexSrv.Shutdown(ctx)
@@ -442,8 +502,18 @@ func main() {
 		}
 	}()
 
-	log.Printf("executor-server listening on %s", *listen)
-	if err := grpcSrv.Serve(lis); err != nil {
+	log.Printf("executor-server listening on %s (legacy gRPC + HTTP POST /executor/execute)", *listen)
+	if err := listenerSrv.Serve(lis); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
+	}
+	// Serve returns http.ErrServerClosed as soon as Shutdown closes the
+	// listener — long before active HTTP requests, gRPC streams, and the
+	// legacy backend servers have drained. Join the bounded shutdown here
+	// so in-flight commands finish instead of being truncated by an early
+	// process exit.
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownJoinGrace):
+		log.Printf("executor listener: shutdown drain did not finish within %s; exiting", shutdownJoinGrace)
 	}
 }

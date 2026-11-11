@@ -7,6 +7,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import type { WorkPreflightResult } from "./work-preflight.js";
 import { buildInputEnvelope, INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "./input-envelope.js";
 import { createMemoryPolicy } from "./memory-policy.js";
+import { withPublicEgress } from "./egress-policy.js";
 import { isNormalizedAbsolutePath, pathsOverlap, type RuntimeLayout } from "./runtime-layout.js";
 
 type Raw = Pick<OpenShellClient["raw"], "createWorkspace" | "getWorkspace" | "deleteWorkspace" | "listWorkspaceMembers" | "createSandbox" | "getSandbox" | "listSandboxes" | "deleteSandbox" | "execSandbox" | "importProviderProfiles" | "getProviderProfile" | "deleteProviderProfile" | "listProviderProfiles" | "getProvider" | "createProvider" | "deleteProvider" | "listProviders" | "getSandboxProviderStatus" | "getSandboxConfig">;
@@ -17,6 +18,8 @@ export type SandboxSessionOptions = {
   cleanupBudgetMs?: number;
   runtime?: RuntimeLayout;
   modelProxyUrl?: URL;
+  /** Central public-egress rollout flag (REHOR-253); default false. */
+  publicEgress?: boolean;
 };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
@@ -135,6 +138,7 @@ export class SandboxSession {
   private readonly cleanupBudgetMs: number;
   private readonly runtime: RuntimeLayout;
   private readonly modelProxyUrl: URL | undefined;
+  private readonly publicEgress: boolean;
 
   constructor({
     raw,
@@ -142,12 +146,14 @@ export class SandboxSession {
     cleanupBudgetMs = defaultCleanupBudgetMs,
     runtime = { kind: "legacy" },
     modelProxyUrl,
+    publicEgress = false,
   }: SandboxSessionOptions) {
     this.raw = raw;
     this.memory = memory;
     this.cleanupBudgetMs = cleanupBudgetMs;
     this.runtime = runtime;
     this.modelProxyUrl = modelProxyUrl;
+    this.publicEgress = publicEgress;
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
@@ -182,8 +188,12 @@ export class SandboxSession {
     try {
       signal?.throwIfAborted();
       record.stage = "policy";
-      const policy = createMemoryPolicy(
-        this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl,
+      // The centrally compiled public-egress rule merges here, at sandbox
+      // policy construction, and only under the deployment-owned flag; it is
+      // never sourced from profiles, preflightEnv, or any per-agent input.
+      const policy = withPublicEgress(
+        createMemoryPolicy(this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl),
+        this.publicEgress,
       );
       record.stage = "workspace";
       workspace.state = "unknown";
@@ -288,6 +298,15 @@ export class SandboxSession {
             // Gateway may enrich effective policy with baseline/defaults.
             // Preserve exact supplied credential rules, not whole-policy equality.
             if (!credentialBound || !config.policy) throw new Error();
+            if (this.publicEgress) {
+              // Central public egress (REHOR-253): while enabled, the
+              // effective network rule key set must match the requested
+              // set exactly. Legacy flag-off behavior keeps accepting
+              // additive Gateway baselines.
+              const expectedKeys = Object.keys(expected.networkPolicies).sort();
+              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).sort();
+              if (expectedKeys.length !== actualKeys.length || expectedKeys.some((key, index) => key !== actualKeys[index])) throw new Error();
+            }
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {
               const actual = config.policy.networkPolicies[name];
               if (!actual || !equals(NetworkPolicyRuleSchema, rule, actual)) throw new Error();

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadOpenCodeDeploymentConfig, renderOpenCodeConfigForCycle } from "../src";
 import type { PreparedCycleInput } from "../src/cycle-input";
@@ -285,6 +285,41 @@ describe("OpenCode deployment defaults", () => {
     await expect(loadOpenCodeDeploymentConfig(path)).resolves.toEqual({
       providers: [{ id: "instance-provider" }],
     });
+  });
+
+  it("resolves the instance convention before the packaged default", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-instance-convention-"));
+    temporaryDirectories.push(directory);
+    const deployment = { providers: [{ id: "instance-convention-provider" }] };
+    await writeFile(join(directory, "opencode-deployment.json"), JSON.stringify(deployment));
+
+    vi.stubEnv("BOT_CONFIG_PATH", directory);
+    try {
+      await expect(loadOpenCodeDeploymentConfig(undefined)).resolves.toEqual(deployment);
+
+      const explicit = join(directory, "explicit.json");
+      await writeFile(explicit, JSON.stringify({ providers: [{ id: "explicit-provider" }] }));
+      await expect(loadOpenCodeDeploymentConfig(explicit)).resolves.toEqual({
+        providers: [{ id: "explicit-provider" }],
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("falls back to the packaged default when the instance file is absent", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "rehor-instance-convention-missing-"));
+    temporaryDirectories.push(directory);
+
+    vi.stubEnv("BOT_CONFIG_PATH", directory);
+    try {
+      const deployment = await loadOpenCodeDeploymentConfig(undefined);
+      expect(deployment.providers).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: "rehor-openai" })]),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("validates supplemental directory grants from deployment files", async () => {

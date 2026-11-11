@@ -16,6 +16,7 @@ from common import (
     get_task_prs,
     get_tasks,
     is_bot_author,
+    is_newer,
     output_result,
     save_state,
     upstream_repo,
@@ -90,11 +91,10 @@ def classify_gh(pr, last_addressed=""):
         konflux_urls = [c.get("detailsUrl", "") for c in failed_checks if "pipelinerun" in c.get("detailsUrl", "")]
         if konflux_urls:
             issues.append(f"konflux_urls:{';'.join(konflux_urls)}")
-    last_prefix = last_addressed[:16] if last_addressed else ""
     for rv in pr.get("reviews") or []:
         rstate = rv.get("state", "")
-        submitted = (rv.get("submittedAt") or "")[:16]
-        if last_prefix and submitted and submitted <= last_prefix:
+        submitted = rv.get("submittedAt") or ""
+        if last_addressed and submitted and not is_newer(submitted, last_addressed):
             continue
         author = rv.get("author", {}).get("login", "?")
         if rstate == "CHANGES_REQUESTED":
@@ -146,7 +146,7 @@ def enrich_gh(task):
                 pr_comments.append(
                     {
                         "a": rv.get("author", {}).get("login", "?"),
-                        "t": rv.get("submittedAt", "")[:16],
+                        "t": rv.get("submittedAt", ""),
                         "b": f"[REVIEW {rv.get('state', '?')}] {body}",
                     }
                 )
@@ -168,8 +168,7 @@ def has_new_feedback(enriched):
     for c in enriched["pr_comments"]:
         if is_bot_author(c.get("a", "?")):
             continue
-        ct = c.get("t", "")[:16]
-        if not last_addr or ct > last_addr[:16]:
+        if not last_addr or is_newer(c.get("t", ""), last_addr):
             return True
     return False
 

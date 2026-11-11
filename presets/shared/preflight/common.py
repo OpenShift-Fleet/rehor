@@ -11,10 +11,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
 INSTANCE_ID = os.environ.get("BOT_INSTANCE_ID", "")
+INTERRUPTED_RETRY_MINUTES = int(os.environ.get("BOT_INTERRUPTED_RETRY_MINUTES", "30"))
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 PROJECT_REPOS_PATH = _REPO_ROOT / "project-repos.json"
 STATE_FILE = _REPO_ROOT / "data" / "preflight-state.json"
@@ -158,13 +160,69 @@ def is_bot_author(author):
     return "[bot]" in a or a.endswith(("-bot", "-robot")) or a in ("github-actions", "dependabot", "renovate")
 
 
+def parse_iso(ts):
+    """Parse ISO-8601 timestamps from Jira, GitHub/GitLab, and the task DB.
+
+    Accepts 'Z' suffixes, compact '+0000' offsets, and naive values
+    (assumed UTC). Returns None when empty or unparseable.
+    """
+    if not ts:
+        return None
+    s = str(ts).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        m = re.match(r"^(.*\d{2}:\d{2}:\d{2})([+-]\d{4})$", s)
+        if not m:
+            return None
+        off = m.group(2)
+        try:
+            dt = datetime.fromisoformat(f"{m.group(1)}{off[:3]}:{off[3:]}")
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt
+
+
+def is_newer(ts, reference):
+    """True when ts is strictly newer than reference, at full resolution.
+
+    Replaces minute-truncated string comparison (ts[:16] > ref[:16]),
+    which hid comments posted in the same minute as last_addressed.
+    Falls back to the legacy minute-prefix comparison when either value
+    cannot be parsed, so unknown formats behave as before.
+    """
+    a, b = parse_iso(ts), parse_iso(reference)
+    if a is None or b is None:
+        return bool(ts) and bool(reference) and str(ts)[:16] > str(reference)[:16]
+    return a > b
+
+
+def interrupted_retry_due(task):
+    """True when a blocked interrupted task may be (re)tried.
+
+    Cycles that end cleanly stamp last_addressed via task_update. When the
+    agent also declared metadata.blockers, the task is waiting on external
+    input — re-trigger it at the cooldown rate (INTERRUPTED_RETRY_MINUTES)
+    instead of every cycle. Never-addressed tasks and crashed cycles
+    (stale last_addressed because no final task_update ran) stay
+    immediately actionable.
+    """
+    la = parse_iso(task.get("last_addressed") or "")
+    if la is None:
+        return True
+    return datetime.now(UTC) - la >= timedelta(minutes=INTERRUPTED_RETRY_MINUTES)
+
+
 def fmt_comments(comments, label, since=None, max_comments=30):
     """Format a list of comments, optionally filtering by timestamp."""
     if not comments:
         return f"  {label}: (none)"
     if since:
-        since_prefix = since[:16]
-        comments = [c for c in comments if (c.get("t", c.get("created", ""))[:16]) > since_prefix]
+        comments = [c for c in comments if is_newer(c.get("t", c.get("created", "")), since)]
     if not comments:
         return f"  {label}: (none since last_addressed)"
     comments = list(reversed(comments))
