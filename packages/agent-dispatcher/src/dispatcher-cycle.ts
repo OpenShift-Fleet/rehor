@@ -140,6 +140,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
               // Scripts and their imports must resolve inside the private
               // runtime, never the synced checkout.
               preflightDirs: runtime.preflightDirs,
+              helperDir: runtime.helperDir,
               env,
               signal: options.signal,
             });

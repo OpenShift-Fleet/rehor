@@ -9,7 +9,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import subprocess
@@ -76,7 +75,7 @@ def setup_git(script_dir: Path) -> None:
     """Generate per-platform .gitconfig files with includeIf.
 
     Reads GH_USER_NAME/GH_USER_EMAIL and GL_USER_NAME/GL_USER_EMAIL
-    from env. Each platform gets its own identity and signing key.
+    from env. Each platform gets its own identity.
     Sets GIT_CONFIG_GLOBAL so all repos use this config.
     """
     gh_name = os.environ.get("GH_USER_NAME")
@@ -86,7 +85,7 @@ def setup_git(script_dir: Path) -> None:
     git_proxy_host = os.environ.get("GIT_AUTH_PROXY_HOST")
     gl_ca_cert_file = os.environ.get("GITLAB_CA_CERT_FILE", "").strip()
 
-    if not gh_name and not gl_name:
+    if not gh_name and not gl_name and os.environ.get("REHOR_INPUT_SOURCE") != "sandbox":
         return
 
     private_sandbox = (
@@ -101,12 +100,9 @@ def setup_git(script_dir: Path) -> None:
         home = Path(os.environ["HOME"])
         if not home.is_absolute():
             raise ValueError("private sandbox HOME must be absolute")
-        for name, email, key_env in [
-            (gh_name, gh_email, "GH_GPG_SIGNING_KEY"),
-            (gl_name, gl_email, "GL_GPG_SIGNING_KEY"),
-        ]:
-            if not name or not email or not re.fullmatch(r"[A-F0-9]{16}", os.environ.get(key_env, "")):
-                raise ValueError("private sandbox requires both Git identities and signing key IDs")
+        for name, email in [(gh_name, gh_email), (gl_name, gl_email)]:
+            if not name or not email:
+                raise ValueError("private sandbox requires both Git identities")
         configured_global = os.environ.get("GIT_CONFIG_GLOBAL")
         if configured_global == "":
             raise ValueError("private sandbox requires the bootstrap Git config")
@@ -145,7 +141,7 @@ def setup_git(script_dir: Path) -> None:
             lines.append(f"\tname = {config_value(name) if private_sandbox else name}")
         if email:
             lines.append(f"\temail = {config_value(email) if private_sandbox else email}")
-        signing_key = os.environ.get(key_env) or (None if private_sandbox else os.environ.get("GPG_SIGNING_KEY"))
+        signing_key = None if private_sandbox else os.environ.get(key_env) or os.environ.get("GPG_SIGNING_KEY")
         if signing_key:
             lines.append(f"\tsigningkey = {signing_key}")
         path.write_text("\n".join(lines) + "\n")

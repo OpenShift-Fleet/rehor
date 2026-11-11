@@ -13,9 +13,8 @@ Usage:
 import asyncio
 import json
 import os
-import re
 import sys
-from urllib.parse import urlsplit
+from pathlib import Path
 
 JIRA_MCP_URL = os.environ.get("JIRA_MCP_URL", "").rstrip("/")
 
@@ -26,39 +25,10 @@ _cm_transport = None
 _cm_session = None
 
 
-def _sandbox_auth_headers(url):
-    token = os.environ.get("BOT_MEMORY_TOKEN", "")
-    if os.environ.get("REHOR_INPUT_SOURCE") != "sandbox" or not re.fullmatch(
-        r"openshell:resolve:env:[A-Za-z0-9_]+", token
-    ):
-        return {}
-    try:
-        parsed = urlsplit(url)
-        if (
-            any(ord(c) <= 32 or ord(c) == 127 for c in url)
-            or "\\" in url
-            or parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            return {}
-        _ = parsed.port
-    except ValueError:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _no_redirect_client(headers=None, timeout=None, auth=None):
-    from mcp.shared._httpx_utils import create_mcp_http_client
+    from bot.sandbox_transport import no_redirect_client
 
-    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-    client.follow_redirects = False
-    # MCP 1.30 follows same-origin redirects itself, ignoring follow_redirects.
-    client.max_redirects = 0
-    return client
+    return no_redirect_client(headers=headers, timeout=timeout, auth=auth)
 
 
 async def _ensure_session():
@@ -72,7 +42,12 @@ async def _ensure_session():
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    headers = _sandbox_auth_headers(JIRA_MCP_URL)
+    headers = {}
+    if os.environ.get("REHOR_INPUT_SOURCE") == "sandbox":
+        sys.path.insert(0, str(Path(os.environ["HOME"]) / "app"))
+        from bot.sandbox_transport import mcp_headers
+
+        headers = mcp_headers("jira", JIRA_MCP_URL)
     options = {"httpx_client_factory": _no_redirect_client} if "Authorization" in headers else {}
     _cm_transport = streamablehttp_client(JIRA_MCP_URL, headers=headers, **options)
     _read, _write, _ = await _cm_transport.__aenter__()

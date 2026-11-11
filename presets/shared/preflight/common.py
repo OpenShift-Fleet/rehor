@@ -30,19 +30,13 @@ def _instance_param():
     return ""
 
 
-def _auth_headers():
-    """Bearer headers when the runtime supplies a memory credential."""
-    token = os.environ.get("BOT_MEMORY_TOKEN", "")
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
 def http_get(url, timeout=10):
     """GET JSON from a URL. Returns parsed dict or None on error.
 
     Authorization failures raise instead of returning None: a rejected
     request must never be mistaken for an empty task list.
     """
-    req = urllib.request.Request(url, headers=_auth_headers())
+    req = urllib.request.Request(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())

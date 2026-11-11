@@ -126,8 +126,7 @@ fi
 # Per-platform git identity via includeIf (git 2.36+)
 # Each platform gets its own name, email, and GPG signing key.
 if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
-    # Only public key IDs leave the executor. Never let the shim fall back to
-    # its in-cluster default when the sandbox gateway is not configured.
+    # Never let the shim fall back to its in-cluster default in a sandbox.
     if [ -n "${EXECUTOR_HTTP_URL:-}${GH_USER_NAME:-}${GH_USER_EMAIL:-}${GL_USER_NAME:-}${GL_USER_EMAIL:-}" ]; then
         if [ "${REHOR_PRIVATE_RUNTIME:-}" != "1" ]; then
             echo "FATAL: sandbox Git signing requires the private runtime" >&2
@@ -144,16 +143,6 @@ if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
                 echo "FATAL: sandbox Git identity is incomplete for ${platform}" >&2
                 exit 1
             fi
-            if ! key_listing="$(gpg --list-secret-keys --keyid-format long "${!email_var}" 2>/dev/null)"; then
-                echo "FATAL: sandbox Git signing key lookup failed for ${platform}" >&2
-                exit 1
-            fi
-            key="$(printf '%s\n' "$key_listing" | grep -oE '/[A-F0-9]{16}' | head -1 | cut -c2-)"
-            if [ -z "$key" ]; then
-                echo "FATAL: sandbox Git signing key unavailable for ${platform}" >&2
-                exit 1
-            fi
-            export "${platform}_GPG_SIGNING_KEY=${key}"
         done
     fi
 else

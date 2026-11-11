@@ -59,6 +59,8 @@ export interface WorkPreflightOptions {
   instanceDir?: string;
   /** Pre-validated preflight directories (prefer the private runtime copies); skips path re-resolution. */
   preflightDirs?: { workflow?: string; instance?: string };
+  /** Private dispatcher runtime helper directory; omitted for legacy callers. */
+  helperDir?: string;
   /** Defaults to the parent environment, as in the Python runner. */
   env?: NodeJS.ProcessEnv;
   /** Per-script deadline and per-stream output cap. Defaults: 120 seconds and 1 MiB. */
@@ -100,13 +102,19 @@ function failure(name: string, reason: string): WorkPreflightScriptResult {
   return { name, status: "error", content: `${name} ${reason}` };
 }
 
-async function runScript(script: string, root: string, env: NodeJS.ProcessEnv, timeoutMs: number, limit: number, signal?: AbortSignal): Promise<WorkPreflightScriptResult> {
+async function runScript(script: string, root: string, env: NodeJS.ProcessEnv, timeoutMs: number, limit: number, signal?: AbortSignal, helperDir?: string): Promise<WorkPreflightScriptResult> {
   const name = basename(script);
   if (signal?.aborted) return failure(name, "cancelled");
   return new Promise((done) => {
     let child;
     try {
-      child = spawn("python3", [script], { cwd: root, env, stdio: ["inherit", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // Python normally places the script directory ahead of PYTHONPATH. In a
+      // private runtime, keep dispatcher helpers first even for scripts copied
+      // from a shared helper directory or containing a competing module.
+      const args = helperDir
+        ? ["-c", "import sys; sys.path.insert(0, sys.argv[1]); import dispatcher_preflight; dispatcher_preflight.run(sys.argv[1], sys.argv[2])", helperDir, script]
+        : [script];
+      child = spawn("python3", args, { cwd: root, env, stdio: ["inherit", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch {
       done(failure(name, "could not be executed"));
       return;
@@ -192,7 +200,7 @@ export async function runWorkPreflight(options: WorkPreflightOptions): Promise<W
   if (!scripts.length) return { action: "no-scripts", scripts: [] };
   const env = { ...(options.env ?? process.env) };
   env.PYTHONDONTWRITEBYTECODE = "1";
-  env.PYTHONPATH = [join(root, "presets", "shared", "preflight"), join(root, ".claude", "skills"), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
+  env.PYTHONPATH = [...(options.helperDir ? [resolve(options.helperDir)] : []), join(root, "presets", "shared", "preflight"), join(root, ".claude", "skills"), ...(env.PYTHONPATH ? [env.PYTHONPATH] : [])].join(delimiter);
   const results: WorkPreflightScriptResult[] = [];
   const stateFile = join(root, "data", "preflight-state.json");
   // A prior process may have crashed before its cleanup. Never reuse its state.
@@ -203,7 +211,7 @@ export async function runWorkPreflight(options: WorkPreflightOptions): Promise<W
   }
   for (const script of scripts) {
     if (options.signal?.aborted) break;
-    results.push(await runScript(script, root, env, timeoutMs, limit, options.signal));
+    results.push(await runScript(script, root, env, timeoutMs, limit, options.signal, options.helperDir ? resolve(options.helperDir) : undefined));
   }
   try {
     await unlink(stateFile);

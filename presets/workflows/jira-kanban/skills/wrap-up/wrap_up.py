@@ -7,7 +7,6 @@ Usage: python3 .claude/skills/wrap-up/wrap_up.py <JIRA_KEY> [--dry-run] [--resum
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import urllib.parse
@@ -25,53 +24,24 @@ PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
 
-def _memory_authorization(url, method):
-    token = os.environ.get("BOT_MEMORY_TOKEN", "")
-    if (
-        method != "GET"
-        or os.environ.get("REHOR_INPUT_SOURCE") != "sandbox"
-        or not re.fullmatch(r"openshell:resolve:env:[A-Za-z0-9_]+", token)
-    ):
-        return None
-    base = os.environ.get("BOT_MEMORY_URL", "")
-    try:
-        if any(any(ord(c) <= 32 or ord(c) == 127 for c in value) or "\\" in value for value in (base, url)):
-            return None
-        source, target = urllib.parse.urlsplit(base), urllib.parse.urlsplit(url)
-        if (
-            source.scheme != "https"
-            or target.scheme != "https"
-            or not source.hostname
-            or not target.hostname
-            or source.username is not None
-            or source.password is not None
-            or target.username is not None
-            or target.password is not None
-            or source.query
-            or source.fragment
-            or target.fragment
-            or (source.hostname, 443 if source.port is None else source.port)
-            != (target.hostname, 443 if target.port is None else target.port)
-        ):
-            return None
-    except ValueError:
-        return None
-    return f"Bearer {token}"
-
-
 def http_request(url, method="GET", body=None, headers=None, timeout=15):
     hdrs = dict(headers or {})
     data = None
     if body is not None:
         data = json.dumps(body).encode()
         hdrs["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
-    authorization = _memory_authorization(url, method)
-    if authorization and not req.has_header("Authorization"):
-        # urllib redirects copy regular headers across origins; never forward the
-        # placeholder to a redirect, including a downgrade to plaintext HTTP.
-        req.add_unredirected_header("Authorization", authorization)
     try:
+        sandbox_headers = {}
+        if os.environ.get("REHOR_INPUT_SOURCE") == "sandbox":
+            sys.path.insert(0, str(Path(os.environ["HOME"]) / "app"))
+            from bot.sandbox_transport import memory_api_headers
+
+            # Caller-provided credentials must not override the scoped config.
+            hdrs = {key: value for key, value in hdrs.items() if key.lower() != "authorization"}
+            sandbox_headers = memory_api_headers(url, method)
+        req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        for name, value in sandbox_headers.items():
+            req.add_unredirected_header(name, value)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}

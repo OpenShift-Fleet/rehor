@@ -12,9 +12,8 @@ import asyncio
 import contextlib
 import json
 import os
-import re
 import sys
-from urllib.parse import urlsplit
+from pathlib import Path
 
 MEMORY_MCP_URL = os.environ.get("BOT_MEMORY_URL", "").rstrip("/")
 
@@ -31,39 +30,18 @@ def _headers(url):
     if instance:
         # HTTPX accepts bytes; the server decodes these header bytes as UTF-8.
         headers["X-Bot-Instance-Id"] = instance.encode("utf-8")
-    token = os.environ.get("BOT_MEMORY_TOKEN", "")
-    if os.environ.get("REHOR_INPUT_SOURCE") != "sandbox" or not re.fullmatch(
-        r"openshell:resolve:env:[A-Za-z0-9_]+", token
-    ):
-        return headers
-    try:
-        parsed = urlsplit(url)
-        if (
-            any(ord(c) <= 32 or ord(c) == 127 for c in url)
-            or "\\" in url
-            or parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-        ):
-            return headers
-        _ = parsed.port
-    except ValueError:
-        return headers
-    headers["Authorization"] = f"Bearer {token}"
+    if os.environ.get("REHOR_INPUT_SOURCE") == "sandbox":
+        sys.path.insert(0, str(Path(os.environ["HOME"]) / "app"))
+        from bot.sandbox_transport import mcp_headers
+
+        headers.update(mcp_headers("memory", url))
     return headers
 
 
 def _no_redirect_client(headers=None, timeout=None, auth=None):
-    from mcp.shared._httpx_utils import create_mcp_http_client
+    from bot.sandbox_transport import no_redirect_client
 
-    client = create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
-    client.follow_redirects = False
-    # MCP 1.30 follows same-origin redirects itself, ignoring follow_redirects.
-    client.max_redirects = 0
-    return client
+    return no_redirect_client(headers=headers, timeout=timeout, auth=auth)
 
 
 async def _ensure_session():

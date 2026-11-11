@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,23 +28,24 @@ def load(path):
 
 @pytest.mark.parametrize("path", CLIENTS)
 @pytest.mark.parametrize(
-    "url,mode,token,authorized",
+    "url,mode,authorized",
     [
-        ("https://service.example/mcp", "sandbox", MARKER, True),
-        ("http://service.example/mcp", "sandbox", MARKER, False),
-        ("https://service.example/mcp", "legacy", MARKER, False),
-        ("https://service.example/mcp", "sandbox", "raw-secret", False),
-        ("https://service.example/mcp", "sandbox", MARKER + "\n", False),
-        ("https://service.example:bad/mcp", "sandbox", MARKER, False),
-        ("https://user@service.example/mcp", "sandbox", MARKER, False),
-        ("https://service.example/mcp?credential=secret", "sandbox", MARKER, False),
-        ("https://service.example\\@evil.example/mcp", "sandbox", MARKER, False),
+        ("https://service.example", "sandbox", True),
+        ("http://service.example", "sandbox", False),
+        ("https://service.example", "legacy", False),
     ],
 )
-def test_helper_transport_headers(path, url, mode, token, authorized, monkeypatch):
+def test_helper_transport_headers(path, url, mode, authorized, monkeypatch, tmp_path):
     monkeypatch.setenv("REHOR_INPUT_SOURCE", mode)
-    monkeypatch.setenv("BOT_MEMORY_TOKEN", token)
+    monkeypatch.setenv("BOT_MEMORY_TOKEN", "raw-secret-must-not-be-used")
     monkeypatch.setenv("BOT_INSTANCE_ID", INSTANCE)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tmp_path = tmp_path / "app"
+    (tmp_path / "bot").mkdir(parents=True)
+    url += "/jira/mcp" if "jira" in path and url.startswith("https") else "/mcp"
+    server = {"url": url, "headers": {"Authorization": f"Bearer {MARKER}"} if authorized else {}}
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"bot-memory": server}}))
+    (tmp_path / "bot/mcp.json").write_text(json.dumps({"mcpServers": {"mcp-atlassian": server}}))
     module = load(path)
     setattr(module, "JIRA_MCP_URL" if "jira" in path else "MEMORY_MCP_URL", url)
     captured = {}
@@ -91,6 +93,76 @@ def test_helper_transport_headers(path, url, mode, token, authorized, monkeypatc
         assert dict(httpx.Headers(headers).raw)[b"X-Bot-Instance-Id"].decode("utf-8") == INSTANCE
     else:
         assert "X-Bot-Instance-Id" not in headers
+
+
+@pytest.mark.parametrize("path", CLIENTS)
+@pytest.mark.parametrize(
+    "target",
+    [
+        "https://evil.example/mcp",
+        "https://service.example/other",
+        "http://service.example/mcp",
+        "https://service.example/mcp?x=1",
+    ],
+)
+def test_sandbox_mcp_rejects_mismatched_destination(path, target, monkeypatch, tmp_path):
+    from bot.sandbox_transport import mcp_headers
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tmp_path = tmp_path / "app"
+    (tmp_path / "bot").mkdir(parents=True)
+    server = {
+        "url": "https://service.example/jira/mcp" if "jira" in path else "https://service.example/mcp",
+        "headers": {"Authorization": f"Bearer {MARKER}"},
+    }
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"bot-memory": server}}))
+    (tmp_path / "bot/mcp.json").write_text(json.dumps({"mcpServers": {"mcp-atlassian": server}}))
+    with pytest.raises(RuntimeError):
+        mcp_headers("jira" if "jira" in path else "memory", target)
+
+
+@pytest.mark.parametrize("value", ["Bearer raw-secret", MARKER, f"Bearer {MARKER}\n", 123])
+def test_sandbox_rejects_non_placeholder_config(value, tmp_path, monkeypatch):
+    from bot.sandbox_transport import mcp_headers
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tmp_path = tmp_path / "app"
+    tmp_path.mkdir()
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"bot-memory": {"url": "https://service.example/mcp", "headers": {"Authorization": value}}}}
+        )
+    )
+    with pytest.raises(RuntimeError, match="invalid sandbox MCP config"):
+        mcp_headers("memory", "https://service.example/mcp")
+
+
+@pytest.mark.parametrize("path", [".claude/skills/memory_mcp.py", "bot/memory_mcp.py"])
+def test_sandbox_helper_imports_from_private_home_without_pythonpath(path, tmp_path):
+    app = tmp_path / "app"
+    (app / ".claude/skills").mkdir(parents=True)
+    (app / "bot").mkdir()
+    for relative in ("bot/__init__.py", "bot/sandbox_transport.py", path):
+        shutil.copyfile(ROOT / relative, app / relative)
+    (app / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "bot-memory": {
+                        "url": "https://service.example/mcp",
+                        "headers": {"Authorization": f"Bearer {MARKER}"},
+                    }
+                }
+            }
+        )
+    )
+    script = "import runpy,sys; m=runpy.run_path(sys.argv[1]); print(m['_headers']('https://service.example/mcp')['Authorization'])"
+    env = {"HOME": str(tmp_path), "REHOR_INPUT_SOURCE": "sandbox", "BOT_MEMORY_TOKEN": "raw-secret"}
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", script, str(app / path)], env=env, capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == f"Bearer {MARKER}"
+    assert "raw-secret" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("path", CLIENTS)
@@ -235,6 +307,28 @@ def test_bootstrap_configures_https_routes_and_unicode_identity(bootstrap, monke
     }
     assert jira["headers"] == {"Authorization": f"Bearer {MARKER}"}
     assert os.environ["EXECUTOR_TOKEN"] == MARKER
+
+
+def test_helpers_consume_bootstrap_configs_without_token_environment(tmp_path, monkeypatch):
+    from bot.sandbox_transport import mcp_headers, memory_api_headers
+
+    app = tmp_path / "app"
+    (app / "bot").mkdir(parents=True)
+    (app / ".mcp.json").write_text(json.dumps({"mcpServers": {"bot-memory": {}}}))
+    (app / "bot/mcp.json").write_text(json.dumps({"mcpServers": {"mcp-atlassian": {}}}))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("REHOR_INPUT_SOURCE", "sandbox")
+    monkeypatch.setenv("BOT_MEMORY_TOKEN", MARKER)
+    monkeypatch.setenv("BOT_MEMORY_URL", "https://memory.example/mcp")
+    monkeypatch.setenv("JIRA_MCP_URL", "https://gateway.example/jira/mcp")
+    monkeypatch.delenv("REHOR_MODEL_PROXY_URL", raising=False)
+    monkeypatch.delenv("EXECUTOR_HTTP_URL", raising=False)
+    load("scripts/sandbox-bootstrap.py").configure_routes(app)
+    monkeypatch.delenv("BOT_MEMORY_TOKEN")
+    expected = {"Authorization": f"Bearer {MARKER}"}
+    assert mcp_headers("memory", "https://memory.example/mcp") == expected
+    assert mcp_headers("jira", "https://gateway.example/jira/mcp") == expected
+    assert memory_api_headers("https://memory.example/api/tasks?limit=50", "GET") == expected
 
 
 def test_bootstrap_http_removes_stale_auth_and_executor_token(bootstrap, monkeypatch):

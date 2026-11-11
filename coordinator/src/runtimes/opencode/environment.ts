@@ -171,12 +171,6 @@ export function buildOpenCodeEnvironment(
   if (base.REHOR_INPUT_SOURCE === "sandbox") {
     environment.REHOR_INPUT_SOURCE = "sandbox";
     for (const name of OPENSHELL_CA_ENVIRONMENT) copyIfPresent(environment, base, name);
-    if (
-      base.BOT_MEMORY_TOKEN !== undefined &&
-      EXECUTOR_TOKEN_PLACEHOLDER_PATTERN.test(base.BOT_MEMORY_TOKEN)
-    ) {
-      environment.BOT_MEMORY_TOKEN = base.BOT_MEMORY_TOKEN;
-    }
     // The sandbox thin client may carry only the nonsecret EXECUTOR_TOKEN
     // placeholder, either set explicitly or derived from the existing
     // BOT_MEMORY_TOKEN placeholder. Real tokens never reach the agent; the

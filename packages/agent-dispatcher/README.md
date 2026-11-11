@@ -23,7 +23,7 @@ preflight:
 
 Shared Python workflow scripts and helpers come from the repository's pinned `dev-bot` submodule. Python execution is a stopgap: existing preflight scripts run unchanged during migration, but preflights will move to `.mjs` and only `.mjs` preflights will be supported long-term. The instance's `project-repos.json` is used as-is, never merged with the shared map. Checks run sequentially and at most once per agent every five minutes; the in-memory timer resets on restart. Python preflight failures use the existing aggregation contract: an actionable successful script can produce a start decision despite another script's failure. Missing scripts never produce a start decision.
 
-Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to preflight scripts as `BOT_MEMORY_TOKEN` (never via the process environment); helpers attach it as a bearer header, and an authorization failure fails the preflight instead of reporting empty results. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3.12, Git, the Python MCP client, and the executor client's `gh`/`glab` shims. Only trusted repositories should be configured: their scripts execute in the dispatcher.
+Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to private preflight subprocesses as `BOT_MEMORY_TOKEN` (never via the dispatcher process environment). Its private transport authenticates requests to the configured memory task endpoint without following redirects; authorization failures fail the preflight instead of reporting empty results. Dispatcher preflights use a dispatcher-owned Jira MCP client, independent of agent skills. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3.12, Git, the Python MCP client, and the executor client's `gh`/`glab` shims. Only trusted repositories should be configured: their scripts execute in the dispatcher.
 
 ## Sandbox dispatch
 
@@ -185,6 +185,7 @@ tar -cf - package.json package-lock.json nx.json \
   packages/agent-dispatcher/tsconfig.json \
   packages/agent-dispatcher/Containerfile \
   packages/agent-dispatcher/src \
+  packages/agent-dispatcher/preflight \
   packages/openshell-sdk \
   proxy/executor | \
   podman build \

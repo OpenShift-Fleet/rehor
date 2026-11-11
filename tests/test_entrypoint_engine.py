@@ -107,10 +107,8 @@ def test_sandbox_coordinator_selection_is_preserved(tmp_path, profile_changes_en
         assert f"FAKE_NODE:{bundle} --label test --once" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "failure", [None, "gateway", "plaintext", "lookup", "missing-key", "identity", "private", "no-identities"]
-)
-def test_sandbox_discovers_platform_key_ids_via_gateway(tmp_path, failure):
+@pytest.mark.parametrize("failure", [None, "gateway", "plaintext", "identity", "private", "no-identities"])
+def test_sandbox_validates_signing_setup_without_exporting_key_ids(tmp_path, failure):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in ("gh", "glab", "git"):
@@ -118,17 +116,12 @@ def test_sandbox_discovers_platform_key_ids_via_gateway(tmp_path, failure):
         stub.write_text("#!/bin/bash\nexit 0\n")
         stub.chmod(0o755)
     gpg = bindir / "gpg"
-    gpg.write_text(
-        "#!/bin/bash\n"
-        'printf "%s %s %s\\n" "$EXECUTOR_HTTP_URL" "$EXECUTOR_TOKEN" "$*" >> "$GPG_TEST_LOG"\n'
-        '[ "$GPG_TEST_FAILURE" = lookup ] && exit 1\n'
-        '[ "$GPG_TEST_FAILURE" = missing-key ] && exit 0\n'
-        'case "$*" in *gh@example.invalid*) printf "sec rsa4096/ABCDEF0123456789\\n";; '
-        '*) printf "sec rsa4096/0123456789ABCDEF\\n";; esac\n'
-    )
+    gpg.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$GPG_TEST_LOG"\nexit 1\n')
     gpg.chmod(0o755)
     node = bindir / "node"
-    node.write_text('#!/bin/bash\nprintf "%s\\n" "$GH_GPG_SIGNING_KEY" "$GL_GPG_SIGNING_KEY" > "$NODE_TEST_LOG"\n')
+    node.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "${GH_GPG_SIGNING_KEY-unset}" "${GL_GPG_SIGNING_KEY-unset}" > "$NODE_TEST_LOG"\n'
+    )
     node.chmod(0o755)
     script = tmp_path / "entrypoint.sh"
     script.write_text(ENTRYPOINT.read_text().replace("/etc/profile.d/*.sh", str(tmp_path / "no-profiles" / "*.sh")))
@@ -152,7 +145,6 @@ def test_sandbox_discovers_platform_key_ids_via_gateway(tmp_path, failure):
         "GL_USER_EMAIL": "gl@example.invalid",
         "GPG_TEST_LOG": str(tmp_path / "gpg-log"),
         "NODE_TEST_LOG": str(tmp_path / "node-log"),
-        "GPG_TEST_FAILURE": failure or "",
     }
     if failure == "gateway":
         del env["EXECUTOR_HTTP_URL"]
@@ -173,15 +165,7 @@ def test_sandbox_discovers_platform_key_ids_via_gateway(tmp_path, failure):
         assert result.returncode != 0
         assert "FATAL: sandbox Git" in result.stderr
         assert not (tmp_path / "node-log").exists()
-        if failure in ("gateway", "plaintext", "private", "no-identities"):
-            assert not (tmp_path / "gpg-log").exists()
     else:
         assert result.returncode == 0, result.stderr
-        assert (tmp_path / "node-log").read_text().splitlines() == ["ABCDEF0123456789", "0123456789ABCDEF"]
-        log = (tmp_path / "gpg-log").read_text()
-        assert (
-            log.count(
-                "https://gateway.example/executor/execute openshell:resolve:env:provider --list-secret-keys --keyid-format long"
-            )
-            == 2
-        )
+        assert (tmp_path / "node-log").read_text().splitlines() == ["unset", "unset"]
+    assert not (tmp_path / "gpg-log").exists()
