@@ -18,6 +18,8 @@ export type SandboxSessionOptions = {
   cleanupBudgetMs?: number;
   runtime?: RuntimeLayout;
   modelProxyUrl?: URL;
+  memoryRuntime?: boolean;
+  serviceGatewayUrl?: URL;
   /** Central public-egress rollout flag (REHOR-253); default false. */
   publicEgress?: boolean;
 };
@@ -138,6 +140,8 @@ export class SandboxSession {
   private readonly cleanupBudgetMs: number;
   private readonly runtime: RuntimeLayout;
   private readonly modelProxyUrl: URL | undefined;
+  private readonly memoryRuntime: boolean;
+  private readonly serviceGatewayUrl: URL | undefined;
   private readonly publicEgress: boolean;
 
   constructor({
@@ -146,6 +150,8 @@ export class SandboxSession {
     cleanupBudgetMs = defaultCleanupBudgetMs,
     runtime = { kind: "legacy" },
     modelProxyUrl,
+    memoryRuntime = false,
+    serviceGatewayUrl,
     publicEgress = false,
   }: SandboxSessionOptions) {
     this.raw = raw;
@@ -153,6 +159,8 @@ export class SandboxSession {
     this.cleanupBudgetMs = cleanupBudgetMs;
     this.runtime = runtime;
     this.modelProxyUrl = modelProxyUrl;
+    this.memoryRuntime = memoryRuntime;
+    this.serviceGatewayUrl = serviceGatewayUrl;
     this.publicEgress = publicEgress;
   }
 
@@ -192,7 +200,7 @@ export class SandboxSession {
       // policy construction, and only under the deployment-owned flag; it is
       // never sourced from profiles, preflightEnv, or any per-agent input.
       const policy = withPublicEgress(
-        createMemoryPolicy(this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl),
+        createMemoryPolicy(this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl, { memoryRuntime: this.memoryRuntime, ...(this.serviceGatewayUrl ? { serviceGatewayUrl: this.serviceGatewayUrl } : {}) }),
         this.publicEgress,
       );
       record.stage = "workspace";

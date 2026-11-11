@@ -73,6 +73,52 @@ export function readModelProxyUrl(env: NodeJS.ProcessEnv): URL | undefined {
   return url;
 }
 
+// Reject syntax that URL normalization would otherwise erase, including empty
+// userinfo, query/fragment delimiters and dot-segment paths.
+function strictRoute(value: string, label: string, path: "origin" | "memory" | "health"): URL {
+  const shape = path === "origin"
+    ? /^https:\/\/[^/?#@\\\s]+\/?$/i
+    : path === "memory" ? /^https:\/\/[^/?#@\\\s]+\/mcp$/i : /^https:\/\/[^/?#@\\\s]+\/health$/i;
+  if (!shape.test(value)) throw new Error(`${label} has an invalid HTTPS route`);
+  if (value.slice(value.indexOf("://") + 3).split("/")[0].endsWith(":")) {
+    throw new Error(`${label} has an invalid host or port`);
+  }
+  const url = parseHttpsUrl(value, label);
+  if (!/^[a-z0-9.-]+$/.test(url.hostname) || (url.port !== "" && Number(url.port) === 0)) {
+    throw new Error(`${label} has an invalid host or port`);
+  }
+  // The path spelling itself is exact, not case-insensitive.
+  if (path === "memory" && url.pathname !== "/mcp") throw new Error(`${label} must use the exact /mcp path`);
+  if (path === "health" && url.pathname !== "/health") throw new Error(`${label} must use the exact /health path`);
+  return url;
+}
+
+export function readServiceGatewayUrl(env: NodeJS.ProcessEnv, auth: AuthConfig | undefined, modelProxyUrl?: URL): URL | undefined {
+  const value = env.AGENT_DISPATCHER_SERVICE_GATEWAY_URL;
+  if (value === undefined || value === "") return undefined;
+  const url = strictRoute(value, "AGENT_DISPATCHER_SERVICE_GATEWAY_URL", "origin");
+  if (!auth) throw new Error("AGENT_DISPATCHER_SERVICE_GATEWAY_URL requires auth configuration");
+  if (url.hostname.length > 253 || url.hostname.split(".").some((label) => !dnsLabel.test(label) || label.length > 63)
+    || url.host === auth.memoryUrl.host || url.host === modelProxyUrl?.host) {
+    throw new Error("AGENT_DISPATCHER_SERVICE_GATEWAY_URL is not compatible with the sandbox policy");
+  }
+  return url;
+}
+
+export function readBotMemoryUrl(env: NodeJS.ProcessEnv, auth: AuthConfig | undefined): URL | undefined {
+  const value = env.BOT_MEMORY_URL;
+  if (value === undefined || value === "") return undefined;
+  const url = strictRoute(value, "BOT_MEMORY_URL", "memory");
+  if (!auth || !env.AGENT_DISPATCHER_AUTH_MEMORY_URL) {
+    throw new Error("BOT_MEMORY_URL requires the configured authenticated memory health origin");
+  }
+  const health = strictRoute(env.AGENT_DISPATCHER_AUTH_MEMORY_URL, "AGENT_DISPATCHER_AUTH_MEMORY_URL", "health");
+  if (health.href !== auth.memoryUrl.href || url.origin !== health.origin) {
+    throw new Error("BOT_MEMORY_URL requires the configured authenticated memory health origin");
+  }
+  return url;
+}
+
 const publicEgressFlagVariable = "AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED";
 
 // Global deployment-owned opt-in for the centrally compiled public-egress

@@ -125,18 +125,19 @@ test("writer errors never escape or get logged, including rejected async writers
 
 test("production wiring preserves decision, filters runner env, and drains signal-racing sessions with mocks only", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
     "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
     "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
     "dispatcher-loop.js": `
-      export const preflightEnvironment = () => ({ PATH: '/host/bin', BOT_LABEL: 'host-label', BOT_INSTANCE_ID: 'host-instance', JIRA_MCP_URL: 'https://jira.example' });
+      export const preflightEnvironment = () => ({ PATH: '/host/bin', BOT_LABEL: 'host-label', BOT_INSTANCE_ID: 'host-instance', BOT_MEMORY_URL: 'https://unvalidated.example/mcp', JIRA_MCP_URL: 'http://jira.internal/mcp', EXECUTOR_ADDR: 'executor.internal:9090' });
       export async function runDispatcherLoop(options) {
+        process.send({ event: 'host', environment: options.env });
         process.send({ event: 'minted', token: await options.memoryCredential() });
         const decision = { action: 'start', prompt: 'sensitive-prompt', scripts: [{ name: '01-work.py', status: 'start', content: 'sensitive-content' }] };
-        const profile = { configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label' } };
+        const profile = { configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' } };
         const completed = options.launch(profile, decision.prompt, decision);
         void completed.then(completion => process.send({ event: 'completion', completion }));
         await new Promise(resolve => setImmediate(resolve));
@@ -144,7 +145,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor({ raw, memory, runtime, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
+        constructor({ raw, memory, runtime, memoryRuntime, serviceGatewayUrl, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || !memoryRuntime || serviceGatewayUrl.href !== 'https://services.example/' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
         run(image, decision, environment, signal) {
           process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
           process.exitCode = 7;
@@ -184,14 +185,15 @@ test("production wiring preserves decision, filters runner env, and drains signa
     const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
     assert.deepEqual(result, { code: 7, signal: null });
     assert.equal(stderr, "");
-    assert.deepEqual(messages.map(({ event }) => event), ["minted", "run", "settled", "completion"]);
-    assert.equal(messages[0].token, "mock-memory-credential");
-    assert.equal(messages[1].image, "registry.example/agent:runner");
-    assert.deepEqual(messages[1].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
-    assert.deepEqual(messages[1].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", JIRA_MCP_URL: "https://jira.example" });
-    assert.equal(messages[1].aborted, false);
-    assert.equal(messages[2].aborted, true);
-    assert.equal(messages[3].completion, "gone");
+    assert.deepEqual(messages.map(({ event }) => event), ["host", "minted", "run", "settled", "completion"]);
+    assert.deepEqual(messages[0].environment, { PATH: "/host/bin", BOT_LABEL: "host-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "http://jira.internal/mcp", EXECUTOR_ADDR: "executor.internal:9090" });
+    assert.equal(messages[1].token, "mock-memory-credential");
+    assert.equal(messages[2].image, "registry.example/agent:runner");
+    assert.deepEqual(messages[2].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
+    assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute" });
+    assert.equal(messages[2].aborted, false);
+    assert.equal(messages[3].aborted, true);
+    assert.equal(messages[4].completion, "gone");
     const records = stdout.trim().split("\n").map(JSON.parse);
     const shutdownSuccess = records.findIndex(({ event, status }) => event === "shutdown" && status === "success");
     const sessionSuccess = records.findIndex(({ event, status }) => event === "sandbox.session" && status === "success");
@@ -334,7 +336,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -376,7 +378,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,

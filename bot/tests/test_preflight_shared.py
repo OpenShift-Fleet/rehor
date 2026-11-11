@@ -2,8 +2,11 @@
 
 import json
 import sys
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
@@ -31,6 +34,26 @@ from gl_mr_status import (
 )
 
 # --- upstream_repo ---
+
+
+def test_shared_http_get_ignores_memory_token(monkeypatch):
+    from common import http_get
+
+    monkeypatch.setenv("BOT_MEMORY_TOKEN", "synthetic-secret")
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"items": []}'
+    with patch("common.urllib.request.urlopen", return_value=response) as urlopen:
+        assert http_get("http://localhost:8080/api/tasks") == {"items": []}
+    assert urlopen.call_args.args[0].get_header("Authorization") is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_shared_http_get_rejects_auth_errors(status):
+    from common import http_get
+
+    error = urllib.error.HTTPError("http://localhost:8080/api/tasks", status, "denied", {}, None)
+    with patch("common.urllib.request.urlopen", side_effect=error), pytest.raises(RuntimeError, match=str(status)):
+        http_get("http://localhost:8080/api/tasks")
 
 
 def test_upstream_repo_qualified_github():

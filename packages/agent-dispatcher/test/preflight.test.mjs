@@ -5,7 +5,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAuthConfig, readModelProxyUrl } from "../dist/config.js";
+import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readServiceGatewayUrl } from "../dist/config.js";
 import { createCredentialProvider, preflightFailureMessage } from "../dist/preflight.js";
 import { HttpRequestError, httpsRequest } from "../dist/https.js";
 import { createLifecycleLogger } from "../dist/logging.js";
@@ -82,6 +82,44 @@ test("model proxy URL is optional, strict, and exactly the /v1 endpoint", () => 
       /AGENT_DISPATCHER_MODEL_PROXY_URL/,
       JSON.stringify(value),
     );
+  }
+});
+
+test("sandbox service and memory routes validate before startup without exposing values", () => {
+  const auth = readAuthConfig(baseEnv);
+  for (const value of [undefined, ""]) {
+    assert.equal(readServiceGatewayUrl({ AGENT_DISPATCHER_SERVICE_GATEWAY_URL: value }, auth), undefined);
+    assert.equal(readBotMemoryUrl({ BOT_MEMORY_URL: value }, auth), undefined);
+  }
+  for (const value of ["https://gateway.example", "https://gateway.example/", "https://gateway.example:8443/"]) {
+    assert.equal(readServiceGatewayUrl({ AGENT_DISPATCHER_SERVICE_GATEWAY_URL: value }, auth).origin, new URL(value).origin);
+  }
+  assert.equal(readBotMemoryUrl({ ...baseEnv, BOT_MEMORY_URL: "https://memory.example:443/mcp" }, auth).href, "https://memory.example/mcp");
+  for (const value of [" ", "http://gateway.example", "https://gateway.example/path", "https://gateway.example/a/..", "https://@gateway.example", "https://user@gateway.example", "https://gateway.example?", "https://gateway.example#", "https://gateway.example/?x", "https://gateway.example:", "https://gateway.example:0", "https://gateway.example\\path", "https://-gateway.example", "https://memory.example"]) {
+    assert.throws(() => readServiceGatewayUrl({ AGENT_DISPATCHER_SERVICE_GATEWAY_URL: value }, auth), /AGENT_DISPATCHER_SERVICE_GATEWAY_URL/);
+  }
+  for (const value of [" ", "http://memory.example/mcp", "https://other.example/mcp", "https://memory.example:8443/mcp", "https://memory.example:/mcp", "https://memory.example/mcp/", "https://memory.example/x/../mcp", "https://@memory.example/mcp", "https://memory.example/mcp?", "https://memory.example/mcp#", "https://memory.example/MCP"]) {
+    assert.throws(() => readBotMemoryUrl({ ...baseEnv, BOT_MEMORY_URL: value }, auth));
+  }
+  assert.throws(() => readServiceGatewayUrl({ AGENT_DISPATCHER_SERVICE_GATEWAY_URL: "https://gateway.example" }, undefined));
+  assert.throws(() => readServiceGatewayUrl({ AGENT_DISPATCHER_SERVICE_GATEWAY_URL: "https://gateway.example" }, auth, new URL("https://gateway.example/v1")));
+  assert.throws(() => readBotMemoryUrl({ BOT_MEMORY_URL: "https://memory.example/mcp" }, undefined));
+  for (const health of ["https://memory.example", "https://memory.example/health?", "https://@memory.example/health", "https://memory.example/a/../health"]) {
+    const env = { ...baseEnv, AGENT_DISPATCHER_AUTH_MEMORY_URL: health, BOT_MEMORY_URL: "https://memory.example/mcp" };
+    assert.throws(() => readBotMemoryUrl(env, readAuthConfig(env)));
+  }
+});
+
+test("invalid sandbox route configuration fails startup without logging route values", () => {
+  for (const env of [
+    { AGENT_DISPATCHER_SERVICE_GATEWAY_URL: "https://private-gateway.example/path" },
+    { ...baseEnv, BOT_MEMORY_URL: "https://private-memory.example/mcp" },
+  ]) {
+    const result = spawnSync(process.execPath, ["dist/index.js"], {
+      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 5000,
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout + result.stderr, /private-gateway|private-memory/);
   }
 });
 

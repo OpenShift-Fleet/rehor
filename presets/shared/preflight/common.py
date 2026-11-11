@@ -14,7 +14,9 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/")
+if MEMORY_URL.endswith("/mcp") and urllib.parse.urlsplit(MEMORY_URL).path.endswith("/mcp"):
+    MEMORY_URL = MEMORY_URL.removesuffix("/mcp").rstrip("/")
 INSTANCE_ID = os.environ.get("BOT_INSTANCE_ID", "")
 INTERRUPTED_RETRY_MINUTES = int(os.environ.get("BOT_INTERRUPTED_RETRY_MINUTES", "30"))
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -28,19 +30,13 @@ def _instance_param():
     return ""
 
 
-def _auth_headers():
-    """Bearer headers when the runtime supplies a memory credential."""
-    token = os.environ.get("BOT_MEMORY_TOKEN", "")
-    return {"Authorization": f"Bearer {token}"} if token else {}
-
-
 def http_get(url, timeout=10):
     """GET JSON from a URL. Returns parsed dict or None on error.
 
     Authorization failures raise instead of returning None: a rejected
     request must never be mistaken for an empty task list.
     """
-    req = urllib.request.Request(url, headers=_auth_headers())
+    req = urllib.request.Request(url)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())

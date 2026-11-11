@@ -1,6 +1,7 @@
 import { cp, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentProfile } from "./agent-profiles.js";
 
 export type PreflightRuntime = {
@@ -8,6 +9,8 @@ export type PreflightRuntime = {
   dispose: () => Promise<void>;
   /** Private-runtime preflight directories; symlinks are materialized copies. */
   preflightDirs: { workflow?: string; instance?: string };
+  /** Dispatcher-owned Python modules, copied from the dispatcher package. */
+  helperDir: string;
 };
 
 /**
@@ -24,13 +27,22 @@ export async function preparePreflightRuntime(profile: AgentProfile): Promise<Pr
   // target must not silently produce a broken runtime.
   const materialize = (source: string, destination: string) => cp(source, destination, { recursive: true, dereference: true, errorOnExist: true });
   const preflightDirs: { workflow?: string; instance?: string } = {};
+  const helperDir = join(botRoot, "dispatcher-preflight");
   try {
     await mkdir(join(botRoot, "presets", "shared"), { recursive: true });
     await mkdir(join(botRoot, "presets", "workflows"), { recursive: true });
     await mkdir(join(botRoot, ".claude"), { recursive: true });
     await mkdir(join(botRoot, "data"), { recursive: true });
+    await mkdir(helperDir);
+    for (const name of ["jira_mcp.py", "dispatcher_preflight.py"]) {
+      await copyFile(fileURLToPath(new URL(`../preflight/${name}`, import.meta.url)), join(helperDir, name));
+    }
     await materialize(join(profile.botRoot, "presets", "shared", "preflight"), join(botRoot, "presets", "shared", "preflight"));
-    await materialize(join(profile.botRoot, ".claude", "skills"), join(botRoot, ".claude", "skills"));
+    const skills = join(profile.botRoot, ".claude", "skills");
+    await cp(skills, join(botRoot, ".claude", "skills"), {
+      recursive: true, dereference: true, errorOnExist: true,
+      filter: (source) => source !== join(skills, "jira_mcp.py"),
+    });
     if (!profile.workflow.startsWith("./")) {
       await materialize(profile.workflowDir, join(botRoot, "presets", "workflows", profile.workflow));
       if (profile.workflowPreflightDir) preflightDirs.workflow = join(botRoot, "presets", "workflows", profile.workflow, "preflight");
@@ -51,7 +63,7 @@ export async function preparePreflightRuntime(profile: AgentProfile): Promise<Pr
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    return { botRoot, dispose, preflightDirs };
+    return { botRoot, dispose, preflightDirs, helperDir };
   } catch (error) {
     await dispose();
     throw error;

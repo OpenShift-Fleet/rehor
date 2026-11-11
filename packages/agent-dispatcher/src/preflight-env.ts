@@ -7,6 +7,7 @@ export function isForwardedPreflightVariable(name: string): boolean {
   return name === "PATH"
     || name === "JIRA_MCP_URL"
     || name === "EXECUTOR_ADDR"
+    || /^(?:GH_USER_NAME|GH_USER_EMAIL|GL_USER_NAME|GL_USER_EMAIL)$/.test(name)
     || /^(?:HTTP_PROXY|HTTPS_PROXY|NO_PROXY|http_proxy|https_proxy|no_proxy)$/.test(name)
     || (/^BOT_[A-Z0-9_]+$/.test(name) && !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(name));
 }

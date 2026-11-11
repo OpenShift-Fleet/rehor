@@ -89,6 +89,28 @@ test("per-agent preflight environment overrides shared defaults", async () => {
   assert.deepEqual(seen, [{ BOT_INSTANCE_ID: "one", BOT_LABEL: "one-label" }, { BOT_INSTANCE_ID: "two", BOT_LABEL: "two-label" }]);
 });
 
+test("deployment memory URL cannot be replaced by profile in preflight", async () => {
+  for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
+    const seen = [];
+    const opts = options({
+      env: { BOT_MEMORY_URL: deploymentUrl, JIRA_MCP_URL: "http://jira.internal/mcp", EXECUTOR_ADDR: "executor.internal:9090" },
+      dependencies: {
+        syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+        discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_MEMORY_URL: "https://untrusted.example/mcp" } }],
+        prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
+        preflight: async ({ env }) => { seen.push(env); return { action: "skip", transcript: "", scripts: [] }; },
+      },
+    });
+    await runDispatcherCycle(opts);
+    assert.equal(seen.length, 2);
+    for (const env of seen) {
+      assert.equal(env.BOT_MEMORY_URL, deploymentUrl);
+      assert.equal(env.JIRA_MCP_URL, "http://jira.internal/mcp");
+      assert.equal(env.EXECUTOR_ADDR, "executor.internal:9090");
+    }
+  }
+});
+
 test("sequential preflights, parallel sessions, busy check and stable unique identities", async () => {
   const events = [];
   const waiting = deferred();
@@ -255,11 +277,15 @@ test("checked-in onboarding preflight flows through cycle with hermetic services
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const port = server.address().port;
   await writeFile(join(shared, "sitecustomize.py"), `import socket\n_original = socket.socket.connect\ndef _local_only(sock, address):\n    if not isinstance(address, tuple) or address[0] != '127.0.0.1' or address[1] != ${port}:\n        raise RuntimeError('external network disabled')\n    return _original(sock, address)\nsocket.socket.connect = _local_only\nsocket.socket.connect_ex = lambda *args: (_ for _ in ()).throw(RuntimeError('external network disabled'))\n`);
-  await writeFile(join(skills, "jira_mcp.py"), `import os\ndef jira_call(name, args):\n    assert name == 'jira_search'\n    assert 'labels = "fixture-label"' in args['jql']\n    return {'issues': [{'key': 'REHOR-123', 'fields': {'summary': 'Synthetic candidate', 'status': {'name': 'New'}, 'labels': ['fixture-label']}}]} if os.environ['FIXTURE_WORK'] == 'yes' else {'issues': []}\ndef jira_cleanup():\n    pass\n`);
+  await writeFile(join(skills, "jira_mcp.py"), "raise RuntimeError('agent helper must not run')\n");
+  await mkdir(join(shared, "mcp", "client"), { recursive: true });
+  await writeFile(join(shared, "mcp", "__init__.py"), `import json, os\nfrom types import SimpleNamespace\nclass ClientSession:\n    def __init__(self, read, write): pass\n    async def __aenter__(self): return self\n    async def __aexit__(self, *args): pass\n    async def initialize(self): pass\n    async def call_tool(self, name, args):\n        assert name == 'jira_search'\n        assert 'labels = "fixture-label"' in args['jql']\n        issues = [{'key': 'REHOR-123', 'fields': {'summary': 'Synthetic candidate', 'status': {'name': 'New'}, 'labels': ['fixture-label']}}] if os.environ['FIXTURE_WORK'] == 'yes' else []\n        return SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps({'issues': issues}))])\n`);
+  await writeFile(join(shared, "mcp", "client", "__init__.py"), "");
+  await writeFile(join(shared, "mcp", "client", "streamable_http.py"), `from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def streamablehttp_client(url):\n    assert url == 'http://fixture.invalid/mcp'\n    yield None, None, None\n`);
   const calls = [];
   let now = 0;
   const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
-    env: { PATH: process.env.PATH, BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR", FIXTURE_WORK: "yes" },
+    env: { PATH: process.env.PATH, JIRA_MCP_URL: "http://fixture.invalid/mcp", BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR", FIXTURE_WORK: "yes" },
     launch: async (p, prompt) => { calls.push([p.name, prompt]); return "gone"; },
     dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
   });
