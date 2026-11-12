@@ -699,6 +699,74 @@ paths:
         '400':
           description: Invalid payload
 
+  /api/session-registry:
+    get:
+      operationId: listSessionRegistry
+      summary: List session registry records, oldest first (storage only; the dispatcher interprets state values)
+      parameters:
+        - in: query
+          name: state
+          required: false
+          description: Exact-match state filter
+          schema: { type: string, minLength: 1, maxLength: 32 }
+      responses:
+        '200':
+          description: Session registry records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionRegistryRecord'
+        '400':
+          description: Invalid state filter
+
+  /api/session-registry/register:
+    post:
+      operationId: registerSession
+      summary: Upsert a session registry record (re-registering the same run_id resets it to open)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryRegisterRequest'
+      responses:
+        '200':
+          description: Session registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryRegistered'
+        '400':
+          description: Invalid payload
+
+  /api/session-registry/update:
+    post:
+      operationId: updateSession
+      summary: Patch fields on a session registry record (absent fields untouched, null clears names/detail/lock_token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryUpdateRequest'
+      responses:
+        '200':
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryUpdated'
+        '400':
+          description: Invalid payload
+        '404':
+          description: Unknown run_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryNotFound'
+
   /api/bot-status:
     get:
       operationId: getBotStatus
@@ -1420,6 +1488,72 @@ components:
       properties:
         key: { type: string, minLength: 1, maxLength: 512 }
         lock_token: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    SessionRegistryRecord:
+      type: object
+      required: [run_id, agent_id, holder, lock_token, state, workspace_name, sandbox_name, provider_name, profile_name, started_at, updated_at, detail]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid, nullable: true }
+        state: { type: string }
+        workspace_name: { type: string, nullable: true }
+        sandbox_name: { type: string, nullable: true }
+        provider_name: { type: string, nullable: true }
+        profile_name: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryRegisterRequest:
+      type: object
+      required: [run_id, agent_id, holder]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        lock_token: { type: string, format: uuid }
+      additionalProperties: false
+
+    SessionRegistryRegistered:
+      type: object
+      required: [registered, run_id, started_at]
+      properties:
+        registered: { type: boolean, enum: [true] }
+        run_id: { type: string, format: uuid }
+        started_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionRegistryUpdateRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id: { type: string, format: uuid }
+        state: { type: string, minLength: 1, maxLength: 32 }
+        workspace_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        sandbox_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        provider_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        profile_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+        lock_token: { type: string, format: uuid, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryUpdated:
+      type: object
+      required: [updated, record]
+      properties:
+        updated: { type: boolean, enum: [true] }
+        record: { $ref: '#/components/schemas/SessionRegistryRecord' }
+      additionalProperties: false
+
+    SessionRegistryNotFound:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: boolean, enum: [false] }
       additionalProperties: false
 
     BotInstance:

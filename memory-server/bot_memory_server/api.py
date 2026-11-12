@@ -1617,3 +1617,175 @@ async def api_locks_list(request: Request) -> JSONResponse:
             for row in rows
         ]
     )
+
+
+# Session registry — durable tracking of dispatcher sandbox sessions so a
+# replacement dispatcher pod can reconcile in-flight work after a restart or
+# hard kill (REHOR-218 phase 2). Dumb storage: the dispatcher owns the
+# lifecycle and interprets state values; the server only validates types and
+# lengths.
+
+REGISTRY_AGENT_ID_MAX = 512
+REGISTRY_HOLDER_MAX = 256
+REGISTRY_STATE_MAX = 32
+REGISTRY_NAME_MAX = 64
+
+REGISTRY_NAME_FIELDS = {
+    "state": REGISTRY_STATE_MAX,
+    "workspace_name": REGISTRY_NAME_MAX,
+    "sandbox_name": REGISTRY_NAME_MAX,
+    "provider_name": REGISTRY_NAME_MAX,
+    "profile_name": REGISTRY_NAME_MAX,
+}
+
+
+def _validate_run_id(run_id) -> str | None:
+    if not isinstance(run_id, str) or not run_id:
+        return "run_id must be a UUID string"
+    try:
+        uuid.UUID(run_id)
+    except ValueError:
+        return "run_id must be a UUID string"
+    return None
+
+
+def _validate_registry_field(field, value, maximum) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= maximum:
+        return f"{field} must be a string of 1..{maximum} characters"
+    return None
+
+
+def _serialize_session_registry_row(row) -> dict:
+    return {
+        "run_id": row["run_id"],
+        "agent_id": row["agent_id"],
+        "holder": row["holder"],
+        "lock_token": row["lock_token"],
+        "state": row["state"],
+        "workspace_name": row["workspace_name"],
+        "sandbox_name": row["sandbox_name"],
+        "provider_name": row["provider_name"],
+        "profile_name": row["profile_name"],
+        "started_at": row["started_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+        "detail": row["detail"],
+    }
+
+
+async def api_session_registry_register(request: Request) -> JSONResponse:
+    """POST /api/session-registry/register — upsert a session record.
+
+    Re-registering the same run_id resets it to open with fresh timestamps
+    and cleared names/detail.
+    """
+    pool = get_pool()
+    body = await request.json()
+    run_id = body.get("run_id")
+    agent_id = body.get("agent_id")
+    holder = body.get("holder")
+    lock_token = body.get("lock_token")
+
+    errors = [
+        _validate_run_id(run_id),
+        _validate_registry_field("agent_id", agent_id, REGISTRY_AGENT_ID_MAX),
+        _validate_registry_field("holder", holder, REGISTRY_HOLDER_MAX),
+    ]
+    if lock_token is not None:
+        errors.append(_validate_lock_token(lock_token))
+    for error in errors:
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO session_registry (run_id, agent_id, holder, lock_token)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (run_id) DO UPDATE SET
+            agent_id = $2, holder = $3, lock_token = $4, state = 'open',
+            workspace_name = NULL, sandbox_name = NULL, provider_name = NULL,
+            profile_name = NULL, detail = NULL,
+            started_at = NOW(), updated_at = NOW()
+        RETURNING run_id, started_at
+        """,
+        run_id,
+        agent_id,
+        holder,
+        lock_token,
+    )
+    await bus.publish(Event("session_registry", {"action": "register", "run_id": run_id, "holder": holder}))
+    return JSONResponse({"registered": True, "run_id": row["run_id"], "started_at": row["started_at"].isoformat()})
+
+
+async def api_session_registry_update(request: Request) -> JSONResponse:
+    """POST /api/session-registry/update — patch fields on a session record.
+
+    Absent fields are untouched; explicit null clears a name, detail, or
+    lock_token. State values are stored verbatim, never interpreted.
+    """
+    pool = get_pool()
+    body = await request.json()
+    run_id = body.get("run_id")
+
+    error = _validate_run_id(run_id)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    updates: dict[str, object] = {}
+    for field, maximum in REGISTRY_NAME_FIELDS.items():
+        if field not in body:
+            continue
+        value = body[field]
+        if value is None and field != "state":
+            updates[field] = None  # explicit null clears the name
+            continue
+        error = _validate_registry_field(field, value, maximum)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        updates[field] = value
+    if "detail" in body:
+        updates["detail"] = body["detail"]
+    if "lock_token" in body:
+        lock_token = body["lock_token"]
+        if lock_token is not None:
+            error = _validate_lock_token(lock_token)
+            if error:
+                return JSONResponse({"error": error}, status_code=400)
+        updates["lock_token"] = lock_token
+
+    if not updates:
+        return JSONResponse({"error": "at least one updatable field is required"}, status_code=400)
+
+    assignments = []
+    params: list[object] = [run_id]
+    for index, (field, value) in enumerate(updates.items(), start=2):
+        assignments.append(f"{field} = ${index}")
+        params.append(json.dumps(value) if field == "detail" and value is not None else value)
+    assignments.append("updated_at = NOW()")
+    row = await pool.fetchrow(
+        f"UPDATE session_registry SET {', '.join(assignments)} WHERE run_id = $1 RETURNING *",
+        *params,
+    )
+    await bus.publish(Event("session_registry", {"action": "update", "run_id": run_id}))
+    if row is None:
+        return JSONResponse({"updated": False}, status_code=404)
+    return JSONResponse({"updated": True, "record": _serialize_session_registry_row(row)})
+
+
+async def api_session_registry_list(request: Request) -> JSONResponse:
+    """GET /api/session-registry — list session records, oldest first.
+
+    Optional exact-match state filter; state values are not interpreted.
+    """
+    pool = get_pool()
+    state = request.query_params.get("state")
+    if state is not None:
+        error = _validate_registry_field("state", state, REGISTRY_STATE_MAX)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        rows = await pool.fetch(
+            "SELECT * FROM session_registry WHERE state = $1 ORDER BY started_at",
+            state,
+        )
+    else:
+        rows = await pool.fetch("SELECT * FROM session_registry ORDER BY started_at")
+    return JSONResponse([_serialize_session_registry_row(row) for row in rows])

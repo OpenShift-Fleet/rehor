@@ -446,6 +446,25 @@ CREATE TABLE IF NOT EXISTS session_locks (
     expires_at   TIMESTAMPTZ NOT NULL
 );
 
+-- Session registry — durable tracking of dispatcher sandbox sessions so a
+-- replacement dispatcher pod can reconcile in-flight work after a restart or
+-- hard kill (REHOR-218). Storage only: the dispatcher owns the lifecycle and
+-- interprets state values.
+CREATE TABLE IF NOT EXISTS session_registry (
+    run_id         TEXT PRIMARY KEY,
+    agent_id       TEXT NOT NULL,
+    holder         TEXT NOT NULL,
+    lock_token     TEXT,
+    state          TEXT NOT NULL DEFAULT 'open',
+    workspace_name TEXT,
+    sandbox_name   TEXT,
+    provider_name  TEXT,
+    profile_name   TEXT,
+    started_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    detail         JSONB
+);
+
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
 -- Re-run this after seeding data:

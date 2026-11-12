@@ -98,6 +98,9 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_memory_get,
         api_memory_search,
         api_memory_upload,
+        api_session_registry_list,
+        api_session_registry_register,
+        api_session_registry_update,
         api_stats,
         api_tags,
         api_task_delete,
@@ -143,6 +146,9 @@ def build_app() -> tuple[Starlette, Starlette]:
     mcp.custom_route("/api/locks/renew", methods=["POST"])(api_locks_renew)
     mcp.custom_route("/api/locks/release", methods=["POST"])(api_locks_release)
     mcp.custom_route("/api/locks", methods=["GET"])(api_locks_list)
+    mcp.custom_route("/api/session-registry/register", methods=["POST"])(api_session_registry_register)
+    mcp.custom_route("/api/session-registry/update", methods=["POST"])(api_session_registry_update)
+    mcp.custom_route("/api/session-registry", methods=["GET"])(api_session_registry_list)
 
     mcp_app = mcp.http_app(transport="streamable-http")
 
