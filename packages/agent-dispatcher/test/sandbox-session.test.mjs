@@ -120,7 +120,10 @@ function fixture(options = {}) {
       return { status: { state: ProviderReadinessState.READY, receipt: { desired: { ...revision, sandboxId: sandbox.metadata.id, providerId: provider.metadata.id, providerResourceVersion: 1n } }, observed: { ...revision, credentialsInstalled: true, policyActive: true, launchEnvironmentInstalled: true } } };
     },
     async *execSandbox(request, callOptions) {
-      const isRunner = request.command[0] === "/usr/bin/bash" || request.command[1] === "/opt/rehor/sandbox-bootstrap.py";
+      // The runner command is wrapped in a keepalive shell loop (REHOR-245);
+      // detect it by the inner bootstrap/entrypoint reference.
+      const commandText = request.command.join(" ");
+      const isRunner = commandText.includes("/opt/rehor/sandbox-bootstrap.py") || commandText.includes("/home/botuser/app/entrypoint.sh");
       if (isRunner) {
         yield { payload: { case: "stdout", value: { data: Buffer.from(prompt) } } };
         yield { payload: { case: "stderr", value: { data: Buffer.from(token) } } };
@@ -373,7 +376,7 @@ test("safe stdin writer then exact runner with per-exec pointers, unique request
   for (const expected of ["os.O_EXCL", "os.O_NOFOLLOW", "0o600", "os.fstat", "stream.read() != data", INPUT_FILE_PATH]) assert.ok(writer.request.command[2].includes(expected));
   assert.equal(JSON.parse(writer.request.stdin.toString()).prompt, prompt);
   assert.equal(writer.request.requestId, result.writeRequestId);
-  assert.deepEqual(runner.request.command, ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"]);
+  assert.deepEqual(runner.request.command, ["/usr/bin/sh", "-c", "/usr/bin/bash /home/botuser/app/entrypoint.sh & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?"]);
   assert.deepEqual(runner.request.environment, { ...environment, ...INPUT_ENVIRONMENT });
   assert.equal(runner.request.environment.BOT_MEMORY_URL, environment.BOT_MEMORY_URL);
   assert.equal(runner.request.workdir, "/home/botuser/app");
@@ -545,7 +548,7 @@ test("private runtime uses configurable paths and accepts safe exact Gateway fil
   assert.deepEqual(spec.policy.filesystem.readWrite, ["/tmp", "/sandbox"]);
   const [writer, runner] = f.calls.filter((call) => call.name === "execSandbox");
   assert.equal(writer.request.workdir, "/sandbox");
-  assert.deepEqual(runner.request.command, ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]);
+  assert.deepEqual(runner.request.command, ["/usr/bin/sh", "-c", "/usr/bin/python3.12 /opt/rehor/sandbox-bootstrap.py & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?"]);
   assert.equal(runner.request.workdir, "/sandbox");
   assert.deepEqual(runner.request.environment, { ...INPUT_ENVIRONMENT, REHOR_RUNTIME_SOURCE: "/opt/custom/app", REHOR_RUNTIME_PARENT: "/sandbox" });
 });

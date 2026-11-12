@@ -380,9 +380,17 @@ export class SandboxSession {
       else {
         record.stage = "runner";
         signal?.throwIfAborted();
-        const command = this.runtime.kind === "private"
-          ? ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]
-          : ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"];
+        // Wrap the runner in a keepalive loop: long silent phases (a hung
+        // model turn, quiet builds) starve the exec stream of traffic and
+        // idle timeouts between the client and the gateway reset it
+        // (REHOR-245: a stalled session was cancelled ~8 minutes into
+        // silence, orphaning its cycle record and transcript). The periodic
+        // stdout byte is drained and never logged; the runner's exit status
+        // propagates through wait.
+        const runnerCommand = this.runtime.kind === "private"
+          ? "/usr/bin/python3.12 /opt/rehor/sandbox-bootstrap.py"
+          : "/usr/bin/bash /home/botuser/app/entrypoint.sh";
+        const command = ["/usr/bin/sh", "-c", `${runnerCommand} & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?`];
         const exit = await execute(command, Buffer.alloc(0), record.runnerRequestId, true);
         record.outcome = exit === 0 ? "passed" : "failed";
       }
