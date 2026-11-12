@@ -9,6 +9,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { DeletionOutcome, NetworkEnforcementMode, NetworkTlsMode, ProviderReadinessState, ProviderProfileSchema, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { SandboxSession } from "../dist/sandbox-session.js";
+import { readSandboxRetentionMs } from "../dist/config.js";
 import { createPublicEgressRule } from "../dist/egress-policy.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "../dist/input-envelope.js";
@@ -89,6 +90,13 @@ function fixture(options = {}) {
           networkPolicies: { platform_default: { name: "platform-default" } },
         }).networkPolicies.platform_default;
       }
+      // The real Gateway (>= 0.1.6) attaches a reserved per-provider rule on
+      // provider attachment (credential placeholder resolution); strict
+      // public-egress mode must tolerate exactly this rule and nothing else.
+      const reservedProviderRule = `_provider_${request.spec.providers[0]}`;
+      suppliedPolicy.networkPolicies[reservedProviderRule] = create(SandboxPolicySchema, {
+        networkPolicies: { [reservedProviderRule]: { name: reservedProviderRule } },
+      }).networkPolicies[reservedProviderRule];
       options.enrichPolicy?.(suppliedPolicy);
       if (options.delayedCreate === "sandbox") {
         setTimeout(() => { sandbox = created; }, 25);
@@ -112,7 +120,10 @@ function fixture(options = {}) {
       return { status: { state: ProviderReadinessState.READY, receipt: { desired: { ...revision, sandboxId: sandbox.metadata.id, providerId: provider.metadata.id, providerResourceVersion: 1n } }, observed: { ...revision, credentialsInstalled: true, policyActive: true, launchEnvironmentInstalled: true } } };
     },
     async *execSandbox(request, callOptions) {
-      const isRunner = request.command[0] === "/usr/bin/bash" || request.command[1] === "/opt/rehor/sandbox-bootstrap.py";
+      // The runner command is wrapped in a keepalive shell loop (REHOR-245);
+      // detect it by the inner bootstrap/entrypoint reference.
+      const commandText = request.command.join(" ");
+      const isRunner = commandText.includes("/opt/rehor/sandbox-bootstrap.py") || commandText.includes("/home/botuser/app/entrypoint.sh");
       if (isRunner) {
         yield { payload: { case: "stdout", value: { data: Buffer.from(prompt) } } };
         yield { payload: { case: "stderr", value: { data: Buffer.from(token) } } };
@@ -147,13 +158,13 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}) }), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}), ...(options.sandboxRetentionMs !== undefined ? { sandboxRetentionMs: options.sandboxRetentionMs } : {}), ...(options.onRetention !== undefined ? { onRetention: options.onRetention } : {}) }), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
 test("session options preserve default, explicit undefined, and custom values", () => {
   const { raw, memory } = fixture();
-  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined, publicEgress: undefined }]) {
+  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined, publicEgress: undefined, sandboxRetentionMs: undefined, onRetention: undefined }]) {
     const session = new SandboxSession({ raw, memory, ...options });
     assert.equal(session.raw, raw);
     assert.equal(session.memory, memory);
@@ -161,16 +172,66 @@ test("session options preserve default, explicit undefined, and custom values", 
     assert.deepEqual(session.runtime, { kind: "legacy" });
     assert.equal(session.modelProxyUrl, undefined);
     assert.equal(session.publicEgress, false);
+    assert.equal(session.sandboxRetentionMs, 0);
+    assert.equal(session.onRetention, undefined);
   }
   const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
   const modelProxyUrl = new URL("https://model-gateway.example.test/v1");
   for (const cleanupBudgetMs of [0, 1234]) {
-    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl, publicEgress: true });
+    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl, publicEgress: true, sandboxRetentionMs: 2500, onRetention: () => {} });
     assert.equal(session.cleanupBudgetMs, cleanupBudgetMs);
     assert.equal(session.runtime, runtime);
     assert.equal(session.modelProxyUrl, modelProxyUrl);
     assert.equal(session.publicEgress, true);
+    assert.equal(session.sandboxRetentionMs, 2500);
+    assert.equal(typeof session.onRetention, "function");
   }
+});
+
+test("sandbox retention config is opt-in, whole seconds, and fail-closed", () => {
+  assert.equal(readSandboxRetentionMs({}), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: undefined }), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "0" }), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "30" }), 30_000);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "86400" }), 86_400_000);
+  for (const value of ["", " ", "-1", "1.5", "abc", "86401", "999999999999999999999999", "10s", "0x10"]) {
+    assert.throws(() => readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: value }), undefined, `rejects ${JSON.stringify(value)}`);
+  }
+});
+
+test("retention holds finished session resources before cleanup and reports names", async () => {
+  const retained = [];
+  const f = fixture({ sandboxRetentionMs: 40, onRetention: (info) => retained.push(info) });
+  const startedAt = performance.now();
+  const result = await f.session.run(image, decision, {});
+  const elapsedMs = performance.now() - startedAt;
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(result.completion, "gone");
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].runId, result.runId);
+  assert.equal(retained[0].workspaceName, result.workspace.name);
+  assert.equal(retained[0].sandboxName, result.sandbox.name);
+  assert.equal(retained[0].retentionMs, 40);
+  assert.ok(elapsedMs >= 40, "retention delays cleanup");
+  assert.equal(f.calls.filter((c) => c.name === "deleteSandbox").length, 1);
+  assert.ok(f.resources().sandbox === undefined && f.resources().workspace === undefined);
+});
+
+test("aborting during retention falls through to immediate cleanup", async () => {
+  const retained = [];
+  const f = fixture({ sandboxRetentionMs: 120_000, onRetention: (info) => retained.push(info) });
+  const controller = new AbortController();
+  const running = f.session.run(image, decision, {}, controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const abortedAt = performance.now();
+  controller.abort();
+  const result = await running;
+  assert.ok(performance.now() - abortedAt < 10_000, "cleanup does not wait out the retention window");
+  assert.equal(retained.length, 1);
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(result.completion, "gone");
+  assert.ok(f.resources().sandbox === undefined && f.resources().workspace === undefined);
 });
 
 test("session passes deployment runtime options to the memory policy builder", () => {
@@ -259,6 +320,31 @@ test("extra effective network rules fail closed only while public egress is enab
   assert.equal(legacyResult.completion, "gone");
 });
 
+test("strict public egress tolerates only the exact reserved provider rule", async () => {
+  // Regression (REHOR-245): the real Gateway (>= 0.1.6) attaches a reserved
+  // `_provider_<attached-provider>` rule on provider attachment; strict mode
+  // rejected it and every healthy session failed at the readiness stage.
+  const healthy = fixture({ publicEgress: true });
+  const healthyResult = await healthy.session.run(image, decision, {});
+  assert.equal(healthyResult.outcome, "passed");
+  assert.equal(healthyResult.completion, "gone");
+  assert.equal(healthyResult.cleanup, "deleted");
+
+  // A reserved-shaped rule for a different provider is not exempt.
+  const impostor = fixture({
+    publicEgress: true,
+    enrichPolicy: (policy) => {
+      policy.networkPolicies._provider_someone_else = create(SandboxPolicySchema, {
+        networkPolicies: { _provider_someone_else: { name: "_provider_someone_else" } },
+      }).networkPolicies._provider_someone_else;
+    },
+  });
+  const impostorResult = await impostor.session.run(image, decision, {});
+  assert.equal(impostorResult.outcome, "unknown");
+  assert.equal(impostorResult.stage, "readiness");
+  assert.equal(impostorResult.errorCode, "other");
+});
+
 test("mutating a public endpoint away from raw TLS skip fails the effective policy check", async () => {
   // An effective public endpoint whose TLS mode was widened from SKIP
   // must fail closed.
@@ -290,7 +376,7 @@ test("safe stdin writer then exact runner with per-exec pointers, unique request
   for (const expected of ["os.O_EXCL", "os.O_NOFOLLOW", "0o600", "os.fstat", "stream.read() != data", INPUT_FILE_PATH]) assert.ok(writer.request.command[2].includes(expected));
   assert.equal(JSON.parse(writer.request.stdin.toString()).prompt, prompt);
   assert.equal(writer.request.requestId, result.writeRequestId);
-  assert.deepEqual(runner.request.command, ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"]);
+  assert.deepEqual(runner.request.command, ["/usr/bin/sh", "-c", "/usr/bin/bash /home/botuser/app/entrypoint.sh & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?"]);
   assert.deepEqual(runner.request.environment, { ...environment, ...INPUT_ENVIRONMENT });
   assert.equal(runner.request.environment.BOT_MEMORY_URL, environment.BOT_MEMORY_URL);
   assert.equal(runner.request.workdir, "/home/botuser/app");
@@ -366,7 +452,7 @@ test("default policy remains constrained HTTPS health-only, not inferred runner 
   const rule = policy.networkPolicies.memory_health;
   assert.equal(rule.endpoints[0].host, "memory.example.test");
   assert.deepEqual(rule.endpoints[0].rules, [{ allow: { method: "GET", path: "/health" } }]);
-  assert.deepEqual(rule.binaries, [{ path: "/usr/bin/python3.12" }]);
+  assert.deepEqual(rule.binaries, [{ path: "/usr/bin/python3.12" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }]);
   assert.deepEqual(policy.filesystem.readOnly, ["/home/botuser/app"]);
   assert.deepEqual(policy.filesystem.readWrite, ["/home/botuser/repos", "/home/botuser/data", "/tmp"]);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
@@ -391,7 +477,7 @@ test("model proxy URL dispatches with the model-gateway rule verified against th
     { allow: { method: "POST", path: "/v1/responses" } },
   ]);
   assert.deepEqual(rule.endpoints[0].credentialBinding, { provider: result.provider.name });
-  assert.deepEqual(rule.binaries, [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }]);
+  assert.deepEqual(rule.binaries, [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }]);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
 });
 
@@ -462,7 +548,7 @@ test("private runtime uses configurable paths and accepts safe exact Gateway fil
   assert.deepEqual(spec.policy.filesystem.readWrite, ["/tmp", "/sandbox"]);
   const [writer, runner] = f.calls.filter((call) => call.name === "execSandbox");
   assert.equal(writer.request.workdir, "/sandbox");
-  assert.deepEqual(runner.request.command, ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]);
+  assert.deepEqual(runner.request.command, ["/usr/bin/sh", "-c", "/usr/bin/python3.12 /opt/rehor/sandbox-bootstrap.py & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?"]);
   assert.equal(runner.request.workdir, "/sandbox");
   assert.deepEqual(runner.request.environment, { ...INPUT_ENVIRONMENT, REHOR_RUNTIME_SOURCE: "/opt/custom/app", REHOR_RUNTIME_PARENT: "/sandbox" });
 });

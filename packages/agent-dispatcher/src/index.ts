@@ -1,4 +1,4 @@
-import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readServiceGatewayUrl, type AuthConfig } from "./config.js";
+import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readSandboxRetentionMs, readServiceGatewayUrl, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
@@ -83,6 +83,7 @@ async function start(): Promise<void> {
   let serviceGatewayUrl: URL | undefined;
   let botMemoryUrl: URL | undefined;
   let publicEgress = false;
+  let sandboxRetentionMs = 0;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
@@ -91,6 +92,7 @@ async function start(): Promise<void> {
     modelProxyUrl = readModelProxyUrl(process.env);
     serviceGatewayUrl = readServiceGatewayUrl(process.env, authConfig, modelProxyUrl);
     publicEgress = readPublicEgressEnabled(process.env);
+    sandboxRetentionMs = readSandboxRetentionMs(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
     configuration.failure("configuration");
@@ -147,6 +149,10 @@ async function start(): Promise<void> {
         memoryRuntime: !!botMemoryUrl,
         ...(serviceGatewayUrl ? { serviceGatewayUrl } : {}),
         ...(publicEgress ? { publicEgress } : {}),
+        sandboxRetentionMs,
+        onRetention: (info) => logger.log("sandbox.retention", "success", {
+          retentionMs: info.retentionMs, workspaceName: info.workspaceName, sandboxName: info.sandboxName,
+        }),
       });
       const signal = stopController.signal;
       const hostEnvironment = preflightEnvironment();

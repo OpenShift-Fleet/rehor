@@ -64,6 +64,12 @@ parameters:
     Opt-in for centrally owned sandbox public egress. Deployment-level
     flag only, no per-agent override. Default "false".
   value: "false"
+- name: AGENT_DISPATCHER_SANDBOX_RETENTION
+  description: >
+    Debug aid (REHOR-245): whole seconds to keep a finished session's
+    gateway resources before cleanup so failed sandboxes stay
+    inspectable. Default "0" cleans up immediately. Maximum 86400.
+  value: "0"
 objects:
 
 # ============================================================================
@@ -185,6 +191,9 @@ objects:
           # Central opt-in; no per-agent policy knob.
           - name: AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED
             value: ${AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED}
+          # Debug retention (REHOR-245); default "0" keeps immediate cleanup.
+          - name: AGENT_DISPATCHER_SANDBOX_RETENTION
+            value: ${AGENT_DISPATCHER_SANDBOX_RETENTION}
           # Memory credential preflight: TokenRequest and memory Route
           # configuration are supplied by Vault-backed devbot-secrets.
           - name: AGENT_DISPATCHER_AUTH_NAMESPACE

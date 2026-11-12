@@ -22,7 +22,13 @@ export type SandboxSessionOptions = {
   serviceGatewayUrl?: URL;
   /** Central public-egress rollout flag (REHOR-253); default false. */
   publicEgress?: boolean;
+  /** Debug retention (REHOR-245): ms to hold gateway resources after a session
+   * before cleanup so failed sandboxes stay inspectable; default 0. */
+  sandboxRetentionMs?: number;
+  /** Best-effort notification when retention holds a session's resources. */
+  onRetention?: (info: SandboxRetentionInfo) => void;
 };
+export type SandboxRetentionInfo = { runId: string; workspaceName: string; sandboxName: string; retentionMs: number };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
 
@@ -143,6 +149,8 @@ export class SandboxSession {
   private readonly memoryRuntime: boolean;
   private readonly serviceGatewayUrl: URL | undefined;
   private readonly publicEgress: boolean;
+  private readonly sandboxRetentionMs: number;
+  private readonly onRetention: ((info: SandboxRetentionInfo) => void) | undefined;
 
   constructor({
     raw,
@@ -153,6 +161,8 @@ export class SandboxSession {
     memoryRuntime = false,
     serviceGatewayUrl,
     publicEgress = false,
+    sandboxRetentionMs = 0,
+    onRetention,
   }: SandboxSessionOptions) {
     this.raw = raw;
     this.memory = memory;
@@ -162,6 +172,8 @@ export class SandboxSession {
     this.memoryRuntime = memoryRuntime;
     this.serviceGatewayUrl = serviceGatewayUrl;
     this.publicEgress = publicEgress;
+    this.sandboxRetentionMs = sandboxRetentionMs;
+    this.onRetention = onRetention;
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
@@ -310,9 +322,14 @@ export class SandboxSession {
               // Central public egress (REHOR-253): while enabled, the
               // effective network rule key set must match the requested
               // set exactly. Legacy flag-off behavior keeps accepting
-              // additive Gateway baselines.
+              // additive Gateway baselines. The Gateway attaches one
+              // reserved `_provider_<name>` rule on provider attachment
+              // (credential placeholder resolution); it is gateway-owned,
+              // deterministic, and credential-free, so strict mode ignores
+              // exactly that rule and nothing else.
+              const reservedProviderRule = `_provider_${record.provider.name}`;
               const expectedKeys = Object.keys(expected.networkPolicies).sort();
-              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).sort();
+              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).filter((key) => key !== reservedProviderRule).sort();
               if (expectedKeys.length !== actualKeys.length || expectedKeys.some((key, index) => key !== actualKeys[index])) throw new Error();
             }
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {
@@ -363,9 +380,17 @@ export class SandboxSession {
       else {
         record.stage = "runner";
         signal?.throwIfAborted();
-        const command = this.runtime.kind === "private"
-          ? ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]
-          : ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"];
+        // Wrap the runner in a keepalive loop: long silent phases (a hung
+        // model turn, quiet builds) starve the exec stream of traffic and
+        // idle timeouts between the client and the gateway reset it
+        // (REHOR-245: a stalled session was cancelled ~8 minutes into
+        // silence, orphaning its cycle record and transcript). The periodic
+        // stdout byte is drained and never logged; the runner's exit status
+        // propagates through wait.
+        const runnerCommand = this.runtime.kind === "private"
+          ? "/usr/bin/python3.12 /opt/rehor/sandbox-bootstrap.py"
+          : "/usr/bin/bash /home/botuser/app/entrypoint.sh";
+        const command = ["/usr/bin/sh", "-c", `${runnerCommand} & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?`];
         const exit = await execute(command, Buffer.alloc(0), record.runnerRequestId, true);
         record.outcome = exit === 0 ? "passed" : "failed";
       }
@@ -381,6 +406,19 @@ export class SandboxSession {
     } else {
       record.completion = "unknown";
       record.cleanup = "unknown";
+      // Debug retention (REHOR-245): hold the session's gateway resources so
+      // failed sandboxes stay inspectable (logs, exec) before cleanup. An
+      // abort during the wait falls through to immediate cleanup, and the
+      // cleanup budget starts only after the wait. The record keeps its
+      // unresolved values until the deferred reconciliation completes.
+      if (this.sandboxRetentionMs > 0 && !signal?.aborted) {
+        try {
+          this.onRetention?.({ runId, workspaceName: workspace.name, sandboxName: sandbox.name, retentionMs: this.sandboxRetentionMs });
+        } catch { /* Notification is best effort. */ }
+        try {
+          await sleep(this.sandboxRetentionMs, undefined, signal ? { signal } : undefined);
+        } catch { /* Aborted: clean up now. */ }
+      }
       // Bound the entire reconciliation once, not the sum of per-RPC retries.
       const cleanupSignal = AbortSignal.timeout(this.cleanupBudgetMs);
       try {

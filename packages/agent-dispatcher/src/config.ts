@@ -133,3 +133,23 @@ export function readPublicEgressEnabled(env: NodeJS.ProcessEnv): boolean {
   if (value === "false") return false;
   throw new Error(`${publicEgressFlagVariable}, when set, must be exactly "true" or "false"`);
 }
+
+const sandboxRetentionVariable = "AGENT_DISPATCHER_SANDBOX_RETENTION";
+
+// Debug aid (REHOR-245): whole seconds to keep a finished session's gateway
+// resources before cleanup so failed sandboxes can be inspected. Default 0
+// preserves immediate cleanup; the ceiling bounds how long a session can hold
+// the dispatcher loop. Fail-closed: only plain decimal seconds are accepted so
+// a typo cannot silently disable or extend the hold.
+export function readSandboxRetentionMs(env: NodeJS.ProcessEnv): number {
+  const value = env[sandboxRetentionVariable];
+  if (value === undefined) return 0;
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error(`${sandboxRetentionVariable}, when set, must be a whole number of seconds between 0 and 86400`);
+  }
+  const seconds = Number(value);
+  if (!Number.isSafeInteger(seconds) || seconds > 86_400) {
+    throw new Error(`${sandboxRetentionVariable}, when set, must be a whole number of seconds between 0 and 86400`);
+  }
+  return seconds * 1000;
+}

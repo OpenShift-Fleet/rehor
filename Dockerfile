@@ -106,7 +106,18 @@ RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi
     && dnf clean all
 
 # Buildah (rootless container image builder — no daemon, works in OpenShift)
-RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs \
+# UBI9 appstream repo skew (REHOR-245): netavark was republished with epoch 3
+# (3:1.17.2) requiring aardvark-dns >= 3:1.17, but the repo still carries the
+# epoch-2 build (2:1.17.1) and keeps no older versions, so dnf cannot resolve
+# the buildah chain at all (--nobest has nothing to fall back to). Install
+# netavark with --nodeps, then resolve buildah normally; netavark 1.17.2 and
+# aardvark-dns 1.17.1 are functionally matched. Revert to a plain
+# `dnf install -y --nodocs buildah fuse-overlayfs` once the repo resyncs.
+RUN cd /tmp \
+    && dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' download netavark \
+    && rpm -i --nodeps netavark-*.rpm \
+    && rm -f netavark-*.rpm \
+    && dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs aardvark-dns \
     && dnf clean all
 
 # tini — proper init process that reaps zombie children
