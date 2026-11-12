@@ -1,3 +1,4 @@
+# Rebuild 2026-11-11: refresh base image packages.
 # Build executor binaries
 FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:15c3098dc4639e8a0e6a1bc77b50964513a1d76dccae4b07b9808101c5addd04 AS executor-builder
 WORKDIR /build

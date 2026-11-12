@@ -45,6 +45,11 @@ parameters:
     set, dispatched sandboxes gain a model-proxy network policy rule and
     the runner environment receives REHOR_MODEL_PROXY_URL.
   required: true
+- name: AGENT_DISPATCHER_SERVICE_GATEWAY_URL
+  description: Sandbox-facing HTTPS service gateway origin.
+  value: ""
+- name: BOT_MEMORY_URL
+  value: ""
 - name: JIRA_MCP_URL
   description: >
     Jira MCP endpoint forwarded to preflights. In-cluster service DNS serves
@@ -59,6 +64,12 @@ parameters:
     Opt-in for centrally owned sandbox public egress. Deployment-level
     flag only, no per-agent override. Default "false".
   value: "false"
+- name: AGENT_DISPATCHER_SANDBOX_RETENTION
+  description: >
+    Debug aid (REHOR-245): whole seconds to keep a finished session's
+    gateway resources before cleanup so failed sandboxes stay
+    inspectable. Default "0" cleans up immediately. Maximum 86400.
+  value: "0"
 objects:
 
 # ============================================================================
@@ -85,6 +96,7 @@ objects:
 #      AGENT_DISPATCHER_AUTH_NAMESPACE, AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT,
 #      AGENT_DISPATCHER_AUTH_MEMORY_URL — memory TokenRequest configuration
 #      jira-email — shared Jira identity forwarded to preflights
+#      bot-gh-username, bot-email, bot-gl-name, bot-gl-email — Git identities
 #    Stage Vault-synced devbot-secrets version 35 contains these keys.
 # 3. Role/RoleBinding (app-interface, already present) granting the runtime
 #    SA rehor-agent-dispatcher create on serviceaccounts/token for the
@@ -174,9 +186,14 @@ objects:
           # coordinate, so it is a plain parameter rather than a secret key.
           - name: AGENT_DISPATCHER_MODEL_PROXY_URL
             value: ${AGENT_DISPATCHER_MODEL_PROXY_URL}
+          - name: AGENT_DISPATCHER_SERVICE_GATEWAY_URL
+            value: ${AGENT_DISPATCHER_SERVICE_GATEWAY_URL}
           # Central opt-in; no per-agent policy knob.
           - name: AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED
             value: ${AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED}
+          # Debug retention (REHOR-245); default "0" keeps immediate cleanup.
+          - name: AGENT_DISPATCHER_SANDBOX_RETENTION
+            value: ${AGENT_DISPATCHER_SANDBOX_RETENTION}
           # Memory credential preflight: TokenRequest and memory Route
           # configuration are supplied by Vault-backed devbot-secrets.
           - name: AGENT_DISPATCHER_AUTH_NAMESPACE
@@ -232,6 +249,8 @@ objects:
                 name: devbot-secrets
                 key: OPENSHELL_SERVICE_ACCOUNT_SUBJECT
                 optional: true
+          - name: BOT_MEMORY_URL
+            value: ${BOT_MEMORY_URL}
           # Shared Jira identity as a dispatcher-wide default for preflights;
           # agent-specific labels, instance IDs, and workflow settings stay in
           # instance profiles (REHOR-237 follow-up note).
@@ -240,6 +259,27 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: jira-email
+          # Non-secret platform identities; private keys remain in the proxy.
+          - name: GH_USER_NAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gh-username
+          - name: GH_USER_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-email
+          - name: GL_USER_NAME
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gl-name
+          - name: GL_USER_EMAIL
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: bot-gl-email
           # Non-secret service coordinates forwarded to preflights together
           # with the non-secret BOT_* environment above.
           - name: JIRA_MCP_URL

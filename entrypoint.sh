@@ -9,8 +9,8 @@ export REHOR_MODEL_PROXY_URL="${REHOR_MODEL_PROXY_URL:-http://${PROXY_HOST:-prox
 export REHOR_MODEL_PROXY_TOKEN="${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}"
 
 # Dispatcher sandbox dispatch (REHOR-233): the runner executes one delivered
-# input and exits. The sandbox has no executor sidecar, GPG keys, or writable
-# app directory, so deployment-only setup is skipped for that invocation.
+# input and exits. The sandbox uses the HTTP executor gateway rather than a
+# local sidecar and keeps private keys in the proxy.
 SANDBOX_DISPATCH=0
 if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
     if [ "${BOT_EXECUTION_ENGINE:-}" != "coordinator" ]; then
@@ -18,7 +18,7 @@ if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
         exit 64
     fi
     SANDBOX_DISPATCH=1
-    echo "Sandbox dispatch mode: skipping executor/git/auth setup"
+    echo "Sandbox dispatch mode: using gateway services"
 fi
 
 # --- Verify required CLI tools ---
@@ -46,9 +46,12 @@ decode_or_raw() {
     esac
 }
 
-# Git credential helpers — thin clients forward to executor sidecar in proxy container
-git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
-git config --global credential.https://gitlab.cee.redhat.com.helper '!/usr/local/bin/glab credential-helper'
+# Legacy credential helpers. Sandbox Git authentication is configured by the
+# private bootstrap; do not modify or bypass its gateway configuration.
+if [ "$SANDBOX_DISPATCH" -ne 1 ]; then
+    git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
+    git config --global credential.https://gitlab.cee.redhat.com.helper '!/usr/local/bin/glab credential-helper'
+fi
 
 # Optional: internal GitLab CA bundle for strict TLS in bot-side git/curl flows.
 # Supports either raw PEM (GITLAB_CA_CERT_PEM) or base64 PEM (GITLAB_CA_CERT_B64).
@@ -122,10 +125,26 @@ fi
 
 # Per-platform git identity via includeIf (git 2.36+)
 # Each platform gets its own name, email, and GPG signing key.
-# Skipped for sandbox dispatch: no GPG keys are projected and the one-shot
-# runner does not configure deployment git identity.
 if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
-    _log_json "INFO" "Sandbox dispatch: skipping git identity and platform verification"
+    # Never let the shim fall back to its in-cluster default in a sandbox.
+    if [ -n "${EXECUTOR_HTTP_URL:-}${GH_USER_NAME:-}${GH_USER_EMAIL:-}${GL_USER_NAME:-}${GL_USER_EMAIL:-}" ]; then
+        if [ "${REHOR_PRIVATE_RUNTIME:-}" != "1" ]; then
+            echo "FATAL: sandbox Git signing requires the private runtime" >&2
+            exit 1
+        fi
+        if [[ "${EXECUTOR_HTTP_URL:-}" != https://* ]]; then
+            echo "FATAL: sandbox Git signing requires the HTTPS executor gateway" >&2
+            exit 1
+        fi
+        for platform in GH GL; do
+            name_var="${platform}_USER_NAME"
+            email_var="${platform}_USER_EMAIL"
+            if [ -z "${!name_var:-}" ] || [ -z "${!email_var:-}" ]; then
+                echo "FATAL: sandbox Git identity is incomplete for ${platform}" >&2
+                exit 1
+            fi
+        done
+    fi
 else
     GH_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GH_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
     GL_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GL_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"

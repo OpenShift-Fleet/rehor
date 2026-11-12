@@ -14,6 +14,7 @@ const EVENTS = [
   "gateway.oidc",
   "sandbox.session",
   "sandbox.cleanup",
+  "sandbox.retention",
   "ready",
   "shutdown",
 ] as const;
@@ -43,6 +44,10 @@ export interface LogOptions {
   category?: ErrorCategory;
   stage?: SessionStage;
   errorCode?: SessionErrorCode;
+  /** Opaque generated gateway resource names for retention debugging (REHOR-245). */
+  workspaceName?: string;
+  sandboxName?: string;
+  retentionMs?: number;
 }
 
 export interface LifecycleLogger {
@@ -153,16 +158,27 @@ export function createLifecycleLogger(deps: {
       const category = options?.category;
       const stage = options?.stage;
       const errorCode = options?.errorCode;
+      const workspaceName = options?.workspaceName;
+      const sandboxName = options?.sandboxName;
+      const retentionMs = options?.retentionMs;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
       if (errorCode !== undefined && !isMember(SESSION_ERROR_CODES, errorCode)) return;
+      // Gateway resource names are opaque generated identifiers: one letter
+      // plus 18 base36 characters. Anything else is rejected, never logged.
+      if (workspaceName !== undefined && (typeof workspaceName !== "string" || !/^[a-z0-9]{19}$/.test(workspaceName))) return;
+      if (sandboxName !== undefined && (typeof sandboxName !== "string" || !/^[a-z0-9]{19}$/.test(sandboxName))) return;
+      if (retentionMs !== undefined && (typeof retentionMs !== "number" || !Number.isFinite(retentionMs))) return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
       if (errorCode !== undefined) record.errorCode = errorCode;
+      if (workspaceName !== undefined) record.workspaceName = workspaceName;
+      if (sandboxName !== undefined) record.sandboxName = sandboxName;
+      if (retentionMs !== undefined) record.retentionMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, retentionMs)));
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.

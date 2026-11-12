@@ -372,6 +372,126 @@ def test_prepare_bridge_validates_before_installing_skills(tmp_path, monkeypatch
     assert installed == []
 
 
+@pytest.fixture
+def baked_profile_request(tmp_path, monkeypatch):
+    import bot.run as runner
+
+    monkeypatch.setattr(runner, "SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr(runner, "setup_git", lambda script_dir: None)
+    monkeypatch.setenv("REHOR_INPUT_SOURCE", "sandbox")
+    monkeypatch.setenv("REHOR_PRIVATE_RUNTIME", "1")
+    monkeypatch.setenv("BOT_CONFIG_PATH", "instance/fleetshift-config")
+    monkeypatch.setenv("BOT_CONFIG_REPO", "https://example.invalid/must-not-fetch")
+    monkeypatch.delenv("BOT_MODEL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"claude": {"model": "default-claude", "maxTurns": 10}, '
+        '"opencode": {"model": "default-opencode"}, '
+        '"polling": {"intervalSeconds": 300, "idleIntervalSeconds": 60}, "jira": {"boardKey": "TEST"}}'
+    )
+    (tmp_path / "presets" / "workflows" / "jira-sprint").mkdir(parents=True)
+    (tmp_path / ".claude").mkdir()
+    agent = tmp_path / "instance" / "fleetshift-config" / "agent"
+    agent.mkdir(parents=True)
+    (agent / "instance.yaml").write_text(
+        "workflow: jira-sprint\nsource: jira\nruntime: opencode\nprovider: rehor-openai\nmodel: fleet-model\nenvs: []\n"
+    )
+    agents = agent / ".opencode" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "fleetshift-coordinator.md").write_text("---\nmode: primary\n---\nCoordinator\n")
+    (agent / "opencode.json").write_text('{"default_agent": "fleetshift-coordinator"}')
+    (agent / "project-repos.json").write_text('{"example/repo": {"url": "https://example.invalid/repo"}}')
+    shared = tmp_path / "instance" / "shared" / "agent"
+    shared.mkdir(parents=True)
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: pytest.fail("private sandbox must not sync"))
+    return {"operation": "prepare", "scriptDir": str(tmp_path), "label": "fleetshift"}, agent, shared
+
+
+def test_private_sandbox_loads_baked_profile_and_exposes_native_agents(baked_profile_request):
+    request, agent, shared = baked_profile_request
+    result = handle(request)
+
+    assert (result["runtimeId"], result["providerId"], result["model"]) == ("opencode", "rehor-openai", "fleet-model")
+    assert result["remoteAgentDir"] == str(agent.resolve())
+    assert result["sharedAgentDir"] == str(shared.resolve())
+    assert json.loads((agent / "opencode.json").read_text())["default_agent"] == "fleetshift-coordinator"
+    assert (agent / ".opencode" / "agents" / "fleetshift-coordinator.md").is_file()
+    assert "example/repo" in json.loads((agent.parents[2] / "project-repos.json").read_text())
+
+
+@pytest.mark.parametrize("path", ["/absolute/profile", "../outside", "instance/../fleetshift-config", "missing"])
+def test_private_sandbox_rejects_unsafe_or_missing_profile(baked_profile_request, monkeypatch, path):
+    from bot.coordinator_bridge import BridgeError
+
+    request, _, _ = baked_profile_request
+    monkeypatch.setenv("BOT_CONFIG_PATH", path)
+    with pytest.raises(BridgeError, match="BOT_CONFIG_PATH"):
+        handle(request)
+
+
+@pytest.mark.parametrize("target", ["agent", "instance.yaml", "profile", "shared"])
+def test_private_sandbox_rejects_escaping_symlinks(baked_profile_request, tmp_path, target):
+    from bot.coordinator_bridge import BridgeError
+
+    request, agent, shared = baked_profile_request
+    outside = tmp_path.parent / (tmp_path.name + "-outside")
+    outside.mkdir()
+    if target == "instance.yaml":
+        config = agent / "instance.yaml"
+        config.unlink()
+        (outside / "instance.yaml").write_text("runtime: opencode\n")
+        config.symlink_to(outside / "instance.yaml")
+    else:
+        import shutil
+
+        path = {"agent": agent, "profile": agent.parent, "shared": shared}[target]
+        shutil.rmtree(path)
+        path.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(BridgeError, match="BOT_CONFIG_PATH"):
+        handle(request)
+
+
+@pytest.mark.parametrize("missing", ["agent", "instance.yaml"])
+def test_private_sandbox_rejects_incomplete_profile(baked_profile_request, missing):
+    import shutil
+
+    from bot.coordinator_bridge import BridgeError
+
+    request, agent, _ = baked_profile_request
+    if missing == "agent":
+        shutil.rmtree(agent)
+    else:
+        (agent / "instance.yaml").unlink()
+    with pytest.raises(BridgeError, match="BOT_CONFIG_PATH"):
+        handle(request)
+
+
+@pytest.mark.parametrize("source,private", [("legacy", "1"), ("sandbox", "0"), ("legacy", "0")])
+def test_non_private_sandbox_keeps_legacy_remote_sync(baked_profile_request, monkeypatch, source, private):
+    import bot.run as runner
+
+    request, agent, shared = baked_profile_request
+    monkeypatch.setenv("REHOR_INPUT_SOURCE", source)
+    monkeypatch.setenv("REHOR_PRIVATE_RUNTIME", private)
+    calls = []
+    monkeypatch.setattr(runner, "sync_config_repo", lambda label: calls.append(label) or (agent, shared))
+    result = handle(request)
+    assert calls == ["fleetshift"]
+    assert result["remoteAgentDir"] == str(agent)
+
+
+@pytest.mark.parametrize("path", [None, ""])
+def test_private_sandbox_without_profile_path_fails_closed(baked_profile_request, monkeypatch, path):
+    from bot.coordinator_bridge import BridgeError
+
+    request, _, _ = baked_profile_request
+    if path is None:
+        monkeypatch.delenv("BOT_CONFIG_PATH")
+    else:
+        monkeypatch.setenv("BOT_CONFIG_PATH", path)
+    with pytest.raises(BridgeError, match="BOT_CONFIG_PATH is required"):
+        handle(request)
+
+
 def test_open_code_mcp_merge_preserves_environment_references(tmp_path, monkeypatch):
     from bot.config import load_mcp_servers
 
