@@ -544,6 +544,104 @@ def test_app_interface_mr_ignores_old_merged_konflux_mr(monkeypatch):
     assert _any_pr_mr_merged(task, "app-interface-mr") is False
 
 
+def test_intake_step_pending_returns_start(env_vars, monkeypatch, capsys):
+    """Regression (REHOR-265): freshly claimed task at onboarding:intake with no
+    comments and no feedback must still emit start — intake advances when the
+    ticket is read (bot action), not on external feedback."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-265",
+                "status": "in_progress",
+                "repo": "",
+                "last_addressed": "2026-11-12T14:57:01+00:00",
+                "metadata": {
+                    "step": "intake",
+                    "phase_tickets": {
+                        "phase1": "REHOR-266",
+                        "phase2": "REHOR-267",
+                        "phase3": "REHOR-268",
+                    },
+                },
+            }
+        ]
+    )
+    issue = {
+        "labels": ["rehor-ai-onboarding-bot", "onboarding:intake"],
+        "comments": [],
+    }
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+    monkeypatch.setattr(
+        "onboarding_preflight._any_pr_mr_merged",
+        lambda t, s: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "INTAKE PENDING" in out["content"]
+
+
+def test_intake_step_jira_unavailable_returns_skip(env_vars, monkeypatch, capsys):
+    """Intake pending must not fire when the Jira label cannot be confirmed —
+    metadata step alone is not evidence (could be stale)."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-265",
+                "status": "in_progress",
+                "repo": "",
+                "last_addressed": "2026-11-12T14:57:01+00:00",
+                "metadata": {"step": "intake"},
+            }
+        ]
+    )
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: None)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "INTAKE PENDING" not in out["content"]
+
+
+def test_blocked_intake_task_returns_skip(env_vars, monkeypatch, capsys):
+    """Blocked check wins over intake pending."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "REHOR-265",
+                "status": "in_progress",
+                "repo": "",
+                "last_addressed": "2026-11-12T14:57:01+00:00",
+                "metadata": {"step": "intake"},
+            }
+        ]
+    )
+    issue = {
+        "labels": ["rehor-ai-onboarding-bot", "onboarding:intake", "onboarding:blocked"],
+        "comments": [],
+    }
+    monkeypatch.setattr("onboarding_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("onboarding_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("onboarding_preflight._jira_issue", lambda key: issue)
+    monkeypatch.setattr("onboarding_preflight._get_candidates", lambda: [])
+    monkeypatch.setattr("onboarding_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "INTAKE PENDING" not in out["content"]
+    assert "BLOCKED" in out["content"]
+
+
 def test_tekton_setup_does_not_trigger_merge_check(env_vars, monkeypatch, capsys):
     """tekton-setup is not in labels_with_auto_advance — no merge check."""
     tasks = _mock_tasks(
