@@ -322,9 +322,14 @@ export class SandboxSession {
               // Central public egress (REHOR-253): while enabled, the
               // effective network rule key set must match the requested
               // set exactly. Legacy flag-off behavior keeps accepting
-              // additive Gateway baselines.
+              // additive Gateway baselines. The Gateway attaches one
+              // reserved `_provider_<name>` rule on provider attachment
+              // (credential placeholder resolution); it is gateway-owned,
+              // deterministic, and credential-free, so strict mode ignores
+              // exactly that rule and nothing else.
+              const reservedProviderRule = `_provider_${record.provider.name}`;
               const expectedKeys = Object.keys(expected.networkPolicies).sort();
-              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).sort();
+              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).filter((key) => key !== reservedProviderRule).sort();
               if (expectedKeys.length !== actualKeys.length || expectedKeys.some((key, index) => key !== actualKeys[index])) throw new Error();
             }
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {

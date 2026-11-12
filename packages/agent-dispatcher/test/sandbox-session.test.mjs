@@ -90,6 +90,13 @@ function fixture(options = {}) {
           networkPolicies: { platform_default: { name: "platform-default" } },
         }).networkPolicies.platform_default;
       }
+      // The real Gateway (>= 0.1.6) attaches a reserved per-provider rule on
+      // provider attachment (credential placeholder resolution); strict
+      // public-egress mode must tolerate exactly this rule and nothing else.
+      const reservedProviderRule = `_provider_${request.spec.providers[0]}`;
+      suppliedPolicy.networkPolicies[reservedProviderRule] = create(SandboxPolicySchema, {
+        networkPolicies: { [reservedProviderRule]: { name: reservedProviderRule } },
+      }).networkPolicies[reservedProviderRule];
       options.enrichPolicy?.(suppliedPolicy);
       if (options.delayedCreate === "sandbox") {
         setTimeout(() => { sandbox = created; }, 25);
@@ -308,6 +315,31 @@ test("extra effective network rules fail closed only while public egress is enab
   const legacyResult = await legacy.session.run(image, decision, {});
   assert.equal(legacyResult.outcome, "passed");
   assert.equal(legacyResult.completion, "gone");
+});
+
+test("strict public egress tolerates only the exact reserved provider rule", async () => {
+  // Regression (REHOR-245): the real Gateway (>= 0.1.6) attaches a reserved
+  // `_provider_<attached-provider>` rule on provider attachment; strict mode
+  // rejected it and every healthy session failed at the readiness stage.
+  const healthy = fixture({ publicEgress: true });
+  const healthyResult = await healthy.session.run(image, decision, {});
+  assert.equal(healthyResult.outcome, "passed");
+  assert.equal(healthyResult.completion, "gone");
+  assert.equal(healthyResult.cleanup, "deleted");
+
+  // A reserved-shaped rule for a different provider is not exempt.
+  const impostor = fixture({
+    publicEgress: true,
+    enrichPolicy: (policy) => {
+      policy.networkPolicies._provider_someone_else = create(SandboxPolicySchema, {
+        networkPolicies: { _provider_someone_else: { name: "_provider_someone_else" } },
+      }).networkPolicies._provider_someone_else;
+    },
+  });
+  const impostorResult = await impostor.session.run(image, decision, {});
+  assert.equal(impostorResult.outcome, "unknown");
+  assert.equal(impostorResult.stage, "readiness");
+  assert.equal(impostorResult.errorCode, "other");
 });
 
 test("mutating a public endpoint away from raw TLS skip fails the effective policy check", async () => {
