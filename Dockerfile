@@ -106,7 +106,10 @@ RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi
     && dnf clean all
 
 # Buildah (rootless container image builder — no daemon, works in OpenShift)
-RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs \
+# --nobest: UBI9 appstream currently publishes netavark-1.17.2, which requires
+# aardvark-dns >= 1.17 that the repo does not yet provide; --nobest lets dnf
+# resolve the previous, still-consistent netavark/container stack (REHOR-245).
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs --nobest buildah fuse-overlayfs \
     && dnf clean all
 
 # tini — proper init process that reaps zombie children
