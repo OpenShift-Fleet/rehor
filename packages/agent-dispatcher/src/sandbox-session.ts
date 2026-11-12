@@ -29,6 +29,22 @@ export type SandboxSessionOptions = {
   onRetention?: (info: SandboxRetentionInfo) => void;
 };
 export type SandboxRetentionInfo = { runId: string; workspaceName: string; sandboxName: string; retentionMs: number };
+/** Durable registry hooks (REHOR-218): the run ID is minted by the caller so
+ * a registry record can exist before the session starts, and provisioning is
+ * reported once the sandbox exists. Both are best effort. */
+export type SandboxProvisionedInfo = {
+  runId: string;
+  workspaceName: string;
+  sandboxName: string;
+  providerName: string;
+  profileName: string;
+};
+export type SandboxRunOptions = {
+  /** Reuse a caller-minted run ID for resource names and labels. */
+  runId?: ReturnType<typeof randomUUID>;
+  /** Awaited after the sandbox is created and verified; errors never fail the session. */
+  onProvisioned?: (info: SandboxProvisionedInfo) => Promise<void>;
+};
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
 
@@ -177,8 +193,14 @@ export class SandboxSession {
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
-  async run(image: string, decision: Extract<WorkPreflightResult, { action: "start" }>, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
-    const runId = randomUUID();
+  async run(
+    image: string,
+    decision: Extract<WorkPreflightResult, { action: "start" }>,
+    environment: Record<string, string>,
+    signal?: AbortSignal,
+    options?: SandboxRunOptions,
+  ): Promise<SandboxSessionResult> {
+    const runId = options?.runId ?? randomUUID();
     const built = buildInputEnvelope(decision, runId);
     // Gateway resource names allow at most 19 characters, including prefix.
     const suffix = (BigInt(`0x${runId.replaceAll("-", "")}`) % (36n ** 18n)).toString(36).padStart(18, "0");
@@ -194,10 +216,17 @@ export class SandboxSession {
       return record;
     }
     if (signal?.aborted) { record.errorCode = "cancelled"; return record; }
-    return this.execute(record, image, built.serialized, environment, signal);
+    return this.execute(record, image, built.serialized, environment, signal, options);
   }
 
-  private async execute(record: SandboxSessionResult, image: string, content: Buffer, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
+  private async execute(
+    record: SandboxSessionResult,
+    image: string,
+    content: Buffer,
+    environment: Record<string, string>,
+    signal?: AbortSignal,
+    options?: SandboxRunOptions,
+  ): Promise<SandboxSessionResult> {
     const { workspace, sandbox, runId } = record;
     const scope = { selection: { case: "workspace" as const, value: workspace.name } };
     const labels = { "rehor-session": "agent", "rehor-run-id": runId };
@@ -267,6 +296,23 @@ export class SandboxSession {
       if (!sandboxMatches(createdSandbox?.metadata)) throw new Error();
       sandbox.id = createdSandbox!.metadata!.id;
       sandbox.state = "created";
+
+      // Durable registry notification (REHOR-218): reported once the sandbox
+      // exists and its identity is verified. Best effort by contract; a
+      // registry hiccup must never fail an otherwise healthy session.
+      if (options?.onProvisioned) {
+        try {
+          await options.onProvisioned({
+            runId,
+            workspaceName: workspace.name,
+            sandboxName: sandbox.name,
+            providerName: record.provider.name,
+            profileName: record.profile.name,
+          });
+        } catch {
+          /* Notification is best effort. */
+        }
+      }
 
       record.stage = "readiness";
       let ready = false;

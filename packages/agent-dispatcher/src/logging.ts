@@ -16,6 +16,8 @@ const EVENTS = [
   "sandbox.cleanup",
   "sandbox.retention",
   "sandbox.lock",
+  "sandbox.registry",
+  "sandbox.reconcile",
   "ready",
   "shutdown",
 ] as const;
@@ -32,12 +34,15 @@ const CATEGORIES = [
 ] as const;
 const SESSION_STAGES = ["input", "policy", "workspace", "provider", "sandbox", "readiness", "write", "runner", "complete"] as const;
 const SESSION_ERROR_CODES = ["invalid_argument", "not_found", "permission_denied", "unauthenticated", "deadline_exceeded", "unavailable", "cancelled", "readiness_timeout", "other"] as const;
+const RECONCILE_REASONS = ["never-provisioned", "workspace-gone", "sandbox-gone", "reconciled-terminal", "adopted", "adopt-timeout", "record-failure", "startup-timeout"] as const;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type LifecycleEvent = (typeof EVENTS)[number];
 export type LifecycleStatus = (typeof STATUSES)[number];
 export type ErrorCategory = (typeof CATEGORIES)[number];
 export type SessionStage = (typeof SESSION_STAGES)[number];
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number];
+export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
 export type LifecycleDetails = { stage?: SessionStage; errorCode?: SessionErrorCode };
 
 export interface LogOptions {
@@ -54,6 +59,13 @@ export interface LogOptions {
   holder?: string;
   renew?: boolean;
   release?: boolean;
+  /** Session registry (REHOR-218): registration and final-update failures. */
+  register?: boolean;
+  update?: boolean;
+  /** Startup reconciliation (REHOR-218): run ID, outcome reason, adoption. */
+  runId?: string;
+  reason?: ReconcileReason;
+  adopted?: boolean;
 }
 
 export interface LifecycleLogger {
@@ -171,6 +183,11 @@ export function createLifecycleLogger(deps: {
       const holder = options?.holder;
       const renew = options?.renew;
       const release = options?.release;
+      const register = options?.register;
+      const update = options?.update;
+      const runId = options?.runId;
+      const reason = options?.reason;
+      const adopted = options?.adopted;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
@@ -185,8 +202,14 @@ export function createLifecycleLogger(deps: {
       if (holder !== undefined && (typeof holder !== "string" || holder.length > 63 || !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(holder))) return;
       if (renew !== undefined && typeof renew !== "boolean") return;
       if (release !== undefined && typeof release !== "boolean") return;
+      if (register !== undefined && typeof register !== "boolean") return;
+      if (update !== undefined && typeof update !== "boolean") return;
+      // Run IDs are opaque generated UUIDs; anything else is rejected.
+      if (runId !== undefined && (typeof runId !== "string" || !UUID_PATTERN.test(runId))) return;
+      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason)) return;
+      if (adopted !== undefined && typeof adopted !== "boolean") return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason; adopted?: boolean } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
@@ -198,6 +221,11 @@ export function createLifecycleLogger(deps: {
       if (holder !== undefined) record.holder = holder;
       if (renew !== undefined) record.renew = renew;
       if (release !== undefined) record.release = release;
+      if (register !== undefined) record.register = register;
+      if (update !== undefined) record.update = update;
+      if (runId !== undefined) record.runId = runId;
+      if (reason !== undefined) record.reason = reason;
+      if (adopted !== undefined) record.adopted = adopted;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.

@@ -401,6 +401,52 @@ test("safe stdin writer then exact runner with per-exec pointers, unique request
   }
 });
 
+test("onProvisioned reports generated names right after sandbox creation, before any exec", async () => {
+  const f = fixture();
+  const observed = [];
+  const result = await f.session.run(image, decision, {}, undefined, {
+    onProvisioned: async (info) => {
+      observed.push({ info, callsSoFar: f.calls.map((call) => call.name) });
+    },
+  });
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  assert.equal(observed.length, 1);
+  const { info, callsSoFar } = observed[0];
+  assert.equal(info.runId, result.runId);
+  assert.equal(info.workspaceName, result.workspace.name);
+  assert.equal(info.sandboxName, result.sandbox.name);
+  assert.equal(info.providerName, result.provider.name);
+  assert.equal(info.profileName, result.profile.name);
+  assert.ok(callsSoFar.includes("createSandbox"), "reported after sandbox creation");
+  assert.equal(callsSoFar.includes("execSandbox"), false, "reported before any exec");
+});
+
+test("an external run ID is honored for names and labels", async () => {
+  const f = fixture();
+  const runId = randomUUID();
+  const result = await f.session.run(image, decision, {}, undefined, { runId });
+  assert.equal(result.runId, runId);
+  const createWorkspace = f.calls.find((call) => call.name === "createWorkspace").request;
+  assert.equal(createWorkspace.name, result.workspace.name);
+  assert.equal(createWorkspace.labels["rehor-run-id"], runId);
+  const createSandbox = f.calls.find((call) => call.name === "createSandbox").request;
+  assert.equal(createSandbox.name, result.sandbox.name);
+  assert.equal(createSandbox.labels["rehor-run-id"], runId);
+  assert.equal(result.outcome, "passed");
+});
+
+test("an onProvisioned failure never fails the session", async () => {
+  const f = fixture();
+  const result = await f.session.run(image, decision, {}, undefined, {
+    onProvisioned: async () => { throw new Error("registry-secret"); },
+  });
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
+});
+
 test("production writer creates exact bytes at mode 0600 and refuses existing files or symlinks", async () => {
   const f = fixture();
   await f.session.run(image, decision, {});

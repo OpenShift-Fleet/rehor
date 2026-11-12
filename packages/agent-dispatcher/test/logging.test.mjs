@@ -111,6 +111,30 @@ test("session lock records expose only fixed contention, holder and failure flag
   assert.equal(lines.length, 4, "malformed lock details are dropped, never logged");
 });
 
+test("registry and reconcile records expose only fixed identifiers and outcomes", () => {
+  const { logger, lines } = fixture();
+  const runId = "01234567-89ab-cdef-0123-456789abcdef";
+  logger.log("sandbox.registry", "failure", { register: true });
+  logger.log("sandbox.registry", "failure", { update: true });
+  logger.log("sandbox.reconcile", "success", { runId, reason: "adopted", adopted: true });
+  logger.log("sandbox.reconcile", "failure", { runId, reason: "startup-timeout" });
+  assert.deepEqual(lines.map(JSON.parse), [
+    { event: "sandbox.registry", status: "failure", register: true, level: 50 },
+    { event: "sandbox.registry", status: "failure", update: true, level: 50 },
+    { event: "sandbox.reconcile", status: "success", runId, reason: "adopted", adopted: true, level: 30 },
+    { event: "sandbox.reconcile", status: "failure", runId, reason: "startup-timeout", level: 50 },
+  ]);
+  for (const options of [
+    { runId: "not-a-uuid" }, { runId: "" }, { runId: 42 },
+    { reason: "secret" }, { reason: "ADOPTED" }, { adopted: "yes" }, { adopted: 1 },
+    { register: "true" }, { update: null },
+  ]) {
+    logger.log("sandbox.reconcile", "success", options);
+    logger.log("sandbox.registry", "failure", options);
+  }
+  assert.equal(lines.length, 4, "malformed registry and reconcile details are dropped, never logged");
+});
+
 test("durations are bounded, rounded and measured with an injectable clock", () => {
   const { logger, lines, advance } = fixture();
   logger.log("startup", "success", { durationMs: -4 });

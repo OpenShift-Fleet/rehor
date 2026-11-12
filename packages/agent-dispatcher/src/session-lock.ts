@@ -83,17 +83,18 @@ export function createSessionLockClient(options: {
  * created). While `run` is in flight the lease renews at one third of the
  * TTL. A failed renewal is logged once and never aborts the session:
  * killing a running sandbox mid-flight is worse than a possibly-shared
- * lock, and the TTL bounds how stale that state can become. The timer is
- * cleared and the lock released in a finally block once `run` settles, so
- * drain-driven completions release their locks on rollout; hard kills are
- * covered by TTL expiry instead. */
+ * lock, and the TTL bounds how stale that state can become. The acquisition
+ * token is handed to `run` so durable bookkeeping (session registry) can
+ * reference the exact lease. The timer is cleared and the lock released in a
+ * finally block once `run` settles, so drain-driven completions release their
+ * locks on rollout; hard kills are covered by TTL expiry instead. */
 export async function withSessionLock<T>(options: {
   lock: SessionLockClient;
   key: string;
   holder: string;
   ttlMs: number;
   log: SessionLockLog;
-  run: () => Promise<T>;
+  run: (lockToken: string) => Promise<T>;
 }): Promise<{ status: "contended" | "error" } | { status: "ran"; result: T }> {
   const acquisition = await options.lock.acquire(options.key, options.holder, options.ttlMs);
   if (acquisition.status === "contended") {
@@ -117,7 +118,7 @@ export async function withSessionLock<T>(options: {
   // The renew timer must not keep the process alive during drain.
   timer.unref?.();
   try {
-    const result = await options.run();
+    const result = await options.run(acquisition.token);
     return { status: "ran", result };
   } finally {
     clearInterval(timer);

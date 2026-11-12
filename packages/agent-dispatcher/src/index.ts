@@ -1,4 +1,6 @@
 import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
+import { setTimeout as sleep } from "node:timers/promises";
 import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readSandboxRetentionMs, readSessionLockTtlMs, readServiceGatewayUrl, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
@@ -7,10 +9,11 @@ import { createLifecycleLogger, writeStartupGreeting, type LifecycleEvent, type 
 import { parseConfigRepositories } from "./config-repositories.js";
 import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { verifyPreflightTools } from "./work-preflight.js";
-import { SandboxSession } from "./sandbox-session.js";
+import { SandboxSession, type SandboxSessionResult } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
 import { createSessionLockClient, withSessionLock, type SessionLockLog } from "./session-lock.js";
+import { createSessionRegistryClient, reconcileOpenSessions } from "./session-registry.js";
 import type { SessionCompletion } from "./dispatch-sessions.js";
 
 const logger = createLifecycleLogger();
@@ -21,6 +24,10 @@ const stopController = new AbortController();
 // for shutdown bookkeeping. Runtime termination grace must exceed this drain
 // deadline (documented in README); no workload manifest lives here to set it.
 const shutdownDeadlineMs = 22 * 60_000;
+// Startup reconciliation of abandoned sessions is bounded: a hung
+// reconciliation must not block the dispatch loop forever, and the loop's
+// session lock prevents duplicate sessions either way.
+const reconcileBoundMs = 5 * 60_000;
 let shuttingDown = false;
 let startPromise = Promise.resolve();
 let loopPromise: Promise<void> | undefined;
@@ -170,6 +177,13 @@ async function start(): Promise<void> {
       const sessionLock = sessionLockTtlMs > 0
         ? createSessionLockClient({ url: authConfig.memoryUrl, mint: async () => (await provider!.mint()).token })
         : undefined;
+      // REHOR-218 phase 2: durable session registry. Enabled exactly when the
+      // lock is: without the lock there is a single replica and no abandoned
+      // sessions of another pod to reconcile. Unlike the lock this is
+      // best-effort durability — a registry outage is logged, never fatal.
+      const sessionRegistry = sessionLock
+        ? createSessionRegistryClient({ url: authConfig.memoryUrl, mint: async () => (await provider!.mint()).token })
+        : undefined;
       const lockHolder = hostname();
       // withSessionLock emits only the fixed "sandbox.lock" event with
       // lifecycle-logger-shaped details; the logger re-validates and drops
@@ -177,6 +191,30 @@ async function start(): Promise<void> {
       const lockLog: SessionLockLog = (event, status, data) => {
         logger.log(event as LifecycleEvent, status, data as LogOptions);
       };
+      if (sessionLock && sessionRegistry) {
+        // Reconcile sessions abandoned by dead pods before dispatching new
+        // work: adopt or clean up their gateway resources and release their
+        // locks. Bounded so startup cannot hang; the shutdown signal aborts
+        // it promptly and the next restart retries whatever stayed open.
+        const reconciliation = reconcileOpenSessions({
+          registry: sessionRegistry,
+          lockClient: sessionLock,
+          gateway: gateway.raw,
+          holder: lockHolder,
+          signal,
+          log: lockLog,
+        }).catch(() => {});
+        // The sleep is never cancelled, so a plain then() would emit a
+        // spurious startup-timeout minutes after a fast, successful
+        // reconcile; only log the bound when reconciliation has not settled.
+        let settled = false;
+        const bounded = reconciliation.finally(() => { settled = true; });
+        const bound = sleep(reconcileBoundMs, undefined, { signal }).then(
+          () => { if (!settled) lockLog("sandbox.reconcile", "failure", { reason: "startup-timeout" }); },
+          () => {},
+        );
+        await Promise.race([bounded, bound]);
+      }
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,
         env: hostEnvironment,
@@ -186,14 +224,43 @@ async function start(): Promise<void> {
         launch: async (profile, agentId, _prompt, decision) => {
           if (signal.aborted) return "not-created";
           const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl);
-          const runSession = async (): Promise<SessionCompletion> => {
+          // The run ID is minted here so the registry record can exist before
+          // the session starts; the session reuses it for names and labels.
+          const runId = randomUUID();
+          const registry = sessionRegistry;
+          const runSession = async (lockToken?: string): Promise<SessionCompletion> => {
+            if (registry) {
+              // Best-effort durability: a registry outage is logged and the
+              // session continues (the lock above stays fail-closed).
+              const registered = await registry.register({
+                runId,
+                agentId,
+                holder: lockHolder,
+                ...(lockToken ? { lockToken } : {}),
+              });
+              if (!registered) lockLog("sandbox.registry", "failure", { register: true });
+            }
             // Register before invoking session code, including synchronous errors
             // or a shutdown signal raised during admission.
-            const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));
+            const work = Promise.resolve().then(() => registry
+              ? session.run(profile.image.reference, decision, environment, signal, {
+                runId,
+                onProvisioned: async (info) => {
+                  await registry.update(runId, {
+                    workspaceName: info.workspaceName,
+                    sandboxName: info.sandboxName,
+                    providerName: info.providerName,
+                    profileName: info.profileName,
+                  });
+                },
+              })
+              : session.run(profile.image.reference, decision, environment, signal));
             sessionRuns.add(work);
             const running = logger.start("sandbox.session");
+            let settled: SandboxSessionResult | undefined;
             try {
               const record = await work;
+              settled = record;
               if (isUnresolvedSession(record)) unresolvedSessionResult = true;
               if (record.outcome === "passed") running.success();
               else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
@@ -206,6 +273,15 @@ async function start(): Promise<void> {
               return "unknown";
             } finally {
               sessionRuns.delete(work);
+              if (registry) {
+                // The record settles with the session, whatever its outcome;
+                // a failed update is logged, never fatal.
+                const updated = await registry.update(runId, {
+                  state: "completed",
+                  ...(settled ? { detail: { outcome: settled.outcome, cleanup: settled.cleanup, completion: settled.completion } } : {}),
+                });
+                if (!updated) lockLog("sandbox.registry", "failure", { update: true });
+              }
             }
           };
           if (!sessionLock) return runSession();

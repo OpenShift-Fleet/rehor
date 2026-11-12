@@ -95,7 +95,7 @@ test("contended 409 without a holder body reports a null holder", async () => {
   assert.deepEqual(await client(fetchImpl).acquire("k", "pod-a", 30_000), { status: "contended", holder: null });
 });
 
-test("acquired lock runs the session, renews, and releases with the token", async () => {
+test("acquired lock runs the session with the acquisition token, renews, and releases", async () => {
   const { requests, fetchImpl } = harness({
     "/api/locks/acquire": { status: 200, body: { acquired: true, lock_token: "tok-1", holder: "pod-a", acquired_at: "x", expires_at: "y" } },
     "/api/locks/renew": { status: 200, body: { renewed: true, expires_at: "y" } },
@@ -103,12 +103,16 @@ test("acquired lock runs the session, renews, and releases with the token", asyn
   });
   const { entries, log } = logs();
   let ran = 0;
+  let observedToken;
   const outcome = await withSessionLock({
     lock: client(fetchImpl), key: "k", holder: "pod-a", ttlMs: 60, log,
-    run: async () => { ran++; await sleep(45); return "session-result"; },
+    run: async (lockToken) => { ran++; observedToken = lockToken; await sleep(45); return "session-result"; },
   });
   assert.deepEqual(outcome, { status: "ran", result: "session-result" });
   assert.equal(ran, 1);
+  // The run callback receives the exact acquisition token so durable
+  // bookkeeping (session registry) can reference the lease.
+  assert.equal(observedToken, "tok-1");
   assert.deepEqual(entries, []);
   assert.deepEqual(requests.find((request) => request.url.endsWith("/release")).body, { key: "k", lock_token: "tok-1" });
   // Renewal fired during the run at one third of the TTL.
