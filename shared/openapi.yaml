@@ -625,6 +625,80 @@ paths:
               schema:
                 type: string
 
+  /api/locks:
+    get:
+      operationId: listSessionLocks
+      summary: List session locks, including expired ones (expiry is authoritative)
+      responses:
+        '200':
+          description: Session locks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionLock'
+
+  /api/locks/acquire:
+    post:
+      operationId: acquireSessionLock
+      summary: Atomically acquire a session lock (expired locks are takeable)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockAcquireRequest'
+      responses:
+        '200':
+          description: Lock acquired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockAcquired'
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock held by someone else
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockConflict'
+
+  /api/locks/renew:
+    post:
+      operationId: renewSessionLock
+      summary: Extend a held, unexpired session lock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockRenewRequest'
+      responses:
+        '200':
+          description: Lock renewed
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock lost (token mismatch, missing, or expired)
+
+  /api/locks/release:
+    post:
+      operationId: releaseSessionLock
+      summary: Release a session lock (idempotent)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockReleaseRequest'
+      responses:
+        '200':
+          description: Release result (released is false when never held, already released, or token mismatch)
+        '400':
+          description: Invalid payload
+
   /api/bot-status:
     get:
       operationId: getBotStatus
@@ -1288,6 +1362,65 @@ components:
         instance_id: { type: string }
         updated_at: { type: string }
         cycle_start: { type: string, nullable: true }
+
+    SessionLock:
+      type: object
+      required: [key, holder, acquired_at, expires_at]
+      properties:
+        key: { type: string }
+        holder: { type: string }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockAcquireRequest:
+      type: object
+      required: [key, holder, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockAcquired:
+      type: object
+      required: [acquired, key, holder, lock_token, acquired_at, expires_at]
+      properties:
+        acquired: { type: boolean, enum: [true] }
+        key: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockConflict:
+      type: object
+      required: [acquired, key, holder]
+      properties:
+        acquired: { type: boolean, enum: [false] }
+        key: { type: string }
+        holder: { type: string, nullable: true }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockRenewRequest:
+      type: object
+      required: [key, lock_token, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockReleaseRequest:
+      type: object
+      required: [key, lock_token]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+      additionalProperties: false
 
     BotInstance:
       type: object

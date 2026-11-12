@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import uuid
 from datetime import date as date_type
 from datetime import datetime
 
@@ -1433,3 +1434,186 @@ def _cycle_run(row) -> dict:
         "created_at": row["created_at"].isoformat(),
         "has_transcript": bool(row.get("has_transcript", False)),
     }
+
+
+# --- Session locks (REHOR-218) ---
+# Storage + interface only: the dispatcher owns acquire/renew/release
+# lifecycle. All atomicity lives in single SQL statements; expiry is
+# authoritative, rows may linger until the key is re-acquired.
+
+LOCK_KEY_MAX = 512
+LOCK_HOLDER_MAX = 256
+LOCK_TTL_MAX = 86400
+
+
+def _validate_lock_key(key) -> str | None:
+    if not isinstance(key, str) or not 1 <= len(key) <= LOCK_KEY_MAX:
+        return f"key must be a string of 1..{LOCK_KEY_MAX} characters"
+    return None
+
+
+def _validate_lock_holder(holder) -> str | None:
+    if not isinstance(holder, str) or not 1 <= len(holder) <= LOCK_HOLDER_MAX:
+        return f"holder must be a string of 1..{LOCK_HOLDER_MAX} characters"
+    return None
+
+
+def _validate_lock_ttl(ttl_seconds) -> str | None:
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= LOCK_TTL_MAX:
+        return f"ttl_seconds must be an integer between 1 and {LOCK_TTL_MAX}"
+    return None
+
+
+async def api_locks_acquire(request: Request) -> JSONResponse:
+    """POST /api/locks/acquire — atomically acquire a session lock.
+
+    Expired locks are takeable. The lock token is generated in Python and
+    passed as a parameter (mock-friendly, no pgcrypto dependency).
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    holder = body.get("holder")
+    ttl_seconds = body.get("ttl_seconds")
+
+    for error in (_validate_lock_key(key), _validate_lock_holder(holder), _validate_lock_ttl(ttl_seconds)):
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+
+    lock_token = uuid.uuid4()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO session_locks (lock_key, holder, lock_token, acquired_at, expires_at)
+        VALUES ($1, $2, $4, NOW(), NOW() + make_interval(secs => $3))
+        ON CONFLICT (lock_key) DO UPDATE SET
+            holder = $2, lock_token = $4, acquired_at = NOW(),
+            expires_at = NOW() + make_interval(secs => $3)
+            WHERE session_locks.expires_at <= NOW()
+        RETURNING lock_token, holder, acquired_at, expires_at
+        """,
+        key,
+        holder,
+        ttl_seconds,
+        lock_token,
+    )
+    if row is not None:
+        result = {
+            "acquired": True,
+            "key": key,
+            "holder": row["holder"],
+            "lock_token": str(row["lock_token"]),
+            "acquired_at": row["acquired_at"].isoformat(),
+            "expires_at": row["expires_at"].isoformat(),
+        }
+        status = 200
+    else:
+        current = await pool.fetchrow(
+            "SELECT holder, acquired_at, expires_at FROM session_locks WHERE lock_key = $1",
+            key,
+        )
+        if current is not None:
+            result = {
+                "acquired": False,
+                "key": key,
+                "holder": current["holder"],
+                "acquired_at": current["acquired_at"].isoformat(),
+                "expires_at": current["expires_at"].isoformat(),
+            }
+        else:
+            # Raced away between the failed upsert and this SELECT.
+            result = {"acquired": False, "key": key, "holder": None}
+        status = 409
+    await bus.publish(Event("session_locks", {"action": "acquire", "key": key, "holder": holder}))
+    return JSONResponse(result, status_code=status)
+
+
+def _validate_lock_token(lock_token) -> str | None:
+    if not isinstance(lock_token, str) or not lock_token:
+        return "lock_token must be a non-empty string"
+    try:
+        uuid.UUID(lock_token)
+    except ValueError:
+        return "lock_token must be a UUID"
+    return None
+
+
+async def api_locks_renew(request: Request) -> JSONResponse:
+    """POST /api/locks/renew — extend a held, unexpired lock.
+
+    Token mismatch, missing row, or already expired are indistinguishable:
+    the client treats any 409 as a lost lock.
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    lock_token = body.get("lock_token")
+    ttl_seconds = body.get("ttl_seconds")
+
+    for error in (_validate_lock_key(key), _validate_lock_ttl(ttl_seconds)):
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+    error = _validate_lock_token(lock_token)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        """
+        UPDATE session_locks SET expires_at = NOW() + make_interval(secs => $2)
+        WHERE lock_key = $1 AND lock_token = $3 AND expires_at > NOW()
+        RETURNING expires_at
+        """,
+        key,
+        ttl_seconds,
+        lock_token,
+    )
+    await bus.publish(Event("session_locks", {"action": "renew", "key": key}))
+    if row is None:
+        return JSONResponse({"renewed": False}, status_code=409)
+    return JSONResponse({"renewed": True, "expires_at": row["expires_at"].isoformat()})
+
+
+async def api_locks_release(request: Request) -> JSONResponse:
+    """POST /api/locks/release — release a lock by key + token.
+
+    Idempotent: never held, already released, and token mismatch are
+    indistinguishable by design.
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    lock_token = body.get("lock_token")
+
+    error = _validate_lock_key(key)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+    error = _validate_lock_token(lock_token)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        "DELETE FROM session_locks WHERE lock_key = $1 AND lock_token = $2 RETURNING lock_token",
+        key,
+        lock_token,
+    )
+    await bus.publish(Event("session_locks", {"action": "release", "key": key}))
+    return JSONResponse({"released": row is not None})
+
+
+async def api_locks_list(request: Request) -> JSONResponse:
+    """GET /api/locks — list all locks, including expired ones.
+
+    Expiry is authoritative; clients read expires_at.
+    """
+    pool = get_pool()
+    rows = await pool.fetch("SELECT lock_key, holder, acquired_at, expires_at FROM session_locks ORDER BY acquired_at")
+    return JSONResponse(
+        [
+            {
+                "key": row["lock_key"],
+                "holder": row["holder"],
+                "acquired_at": row["acquired_at"].isoformat(),
+                "expires_at": row["expires_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    )

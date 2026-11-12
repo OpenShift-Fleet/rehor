@@ -435,6 +435,17 @@ ALTER TABLE cycle_runs ADD COLUMN IF NOT EXISTS input_prompt TEXT;
 CREATE INDEX IF NOT EXISTS idx_cycle_runs_task_started
     ON cycle_runs (task_id, started_at, id);
 
+-- Session locks — per-agent mutex for multi-replica dispatchers (REHOR-218).
+-- Storage only: the dispatcher owns acquire/renew/release lifecycle. Rows may
+-- linger after expiry until the key is re-acquired; expiry is authoritative.
+CREATE TABLE IF NOT EXISTS session_locks (
+    lock_key     TEXT PRIMARY KEY,
+    holder       TEXT NOT NULL,
+    lock_token   UUID NOT NULL,
+    acquired_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at   TIMESTAMPTZ NOT NULL
+);
+
 -- Only create index if table has enough rows (ivfflat needs data)
 -- On first startup with empty table, queries fall back to sequential scan
 -- Re-run this after seeding data:

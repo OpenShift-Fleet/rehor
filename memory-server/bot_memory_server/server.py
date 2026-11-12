@@ -88,6 +88,10 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_instance_get,
         api_instance_idle_update,
         api_instances,
+        api_locks_acquire,
+        api_locks_list,
+        api_locks_release,
+        api_locks_renew,
         api_memories,
         api_memory_delete,
         api_memory_embeddings,
@@ -135,6 +139,10 @@ def build_app() -> tuple[Starlette, Starlette]:
     mcp.custom_route("/api/cycle-runs", methods=["GET", "POST"])(api_cycle_runs)
     mcp.custom_route("/api/cycle-runs/by-task", methods=["GET"])(api_cycle_runs_by_task)
     mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(api_cycle_run_transcript)
+    mcp.custom_route("/api/locks/acquire", methods=["POST"])(api_locks_acquire)
+    mcp.custom_route("/api/locks/renew", methods=["POST"])(api_locks_renew)
+    mcp.custom_route("/api/locks/release", methods=["POST"])(api_locks_release)
+    mcp.custom_route("/api/locks", methods=["GET"])(api_locks_list)
 
     mcp_app = mcp.http_app(transport="streamable-http")
 
