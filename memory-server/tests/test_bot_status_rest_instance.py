@@ -53,20 +53,34 @@ def _request_with_body(body: dict) -> Request:
     async def receive():
         return {"type": "http.request", "body": payload, "more_body": False}
 
-    return Request({"type": "http", "http_version": "1.1", "method": "POST", "path": "/api/bot-status", "query_string": b"", "headers": []}, receive=receive)
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "path": "/api/bot-status",
+            "query_string": b"",
+            "headers": [],
+        },
+        receive=receive,
+    )
 
 
 @pytest.mark.asyncio
 async def test_rest_bot_status_updates_singleton_instance_id():
     pool = RecordingPool(STATUS_ROW)
     with patch("bot_memory_server.api.get_pool", return_value=pool):
-        response = await api_bot_status_update(_request_with_body({
-            "state": "idle",
-            "message": "Cycle complete.",
-            "external_key": "FM-162",
-            "repo": "org/repo",
-            "instance_id": "Bořivoj Lodník z Plovoucího hradu",
-        }))
+        response = await api_bot_status_update(
+            _request_with_body(
+                {
+                    "state": "idle",
+                    "message": "Cycle complete.",
+                    "external_key": "FM-162",
+                    "repo": "org/repo",
+                    "instance_id": "Bořivoj Lodník z Plovoucího hradu",
+                }
+            )
+        )
     assert response.status_code == 200
 
     singleton_update = next(call for call in pool.calls if call[0] == "fetchrow")
@@ -84,10 +98,14 @@ async def test_rest_bot_status_updates_singleton_instance_id():
 async def test_rest_bot_status_without_instance_id_keeps_singleton_value():
     pool = RecordingPool(STATUS_ROW)
     with patch("bot_memory_server.api.get_pool", return_value=pool):
-        response = await api_bot_status_update(_request_with_body({
-            "state": "working",
-            "message": "Starting cycle...",
-        }))
+        response = await api_bot_status_update(
+            _request_with_body(
+                {
+                    "state": "working",
+                    "message": "Starting cycle...",
+                }
+            )
+        )
     assert response.status_code == 200
     singleton_update = next(call for call in pool.calls if call[0] == "fetchrow")
     assert "instance_id = COALESCE" in singleton_update[1]
