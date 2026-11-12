@@ -546,7 +546,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
-            repo = $5,
+            repo = $5, instance_id = COALESCE($7, instance_id),
             cycle_start = CASE WHEN state = 'idle' AND $1 = 'working' THEN NOW() ELSE cycle_start END,
             updated_at = NOW()
         WHERE id = 1 RETURNING *
@@ -556,6 +556,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
         external_key,
         source_type,
         repo,
+        instance_id,
     )
     await pool.execute(
         """
@@ -588,6 +589,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
         "external_key": row.get("external_key"),
         "source_type": row.get("source_type"),
         "repo": row["repo"],
+        "instance_id": row.get("instance_id"),
         "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
         "updated_at": row["updated_at"].isoformat(),
     }
