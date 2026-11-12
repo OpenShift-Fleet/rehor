@@ -105,20 +105,13 @@ RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi
     && pip3.12 uninstall -y meson ninja \
     && dnf clean all
 
-# Buildah (rootless container image builder — no daemon, works in OpenShift)
-# UBI9 appstream repo skew (REHOR-245): netavark was republished with epoch 3
-# (3:1.17.2) requiring aardvark-dns >= 3:1.17, but the repo still carries the
-# epoch-2 build (2:1.17.1) and keeps no older versions, so dnf cannot resolve
-# the buildah chain at all (--nobest has nothing to fall back to). Install
-# netavark with --nodeps, then resolve buildah normally; netavark 1.17.2 and
-# aardvark-dns 1.17.1 are functionally matched. Revert to a plain
-# `dnf install -y --nodocs buildah fuse-overlayfs` once the repo resyncs.
-RUN cd /tmp \
-    && dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' download netavark \
-    && rpm -i --nodeps netavark-*.rpm \
-    && rm -f netavark-*.rpm \
-    && dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs aardvark-dns \
-    && dnf clean all
+# Buildah (rootless container image builder — no daemon, works in OpenShift).
+# Shared installer: plain dnf install first, with a self-removing fallback for
+# the UBI9 appstream netavark/aardvark-dns epoch skew (REHOR-245) — see
+# presets/install-buildah.sh for details. The same script is used by the
+# container-scan env preset so the images cannot drift.
+COPY presets/install-buildah.sh /tmp/install-buildah.sh
+RUN bash /tmp/install-buildah.sh && rm -f /tmp/install-buildah.sh
 
 # tini — proper init process that reaps zombie children
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
