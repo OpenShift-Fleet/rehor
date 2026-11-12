@@ -7,8 +7,9 @@ ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
 curl -fsSL "https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.118.0_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin grype
 
-# Buildah (rootless container builder)
-dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs buildah fuse-overlayfs && dnf clean all
+# Buildah (rootless container builder) — shared installer handles the UBI9
+# appstream epoch-skew workaround (see presets/install-buildah.sh)
+bash "$(dirname "${BASH_SOURCE[0]}")/../../install-buildah.sh"
 
 # BUILDAH_ISOLATION for all shells
 cat > /etc/profile.d/buildah.sh << 'PROFILE'
