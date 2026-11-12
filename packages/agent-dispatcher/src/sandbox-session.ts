@@ -22,7 +22,13 @@ export type SandboxSessionOptions = {
   serviceGatewayUrl?: URL;
   /** Central public-egress rollout flag (REHOR-253); default false. */
   publicEgress?: boolean;
+  /** Debug retention (REHOR-245): ms to hold gateway resources after a session
+   * before cleanup so failed sandboxes stay inspectable; default 0. */
+  sandboxRetentionMs?: number;
+  /** Best-effort notification when retention holds a session's resources. */
+  onRetention?: (info: SandboxRetentionInfo) => void;
 };
+export type SandboxRetentionInfo = { runId: string; workspaceName: string; sandboxName: string; retentionMs: number };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
 
@@ -143,6 +149,8 @@ export class SandboxSession {
   private readonly memoryRuntime: boolean;
   private readonly serviceGatewayUrl: URL | undefined;
   private readonly publicEgress: boolean;
+  private readonly sandboxRetentionMs: number;
+  private readonly onRetention: ((info: SandboxRetentionInfo) => void) | undefined;
 
   constructor({
     raw,
@@ -153,6 +161,8 @@ export class SandboxSession {
     memoryRuntime = false,
     serviceGatewayUrl,
     publicEgress = false,
+    sandboxRetentionMs = 0,
+    onRetention,
   }: SandboxSessionOptions) {
     this.raw = raw;
     this.memory = memory;
@@ -162,6 +172,8 @@ export class SandboxSession {
     this.memoryRuntime = memoryRuntime;
     this.serviceGatewayUrl = serviceGatewayUrl;
     this.publicEgress = publicEgress;
+    this.sandboxRetentionMs = sandboxRetentionMs;
+    this.onRetention = onRetention;
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
@@ -381,6 +393,19 @@ export class SandboxSession {
     } else {
       record.completion = "unknown";
       record.cleanup = "unknown";
+      // Debug retention (REHOR-245): hold the session's gateway resources so
+      // failed sandboxes stay inspectable (logs, exec) before cleanup. An
+      // abort during the wait falls through to immediate cleanup, and the
+      // cleanup budget starts only after the wait. The record keeps its
+      // unresolved values until the deferred reconciliation completes.
+      if (this.sandboxRetentionMs > 0 && !signal?.aborted) {
+        try {
+          this.onRetention?.({ runId, workspaceName: workspace.name, sandboxName: sandbox.name, retentionMs: this.sandboxRetentionMs });
+        } catch { /* Notification is best effort. */ }
+        try {
+          await sleep(this.sandboxRetentionMs, undefined, signal ? { signal } : undefined);
+        } catch { /* Aborted: clean up now. */ }
+      }
       // Bound the entire reconciliation once, not the sum of per-RPC retries.
       const cleanupSignal = AbortSignal.timeout(this.cleanupBudgetMs);
       try {

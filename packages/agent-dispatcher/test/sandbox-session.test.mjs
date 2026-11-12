@@ -9,6 +9,7 @@ import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { DeletionOutcome, NetworkEnforcementMode, NetworkTlsMode, ProviderReadinessState, ProviderProfileSchema, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { SandboxSession } from "../dist/sandbox-session.js";
+import { readSandboxRetentionMs } from "../dist/config.js";
 import { createPublicEgressRule } from "../dist/egress-policy.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "../dist/input-envelope.js";
@@ -147,13 +148,13 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}) }), minted: () => minted, workspace: () => workspace,
+  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}), ...(options.sandboxRetentionMs !== undefined ? { sandboxRetentionMs: options.sandboxRetentionMs } : {}), ...(options.onRetention !== undefined ? { onRetention: options.onRetention } : {}) }), minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
 test("session options preserve default, explicit undefined, and custom values", () => {
   const { raw, memory } = fixture();
-  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined, publicEgress: undefined }]) {
+  for (const options of [{}, { cleanupBudgetMs: undefined, runtime: undefined, modelProxyUrl: undefined, publicEgress: undefined, sandboxRetentionMs: undefined, onRetention: undefined }]) {
     const session = new SandboxSession({ raw, memory, ...options });
     assert.equal(session.raw, raw);
     assert.equal(session.memory, memory);
@@ -161,16 +162,66 @@ test("session options preserve default, explicit undefined, and custom values", 
     assert.deepEqual(session.runtime, { kind: "legacy" });
     assert.equal(session.modelProxyUrl, undefined);
     assert.equal(session.publicEgress, false);
+    assert.equal(session.sandboxRetentionMs, 0);
+    assert.equal(session.onRetention, undefined);
   }
   const runtime = readRuntimeLayout({ AGENT_DISPATCHER_RUNTIME_LAYOUT: "private" });
   const modelProxyUrl = new URL("https://model-gateway.example.test/v1");
   for (const cleanupBudgetMs of [0, 1234]) {
-    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl, publicEgress: true });
+    const session = new SandboxSession({ raw, memory, cleanupBudgetMs, runtime, modelProxyUrl, publicEgress: true, sandboxRetentionMs: 2500, onRetention: () => {} });
     assert.equal(session.cleanupBudgetMs, cleanupBudgetMs);
     assert.equal(session.runtime, runtime);
     assert.equal(session.modelProxyUrl, modelProxyUrl);
     assert.equal(session.publicEgress, true);
+    assert.equal(session.sandboxRetentionMs, 2500);
+    assert.equal(typeof session.onRetention, "function");
   }
+});
+
+test("sandbox retention config is opt-in, whole seconds, and fail-closed", () => {
+  assert.equal(readSandboxRetentionMs({}), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: undefined }), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "0" }), 0);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "30" }), 30_000);
+  assert.equal(readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: "86400" }), 86_400_000);
+  for (const value of ["", " ", "-1", "1.5", "abc", "86401", "999999999999999999999999", "10s", "0x10"]) {
+    assert.throws(() => readSandboxRetentionMs({ AGENT_DISPATCHER_SANDBOX_RETENTION: value }), undefined, `rejects ${JSON.stringify(value)}`);
+  }
+});
+
+test("retention holds finished session resources before cleanup and reports names", async () => {
+  const retained = [];
+  const f = fixture({ sandboxRetentionMs: 40, onRetention: (info) => retained.push(info) });
+  const startedAt = performance.now();
+  const result = await f.session.run(image, decision, {});
+  const elapsedMs = performance.now() - startedAt;
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(result.completion, "gone");
+  assert.equal(retained.length, 1);
+  assert.equal(retained[0].runId, result.runId);
+  assert.equal(retained[0].workspaceName, result.workspace.name);
+  assert.equal(retained[0].sandboxName, result.sandbox.name);
+  assert.equal(retained[0].retentionMs, 40);
+  assert.ok(elapsedMs >= 40, "retention delays cleanup");
+  assert.equal(f.calls.filter((c) => c.name === "deleteSandbox").length, 1);
+  assert.ok(f.resources().sandbox === undefined && f.resources().workspace === undefined);
+});
+
+test("aborting during retention falls through to immediate cleanup", async () => {
+  const retained = [];
+  const f = fixture({ sandboxRetentionMs: 120_000, onRetention: (info) => retained.push(info) });
+  const controller = new AbortController();
+  const running = f.session.run(image, decision, {}, controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const abortedAt = performance.now();
+  controller.abort();
+  const result = await running;
+  assert.ok(performance.now() - abortedAt < 10_000, "cleanup does not wait out the retention window");
+  assert.equal(retained.length, 1);
+  assert.equal(result.cleanup, "deleted");
+  assert.equal(result.completion, "gone");
+  assert.ok(f.resources().sandbox === undefined && f.resources().workspace === undefined);
 });
 
 test("session passes deployment runtime options to the memory policy builder", () => {

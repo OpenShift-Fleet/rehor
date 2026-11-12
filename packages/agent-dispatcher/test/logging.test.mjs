@@ -9,7 +9,7 @@ import { createLifecycleLogger } from "../dist/logging.js";
 const events = [
   "startup", "configuration", "kubernetes.token_request", "memory.missing_token",
   "memory.invalid_token", "memory.token", "gateway.authentication", "gateway.oidc",
-  "sandbox.session", "sandbox.cleanup", "ready", "shutdown",
+  "sandbox.session", "sandbox.cleanup", "sandbox.retention", "ready", "shutdown",
 ];
 
 function fixture() {
@@ -70,6 +70,26 @@ test("session diagnostics expose only fixed stage and error codes", () => {
   ]);
 });
 
+test("retention records expose only opaque gateway names and a bounded duration", () => {
+  const { logger, lines } = fixture();
+  logger.log("sandbox.retention", "success", { retentionMs: 30_000, workspaceName: "w123456789012345678", sandboxName: "s123456789012345678" });
+  assert.equal(lines.length, 1);
+  const record = JSON.parse(lines[0]);
+  assert.equal(record.event, "sandbox.retention");
+  assert.equal(record.status, "success");
+  assert.equal(record.workspaceName, "w123456789012345678");
+  assert.equal(record.sandboxName, "s123456789012345678");
+  assert.equal(record.retentionMs, 30000);
+  for (const options of [
+    { workspaceName: "not-a-name" }, { workspaceName: "" }, { workspaceName: 19 },
+    { sandboxName: "S1234567890123456789" }, { sandboxName: "s12345678901234567" },
+    { sandboxName: "secret-token-payload" }, { retentionMs: "30000" }, { retentionMs: NaN }, { retentionMs: Infinity },
+  ]) {
+    logger.log("sandbox.retention", "success", options);
+  }
+  assert.equal(lines.length, 1, "malformed retention details are dropped, never logged");
+});
+
 test("durations are bounded, rounded and measured with an injectable clock", () => {
   const { logger, lines, advance } = fixture();
   logger.log("startup", "success", { durationMs: -4 });
@@ -125,7 +145,7 @@ test("writer errors never escape or get logged, including rejected async writers
 
 test("production wiring preserves decision, filters runner env, and drains signal-racing sessions with mocks only", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -145,7 +165,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     `,
     "sandbox-session.js": `
       export class SandboxSession {
-        constructor({ raw, memory, runtime, memoryRuntime, serviceGatewayUrl, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || !memoryRuntime || serviceGatewayUrl.href !== 'https://services.example/' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
+        constructor({ raw, memory, runtime, memoryRuntime, serviceGatewayUrl, sandboxRetentionMs, onRetention, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || !memoryRuntime || serviceGatewayUrl.href !== 'https://services.example/' || sandboxRetentionMs !== 0 || typeof onRetention !== 'function' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
         run(image, decision, environment, signal) {
           process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
           process.exitCode = 7;
@@ -336,7 +356,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -378,7 +398,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
