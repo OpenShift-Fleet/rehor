@@ -69,6 +69,7 @@ nav:
     - Git Auth Proxy: git-auth-proxy.md
     - Agent Proxy Gateway: agent-proxy-gateways.md
     - Preset System Design: presets-design.md
+    - Preflight Rework Spike Input: preflight-rework-spike-input.md
   - Presets:
     - Overview: presets/README.md
     - Workflow Presets: presets/workflows.md
