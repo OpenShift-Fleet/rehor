@@ -449,7 +449,7 @@ test("default policy remains constrained HTTPS health-only, not inferred runner 
   const rule = policy.networkPolicies.memory_health;
   assert.equal(rule.endpoints[0].host, "memory.example.test");
   assert.deepEqual(rule.endpoints[0].rules, [{ allow: { method: "GET", path: "/health" } }]);
-  assert.deepEqual(rule.binaries, [{ path: "/usr/bin/python3.12" }]);
+  assert.deepEqual(rule.binaries, [{ path: "/usr/bin/python3.12" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }]);
   assert.deepEqual(policy.filesystem.readOnly, ["/home/botuser/app"]);
   assert.deepEqual(policy.filesystem.readWrite, ["/home/botuser/repos", "/home/botuser/data", "/tmp"]);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
@@ -474,7 +474,7 @@ test("model proxy URL dispatches with the model-gateway rule verified against th
     { allow: { method: "POST", path: "/v1/responses" } },
   ]);
   assert.deepEqual(rule.endpoints[0].credentialBinding, { provider: result.provider.name });
-  assert.deepEqual(rule.binaries, [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }]);
+  assert.deepEqual(rule.binaries, [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }]);
   assert.equal(f.calls.filter((call) => call.name === "execSandbox").length, 2);
 });
 
