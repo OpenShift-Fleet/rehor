@@ -20,7 +20,9 @@ export type DispatcherCycleOptions = {
   /** Complete caller-supplied environment, or a per-profile environment resolver. */
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
-  launch: (profile: AgentProfile, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>) => Promise<SessionCompletion>;
+  /** Sandbox launch for a start decision; agentId is the opaque per-agent
+   * identity the caller may use to key the session mutex lock (REHOR-218). */
+  launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>) => Promise<SessionCompletion>;
   /**
    * Mints the short-lived memory credential forwarded to preflight scripts as
    * BOT_MEMORY_TOKEN. Called once per cycle; a minting failure fails every
@@ -150,7 +152,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           if (options.signal?.aborted) return "shutdown" as const;
           const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => {
             if (decision.action !== "start") return "not-created";
-            return options.launch(profile, prompt, decision);
+            return options.launch(profile, id, prompt, decision);
           });
           if (dispatched.status === "started") {
             // Defensive even if a future dispatcher implementation rejects completion.

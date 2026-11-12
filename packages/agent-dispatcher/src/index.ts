@@ -1,14 +1,17 @@
-import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readSandboxRetentionMs, readServiceGatewayUrl, type AuthConfig } from "./config.js";
+import { hostname } from "node:os";
+import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readSandboxRetentionMs, readSessionLockTtlMs, readServiceGatewayUrl, type AuthConfig } from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
-import { createLifecycleLogger, writeStartupGreeting } from "./logging.js";
+import { createLifecycleLogger, writeStartupGreeting, type LifecycleEvent, type LogOptions } from "./logging.js";
 import { parseConfigRepositories } from "./config-repositories.js";
 import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { verifyPreflightTools } from "./work-preflight.js";
 import { SandboxSession } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
+import { createSessionLockClient, withSessionLock, type SessionLockLog } from "./session-lock.js";
+import type { SessionCompletion } from "./dispatch-sessions.js";
 
 const logger = createLifecycleLogger();
 const startup = logger.start("startup");
@@ -84,6 +87,7 @@ async function start(): Promise<void> {
   let botMemoryUrl: URL | undefined;
   let publicEgress = false;
   let sandboxRetentionMs = 0;
+  let sessionLockTtlMs = 0;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
@@ -93,6 +97,7 @@ async function start(): Promise<void> {
     serviceGatewayUrl = readServiceGatewayUrl(process.env, authConfig, modelProxyUrl);
     publicEgress = readPublicEgressEnabled(process.env);
     sandboxRetentionMs = readSandboxRetentionMs(process.env);
+    sessionLockTtlMs = readSessionLockTtlMs(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
     configuration.failure("configuration");
@@ -159,35 +164,62 @@ async function start(): Promise<void> {
       // Snapshot validated deployment configuration for both execution paths.
       if (botMemoryUrl) hostEnvironment.BOT_MEMORY_URL = botMemoryUrl.href;
       else delete hostEnvironment.BOT_MEMORY_URL;
+      // REHOR-218: cluster-wide per-agent session mutex, leased from the
+      // memory server. Enabled only when the TTL is positive; without it the
+      // launch path below is exactly the pre-mutex behavior.
+      const sessionLock = sessionLockTtlMs > 0
+        ? createSessionLockClient({ url: authConfig.memoryUrl, mint: async () => (await provider!.mint()).token })
+        : undefined;
+      const lockHolder = hostname();
+      // withSessionLock emits only the fixed "sandbox.lock" event with
+      // lifecycle-logger-shaped details; the logger re-validates and drops
+      // anything malformed, so these narrowing casts stay sound.
+      const lockLog: SessionLockLog = (event, status, data) => {
+        logger.log(event as LifecycleEvent, status, data as LogOptions);
+      };
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,
         env: hostEnvironment,
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,
-        launch: async (profile, _prompt, decision) => {
+        launch: async (profile, agentId, _prompt, decision) => {
           if (signal.aborted) return "not-created";
           const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl);
-          // Register before invoking session code, including synchronous errors
-          // or a shutdown signal raised during admission.
-          const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));
-          sessionRuns.add(work);
-          const running = logger.start("sandbox.session");
-          try {
-            const record = await work;
-            if (isUnresolvedSession(record)) unresolvedSessionResult = true;
-            if (record.outcome === "passed") running.success();
-            else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
-            if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success");
-            else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode });
-            return record.completion;
-          } catch {
-            running.failure("internal");
-            logger.log("sandbox.cleanup", "failure", { category: "internal" });
-            return "unknown";
-          } finally {
-            sessionRuns.delete(work);
-          }
+          const runSession = async (): Promise<SessionCompletion> => {
+            // Register before invoking session code, including synchronous errors
+            // or a shutdown signal raised during admission.
+            const work = Promise.resolve().then(() => session.run(profile.image.reference, decision, environment, signal));
+            sessionRuns.add(work);
+            const running = logger.start("sandbox.session");
+            try {
+              const record = await work;
+              if (isUnresolvedSession(record)) unresolvedSessionResult = true;
+              if (record.outcome === "passed") running.success();
+              else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
+              if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success");
+              else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode });
+              return record.completion;
+            } catch {
+              running.failure("internal");
+              logger.log("sandbox.cleanup", "failure", { category: "internal" });
+              return "unknown";
+            } finally {
+              sessionRuns.delete(work);
+            }
+          };
+          if (!sessionLock) return runSession();
+          // Contended (another replica runs the agent) or failed acquisition
+          // created nothing: no session ran, so nothing is registered above.
+          const outcome = await withSessionLock({
+            lock: sessionLock,
+            key: `agent-session:${agentId}`,
+            holder: lockHolder,
+            ttlMs: sessionLockTtlMs,
+            log: lockLog,
+            run: runSession,
+          });
+          return outcome.status === "ran" ? outcome.result : "not-created";
         },
       });
     }

@@ -22,7 +22,7 @@ const options = (extra = {}) => ({
   dispatcher: new SessionDispatcher(), launch: async () => "gone", ...extra,
 });
 
-test("launch receives original start decision and script metadata with mock-only dependencies", async () => {
+test("launch receives agent ID, original start decision and script metadata with mock-only dependencies", async () => {
   const decision = {
     action: "start", prompt: "sensitive prompt",
     scripts: [{ name: "01-work.py", status: "start", content: "sensitive content" }],
@@ -44,9 +44,10 @@ test("launch receives original start decision and script metadata with mock-only
   assert.equal(result.repositories[0].profiles[0].status, "started");
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], selected);
-  assert.equal(calls[0][1], decision.prompt);
-  assert.equal(calls[0][2], decision);
-  assert.deepEqual(calls[0][2].scripts, decision.scripts);
+  assert.match(calls[0][1], /^[0-9a-f]{64}$/);
+  assert.equal(calls[0][2], decision.prompt);
+  assert.equal(calls[0][3], decision);
+  assert.deepEqual(calls[0][3].scripts, decision.scripts);
   assert.doesNotMatch(JSON.stringify(result), /sensitive|01-work/);
 });
 
@@ -115,7 +116,7 @@ test("sequential preflights, parallel sessions, busy check and stable unique ide
   const events = [];
   const waiting = deferred();
   const dispatcher = new SessionDispatcher();
-  const opts = options({ dispatcher, launch: async (p, prompt) => {
+  const opts = options({ dispatcher, launch: async (p, _agentId, prompt) => {
     events.push(`launch:${p.botRoot}:${prompt}`);
     await waiting.promise;
     return "gone";
@@ -237,7 +238,7 @@ test("real discovery and Python runner receive supplied onboarding context; no s
   let now = 0;
   const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
     env: { PATH: process.env.PATH, BOT_INSTANCE_ID: "supplied-id", BOT_LABEL: "supplied-label" },
-    launch: async (p, prompt) => { calls.push([p.name, prompt]); return "gone"; },
+    launch: async (p, _agentId, prompt) => { calls.push([p.name, prompt]); return "gone"; },
     dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
   });
   const first = await runDispatcherCycle(opts);
@@ -286,7 +287,7 @@ test("checked-in onboarding preflight flows through cycle with hermetic services
   let now = 0;
   const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
     env: { PATH: process.env.PATH, JIRA_MCP_URL: "http://fixture.invalid/mcp", BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR", FIXTURE_WORK: "yes" },
-    launch: async (p, prompt) => { calls.push([p.name, prompt]); return "gone"; },
+    launch: async (p, _agentId, prompt) => { calls.push([p.name, prompt]); return "gone"; },
     dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
   });
   const started = await runDispatcherCycle(opts);

@@ -15,6 +15,7 @@ const EVENTS = [
   "sandbox.session",
   "sandbox.cleanup",
   "sandbox.retention",
+  "sandbox.lock",
   "ready",
   "shutdown",
 ] as const;
@@ -48,6 +49,11 @@ export interface LogOptions {
   workspaceName?: string;
   sandboxName?: string;
   retentionMs?: number;
+  /** Session mutex (REHOR-218): contention, holder identity, and failures. */
+  contended?: boolean;
+  holder?: string;
+  renew?: boolean;
+  release?: boolean;
 }
 
 export interface LifecycleLogger {
@@ -161,6 +167,10 @@ export function createLifecycleLogger(deps: {
       const workspaceName = options?.workspaceName;
       const sandboxName = options?.sandboxName;
       const retentionMs = options?.retentionMs;
+      const contended = options?.contended;
+      const holder = options?.holder;
+      const renew = options?.renew;
+      const release = options?.release;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
@@ -170,8 +180,13 @@ export function createLifecycleLogger(deps: {
       if (workspaceName !== undefined && (typeof workspaceName !== "string" || !/^[a-z0-9]{19}$/.test(workspaceName))) return;
       if (sandboxName !== undefined && (typeof sandboxName !== "string" || !/^[a-z0-9]{19}$/.test(sandboxName))) return;
       if (retentionMs !== undefined && (typeof retentionMs !== "number" || !Number.isFinite(retentionMs))) return;
+      if (contended !== undefined && typeof contended !== "boolean") return;
+      // Holders are pod names: one DNS label, never session content.
+      if (holder !== undefined && (typeof holder !== "string" || holder.length > 63 || !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(holder))) return;
+      if (renew !== undefined && typeof renew !== "boolean") return;
+      if (release !== undefined && typeof release !== "boolean") return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
@@ -179,6 +194,10 @@ export function createLifecycleLogger(deps: {
       if (workspaceName !== undefined) record.workspaceName = workspaceName;
       if (sandboxName !== undefined) record.sandboxName = sandboxName;
       if (retentionMs !== undefined) record.retentionMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, retentionMs)));
+      if (contended !== undefined) record.contended = contended;
+      if (holder !== undefined) record.holder = holder;
+      if (renew !== undefined) record.renew = renew;
+      if (release !== undefined) record.release = release;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.

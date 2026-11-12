@@ -37,12 +37,15 @@ Secrets come only from the Vault-synced `devbot-secrets` Secret:
 
 Stage Vault-synced `devbot-secrets` version 35 contains these dispatcher keys. `AGENT_DISPATCHER_CONFIG_REPOS` and the non-secret model-gateway Route URL `AGENT_DISPATCHER_MODEL_PROXY_URL` (REHOR-237; exact HTTPS `/v1` path, validated fail-closed at startup) are supplied as regular app-interface parameters; probes remain removed. No credentials or auth configuration are baked into the image, committed to Git, or exposed as template parameters. Cleanup budgets and sandbox policy remain owned by agent instance profiles and tracked by REHOR-241; the dispatcher forwards only non-secret `BOT_*` variables and the service coordinates above.
 
+`AGENT_DISPATCHER_SESSION_LOCK_TTL_MS` (REHOR-218) controls the cluster-wide per-agent session mutex: whole milliseconds, validated fail-closed at startup, defaulting to `1800000` (30 minutes) when unset; `0` disables the mutex entirely and preserves single-replica behavior. Before creating a sandbox session the dispatcher acquires a lock from the memory server (`POST /api/locks/acquire` on the configured `AGENT_DISPATCHER_AUTH_MEMORY_URL` origin) keyed by the agent's opaque ID, renews it at one third of the TTL while the session runs, and releases it once the session settles. Contention means another replica already runs the agent and is logged as a `sandbox.lock` success, not a failure. The TTL bounds how long a hard-killed replica (no drain, no release) can block an agent: the lease simply expires and another replica takes over. SIGTERM drain waits for running sessions and each session releases its lock in the same `finally` block as its completion, so rolling updates do not leave zombie locks.
+
 ## Deployment semantics
 
 - **Fail-closed startup**: partial, empty, or malformed auth/Gateway/config-repo configuration exits the process at startup. The Deployment restart policy (`Always`) surfaces misconfiguration as CrashLoopBackOff.
 - **No probes**: the dispatcher has no HTTP listener. Fatal errors exit non-zero and restart the pod; a hung-but-running process is not auto-detected (see [Observability](#observability)).
 - **Shutdown**: on SIGTERM the process drains in-flight sandbox sessions within an internal 22-minute deadline; `terminationGracePeriodSeconds` is 1500s and must stay above it.
 - **Session registry is process-local** (durable recovery is REHOR-218): a restart or eviction abandons in-flight sessions. The Gateway retains the abandoned sandbox/provider/workspace resources; they must be reconciled manually per the rollback procedure until REHOR-218 lands.
+- **Per-agent session mutex (REHOR-218)**: with multiple replicas, only one active sandbox session per agent exists cluster-wide. Admission acquires a memory-server lock before the session is created (a contended or failed acquisition creates nothing and reports `not-created`); crashed replicas are covered by TTL expiry of their lease, not by release. Disable with `AGENT_DISPATCHER_SESSION_LOCK_TTL_MS: '0'`.
 - **Egress**: the namespace has no egress NetworkPolicy; the dispatcher reaches the Kubernetes API (TokenRequest), the memory Route, the Gateway, and config repositories (HTTPS Git) directly. Authenticated Squid mediation for config-repo fetches is a REHOR-237/REHOR-241 follow-up, not required for this deployment.
 
 ## Rollout plan
@@ -69,7 +72,7 @@ Ad-hoc test Jobs remain available for experiments but are no longer required for
 
 ## Observability
 
-- **Lifecycle logs**: the dispatcher emits structured JSON lifecycle events (`startup`, `configuration`, `shutdown`, `sandbox.session`, `sandbox.cleanup`, preflight aggregation) to stdout. Inspect with `oc logs deployment/rehor-agent-dispatcher`.
+- **Lifecycle logs**: the dispatcher emits structured JSON lifecycle events (`startup`, `configuration`, `shutdown`, `sandbox.session`, `sandbox.cleanup`, `sandbox.lock`, preflight aggregation) to stdout. Inspect with `oc logs deployment/rehor-agent-dispatcher`.
 - **Alerting**: `PlatformFrontendAiDevDispatcherDown` (app-interface PrometheusRule) fires when available replicas fall below the desired spec for 15 minutes (crash-loop, eviction, or scheduling failure). The scale-to-zero rollout and rollback states do not alert; a missing Deployment object is not alerted on.
 - **Runbook**: `DispatcherDown` SOP in the app-interface `app-sops/platform-frontend-ai-dev/` directory.
 - **Limitations**: no metrics port and no in-process hang detection. Preflight cycles and cleanup failures are visible in logs and (for completed work) in the memory-server dashboard; GlitchTip/metrics integration is a follow-up if operational need arises.

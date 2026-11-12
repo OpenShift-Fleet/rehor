@@ -134,6 +134,28 @@ export function readPublicEgressEnabled(env: NodeJS.ProcessEnv): boolean {
   throw new Error(`${publicEgressFlagVariable}, when set, must be exactly "true" or "false"`);
 }
 
+const sessionLockTtlVariable = "AGENT_DISPATCHER_SESSION_LOCK_TTL_MS";
+
+// Cluster-wide per-agent session mutex (REHOR-218): whole milliseconds for
+// the memory-server lock lease acquired before each sandbox session and
+// renewed at one third of the TTL while it runs. Default 30 minutes; 0
+// disables the mutex entirely (single-replica behavior). The TTL bounds how
+// long a hard-killed replica can block an agent. Fail-closed: only plain
+// decimal milliseconds are accepted so a typo cannot silently disable or
+// extend the lease.
+export function readSessionLockTtlMs(env: NodeJS.ProcessEnv): number {
+  const value = env[sessionLockTtlVariable];
+  if (value === undefined) return 30 * 60_000;
+  if (!/^[0-9]+$/.test(value)) {
+    throw new Error(`${sessionLockTtlVariable}, when set, must be a whole number of milliseconds between 0 and 86400000`);
+  }
+  const milliseconds = Number(value);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds > 86_400_000) {
+    throw new Error(`${sessionLockTtlVariable}, when set, must be a whole number of milliseconds between 0 and 86400000`);
+  }
+  return milliseconds;
+}
+
 const sandboxRetentionVariable = "AGENT_DISPATCHER_SANDBOX_RETENTION";
 
 // Debug aid (REHOR-245): whole seconds to keep a finished session's gateway
