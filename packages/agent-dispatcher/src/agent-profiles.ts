@@ -1,12 +1,20 @@
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { objectEntrySchema, type PreflightEntry } from "@rehor/preflights";
 import { isInstancePreflightVariable } from "./preflight-env.js";
+import {
+  formatPreflightDiagnostics,
+  preflightEntryDiagnostics,
+  PreflightConfigurationError,
+  type PreflightDiagnostic,
+} from "./preflight-diagnostics.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
 
-/** Paths are absolute and resolved within the checkout. Pass botRoot, workflow and
- * instanceDir to the work-preflight runner; preflight directories may be absent. */
+/** Paths are absolute and resolved within the checkout. Pass botRoot and
+ * instanceDir for instance data (project-repos.json); the preflight engine
+ * consumes the declarative `preflights:` field, never workflow scripts. */
 export type AgentProfile = {
   name: string;
   configPath: string;
@@ -14,10 +22,15 @@ export type AgentProfile = {
   instanceDir: string;
   workflow: string;
   workflowDir: string;
-  workflowPreflightDir?: string;
-  instancePreflightDir?: string;
   image: AgentImage;
   preflightEnv: Record<string, string>;
+  /**
+   * Parsed `preflights:` entries for the preflight engine:
+   * shorthand strings or `{ id, with }` objects, already shape-validated
+   * against the package's entry schema. Registry-level validation (ids,
+   * parameters) happens per run in the engine.
+   */
+  preflights?: PreflightEntry[];
 };
 
 function contained(root: string, path: string): boolean {
@@ -44,17 +57,6 @@ async function optionalDirectory(path: string, root: string): Promise<string | u
     throw error;
   }
   return checkedPath(path, root, "directory");
-}
-
-async function preflightDirectory(path: string, root: string): Promise<string | undefined> {
-  const dir = await optionalDirectory(path, root);
-  if (dir) {
-    // The runner follows symlinks when selecting scripts; verify their targets too.
-    for (const name of await readdir(dir)) {
-      if (name.endsWith(".py")) await checkedPath(join(dir, name), root, "file");
-    }
-  }
-  return dir;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -108,6 +110,31 @@ function preflightEnvironment(value: unknown): Record<string, string> {
   return env;
 }
 
+/** Strict `preflights:` parsing: undefined passes through (the
+ * field is omitted and the workflow's default set applies later), but any
+ * malformed entry fails profile discovery — entries are never silently
+ * dropped, and every failure names the instance and the exact entry,
+ * parameter, and reason. Only the entry shape is checked here; id and
+ * parameter validation against a registry happens per run in the preflight
+ * engine. The failure is typed: it carries the profile name and the full
+ * structured diagnostics, so the cycle can log the issues while the
+ * discovery result stays fail-closed.
+ */
+function preflightsFrom(value: unknown, name: string): PreflightEntry[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw configurationError(name, preflightEntryDiagnostics(value));
+  }
+  const diagnostics = preflightEntryDiagnostics(value);
+  if (diagnostics.length > 0) throw configurationError(name, diagnostics);
+  // Every entry parsed cleanly; re-run the object branch for typed values.
+  return value.map((raw) => (typeof raw === "string" ? raw : objectEntrySchema.parse(raw)));
+}
+
+function configurationError(name: string, diagnostics: readonly PreflightDiagnostic[]): PreflightConfigurationError {
+  return new PreflightConfigurationError(name, diagnostics, formatPreflightDiagnostics(name, diagnostics));
+}
+
 /** Discover every agent profile in one fixed checkout. Any invalid profile or
  * missing shared dependency rejects the entire result; no partial list escapes.
  * The checkout must remain unchanged until the caller finishes using paths. */
@@ -115,8 +142,6 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
   const root = await realpath(resolve(checkout));
   const instances = await checkedPath(join(root, "instance"), root, "directory");
   const botRoot = await checkedPath(join(root, "dev-bot"), root, "directory");
-  await checkedPath(join(botRoot, "presets", "shared", "preflight"), botRoot, "directory");
-  await checkedPath(join(botRoot, ".claude", "skills"), botRoot, "directory");
   const profiles: AgentProfile[] = [];
   for (const name of (await readdir(instances)).sort()) {
     const instancePath = join(instances, name);
@@ -136,14 +161,13 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     const workflow = workflowFrom(config.workflow);
     const image = imageFrom(config.image);
     const preflightEnv = preflightEnvironment(config.preflight);
+    const preflights = preflightsFrom(config.preflights, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
     const workflowPath = workflow.startsWith("./")
       ? join(instanceDir, workflow.slice(2))
       : join(botRoot, "presets", "workflows", workflow);
     const workflowDir = await checkedPath(workflowPath, workflowBoundary, "directory");
-    const workflowPreflightDir = await preflightDirectory(join(workflowDir, "preflight"), workflowBoundary);
-    const instancePreflightDir = await preflightDirectory(join(instanceDir, "preflight"), instanceDir);
-    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, workflowPreflightDir, instancePreflightDir, image, preflightEnv });
+    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, ...(preflights === undefined ? {} : { preflights }) });
   }
   if (!profiles.length) throw new Error("No agent profiles found in checkout");
   return profiles;

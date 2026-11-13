@@ -7,17 +7,19 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --import ./test/register-sdk-hook.mjs --test test/*.test.mjs",
+    "build": "nx run @rehor/agent-dispatcher:build",
+    "test": "nx run @rehor/agent-dispatcher:test",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.16.0",
     "@connectrpc/connect": "2.3.0",
     "@nvidia/openshell-sdk": "0.1.5",
+    "@rehor/preflights": "0.0.0",
     "pino": "10.4.0",
     "undici": "7.30.1",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

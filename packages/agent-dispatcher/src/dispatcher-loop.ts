@@ -13,15 +13,17 @@ export type DispatcherLoopOptions = {
   env?: NodeJS.ProcessEnv;
   /** Sandbox launch for a start decision. Defaults to completing without creating a sandbox. */
   launch?: DispatcherCycleOptions["launch"];
-  /** Mints the per-cycle memory credential forwarded to preflight scripts. */
+  /** Mints the per-cycle memory credential used by the preflight engine. */
   memoryCredential?: () => Promise<string>;
+  /** Services-gateway base URL; the proxy route for external-system preflights. */
+  serviceGatewayUrl?: URL;
   /** Observes each completed cycle; defaults to a structured stdout event. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
   intervalMs?: number;
 };
 
-/** Forward only non-secret settings needed by legacy preflights. */
+/** Forward only non-secret settings the sandbox runtime environment needs. */
 export function preflightEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
@@ -45,7 +47,7 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
-      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential });
+      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl });
       if (!signal?.aborted) emit(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {

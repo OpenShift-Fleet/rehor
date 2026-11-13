@@ -9,6 +9,7 @@ import { createLifecycleLogger } from "../dist/logging.js";
 const events = [
   "startup", "configuration", "kubernetes.token_request", "memory.missing_token",
   "memory.invalid_token", "memory.token", "gateway.authentication", "gateway.oidc",
+  "preflight.error",
   "sandbox.session", "sandbox.cleanup", "sandbox.retention", "ready", "shutdown",
 ];
 
@@ -153,6 +154,130 @@ test("durations are bounded, rounded and measured with an injectable clock", () 
   assert.equal(JSON.parse(lines.at(-1)).level, 50);
 });
 
+test("preflight identity fields accept safe identifiers only; transcripts never logged", () => {
+  const { logger, lines } = fixture();
+  const agentId = "a".repeat(64);
+  logger.log("preflight.error", "failure", {
+    category: "configuration",
+    profile: "fleetshift-config",
+    repository: "https://github.com/org/fleetshift-config.git",
+    agentId,
+  });
+  // Unknown fields (a transcript, free-form message text) are ignored, never
+  // logged — the identity fields alone make the record.
+  logger.log("preflight.error", "failure", {
+    profile: "ok",
+    repository: "https://github.com/org/repo.git",
+    agentId,
+    transcript: "secret-error-detail",
+    message: "secret",
+  });
+  for (const options of [
+    { profile: "/etc/passwd", agentId },
+    { profile: "x".repeat(2049), agentId },
+    { profile: "ok", repository: "https://user:secret@example.test/repo.git", agentId },
+    { profile: "ok", repository: "not a url", agentId },
+    { profile: "ok", repository: "https://github.com/org/repo.git?query=1", agentId },
+    { profile: "ok", repository: "https://github.com/org/repo.git", agentId: "not-a-hash" },
+    { profile: "ok", repository: "https://github.com/org/repo.git", agentId: 42 },
+    { profile: 7, repository: "https://github.com/org/repo.git", agentId },
+  ]) {
+    assert.doesNotThrow(() => logger.log("preflight.error", "failure", options));
+  }
+  assert.equal(lines.length, 2);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: "preflight.error", status: "failure", category: "configuration", level: 50,
+    profile: "fleetshift-config",
+    repository: "https://github.com/org/fleetshift-config.git",
+    agentId,
+  });
+  assert.deepEqual(JSON.parse(lines[1]), {
+    event: "preflight.error", status: "failure", level: 50,
+    profile: "ok",
+    repository: "https://github.com/org/repo.git",
+    agentId,
+  });
+  assert.ok(lines.every((line) => !line.includes("secret")));
+});
+
+test("preflight identity preserves Unicode and removes userinfo and control characters", () => {
+  const { logger, lines } = fixture();
+  const agentId = "b".repeat(64);
+  logger.log("preflight.error", "failure", {
+    profile: "Řehoř 例\n\u001b\u202e",
+    repository: "ssh://private-user%40token@example.test/org/config.git",
+    agentId,
+  });
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: "preflight.error", status: "failure", level: 50,
+    profile: "Řehoř 例\\u{a}\\u{1b}\\u{202e}",
+    repository: "ssh://example.test/org/config.git", agentId,
+  });
+  assert.doesNotMatch(lines[0], /private-user|token|\u001b|\u202e/);
+  for (const repository of [
+    "ssh://user:private-password@example.test/org/config.git",
+    "https://private-user@example.test/org/config.git",
+    "ssh://user@example.test/org/config.git?secret=private-query",
+    "ssh://user@example.test/org/config.git#private-fragment",
+    "ssh://user@example.test/org/\nconfig.git",
+    `https://example.test/${"x".repeat(2048)}`,
+  ]) logger.log("preflight.error", "failure", { profile: "agent", repository, agentId });
+  assert.equal(lines.length, 1);
+});
+
+test("preflight reasons use a fixed allowlist", () => {
+  const { logger, lines } = fixture();
+  for (const reason of ["configuration", "execution"]) logger.log("preflight.error", "failure", { reason });
+  for (const reason of ["secret", "internal", "CONFIGURATION", "", null, 1, {}]) {
+    logger.log("preflight.error", "failure", { reason });
+  }
+  assert.deepEqual(lines.map(JSON.parse), [
+    { event: "preflight.error", status: "failure", reason: "configuration", level: 50 },
+    { event: "preflight.error", status: "failure", reason: "execution", level: 50 },
+  ]);
+});
+
+test("preflight wiring fields use a fixed allowlist", () => {
+  const { logger, lines } = fixture();
+  for (const configurationField of ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"]) logger.log("preflight.error", "failure", { configurationField });
+  for (const configurationField of ["secret-token", "", null, 1, {}]) logger.log("preflight.error", "failure", { configurationField });
+  assert.deepEqual(lines.map(JSON.parse).map(({ configurationField }) => configurationField), ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"]);
+});
+
+test("preflight diagnostics and preflight ids pass a strict allowlist", () => {
+  const { logger, lines } = fixture();
+  const agentId = "c".repeat(64);
+  const repository = "https://github.com/org/repo.git";
+  const diagnostics = [
+    { path: "preflights[0].with.label", code: "invalid_type", message: "Invalid input: expected string, received number", received: "123" },
+  ];
+  // Every issue is logged: no count or length limit drops any diagnostic.
+  const many = Array.from({ length: 40 }, (_, index) => ({ path: `preflights[${index}].with.label`, code: "invalid_type", message: "Invalid input: expected string, received number", received: "123" }));
+  const long = { path: "preflights[0].id", code: "unknown_preflight", message: `nope-${"x".repeat(400)}: unknown preflight id`, received: JSON.stringify(`nope-${"x".repeat(400)}`) };
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics, preflightId: "jira-sprint" });
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics: many });
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics: [long] });
+  for (const options of [
+    { diagnostics: "secret" }, { diagnostics: {} }, { diagnostics: [] },
+    { diagnostics: [{ path: "p" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m", received: "r", extra: "secret" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m", received: 7 }] },
+    { diagnostics: [{ path: "", code: "c", message: "m", received: "r" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m\u0001", received: "r" }] },
+    { preflightId: "not an id" }, { preflightId: "" }, { preflightId: 42 }, { preflightId: "-leading" }, { preflightId: "x".repeat(65) },
+  ]) {
+    assert.doesNotThrow(() => logger.log("preflight.error", "failure", { agentId, ...options }));
+  }
+  assert.equal(lines.length, 3, "malformed diagnostics and preflight ids are dropped, never logged");
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: "preflight.error", status: "failure", level: 50, reason: "configuration",
+    profile: "ok", repository, agentId, diagnostics, preflightId: "jira-sprint",
+  });
+  assert.equal(JSON.parse(lines[1]).diagnostics.length, 40);
+  assert.deepEqual(JSON.parse(lines[2]).diagnostics, [long]);
+  assert.ok(lines.every((line) => !line.includes("secret")));
+});
+
 test("broken clocks omit duration without leaking errors", () => {
   const lines = [];
   const logger = createLifecycleLogger({
@@ -194,8 +319,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
-    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
-    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}]; export const verifyConfigRepositoryTools = async () => {};`,
     "dispatcher-loop.js": `
       export const preflightEnvironment = () => ({ PATH: '/host/bin', BOT_LABEL: 'host-label', BOT_INSTANCE_ID: 'host-instance', BOT_MEMORY_URL: 'https://unvalidated.example/mcp', JIRA_MCP_URL: 'http://jira.internal/mcp', EXECUTOR_ADDR: 'executor.internal:9090' });
       export async function runDispatcherLoop(options) {
@@ -401,12 +525,11 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
-    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
-    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}]; export const verifyConfigRepositoryTools = async () => {};`,
     "dispatcher-cycle.js": `export async function runDispatcherCycle() { return { get status() { process.send('cycle-emitted'); return 'invalid-config'; }, repositories: [] }; }`,
   };
   const preload = `
@@ -443,12 +566,11 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
-    "config-repositories.js": `export const parseConfigRepositories = () => [{}];`,
-    "work-preflight.js": `export const verifyPreflightTools = async () => {};`,
+    "config-repositories.js": `export const parseConfigRepositories = () => [{}]; export const verifyConfigRepositoryTools = async () => {};`,
     "dispatcher-loop.js": `
       export const preflightEnvironment = () => ({});
       export async function runDispatcherLoop(options) {

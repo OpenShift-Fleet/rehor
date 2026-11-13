@@ -4,8 +4,10 @@ on:
   pull_request:
     paths:
       - 'packages/agent-dispatcher/**'
+      - 'packages/preflights/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'nx.json'
       - '.npmrc'
       - '.github/workflows/agent-dispatcher-tests.yml'
   push:
@@ -13,8 +15,10 @@ on:
       - master
     paths:
       - 'packages/agent-dispatcher/**'
+      - 'packages/preflights/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'nx.json'
       - '.npmrc'
       - '.github/workflows/agent-dispatcher-tests.yml'
 
@@ -63,4 +67,4 @@ jobs:
           npm ci --userconfig "$npmrc"
 
       - name: Run tests
-        run: npm test --workspace=@rehor/agent-dispatcher
+        run: npm exec -- nx run @rehor/agent-dispatcher:test

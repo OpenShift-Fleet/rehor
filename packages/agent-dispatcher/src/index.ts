@@ -6,9 +6,8 @@ import { createCredentialProvider, preflightFailureMessage } from "./preflight.j
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
 import { createLifecycleLogger, writeStartupGreeting, type LifecycleEvent, type LogOptions } from "./logging.js";
-import { parseConfigRepositories } from "./config-repositories.js";
+import { parseConfigRepositories, verifyConfigRepositoryTools } from "./config-repositories.js";
 import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
-import { verifyPreflightTools } from "./work-preflight.js";
 import { SandboxSession, type SandboxSessionResult } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
@@ -112,15 +111,19 @@ async function start(): Promise<void> {
     fail("Agent dispatcher auth configuration failed");
     return;
   }
+  if (repositoriesJson !== undefined && !botMemoryUrl) {
+    configuration.failure("configuration");
+    startup.failure("configuration");
+    fail("BOT_MEMORY_URL is required when agent repositories are configured");
+    return;
+  }
   try {
     gatewayConfig = readGatewayConfig(process.env);
     runtimeLayout = readRuntimeLayout(process.env);
     if (repositoriesJson !== undefined) {
       if (!gatewayConfig || !authConfig || !provider || !parseConfigRepositories(repositoriesJson).length) throw new Error();
-      // Work preflights execute Python from the base image; config repository
-      // synchronization needs Git. Fail startup instead of degrading into
-      // undiagnosable per-cycle errors.
-      await verifyPreflightTools();
+      // Repository synchronization requires Git.
+      await verifyConfigRepositoryTools();
     }
   } catch {
     configuration.failure("configuration");
@@ -218,6 +221,7 @@ async function start(): Promise<void> {
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,
         env: hostEnvironment,
+        ...(serviceGatewayUrl ? { serviceGatewayUrl } : {}),
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,

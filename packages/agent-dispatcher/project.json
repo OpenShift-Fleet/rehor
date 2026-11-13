@@ -5,14 +5,18 @@
   "targets": {
     "build": {
       "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
       "options": {
-        "command": "npm run build --workspace=@rehor/agent-dispatcher"
+        "command": "tsc -p tsconfig.json",
+        "cwd": "packages/agent-dispatcher"
       }
     },
     "test": {
       "executor": "nx:run-commands",
+      "dependsOn": ["build"],
       "options": {
-        "command": "npm test --workspace=@rehor/agent-dispatcher"
+        "command": "node --import ./test/register-sdk-hook.mjs --test test/*.test.mjs",
+        "cwd": "packages/agent-dispatcher"
       }
     },
     "run": {

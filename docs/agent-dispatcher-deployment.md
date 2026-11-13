@@ -2,6 +2,25 @@
 
 The agent dispatcher ([`packages/agent-dispatcher`](../packages/agent-dispatcher/README.md)) is deployed as an app-interface-owned, GitOps-managed OpenShift `Deployment` in the stage namespace (`platform-frontend-ai-dev-stage`), running the Konflux-built dispatcher image. This replaces the ad-hoc OpenShift Jobs and manually pushed Quay test tags used during REHOR-233 E2E validation.
 
+## Preflight execution engine
+
+The dispatcher runs preflights from [`@rehor/preflights`](../packages/preflights/README.md) using configuration from each agent repository.
+
+Per-instance declaration:
+
+- Each agent's `instance.yaml` declares its preflights in the `preflights:` field: shorthand entries (`- jira-triage`) or parameterized entries (`- id: jira-sprint` with a `with:` map of plain literal values). Entries are parsed strictly at profile discovery — a malformed entry fails the whole repository's discovery with a message naming the instance, entry, parameter, and reason (`fleetshift-config: preflights[1].with.label: Invalid input: expected string, received number (got 5)`), never a silent drop.
+- An omitted `preflights:` field inherits the central default set registered for the workflow (`workflowDefaults` in the package, e.g. `jira-sprint` → `gh-pr-status`, `gl-mr-status`). A custom workflow has no central default.
+- A profile with neither a declaration nor a registered workflow default returns an error. An explicit `preflights: []` returns `no-scripts` when required wiring is present.
+- Before execution, every entry is validated against the registry. Any `start` among non-errored entries dispatches; the agent prompt contains only `start` results.
+
+### Services-gateway wiring
+
+The engine's Jira, GitHub, and GitLab traffic always uses the `/jira`, `/github`, and `/gitlab` routes on `AGENT_DISPATCHER_SERVICE_GATEWAY_URL`; the dispatcher never contacts those vendors directly. Preflights needing these services fail if the gateway is not configured. The dispatcher authenticates the dispatcher-to-proxy hop with a per-cycle short-lived minted bearer; the proxy alone injects vendor credentials on the upstream leg. Task fetches use the same minted memory credential; `BOT_INSTANCE_ID` is the instance filter. Each profile requires a nonblank ID, and its `preflight.env` takes precedence over the deployment value. The deployment must provide `BOT_MEMORY_URL` as the exact HTTPS `/mcp` route on the authenticated `/health` origin. Missing or invalid deployment routes fail startup when repositories are configured. Missing or blank IDs or minted credentials fail the affected profile before preflight or sandbox execution, including for an empty `preflights: []` declaration. Each entry's execution is bounded at 120 seconds, and the transport honors dispatcher abort during active requests.
+
+### Error reporting and instance identity
+
+Each failed profile emits a `preflight.error` lifecycle event with `agentId`, `reason` (`configuration` or `execution`), `profile`, and `repository`; individual failed entries are logged even when the aggregate decision is still `start` or `skip`. Profile names support Unicode; nonprinting characters are escaped and SSH userinfo is removed. Invalid or oversized identity fields are omitted while `agentId` remains. Configuration-validation failures expose safe structured diagnostics naming the instance identity and every invalid entry's issue path, issue code, message, and received value. Required-wiring failures also identify `configurationField`; credential values, raw transcripts, prompts, upstream response bodies, and exception text are not logged. Engine error transcripts identify the profile and repository; transcripts and prompts do not enter logs or cycle results. Any actionable `start` among non-errored entries wins the aggregate decision, and the agent prompt contains `start` content only.
+
 ## Deployed objects
 
 Defined in [`deploy/agent-dispatcher-template.yaml`](../deploy/agent-dispatcher-template.yaml), consumed by the `platform-frontend-ai-dev-agent-dispatcher` resourceTemplate in the app-interface SaaS file:
@@ -22,8 +41,9 @@ There is deliberately no Service, Route, or HTTP listener, and no liveness/readi
 | `AGENT_DISPATCHER_CONFIG_REPOS` | `["https://github.com/OpenShift-Fleet/rehor-onboarding-agent.git"]` | JSON array; non-empty and valid or startup fails (fail-closed) |
 | `AGENT_DISPATCHER_RUNTIME_LAYOUT` | `legacy` | Switch to `private` only after runner images are rebuilt with the matching `Dockerfile.runner` (REHOR-233) — pilot scope (REHOR-245) |
 | `AGENT_DISPATCHER_AUTH_*` | Vault-backed `devbot-secrets` keys with matching env names | Memory TokenRequest namespace, target service account, and exact HTTPS `/health` Route URL |
-| `JIRA_MCP_URL` | `http://devbot-proxy:8444/mcp` | In-cluster endpoint serves dispatcher-side preflights; sandbox-visible authenticated Route is REHOR-237 phase 2 / REHOR-241 |
-| `EXECUTOR_ADDR` | `devbot-proxy:9090` | gh/glab shim endpoint for preflights |
+| `AGENT_DISPATCHER_SERVICE_GATEWAY_URL` | services Route origin when enabled | Authenticated single route whose `/jira`, `/github`, and `/gitlab` path prefixes carry preflight traffic (see [Services gateway wiring](#services-gateway-wiring)) |
+| `JIRA_MCP_URL` | `http://devbot-proxy:8444/mcp` | Sandbox runtime Jira MCP endpoint (agent `mcp.json` references it); the TS preflight engine reaches Jira through the services-gateway proxy route instead |
+| `EXECUTOR_ADDR` | `devbot-proxy:9090` | gh/glab shim endpoint for the sandbox thin clients; the TS preflight engine makes no executor calls |
 | `OPENSHELL_*` | Vault-backed `devbot-secrets` keys with matching env names | Gateway/OIDC configuration, including optional `OPENSHELL_SERVICE_ACCOUNT_SUBJECT` |
 
 Secrets come only from the Vault-synced `devbot-secrets` Secret:

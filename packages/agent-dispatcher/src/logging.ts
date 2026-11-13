@@ -2,6 +2,8 @@ import { performance } from "node:perf_hooks";
 import { fstatSync, writeSync } from "node:fs";
 import { pino } from "pino";
 import type { DispatcherCycleResult } from "./dispatcher-cycle.js";
+import type { PreflightDiagnostic } from "./preflight-diagnostics.js";
+import type { PreflightWiringField } from "./preflight-engine-ts.js";
 
 const EVENTS = [
   "startup",
@@ -12,6 +14,7 @@ const EVENTS = [
   "memory.token",
   "gateway.authentication",
   "gateway.oidc",
+  "preflight.error",
   "sandbox.session",
   "sandbox.cleanup",
   "sandbox.retention",
@@ -35,7 +38,15 @@ const CATEGORIES = [
 const SESSION_STAGES = ["input", "policy", "workspace", "provider", "sandbox", "readiness", "write", "runner", "complete"] as const;
 const SESSION_ERROR_CODES = ["invalid_argument", "not_found", "permission_denied", "unauthenticated", "deadline_exceeded", "unavailable", "cancelled", "readiness_timeout", "other"] as const;
 const RECONCILE_REASONS = ["never-provisioned", "workspace-gone", "sandbox-gone", "reconciled-terminal", "adopted", "adopt-timeout", "record-failure", "startup-timeout"] as const;
+const PREFLIGHT_REASONS = ["configuration", "execution"] as const;
+const PREFLIGHT_WIRING_FIELDS = ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Opaque cycle agent id: sha256 hex. */
+const AGENT_ID = /^[a-f0-9]{64}$/;
+/** Registered preflight id (a central-registry identifier, never content). */
+const PREFLIGHT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** Nonprinting characters never appear in a well-formed diagnostic field. */
+const DIAGNOSTIC_CONTROLS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 export type LifecycleEvent = (typeof EVENTS)[number];
 export type LifecycleStatus = (typeof STATUSES)[number];
@@ -43,6 +54,7 @@ export type ErrorCategory = (typeof CATEGORIES)[number];
 export type SessionStage = (typeof SESSION_STAGES)[number];
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number];
 export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
+export type PreflightReason = (typeof PREFLIGHT_REASONS)[number];
 export type LifecycleDetails = { stage?: SessionStage; errorCode?: SessionErrorCode };
 
 export interface LogOptions {
@@ -64,8 +76,27 @@ export interface LogOptions {
   update?: boolean;
   /** Startup reconciliation (REHOR-218): run ID, outcome reason, adoption. */
   runId?: string;
-  reason?: ReconcileReason;
+  reason?: ReconcileReason | PreflightReason;
   adopted?: boolean;
+  /**
+   * Instance identity for preflight error reporting: the agent
+   * profile name and its config-repository URL, plus the cycle's opaque
+   * agentId for correlation with cycle results. Fixed identifiers only.
+   */
+  profile?: string;
+  repository?: string;
+  agentId?: string;
+  configurationField?: PreflightWiringField;
+  /**
+   * Structured configuration diagnostics for a preflight failure: full
+   * Zod issue detail (path, code, message, received) sourced from
+   * declaration literals. Validated against the diagnostic contract before
+   * anything is logged — every issue is kept, malformed input is rejected
+   * whole.
+   */
+  diagnostics?: readonly PreflightDiagnostic[];
+  /** Registered preflight id naming the failed entry in per-entry records. */
+  preflightId?: string;
 }
 
 export interface LifecycleLogger {
@@ -153,6 +184,57 @@ function isMember<T extends string>(list: readonly T[], value: unknown): value i
   return typeof value === "string" && list.some((item) => item === value);
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** One diagnostic field: a non-empty string without control characters;
+ * length is never limited, so no issue is dropped. */
+function diagnosticField(value: unknown): value is string {
+  return typeof value === "string" && value !== "" && !DIAGNOSTIC_CONTROLS.test(value);
+}
+
+/** Validate a diagnostics array against the PreflightDiagnostic contract
+ * (exactly the four fields, non-empty, control-free); anything malformed
+ * rejects the whole record, never partially logged. */
+function diagnosticsLogValue(value: unknown): PreflightDiagnostic[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const diagnostics: PreflightDiagnostic[] = [];
+  for (const item of value) {
+    if (!isPlainRecord(item)) return undefined;
+    const keys = Object.keys(item);
+    if (keys.length !== 4 || !["path", "code", "message", "received"].every((field) => keys.includes(field))) return undefined;
+    if (!diagnosticField(item.path) || !diagnosticField(item.code)
+      || !diagnosticField(item.message) || !diagnosticField(item.received)) return undefined;
+    diagnostics.push({ path: item.path, code: item.code, message: item.message, received: item.received });
+  }
+  return diagnostics;
+}
+
+/** Escape nonprinting characters in instance directory names. */
+export function profileLogValue(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value || value.length > 2048 || value === "." || value === ".." || value.includes("/")) return undefined;
+  const safe = value.replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, (char) => `\\u{${char.codePointAt(0)!.toString(16)}}`);
+  return safe.length <= 2048 ? safe : undefined;
+}
+
+/** Config repository URL with SSH userinfo removed. */
+export function repositoryLogValue(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value || value.length > 2048 || /[\s\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (!(["https:", "ssh:"].includes(parsed.protocol)) || !parsed.hostname || parsed.password || parsed.search || parsed.hash
+      || (parsed.protocol === "https:" && parsed.username)) return undefined;
+  parsed.username = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.href.length <= 2048 ? parsed.href : undefined;
+}
+
 /** Emits only fixed lifecycle identifiers and categories; never accepts message text. */
 export function createLifecycleLogger(deps: {
   write?: (line: string) => void;
@@ -188,6 +270,12 @@ export function createLifecycleLogger(deps: {
       const runId = options?.runId;
       const reason = options?.reason;
       const adopted = options?.adopted;
+      const profile = options?.profile === undefined ? undefined : profileLogValue(options.profile);
+      const repository = options?.repository === undefined ? undefined : repositoryLogValue(options.repository);
+      const agentId = options?.agentId;
+      const configurationField = options?.configurationField;
+      const diagnostics = options?.diagnostics === undefined ? undefined : diagnosticsLogValue(options.diagnostics);
+      const preflightId = options?.preflightId;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
@@ -206,10 +294,16 @@ export function createLifecycleLogger(deps: {
       if (update !== undefined && typeof update !== "boolean") return;
       // Run IDs are opaque generated UUIDs; anything else is rejected.
       if (runId !== undefined && (typeof runId !== "string" || !UUID_PATTERN.test(runId))) return;
-      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason)) return;
+      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason) && !isMember(PREFLIGHT_REASONS, reason)) return;
       if (adopted !== undefined && typeof adopted !== "boolean") return;
+      if (options?.profile !== undefined && profile === undefined) return;
+      if (options?.repository !== undefined && repository === undefined) return;
+      if (agentId !== undefined && (typeof agentId !== "string" || !AGENT_ID.test(agentId))) return;
+      if (configurationField !== undefined && !isMember(PREFLIGHT_WIRING_FIELDS, configurationField)) return;
+      if (options?.diagnostics !== undefined && diagnostics === undefined) return;
+      if (preflightId !== undefined && (typeof preflightId !== "string" || !PREFLIGHT_ID.test(preflightId))) return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason; adopted?: boolean } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason | PreflightReason; adopted?: boolean; profile?: string; repository?: string; agentId?: string; configurationField?: PreflightWiringField; diagnostics?: PreflightDiagnostic[]; preflightId?: string } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
@@ -226,6 +320,12 @@ export function createLifecycleLogger(deps: {
       if (runId !== undefined) record.runId = runId;
       if (reason !== undefined) record.reason = reason;
       if (adopted !== undefined) record.adopted = adopted;
+      if (profile !== undefined) record.profile = profile;
+      if (repository !== undefined) record.repository = repository;
+      if (agentId !== undefined) record.agentId = agentId;
+      if (configurationField !== undefined) record.configurationField = configurationField;
+      if (diagnostics !== undefined) record.diagnostics = diagnostics;
+      if (preflightId !== undefined) record.preflightId = preflightId;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.
