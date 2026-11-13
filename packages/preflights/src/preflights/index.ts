@@ -2,6 +2,10 @@ import type { PreflightRegistry } from "../core/registry.js";
 import { createPreflightRegistry } from "../core/registry.js";
 import { ghPrStatus } from "./gh-pr-status/index.js";
 import { glMrStatus } from "./gl-mr-status/index.js";
+import { jiraKanban } from "./jira-kanban/index.js";
+import { jiraSprint } from "./jira-sprint/index.js";
+import { jiraTriage } from "./jira-triage/index.js";
+import { onboarding } from "./onboarding/index.js";
 
 /**
  * Audit-boundary barrel for preflight implementations. Every preflight gets
@@ -12,5 +16,12 @@ import { glMrStatus } from "./gl-mr-status/index.js";
  * `repos` map), never through this registry.
  */
 export function createPopulatedRegistry(): PreflightRegistry {
-  return createPreflightRegistry([ghPrStatus, glMrStatus]);
+  return createPreflightRegistry([
+    ghPrStatus,
+    glMrStatus,
+    jiraKanban,
+    jiraSprint,
+    jiraTriage,
+    onboarding,
+  ]);
 }
