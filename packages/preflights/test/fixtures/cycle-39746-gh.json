@@ -1,0 +1,40 @@
+{
+  "task": {
+    "external_key": "OCPBUGS-115318",
+    "status": "pr_open",
+    "repo": "console",
+    "last_addressed": "2026-09-02T07:11:19+00:00",
+    "metadata": {
+      "prs": [
+        {
+          "repo": "console",
+          "number": 17128,
+          "host": "github"
+        }
+      ]
+    }
+  },
+  "pr": {
+    "state": "OPEN",
+    "mergeable": "MERGEABLE",
+    "statusCheckRollup": [],
+    "reviews": []
+  },
+  "comments": [
+    {
+      "a": "ci-robot",
+      "t": "2026-09-02T07:12",
+      "b": "Automated issue validation completed."
+    },
+    {
+      "a": "reviewer-2[bot]",
+      "t": "2026-09-02T07:12",
+      "b": "Confirmed process identity fix."
+    },
+    {
+      "a": "dev-bot",
+      "t": "2026-09-02T07:12",
+      "b": "Addressed in commit 904beda1."
+    }
+  ]
+}
