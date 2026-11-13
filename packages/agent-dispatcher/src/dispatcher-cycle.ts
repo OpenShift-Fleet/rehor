@@ -4,6 +4,7 @@ import type { AgentProfile } from "./agent-profiles.js";
 import { parseConfigRepositories, syncConfigRepositories } from "./config-repositories.js";
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
 import { createLifecycleLogger, isolateLifecycleLogger, profileLogValue, repositoryLogValue, type LifecycleLogger } from "./logging.js";
+import { isPreflightDiagnostic, PreflightConfigurationError, type PreflightDiagnostic } from "./preflight-diagnostics.js";
 import { loadInstanceRepos, runTsPreflight, validateRequiredPreflightWiring } from "./preflight-engine-ts.js";
 import type { PreflightWiringField, TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
 import { mergeProfileEnvironment } from "./runtime-environment.js";
@@ -72,6 +73,23 @@ function agentId(repositoryUrl: string, profileName: string): string {
   return createHash("sha256").update(JSON.stringify([repositoryUrl, profileName])).digest("hex");
 }
 
+/** Diagnostics that satisfy the logging contract; malformed items are
+ * dropped rather than rejecting the record's identity fields. */
+function safeDiagnostics(value: unknown): PreflightDiagnostic[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const diagnostics = value.filter(isPreflightDiagnostic);
+  return diagnostics.length > 0 ? diagnostics : undefined;
+}
+
+/** Engine skip/error results may carry structured configuration
+ * diagnostics; read the optional property defensively and keep only
+ * well-formed diagnostic objects. */
+function decisionDiagnostics(decision: WorkPreflightResult): PreflightDiagnostic[] | undefined {
+  if (decision.action !== "skip" && decision.action !== "error") return undefined;
+  if (!("diagnostics" in decision)) return undefined;
+  return safeDiagnostics(decision.diagnostics);
+}
+
 /**
  * Execute one dispatcher cycle. Only statuses and opaque IDs leave this function;
  * preflight output, prompts, paths, environment and exception details do not.
@@ -89,16 +107,26 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
   const logger = options.logger ? isolateLifecycleLogger(options.logger) : defaultLogger;
   // A preflight error must identify its owner: fixed identifiers only (the
   // human-meaningful profile name and config repository, plus the opaque
-  // agentId for correlation with cycle results). Transcripts never enter logs.
-  const logPreflightError = (profile: string, repository: string, agentId: string, reason: "configuration" | "execution" = "execution", configurationField?: PreflightWiringField): void => {
+  // agentId for correlation with cycle results). Transcripts never enter
+  // logs; configuration diagnostics carry structured declaration-literal
+  // detail, and per-entry records name the preflight id only.
+  type PreflightErrorDetails = {
+    reason: "configuration" | "execution";
+    configurationField?: PreflightWiringField;
+    diagnostics?: readonly PreflightDiagnostic[];
+    preflightId?: string;
+  };
+  const logPreflightError = (profile: string, repository: string, agentId: string, details: PreflightErrorDetails): void => {
     const safeProfile = profileLogValue(profile);
     const safeRepository = repositoryLogValue(repository);
     logger.log("preflight.error", "failure", {
-      reason,
+      reason: details.reason,
       ...(safeProfile !== undefined ? { profile: safeProfile } : {}),
       ...(safeRepository !== undefined ? { repository: safeRepository } : {}),
       agentId,
-      ...(configurationField ? { configurationField } : {}),
+      ...(details.configurationField !== undefined ? { configurationField: details.configurationField } : {}),
+      ...(details.diagnostics !== undefined ? { diagnostics: details.diagnostics } : {}),
+      ...(details.preflightId !== undefined ? { preflightId: details.preflightId } : {}),
     });
   };
   // Mint once per cycle so every profile shares one short-lived credential.
@@ -130,7 +158,17 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
     let profiles;
     try {
       profiles = await deps.discoverProfiles(checkout.path);
-    } catch {
+    } catch (error) {
+      // A typed preflight-configuration failure carries the profile and the
+      // structured issues: log the safe identity and diagnostics before the
+      // fail-closed discovery-error result. Unknown errors are never logged.
+      if (error instanceof PreflightConfigurationError) {
+        const diagnostics = safeDiagnostics(error.diagnostics);
+        logPreflightError(error.profile, repository.url, agentId(repository.url, error.profile), {
+          reason: "configuration",
+          ...(diagnostics !== undefined ? { diagnostics } : {}),
+        });
+      }
       results.push({ index, status: "discovery-error" });
       continue;
     }
@@ -146,7 +184,10 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           const env = mergeProfileEnvironment(inherited, profile.preflightEnv);
           const required = validateRequiredPreflightWiring(env.BOT_INSTANCE_ID, env.BOT_MEMORY_URL, memoryToken);
           if (!required.ok) {
-            logPreflightError(profile.name, repository.url, id, memoryToken === null && required.field === "memory credential" ? "execution" : "configuration", required.field);
+            logPreflightError(profile.name, repository.url, id, {
+              reason: memoryToken === null && required.field === "memory credential" ? "execution" : "configuration",
+              configurationField: required.field,
+            });
             return "error" as const;
           }
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
@@ -168,8 +209,23 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             ...(repos !== undefined ? { repos } : {}),
           };
           const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
-          if (decision.action === "error") {
-            logPreflightError(profile.name, repository.url, id, decision.reason);
+          // Errored entries are logged independently of the aggregate
+          // decision — start, skip, or all-error — with the preflight id
+          // only; entry content never enters the record.
+          const failedEntries = decision.scripts.filter((script) => script.status === "error");
+          for (const script of failedEntries) {
+            logPreflightError(profile.name, repository.url, id, { reason: "execution", preflightId: script.name });
+          }
+          // The aggregate record covers configuration failures (structured
+          // diagnostics, once) and error decisions with no entry records;
+          // an all-error execution decision is fully described by its
+          // per-entry records.
+          if (decision.action === "error" && (decision.reason === "configuration" || failedEntries.length === 0)) {
+            const diagnostics = decisionDiagnostics(decision);
+            logPreflightError(profile.name, repository.url, id, {
+              reason: decision.reason ?? "execution",
+              ...(diagnostics !== undefined ? { diagnostics } : {}),
+            });
           }
           if (options.signal?.aborted) return "shutdown" as const;
           const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => {
@@ -186,7 +242,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
       } catch {
         // A thrown preflight or per-profile wiring failure: log the owner
         // identity with the same fixed fields, never the exception detail.
-        logPreflightError(profile.name, repository.url, id, "execution");
+        logPreflightError(profile.name, repository.url, id, { reason: "execution" });
         profileResults.push({ agentId: id, status: "error" });
       }
     }

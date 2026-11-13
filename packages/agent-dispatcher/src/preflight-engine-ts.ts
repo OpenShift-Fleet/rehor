@@ -10,6 +10,8 @@ import {
 } from "@rehor/preflights";
 import { createPopulatedRegistry } from "@rehor/preflights/preflights";
 import type { AgentProfile } from "./agent-profiles.js";
+import { preflightConfigurationDiagnostics, type PreflightDiagnostic } from "./preflight-diagnostics.js";
+import { createPreflightTransport, PreflightDeadlineError } from "./preflight-transport.js";
 
 /**
  * A start carries the agent prompt; skip/error carry a transcript. Per-entry
@@ -27,7 +29,7 @@ export type WorkPreflightScriptResult = {
 export type WorkPreflightResult =
   | { action: "no-scripts"; scripts: [] }
   | { action: "start"; prompt: string; scripts: WorkPreflightScriptResult[] }
-  | { action: "skip" | "error"; transcript: string; scripts: WorkPreflightScriptResult[]; reason?: "configuration" | "execution" };
+  | { action: "skip" | "error"; transcript: string; scripts: WorkPreflightScriptResult[]; reason?: "configuration" | "execution"; diagnostics?: PreflightDiagnostic[] };
 
 /**
  * The dispatcher runs reviewed `@rehor/preflights` implementations against
@@ -81,6 +83,8 @@ export type TsPreflightOptions = {
   /** Injectable for tests; defaults to the populated registry. */
   registry?: PreflightRegistry;
   signal?: AbortSignal;
+  /** Per-entry execution budget; defaults to 120 seconds. */
+  entryTimeoutMs?: number;
 };
 
 /**
@@ -120,7 +124,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   const registry = options.registry ?? populatedRegistry;
   const profile = options.profile;
   const identity = options.repositoryUrl ? `${profile.name} (${options.repositoryUrl})` : profile.name;
-  const failure = (transcript: string, reason: "configuration" | "execution"): WorkPreflightResult =>
+  const failure = (transcript: string, reason: "configuration" | "execution"): Extract<WorkPreflightResult, { transcript: string }> =>
     ({ action: "error", transcript: `${identity}: ${transcript}`, scripts: [], reason });
 
   const wiring = validateRequiredPreflightWiring(options.wiring?.instanceId, options.wiring?.memory?.baseUrl, options.wiring?.memory?.token);
@@ -132,7 +136,11 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   // "no preflights" declaration.
   const declared: readonly unknown[] | undefined = profile.preflights ?? workflowDefaults[profile.workflow];
   if (declared === undefined) {
-    return failure(noPreflightsMessage(profile.workflow), "configuration");
+    const message = noPreflightsMessage(profile.workflow);
+    return {
+      ...failure(message, "configuration"),
+      diagnostics: [{ path: "preflights", code: "missing_preflights", message, received: "undefined" }],
+    };
   }
   if (declared.length === 0) {
     return { action: "no-scripts", scripts: [] };
@@ -144,18 +152,29 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   const validation = validateConfig(declared, registry);
   if (!validation.ok) {
     const transcript = validation.invalid.map((entry) => entry.messages.join("\n")).join("\n");
-    return failure(transcript, "configuration");
+    return { ...failure(transcript, "configuration"), diagnostics: preflightConfigurationDiagnostics(declared, registry) };
+  }
+
+  const entryTimeoutMs = options.entryTimeoutMs ?? 120_000;
+  if (!Number.isSafeInteger(entryTimeoutMs) || entryTimeoutMs <= 0 || entryTimeoutMs > 2_147_483_647) {
+    return failure("Preflight entry timeout must be a positive bounded integer", "configuration");
   }
 
   // One run context per invocation, shared by all entries: task/capacity
   // fetches happen once per run and per-run bookkeeping state accumulates.
   const proxy = options.wiring.proxyBaseUrl;
   let context;
+  let transport;
   try {
+    transport = createPreflightTransport({
+      memoryBaseUrl: wiring.wiring.memory.baseUrl,
+      token: wiring.wiring.memory.token,
+      ...(proxy !== undefined ? { proxyBaseUrl: proxy } : {}),
+    });
     context = createPreflightRunContext({
       instanceId: wiring.wiring.instanceId,
-      memory: wiring.wiring.memory,
-      ...(proxy ? { jira: { baseUrl: proxy }, proxy } : {}),
+      memory: { ...wiring.wiring.memory, fetch: transport.memoryFetch },
+      ...(proxy ? { jira: { baseUrl: proxy, fetch: transport.gatewayFetch }, proxy: { baseUrl: proxy, fetch: transport.gatewayFetch } } : {}),
       ...(options.wiring.repos ? { repos: options.wiring.repos } : {}),
     });
   } catch {
@@ -171,11 +190,13 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
     }
     let outcome: PreflightExecutionResult;
     try {
-      outcome = await preflight.run(context, entry.params);
-    } catch {
+      outcome = await transport.runEntry(() => preflight.run(context, entry.params), options.signal, entryTimeoutMs);
+    } catch (error) {
       // A thrown preflight is an execution error of that entry only; the
       // exception detail (URLs, upstream messages) never enters the result.
-      outcome = { status: "error", content: `${entry.id} failed to execute` };
+      outcome = { status: "error", content: error instanceof PreflightDeadlineError
+        ? `${entry.id} timed out after ${entryTimeoutMs}ms`
+        : `${entry.id} failed to execute` };
     }
     results.push({ name: entry.id, status: outcome.status, content: outcome.content });
   }

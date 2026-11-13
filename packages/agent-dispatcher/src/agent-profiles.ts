@@ -1,14 +1,14 @@
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import type { ZodIssue } from "zod";
-import {
-  objectEntrySchema,
-  preflightEntrySchema,
-  shorthandEntrySchema,
-  type PreflightEntry,
-} from "@rehor/preflights";
+import { objectEntrySchema, type PreflightEntry } from "@rehor/preflights";
 import { isInstancePreflightVariable } from "./preflight-env.js";
+import {
+  formatPreflightDiagnostics,
+  preflightEntryDiagnostics,
+  PreflightConfigurationError,
+  type PreflightDiagnostic,
+} from "./preflight-diagnostics.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
 
@@ -110,92 +110,29 @@ function preflightEnvironment(value: unknown): Record<string, string> {
   return env;
 }
 
-/**
- * Render a received value for a validation message. The values here are
- * declarative `instance.yaml` literals (never credentials), so short strings,
- * numbers and booleans are shown; anything structural is described by type
- * only, and env-derived values are never passed through here.
- */
-function describeReceived(value: unknown): string {
-  if (value === undefined) return "undefined";
-  if (value === null) return "null";
-  if (typeof value === "string") {
-    const text = value.length > 60 ? `${value.slice(0, 57)}...` : value;
-    return JSON.stringify(text);
-  }
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
-  if (typeof value === "symbol" || typeof value === "function") return typeof value;
-  if (Array.isArray(value)) return `array (${value.length} items)`;
-  return "object";
-}
-
-/** A union failure collapses its branches into a bare "Invalid input"; reopen
- * it and name what the branches expected, so the message stays actionable. */
-function issueDetail(issue: ZodIssue): string {
-  if (issue.code === "invalid_union" && Array.isArray(issue.errors)) {
-    const expected = new Set<string>();
-    for (const branch of issue.errors) {
-      if (!Array.isArray(branch)) continue;
-      for (const nested of branch) {
-        if ("expected" in nested && typeof nested.expected === "string") expected.add(nested.expected);
-      }
-    }
-    if (expected.size > 0) return `Invalid input: expected one of ${[...expected].join(", ")}`;
-  }
-  return issue.message;
-}
-
-/** One issue, one stable line: `<profile>: preflights[i].with.label: <detail> (got <received>)`. */
-function formatIssue(name: string, where: string, issue: ZodIssue, raw: unknown): string {
-  const path = issue.path.length > 0 ? `${where}.${issue.path.map(String).join(".")}` : where;
-  return `${name}: ${path}: ${issueDetail(issue)} (got ${describeReceived(receivedAt(raw, issue.path))})`;
-}
-
-/** The received value at an issue's path, read from the raw entry with
- * own-property lookups only (a missing key is `undefined`, never an
- * inherited member). Zod does not reliably attach the input to every issue
- * shape, so the path is walked on the raw YAML value instead. */
-function receivedAt(raw: unknown, path: readonly PropertyKey[]): unknown {
-  let current: unknown = raw;
-  for (const key of path) {
-    if (current === null || typeof current !== "object") return undefined;
-    const record = current as Record<string, unknown>;
-    current = Object.hasOwn(record, String(key)) ? record[String(key)] : undefined;
-  }
-  return current;
-}
-
 /** Strict `preflights:` parsing: undefined passes through (the
  * field is omitted and the workflow's default set applies later), but any
  * malformed entry fails profile discovery — entries are never silently
  * dropped, and every failure names the instance and the exact entry,
  * parameter, and reason. Only the entry shape is checked here; id and
  * parameter validation against a registry happens per run in the preflight
- * engine. */
+ * engine. The failure is typed: it carries the profile name and the full
+ * structured diagnostics, so the cycle can log the issues while the
+ * discovery result stays fail-closed.
+ */
 function preflightsFrom(value: unknown, name: string): PreflightEntry[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new Error(`${name}: preflights must be a list of preflight entries (got ${describeReceived(value)})`);
+    throw configurationError(name, preflightEntryDiagnostics(value));
   }
-  const entries: PreflightEntry[] = [];
-  const problems: string[] = [];
-  value.forEach((raw, index) => {
-    const where = `preflights[${index}]`;
-    const parsed = preflightEntrySchema.safeParse(raw);
-    if (parsed.success) {
-      entries.push(parsed.data);
-      return;
-    }
-    // The entry union's collapsed issue carries no path; re-run the failing
-    // branch for the precise per-parameter detail (same schemas, same data).
-    const branch = typeof raw === "string"
-      ? shorthandEntrySchema.safeParse(raw)
-      : objectEntrySchema.safeParse(raw);
-    const issues = !branch.success ? branch.error.issues : parsed.error.issues;
-    for (const issue of issues) problems.push(formatIssue(name, where, issue, raw));
-  });
-  if (problems.length > 0) throw new Error(problems.join("\n"));
-  return entries;
+  const diagnostics = preflightEntryDiagnostics(value);
+  if (diagnostics.length > 0) throw configurationError(name, diagnostics);
+  // Every entry parsed cleanly; re-run the object branch for typed values.
+  return value.map((raw) => (typeof raw === "string" ? raw : objectEntrySchema.parse(raw)));
+}
+
+function configurationError(name: string, diagnostics: readonly PreflightDiagnostic[]): PreflightConfigurationError {
+  return new PreflightConfigurationError(name, diagnostics, formatPreflightDiagnostics(name, diagnostics));
 }
 
 /** Discover every agent profile in one fixed checkout. Any invalid profile or

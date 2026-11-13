@@ -244,6 +244,40 @@ test("preflight wiring fields use a fixed allowlist", () => {
   assert.deepEqual(lines.map(JSON.parse).map(({ configurationField }) => configurationField), ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"]);
 });
 
+test("preflight diagnostics and preflight ids pass a strict allowlist", () => {
+  const { logger, lines } = fixture();
+  const agentId = "c".repeat(64);
+  const repository = "https://github.com/org/repo.git";
+  const diagnostics = [
+    { path: "preflights[0].with.label", code: "invalid_type", message: "Invalid input: expected string, received number", received: "123" },
+  ];
+  // Every issue is logged: no count or length limit drops any diagnostic.
+  const many = Array.from({ length: 40 }, (_, index) => ({ path: `preflights[${index}].with.label`, code: "invalid_type", message: "Invalid input: expected string, received number", received: "123" }));
+  const long = { path: "preflights[0].id", code: "unknown_preflight", message: `nope-${"x".repeat(400)}: unknown preflight id`, received: JSON.stringify(`nope-${"x".repeat(400)}`) };
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics, preflightId: "jira-sprint" });
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics: many });
+  logger.log("preflight.error", "failure", { reason: "configuration", profile: "ok", repository, agentId, diagnostics: [long] });
+  for (const options of [
+    { diagnostics: "secret" }, { diagnostics: {} }, { diagnostics: [] },
+    { diagnostics: [{ path: "p" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m", received: "r", extra: "secret" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m", received: 7 }] },
+    { diagnostics: [{ path: "", code: "c", message: "m", received: "r" }] },
+    { diagnostics: [{ path: "p", code: "c", message: "m\u0001", received: "r" }] },
+    { preflightId: "not an id" }, { preflightId: "" }, { preflightId: 42 }, { preflightId: "-leading" }, { preflightId: "x".repeat(65) },
+  ]) {
+    assert.doesNotThrow(() => logger.log("preflight.error", "failure", { agentId, ...options }));
+  }
+  assert.equal(lines.length, 3, "malformed diagnostics and preflight ids are dropped, never logged");
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: "preflight.error", status: "failure", level: 50, reason: "configuration",
+    profile: "ok", repository, agentId, diagnostics, preflightId: "jira-sprint",
+  });
+  assert.equal(JSON.parse(lines[1]).diagnostics.length, 40);
+  assert.deepEqual(JSON.parse(lines[2]).diagnostics, [long]);
+  assert.ok(lines.every((line) => !line.includes("secret")));
+});
+
 test("broken clocks omit duration without leaking errors", () => {
   const lines = [];
   const logger = createLifecycleLogger({

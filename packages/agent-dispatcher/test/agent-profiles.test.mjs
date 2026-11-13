@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAgentProfiles } from "../dist/agent-profiles.js";
+import { PreflightConfigurationError } from "../dist/preflight-diagnostics.js";
 
 // Existing onboarding profile, plus the required image field.
 const onboarding = `workflow: onboarding
@@ -143,6 +144,32 @@ test("malformed preflights name the instance, entry, parameter, and reason", asy
   for (const [yaml, message] of cases) {
     await writeFile(config, yaml);
     await assert.rejects(discoverAgentProfiles(root), { message }, yaml);
+  }
+});
+
+test("malformed preflights throw a typed configuration failure with diagnostics", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  const cases = [
+    [`workflow: onboarding\n${image}preflights:\n  - id: 5\n`, "rehor-onboarding-config: preflights[0].id: Invalid input: expected string, received number (got 5)", [
+      { path: "preflights[0].id", code: "invalid_type", message: "Invalid input: expected string, received number", received: "5" },
+    ]],
+    [`workflow: onboarding\n${image}preflights: 7\n`, "rehor-onboarding-config: preflights must be a list of preflight entries (got 7)", [
+      { path: "preflights", code: "invalid_type", message: "preflights must be a list of preflight entries", received: "7" },
+    ]],
+    [`workflow: onboarding\n${image}preflights:\n  - id: x\n    with:\n      label: { nested: object }\n`, "rehor-onboarding-config: preflights[0].with.label: Invalid input: expected one of string, number, boolean, array (got object)", [
+      { path: "preflights[0].with.label", code: "invalid_union", message: "Invalid input: expected one of string, number, boolean, array", received: "object" },
+    ]],
+  ];
+  for (const [yaml, message, diagnostics] of cases) {
+    await writeFile(config, yaml);
+    await assert.rejects(discoverAgentProfiles(root), (error) => {
+      assert.ok(error instanceof PreflightConfigurationError, yaml);
+      assert.equal(error.profile, "rehor-onboarding-config");
+      assert.equal(error.message, message);
+      assert.deepEqual(error.diagnostics, diagnostics);
+      return true;
+    }, yaml);
   }
 });
 

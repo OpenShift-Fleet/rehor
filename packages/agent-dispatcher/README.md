@@ -26,9 +26,9 @@ preflights:
   - gh-pr-status
 ```
 
-Preflight execution uses [`@rehor/preflights`](../preflights/README.md). Each agent declares preflights in `preflights:` using shorthand strings or `{ id, with }` parameter entries. An omitted field inherits the workflow's central default set. A profile with neither a declaration nor a registered default returns an error. An explicit empty list (`[]`) declares no preflights.
+Preflight execution uses [`@rehor/preflights`](../preflights/README.md). Each agent declares preflights in `preflights:` using shorthand strings or `{ id, with }` parameter entries. An omitted field inherits the workflow's central default set. A profile with neither a declaration nor a registered default returns an error. An explicit empty list (`[]`) declares no preflights. Entries are validated against the registry before anything executes: invalid configuration fails the whole profile with structured diagnostics naming the instance identity and every invalid entry's issue path, issue code, message, and received value. Raw transcripts, prompts, upstream response bodies, and credentials never enter lifecycle logs.
 
-The engine runs entries sequentially in declared order, at most once per agent every five minutes (the in-memory timer resets on restart). Its run context contains the per-cycle minted memory credential, instance identity, memory route, and optional services gateway. The instance's `project-repos.json` is used as-is. An actionable `start` among non-errored entries produces a start decision despite another entry's failure; all-skip is a skip; all-error is an error. The agent prompt contains `start` results only. Memory-server authorization failures fail the preflight instead of reporting empty results.
+The engine runs entries sequentially in declared order, at most once per agent every five minutes (the in-memory timer resets on restart). Each entry's execution is bounded at 120 seconds. External Jira, GitHub, and GitLab preflights always use the configured services proxy — the dispatcher never contacts those vendors directly. The dispatcher authenticates the dispatcher-to-proxy hop with the per-cycle short-lived minted bearer; the proxy alone injects vendor credentials on the upstream leg. The run context also carries the instance identity, memory route, and the instance's `project-repos.json` used as-is. Transport honors dispatcher abort during active requests. An actionable `start` among non-errored entries produces a start decision despite another entry's failure; all-skip is a skip; all-error is an error. The agent prompt contains `start` results only. Individual failed entries are logged even when the aggregate decision is still `start` or `skip`. Memory-server authorization failures fail the preflight instead of reporting empty results.
 
 Only non-secret `BOT_` variables, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment to the sandbox. The engine receives its wiring explicitly; its short-lived memory credential is minted per cycle, not passed through the process environment.
 
@@ -156,7 +156,7 @@ Failures at any stage report a fixed message naming the stage, never SDK error d
 
 ## Lifecycle logs
 
-The dispatcher writes JSON lifecycle events to stdout through [pino](https://getpino.io). Records carry `level`, fixed `event` and `status` strings, and optional bounded duration and fixed diagnostic fields. A `preflight.error` includes `profile`, `repository`, and the opaque `agentId`: profile names support Unicode, nonprinting characters are escaped, and repository URLs omit SSH userinfo. Invalid or oversized identity fields are omitted while `agentId` remains. Preflight transcripts, prompts, credentials, and exception text are not logged. Failures log at `error` (50); everything else logs at `info` (30).
+The dispatcher writes JSON lifecycle events to stdout through [pino](https://getpino.io). Records carry `level`, fixed `event` and `status` strings, and optional bounded duration and fixed diagnostic fields. A `preflight.error` includes `profile`, `repository`, and the opaque `agentId`: profile names support Unicode, nonprinting characters are escaped, and repository URLs omit SSH userinfo. Invalid or oversized identity fields are omitted while `agentId` remains. Configuration failures include structured `diagnostics`; per-entry failures identify `preflightId`. Preflight transcripts, prompts, credentials, and exception text are not logged. Failures log at `error` (50); everything else logs at `info` (30).
 
 | Event | Meaning |
 | --- | --- |
@@ -168,7 +168,7 @@ The dispatcher writes JSON lifecycle events to stdout through [pino](https://get
 | `memory.token` | Credential expiry validation and authenticated endpoint check. |
 | `gateway.authentication` | Gateway preflight, including the OIDC identity and optional subject checks. |
 | `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
-| `preflight.error` | A profile's preflight run failed; carries fixed `reason` (`configuration` or `execution`) and the instance identity fields below. |
+| `preflight.error` | A profile or preflight entry failed; carries fixed `reason` (`configuration` or `execution`), instance identity, and applicable diagnostics. |
 | `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail. |
 | `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous. |
 | `ready` | Startup completed. |

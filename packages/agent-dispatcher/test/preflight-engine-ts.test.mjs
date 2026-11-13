@@ -82,6 +82,12 @@ test("missing declaration and default set is a loud error; an explicit empty lis
     'agent: No preflights configured: the profile declares no preflights and workflow "custom" has no registered default set',
   );
   assert.deepEqual(missing.scripts, []);
+  assert.deepEqual(missing.diagnostics, [{
+    path: "preflights",
+    code: "missing_preflights",
+    message: 'No preflights configured: the profile declares no preflights and workflow "custom" has no registered default set',
+    received: "undefined",
+  }]);
   const declared = await runTsPreflight({ profile: profile({ preflights: [] }), wiring: wiring(), registry });
   assert.deepEqual(declared, { action: "no-scripts", scripts: [] });
 });
@@ -188,8 +194,39 @@ test("signal abort between entries cancels the run without executing later entri
     registry,
     signal: controller.signal,
   });
-  assert.deepEqual(result, { action: "error", transcript: "agent: Preflight cancelled", scripts: [{ name: "first", status: "start", content: "late-start" }], reason: "execution" });
+  assert.equal(result.action, "error");
+  assert.equal(result.transcript, "agent: Preflight cancelled");
+  assert.equal(result.reason, "execution");
+  assert.deepEqual(result.scripts.map((script) => script.name), ["first"]);
   assert.deepEqual(calls.map((call) => call.id), ["first"]);
+});
+
+test("default entry budget is 120 seconds and cannot block later entries", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { registry, calls } = fakeRegistry({
+    slow: () => new Promise(() => {}),
+    next: { status: "start", content: "work" },
+  });
+  const pending = runTsPreflight({ profile: profile({ preflights: ["slow", "next"] }), wiring: wiring(), registry });
+  t.mock.timers.tick(119_999);
+  await Promise.resolve();
+  assert.deepEqual(calls.map((call) => call.id), ["slow"]);
+  t.mock.timers.tick(1);
+  const result = await pending;
+  assert.equal(result.action, "start");
+  assert.equal(result.prompt, "work");
+  assert.equal(result.scripts[0].content, "slow timed out after 120000ms");
+  assert.deepEqual(calls.map((call) => call.id), ["slow", "next"]);
+});
+
+test("invalid entry budgets fail before any execution", async () => {
+  const { registry, calls } = fakeRegistry({ one: { status: "start", content: "work" } });
+  for (const entryTimeoutMs of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+    const result = await runTsPreflight({ profile: profile({ preflights: ["one"] }), wiring: wiring(), registry, entryTimeoutMs });
+    assert.equal(result.action, "error");
+    assert.equal(result.reason, "configuration");
+  }
+  assert.deepEqual(calls, []);
 });
 
 async function memoryFixture(t, handler) {
@@ -254,7 +291,8 @@ test("proxy wiring: jira client and proxy route only when proxyBaseUrl is presen
   assert.equal(result.action, "skip");
   assert.equal(result.scripts[0].content, "issues:1");
   assert.deepEqual(jiraCalls, ["POST /jira/rest/api/2/search/jql"]);
-  assert.equal(calls[0].ctx.proxy, proxyBaseUrl);
+  assert.equal(calls[0].ctx.proxy.baseUrl, proxyBaseUrl);
+  assert.equal(typeof calls[0].ctx.proxy.fetch, "function");
 
   // Without proxyBaseUrl the context carries no proxy route and no jira
   // client; a jira preflight errors rather than silently skipping.
