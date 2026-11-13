@@ -257,7 +257,7 @@ Or manually ensure the ticket has:
 
 Required labels:
 - **Primary label** — matches the bot instance: `hcc-ai-framework` or `hcc-ai-platform-accessmanagement`
-- **`repo:<name>`** or **`repo:<org>/<name>`** — must match a key in `project-repos.json` either by bare name (e.g. `repo:insights-rbac`) or org-prefixed name resolved via upstream URL (e.g. `repo:RedHatInsights/insights-rbac`)
+- **`repo:<name>`** or **`repo:<org>/<name>`** — must match a key in `project-repos.json` either by bare name (e.g. `repo:insights-rbac`) or org-prefixed name resolved via upstream URL (e.g. `repo:project-kessel/insights-rbac`)
 
 Optional:
 - `needs-investigation` — bot investigates and reports findings instead of implementing
