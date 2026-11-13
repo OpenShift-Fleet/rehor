@@ -70,6 +70,14 @@ parameters:
     gateway resources before cleanup so failed sandboxes stay
     inspectable. Default "0" cleans up immediately. Maximum 86400.
   value: "0"
+- name: AGENT_DISPATCHER_SESSION_LOCK_TTL_MS
+  description: >
+    Cluster-wide per-agent session mutex lease (REHOR-218): whole
+    milliseconds for the memory-server lock acquired before each sandbox
+    session and renewed at one third of the TTL while it runs. Default
+    "1800000" (30 minutes). "0" disables the mutex (single-replica
+    behavior). Maximum 86400000.
+  value: "1800000"
 objects:
 
 # ============================================================================
@@ -194,6 +202,9 @@ objects:
           # Debug retention (REHOR-245); default "0" keeps immediate cleanup.
           - name: AGENT_DISPATCHER_SANDBOX_RETENTION
             value: ${AGENT_DISPATCHER_SANDBOX_RETENTION}
+          # Per-agent session mutex lease (REHOR-218); default 30 minutes.
+          - name: AGENT_DISPATCHER_SESSION_LOCK_TTL_MS
+            value: ${AGENT_DISPATCHER_SESSION_LOCK_TTL_MS}
           # Memory credential preflight: TokenRequest and memory Route
           # configuration are supplied by Vault-backed devbot-secrets.
           - name: AGENT_DISPATCHER_AUTH_NAMESPACE
