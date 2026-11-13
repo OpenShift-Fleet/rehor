@@ -10,7 +10,7 @@ const events = [
   "startup", "configuration", "kubernetes.token_request", "memory.missing_token",
   "memory.invalid_token", "memory.token", "gateway.authentication", "gateway.oidc",
   "preflight.cycle", "preflight.error", "preflight.run",
-  "sandbox.session", "sandbox.cleanup", "sandbox.retention", "ready", "shutdown",
+  "sandbox.session", "sandbox.cleanup", "sandbox.env", "sandbox.retention", "ready", "shutdown",
 ];
 
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -409,7 +409,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
         process.send({ event: 'host', environment: options.env });
         process.send({ event: 'minted', token: await options.memoryCredential() });
         const decision = { action: 'start', prompt: 'sensitive-prompt', scripts: [{ name: '01-work.py', status: 'start', content: 'sensitive-content' }] };
-        const profile = { name: 'fixture-profile', configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' } };
+        const profile = { name: 'fixture-profile', configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' }, sandboxEnv: { SLACK_WEBHOOK_URL: 'wired-plain-value' } };
         const completed = options.launch(profile, 'a'.repeat(64), decision.prompt, decision, 'https://github.com/org/fixture-config.git');
         void completed.then(completion => process.send({ event: 'completion', completion }));
         await new Promise(resolve => setImmediate(resolve));
@@ -462,7 +462,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     assert.equal(messages[1].token, "mock-memory-credential");
     assert.equal(messages[2].image, "registry.example/agent:runner");
     assert.deepEqual(messages[2].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
-    assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute", GH_RELEASE_UPLOAD_URL: "https://services.example/screenshots/upload" });
+    assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute", GH_RELEASE_UPLOAD_URL: "https://services.example/screenshots/upload", SLACK_WEBHOOK_URL: "wired-plain-value" });
     assert.equal(messages[2].aborted, false);
     assert.equal(messages[3].aborted, true);
     assert.equal(messages[4].completion, "gone");
@@ -673,7 +673,7 @@ test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps no
       export const preflightEnvironment = () => ({});
       export async function runDispatcherLoop(options) {
         const decision = { action: 'start', prompt: 'work', scripts: [] };
-        const profile = { name: 'fixture-profile', image: { reference: 'registry.example/agent:runner' }, preflightEnv: {} };
+        const profile = { name: 'fixture-profile', image: { reference: 'registry.example/agent:runner' }, preflightEnv: {}, sandboxEnv: {} };
         const completion = await options.launch(profile, 'b'.repeat(64), decision.prompt, decision, 'https://github.com/org/fixture-config.git');
         process.send({ event: 'completion', completion });
       }

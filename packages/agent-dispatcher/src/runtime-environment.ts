@@ -6,11 +6,16 @@ export function mergeProfileEnvironment(base: NodeJS.ProcessEnv, profile: NodeJS
   return merged;
 }
 
-/** Gateway endpoints apply only to sandbox execution, never host preflights. */
-export function sandboxEnvironment(base: NodeJS.ProcessEnv, profile: NodeJS.ProcessEnv | undefined, serviceGatewayUrl?: URL, modelProxyUrl?: URL): Record<string, string> {
+/** Gateway endpoints apply only to sandbox execution, never host preflights.
+ * Rendered `sandbox.env` values merge after profile settings and before
+ * deployment-owned gateway coordinates, which always win. */
+export function sandboxEnvironment(base: NodeJS.ProcessEnv, profile: NodeJS.ProcessEnv | undefined, serviceGatewayUrl?: URL, modelProxyUrl?: URL, sandboxEnv?: Record<string, string>): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const [name, value] of Object.entries(mergeProfileEnvironment(base, profile))) {
     if (name !== "PATH" && value !== undefined) environment[name] = value;
+  }
+  if (sandboxEnv) {
+    for (const [name, value] of Object.entries(sandboxEnv)) environment[name] = value;
   }
   if (modelProxyUrl) environment.REHOR_MODEL_PROXY_URL = modelProxyUrl.href;
   if (serviceGatewayUrl) {

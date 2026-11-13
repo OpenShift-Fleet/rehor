@@ -24,6 +24,8 @@ import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
 import { SandboxSession, type SandboxSessionResult } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
+import { createKubernetesSecretReader } from "./kubernetes-secrets.js";
+import { renderSandboxEnvironment, SecretRenderError } from "./secret-rendering.js";
 import { createSessionLockClient, withSessionLock, type SessionLockLog } from "./session-lock.js";
 import { createSessionRegistryClient, reconcileOpenSessions } from "./session-registry.js";
 import type { JenkinsInstances, SlackWebhookConfig } from "@rehor/preflights";
@@ -197,6 +199,9 @@ async function start(): Promise<void> {
       });
       const signal = stopController.signal;
       const hostEnvironment = preflightEnvironment();
+      // Tier-2 secret reads use the dispatcher's own automounted
+      // service-account token against the API server in this namespace.
+      const readKubernetesSecret = createKubernetesSecretReader();
       // Snapshot validated deployment configuration for both execution paths.
       if (botMemoryUrl) hostEnvironment.BOT_MEMORY_URL = botMemoryUrl.href;
       else delete hostEnvironment.BOT_MEMORY_URL;
@@ -256,7 +261,20 @@ async function start(): Promise<void> {
         memoryCredential: async () => (await provider!.mint()).token,
         launch: async (profile, agentId, _prompt, decision, repository) => {
           if (signal.aborted) return "not-created";
-          const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl);
+          // Render before sandbox creation: one unresolvable reference
+          // creates nothing. Failures log a fixed category only.
+          let sandboxEnv: Record<string, string> | undefined;
+          if (Object.keys(profile.sandboxEnv).length > 0) {
+            const rendering = logger.start("sandbox.env");
+            try {
+              sandboxEnv = await renderSandboxEnvironment(profile.sandboxEnv, readKubernetesSecret);
+              rendering.success();
+            } catch (error) {
+              rendering.failure(error instanceof SecretRenderError ? error.category : "internal");
+              return "not-created";
+            }
+          }
+          const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl, sandboxEnv);
           // The run ID is minted here so the registry record can exist before
           // the session starts; the session reuses it for names and labels.
           const runId = randomUUID();

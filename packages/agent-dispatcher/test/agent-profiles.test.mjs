@@ -50,6 +50,7 @@ test("maps onboarding layout, YAML comments and default image tag", async (t) =>
     workflowDir: join(bot, "presets", "workflows", "onboarding"),
     image: { repository: "registry.example/team/name", tag: "latest", reference: "registry.example/team/name:latest" },
     preflightEnv: {},
+    sandboxEnv: {},
   });
   assert.equal("preflights" in profile, false);
 });
@@ -133,6 +134,59 @@ test("instance preflight settings cannot override operational environment", asyn
     await writeFile(config, `workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    ${name}: attacker-controlled\n`);
     await assert.rejects(discoverAgentProfiles(root), undefined, `instance env must not accept ${name}`);
   }
+});
+
+test("reads sandbox env shorthand alongside preflight env in one instance.yaml", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: { repository: registry.example/team/name }
+preflight:
+  env:
+    BOT_INSTANCE_ID: test-agent
+    BOT_LABEL: test-label
+sandbox:
+  env:
+    SLACK_WEBHOOK_URL: "\${{ secret('slack-webhook', 'url') }}"
+    SOME_STATIC_FLAG: plain value
+    BOT_TEAM_TOKEN: "\${{ secret('team', 'token') }}"
+`);
+  const [profile] = await discoverAgentProfiles(root);
+  assert.deepEqual(profile.preflightEnv, { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label" });
+  assert.deepEqual(profile.sandboxEnv, {
+    SLACK_WEBHOOK_URL: "${{ secret('slack-webhook', 'url') }}",
+    SOME_STATIC_FLAG: "plain value",
+    BOT_TEAM_TOKEN: "${{ secret('team', 'token') }}",
+  });
+});
+
+test("sandbox env rejects operational, runtime-owned, and malformed entries", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  for (const yaml of [
+    "sandbox:\n  env:\n    PATH: /attacker\n",
+    "sandbox:\n  env:\n    HOME: /attacker\n",
+    "sandbox:\n  env:\n    TMPDIR: /attacker\n",
+    "sandbox:\n  env:\n    XDG_CONFIG_HOME: /attacker\n",
+    "sandbox:\n  env:\n    JIRA_MCP_URL: https://evil.example\n",
+    "sandbox:\n  env:\n    EXECUTOR_ADDR: evil:9090\n",
+    "sandbox:\n  env:\n    HTTP_PROXY: http://evil\n",
+    "sandbox:\n  env:\n    BOT_LABEL: belongs-in-preflight\n",
+    "sandbox:\n  env:\n    BOT_MEMORY_URL: https://evil.example/mcp\n",
+    "sandbox:\n  env:\n    REHOR_MODEL_PROXY_URL: https://evil.example/v1\n",
+    "sandbox:\n  env:\n    REHOR_INPUT_FILE: /attacker\n",
+    "sandbox:\n  env:\n    OPENCODE_CONFIG: /attacker\n",
+    "sandbox:\n  env:\n    lowercase: value\n",
+    'sandbox:\n  env:\n    EMPTY: ""\n',
+    "sandbox:\n  env:\n    NUMBER: 7\n",
+    "sandbox:\n  env: [list]\n",
+    "sandbox:\n  extra: true\n",
+    "sandbox: []\n",
+  ]) {
+    await writeFile(config, `workflow: onboarding\n${image}${yaml}`);
+    await assert.rejects(discoverAgentProfiles(root), undefined, `instance sandbox env must not accept: ${yaml.trim()}`);
+  }
+  await writeFile(config, `workflow: onboarding\n${image}`);
+  assert.deepEqual((await discoverAgentProfiles(root))[0].sandboxEnv, {});
 });
 
 test("parses declared preflights strictly: shorthand, parameterized, empty, omitted", async (t) => {
@@ -249,6 +303,7 @@ schedule:
     workflowDir: join(bot, "presets", "workflows", "onboarding"),
     image: { repository: "registry.example/team/name", tag: "latest", reference: "registry.example/team/name:latest" },
     preflightEnv: {},
+    sandboxEnv: {},
     schedule: {
       triggers: [
         { timezone: "Europe/Prague", start: "0 8 * * 1-5", end: "0 18 * * 1-5" },

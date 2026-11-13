@@ -68,7 +68,7 @@ For current operational procedures, see the [Operations Overview](operations/ind
 |---------|-----------------|
 | [Onboarding a New Instance](onboarding-new-instance.md) | Build a runner image and enroll its profile in the dispatcher |
 | [Agent Dispatcher Deployment](agent-dispatcher-deployment.md) | Dispatcher deployment contract, configuration, rollout, rollback, observability |
-| [Dispatcher Credentials and Secrets](dispatcher-secrets.md) | Current platform authentication and planned sandbox secrets |
+| [Dispatcher Credentials and Secrets](dispatcher-secrets.md) | Platform authentication and tier-2 sandbox secrets |
 | [Instance Configuration](presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
 | [Bot Workflow Loop](bot-workflow-loop.md) | From preflight decision to sandbox cleanup |
 | [Scheduling](scheduling.md) | Current dispatcher cadence and planned per-instance schedules |

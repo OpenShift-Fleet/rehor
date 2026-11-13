@@ -24,3 +24,22 @@ export function isForwardedPreflightVariable(name: string): boolean {
 export function isInstancePreflightVariable(name: string): boolean {
   return /^BOT_[A-Z0-9_]+$/.test(name) && !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(name);
 }
+
+// Runtime-owned names inside the sandbox (mirroring the coordinator's
+// baseline environment allowlist) plus the dispatcher-controlled REHOR_ and
+// OPENCODE_ namespaces.
+const sandboxDeniedNames = /^(?:PATH|HOME|USER|SHELL|LANG|LC_[A-Z_]+|NO_COLOR|TMPDIR|GIT_CONFIG_GLOBAL|XDG_(?:CACHE|CONFIG|DATA|STATE)_HOME)$/;
+
+/**
+ * Names an instance configuration may set in `sandbox.env`. Rejects
+ * runtime-owned names, the REHOR_ and OPENCODE_ namespaces, and values the
+ * dispatcher forwards itself; non-secret BOT_ settings belong in the profile
+ * `env` category.
+ */
+export function isSandboxEnvironmentVariable(name: string): boolean {
+  return /^[A-Z][A-Z0-9_]*$/.test(name)
+    && !sandboxDeniedNames.test(name)
+    && !name.startsWith("REHOR_")
+    && !name.startsWith("OPENCODE_")
+    && !isForwardedPreflightVariable(name);
+}

@@ -2,7 +2,7 @@ import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { objectEntrySchema, type PreflightEntry } from "@rehor/preflights";
-import { isInstancePreflightVariable } from "./preflight-env.js";
+import { isInstancePreflightVariable, isSandboxEnvironmentVariable } from "./preflight-env.js";
 import {
   formatPreflightDiagnostics,
   preflightEntryDiagnostics,
@@ -25,6 +25,12 @@ export type AgentProfile = {
   workflowDir: string;
   image: AgentImage;
   preflightEnv: Record<string, string>;
+  /**
+   * Parsed `sandbox.env` entries: sandbox runner environment values applied
+   * per dispatch. Values containing `${{ secret('name','key') }}` placeholders
+   * are rendered from tier-2 Kubernetes Secrets before sandbox creation.
+   */
+  sandboxEnv: Record<string, string>;
   /**
    * Parsed `preflights:` entries for the preflight engine:
    * shorthand strings or `{ id, with }` objects, already shape-validated
@@ -125,6 +131,25 @@ function profileEnvironment(value: unknown, legacy: unknown): Record<string, str
   return env;
 }
 
+/** Mirrors the `preflight` category shape: the `sandbox` object accepts only
+ * the `env` key, and every entry must be an allowed sandbox environment name
+ * with a non-empty string value. Placeholder syntax is validated at dispatch
+ * time by the renderer; discovery fails closed on shape only. */
+function sandboxEnvironment(value: unknown): Record<string, string> {
+  if (value === undefined) return {};
+  if (!object(value) || Object.keys(value).some((key) => key !== "env") || !object(value.env)) {
+    throw new Error("Invalid sandbox environment");
+  }
+  const env: Record<string, string> = {};
+  for (const [name, setting] of Object.entries(value.env)) {
+    if (!isSandboxEnvironmentVariable(name) || typeof setting !== "string" || !setting) {
+      throw new Error("Invalid sandbox environment");
+    }
+    env[name] = setting;
+  }
+  return env;
+}
+
 /** Strict `preflights:` parsing: undefined passes through (the
  * field is omitted and the workflow's default set applies later), but any
  * malformed entry fails profile discovery — entries are never silently
@@ -188,6 +213,7 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     const workflow = workflowFrom(config.workflow);
     const image = imageFrom(config.image);
     const preflightEnv = profileEnvironment(config.env, config.preflight);
+    const sandboxEnv = sandboxEnvironment(config.sandbox);
     const preflights = preflightsFrom(config.preflights, name);
     const schedule = scheduleFrom(config.schedule, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
@@ -195,7 +221,7 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
       ? join(instanceDir, workflow.slice(2))
       : join(botRoot, "presets", "workflows", workflow);
     const workflowDir = await checkedPath(workflowPath, workflowBoundary, "directory");
-    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
+    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, sandboxEnv, ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
   }
   if (!profiles.length) throw new Error("No agent profiles found in checkout");
   return profiles;

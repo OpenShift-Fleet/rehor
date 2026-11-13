@@ -29,6 +29,15 @@ Preflight execution uses [`@rehor/preflights`](../preflights/README.md). Each ag
 
 New preflights must be [contributed to this repository](../preflights/README.md#adding-a-preflight). Instance repositories provide configuration only; no executable preflight discovery runs in the dispatcher.
 
+The `sandbox.env` category delivers environment values to the agent's sandbox runner. Plain strings pass through unchanged; values containing `${{ secret('name','key') }}` placeholders are rendered at dispatch time, before any sandbox exists, from tier-2 Kubernetes Secrets in the dispatcher's namespace (synced from Vault by External Secrets Operator, labeled `rehor.dev/secret-tier: "2"`). The instance repository never holds Vault paths or secret values. Rendering is fail-closed: one unresolvable, denied, or malformed reference creates no sandbox, and resolved values never appear in logs or diagnostics — failures carry a fixed category only. Names are restricted to uppercase environment names outside the runtime-owned, `REHOR_`/`OPENCODE_`, and dispatcher-forwarded variables; non-secret `BOT_` settings belong in the profile `env` category, and the tier-1 `devbot-secrets` is denied even if referenced. For example:
+
+```yaml
+sandbox:
+  env:
+    SLACK_WEBHOOK_URL: ${{ secret('myteam-slack-webhook', 'url') }}
+    FEATURE_FLAG_X: "enabled"
+```
+
 The engine runs entries sequentially in declared order, at most once per agent every five minutes (the in-memory timer resets on restart). Each entry's execution is bounded at 120 seconds. External Jira, GitHub, and GitLab preflights always use the configured services proxy — the dispatcher never contacts those vendors directly. The dispatcher authenticates the dispatcher-to-proxy hop with the per-cycle short-lived minted bearer; the proxy alone injects vendor credentials on the upstream leg. The run context also carries the instance identity, memory route, and the instance's `project-repos.json` used as-is. Transport honors dispatcher abort during active requests. An actionable `start` among non-errored entries produces a start decision despite another entry's failure; all-skip is a skip; all-error is an error. The agent prompt contains `start` results only. Individual failed entries are logged even when the aggregate decision is still `start` or `skip`. Memory-server authorization failures fail the preflight instead of reporting empty results.
 
 Only non-secret `BOT_` variables, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment to the sandbox. The engine receives its wiring explicitly; its short-lived memory credential is minted per cycle, not passed through the process environment.
