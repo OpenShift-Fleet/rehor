@@ -88,11 +88,8 @@ export function parseConfigRepositories(json: string): ConfigRepository[] {
 }
 
 /**
- * Fail fast at startup when the config-repository tooling cannot run at all:
- * without this check a missing interpreter degrades into permanent,
- * undiagnosable per-cycle sync errors. The repositories supply declarative
- * agent configuration (`instance.yaml`, `project-repos.json`) — data, never
- * executed code — so Git is the only tool the dispatcher still requires.
+ * Fail fast at startup if Git is unavailable, rather than failing every
+ * configuration repository sync cycle.
  */
 export async function verifyConfigRepositoryTools(): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {

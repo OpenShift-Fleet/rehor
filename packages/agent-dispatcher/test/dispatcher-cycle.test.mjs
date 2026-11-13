@@ -18,8 +18,8 @@ const deferred = () => {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const profile = (name, root) => ({ name, botRoot: root, workflow: name, instanceDir: `${root}/${name}` });
 const options = (extra = {}) => ({
-  repositoriesJson: JSON.stringify(urls), cacheRoot: "/cache", env: { BOT_INSTANCE_ID: "secret-instance" },
-  dispatcher: new SessionDispatcher(), launch: async () => "gone", ...extra,
+  repositoriesJson: JSON.stringify(urls), cacheRoot: "/cache", env: { BOT_INSTANCE_ID: "secret-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
+  memoryCredential: async () => "fixture-token", dispatcher: new SessionDispatcher(), launch: async () => "gone", ...extra,
 });
 
 test("launch receives agent ID, original start decision and script metadata with mock-only dependencies", async () => {
@@ -76,22 +76,22 @@ test("each agent waits five minutes between checks, including skip and error", a
 test("per-agent preflight environment overrides shared instance identity", async () => {
   const seen = [];
   const opts = options({
-    env: { BOT_INSTANCE_ID: "shared", BOT_LABEL: "shared" },
+    env: { BOT_INSTANCE_ID: "shared", BOT_LABEL: "shared", BOT_MEMORY_URL: "https://memory.example/mcp" },
     dependencies: {
       syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
-      discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_INSTANCE_ID: root, BOT_LABEL: `${root}-label` } }],
+      discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_INSTANCE_ID: `${root}-例`, BOT_LABEL: `${root}-label` } }],
       preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
     },
   });
   await runDispatcherCycle(opts);
-  assert.deepEqual(seen.map((wiring) => wiring.instanceId), ["one", "two"]);
+  assert.deepEqual(seen.map((wiring) => wiring.instanceId), ["one-例", "two-例"]);
 });
 
 test("deployment memory URL cannot be replaced by profile in preflight wiring", async () => {
   for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
     const seen = [];
     const opts = options({
-      env: { BOT_MEMORY_URL: deploymentUrl, JIRA_MCP_URL: "http://jira.internal/mcp", EXECUTOR_ADDR: "executor.internal:9090" },
+      env: { BOT_INSTANCE_ID: "fixture", BOT_MEMORY_URL: deploymentUrl, JIRA_MCP_URL: "http://jira.internal/mcp", EXECUTOR_ADDR: "executor.internal:9090" },
       dependencies: {
         syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
         discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_MEMORY_URL: "https://untrusted.example/mcp" } }],
@@ -99,9 +99,135 @@ test("deployment memory URL cannot be replaced by profile in preflight wiring", 
       },
     });
     await runDispatcherCycle(opts);
-    assert.equal(seen.length, 2);
-    for (const baseUrl of seen) assert.equal(baseUrl, deploymentUrl ?? "");
+    assert.deepEqual(seen, deploymentUrl ? [deploymentUrl, deploymentUrl] : []);
   }
+});
+
+test("required wiring failures identify every profile without exposing values or running work", async () => {
+  const valid = { BOT_INSTANCE_ID: "identity-例", BOT_MEMORY_URL: "https://memory.example/mcp" };
+  for (const [field, value, reason] of [
+    ["BOT_INSTANCE_ID", undefined, "configuration"], ["BOT_INSTANCE_ID", "", "configuration"], ["BOT_INSTANCE_ID", " \t", "configuration"],
+    ["BOT_MEMORY_URL", undefined, "configuration"], ["BOT_MEMORY_URL", "", "configuration"], ["BOT_MEMORY_URL", " \t", "configuration"],
+    ["memory credential", undefined, "configuration"], ["memory credential", "", "configuration"], ["memory credential", " \t", "configuration"],
+    ["memory credential", "throw", "execution"],
+  ]) {
+    const lines = [];
+    let calls = 0;
+    const env = field === "memory credential" ? valid : { ...valid, [field]: value };
+    const credential = field === "memory credential"
+      ? value === undefined ? undefined : async () => { if (value === "throw") throw new Error("private-mint-error"); return value; }
+      : async () => "private-minted-credential";
+    const opts = options({ env, memoryCredential: credential,
+      logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+      launch: async () => { calls++; return "gone"; },
+      dependencies: {
+        syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+        discoverProfiles: async (root) => [{ ...profile("profile", root), preflights: [] }],
+        preflight: async () => { calls++; return start(); },
+      },
+    });
+    const result = await runDispatcherCycle(opts);
+    assert.deepEqual(result.repositories.map((repo) => repo.profiles[0].status), ["error", "error"]);
+    assert.equal(calls, 0);
+    assert.deepEqual(lines.map(JSON.parse), result.repositories.map((repo, i) => ({
+      level: 50, event: "preflight.error", status: "failure", reason, profile: "profile", repository: urls[i],
+      agentId: repo.profiles[0].agentId, configurationField: field,
+    })));
+    assert.doesNotMatch(JSON.stringify([result, lines]), /private-mint|identity-例|memory\.example/);
+  }
+});
+
+test("invalid profile identity does not use deployment fallback and can recover without cooldown", async () => {
+  let profileId = " ";
+  let calls = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
+    env: { BOT_INSTANCE_ID: "shared", BOT_MEMORY_URL: "https://memory.example/mcp" },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("agent", "one"), preflightEnv: { BOT_INSTANCE_ID: profileId } }],
+      preflight: async ({ wiring }) => { calls++; assert.equal(wiring.instanceId, "identity-例"); return start(); },
+    },
+  });
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "error");
+  profileId = "identity-例";
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "started");
+  await opts.dispatcher.drain();
+  assert.equal(calls, 1);
+});
+
+test("mint failures are reported even while a profile is busy", async () => {
+  const session = deferred();
+  const lines = [];
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]),
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    launch: async () => { await session.promise; return "gone"; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("agent", "one")],
+      preflight: async () => start(),
+    },
+  });
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "started");
+  opts.memoryCredential = async () => { throw new Error("private-exception"); };
+  const result = await runDispatcherCycle(opts);
+  assert.equal(result.repositories[0].profiles[0].status, "error");
+  assert.equal(JSON.parse(lines[0]).reason, "execution");
+  assert.equal(JSON.parse(lines[0]).configurationField, "memory credential");
+  assert.doesNotMatch(lines[0], /private-exception/);
+  session.resolve();
+  await opts.dispatcher.drain();
+});
+
+test("preflight errors identify Unicode profiles and sanitize SSH userinfo", async () => {
+  const lines = [];
+  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]), env: {},
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    dependencies: {
+      syncRepositories: async () => [{ name: "config", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("unicode-例", "one")],
+      preflight: async () => { throw new Error("must not run"); },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    level: 50, event: "preflight.error", status: "failure", reason: "configuration",
+    profile: "unicode-例", repository: "ssh://example.test/config.git",
+    agentId: result.repositories[0].profiles[0].agentId, configurationField: "BOT_INSTANCE_ID",
+  });
+  assert.doesNotMatch(lines[0], /private-user/);
+});
+
+test("owner identifiers are sanitized before reaching an injected logger", async () => {
+  const logs = [];
+  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]),
+    logger: { log: (event, status, fields) => logs.push({ event, status, ...fields }), start: () => ({ success: () => {}, failure: () => {} }) },
+    dependencies: {
+      syncRepositories: async () => [{ name: "config", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("profile-例\n\u001b", "one")],
+      preflight: async () => ({ action: "error", reason: "execution", transcript: "private-transcript", scripts: [] }),
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.deepEqual(logs, [{ event: "preflight.error", status: "failure", reason: "execution",
+    profile: "profile-例\\u{a}\\u{1b}", repository: "ssh://example.test/config.git",
+    agentId: result.repositories[0].profiles[0].agentId }]);
+  assert.doesNotMatch(JSON.stringify(logs), /private-user|private-transcript/);
+});
+
+test("invalid owner identifiers retain opaque agent identity", async () => {
+  const lines = [];
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), env: {},
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("x".repeat(2049), "one")],
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.deepEqual(JSON.parse(lines[0]), {
+    level: 50, event: "preflight.error", status: "failure", reason: "configuration",
+    repository: urls[0], agentId: result.repositories[0].profiles[0].agentId, configurationField: "BOT_INSTANCE_ID",
+  });
 });
 
 test("cycle wiring threads the minted credential, services gateway, and instance repos", async (t) => {
@@ -222,7 +348,7 @@ test("decisions, thrown failures and rejected launch stay isolated and redact re
   const names = ["skip", "error", "none", "throws", "resolver", "reject", "start"];
   const opts = options({ dispatcher,
     repositoriesJson: JSON.stringify(["https://example.test/sync.git", "https://example.test/discovery.git", urls[0], urls[1]]),
-    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return { BOT_INSTANCE_ID: p.name }; },
+    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return { BOT_INSTANCE_ID: p.name, BOT_MEMORY_URL: "https://memory.example/mcp" }; },
     launch: async (p) => { launched.push(p.name); if (p.name === "reject") throw new Error("secret-launch"); return "gone"; },
     dependencies: {
       syncRepositories: async (_root, [repo]) => {
@@ -362,7 +488,7 @@ test("memory authorization failures are errors and the minted credential is requ
     ...extra,
   });
   // Without a credential provider the engine refuses to run unauthenticated.
-  const unauthenticated = await runDispatcherCycle(opts());
+  const unauthenticated = await runDispatcherCycle(opts({ memoryCredential: undefined }));
   assert.equal(unauthenticated.repositories[0].profiles[0].status, "error");
   assert.equal(requests.length, 0);
   // A minting failure also fails the profile instead of running unauthenticated.
@@ -427,7 +553,7 @@ test("preflight error reasons reach lifecycle logs, including missing reasons an
   const opts = options({
     repositoriesJson: JSON.stringify([urls[0]]),
     logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
-    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return {}; },
+    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return { BOT_INSTANCE_ID: p.name, BOT_MEMORY_URL: "https://memory.example/mcp" }; },
     dependencies: {
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
       discoverProfiles: async () => names.map((name) => profile(name, "one")),

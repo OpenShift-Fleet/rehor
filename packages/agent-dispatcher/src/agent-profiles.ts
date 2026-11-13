@@ -25,7 +25,7 @@ export type AgentProfile = {
   image: AgentImage;
   preflightEnv: Record<string, string>;
   /**
-   * Parsed `preflights:` entries for the preflight engine (REHOR-259):
+   * Parsed `preflights:` entries for the preflight engine:
    * shorthand strings or `{ id, with }` objects, already shape-validated
    * against the package's entry schema. Registry-level validation (ids,
    * parameters) happens per run in the engine.
@@ -165,7 +165,7 @@ function receivedAt(raw: unknown, path: readonly PropertyKey[]): unknown {
   return current;
 }
 
-/** Strict `preflights:` parsing (REHOR-259): undefined passes through (the
+/** Strict `preflights:` parsing: undefined passes through (the
  * field is omitted and the workflow's default set applies later), but any
  * malformed entry fails profile discovery — entries are never silently
  * dropped, and every failure names the instance and the exact entry,

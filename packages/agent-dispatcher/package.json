@@ -7,8 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "npm run build --workspace=@rehor/preflights && tsc -p tsconfig.json",
-    "test": "npm run build && node --import ./test/register-sdk-hook.mjs --test test/*.test.mjs",
+    "build": "nx run @rehor/agent-dispatcher:build",
+    "test": "nx run @rehor/agent-dispatcher:test",
     "start": "node dist/index.js"
   },
   "dependencies": {

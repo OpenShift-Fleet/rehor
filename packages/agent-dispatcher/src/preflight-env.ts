@@ -3,12 +3,9 @@
  * here: callers decide whether a name is forwarded (process environment) or
  * accepted (instance configuration).
  *
- * The TS preflight engine (REHOR-259) receives its wiring — memory token,
- * proxy base, instance identity — explicitly, not through these variables;
- * the forwarded set now serves only the sandbox runtime environment
- * (non-secret `BOT_*` settings, Jira MCP and executor endpoints, git
- * identity, proxy variables). `PATH` forwarding existed for the removed
- * Python subprocess runner and is gone with it.
+ * The preflight engine receives its wiring explicitly. Forwarded variables
+ * provide sandbox runtime settings, endpoints, git identity, and proxies;
+ * secret-bearing `BOT_*` names are excluded.
  */
 export function isForwardedPreflightVariable(name: string): boolean {
   return name === "JIRA_MCP_URL"

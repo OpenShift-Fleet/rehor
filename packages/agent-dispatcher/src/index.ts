@@ -111,15 +111,18 @@ async function start(): Promise<void> {
     fail("Agent dispatcher auth configuration failed");
     return;
   }
+  if (repositoriesJson !== undefined && !botMemoryUrl) {
+    configuration.failure("configuration");
+    startup.failure("configuration");
+    fail("BOT_MEMORY_URL is required when agent repositories are configured");
+    return;
+  }
   try {
     gatewayConfig = readGatewayConfig(process.env);
     runtimeLayout = readRuntimeLayout(process.env);
     if (repositoriesJson !== undefined) {
       if (!gatewayConfig || !authConfig || !provider || !parseConfigRepositories(repositoriesJson).length) throw new Error();
-      // Config repository synchronization needs Git: the repositories now
-      // supply declarative preflight configuration (instance.yaml), never
-      // executed code. Fail startup instead of degrading into undiagnosable
-      // per-cycle errors.
+      // Repository synchronization requires Git.
       await verifyConfigRepositoryTools();
     }
   } catch {

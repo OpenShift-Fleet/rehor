@@ -3,9 +3,9 @@ import { discoverAgentProfiles } from "./agent-profiles.js";
 import type { AgentProfile } from "./agent-profiles.js";
 import { parseConfigRepositories, syncConfigRepositories } from "./config-repositories.js";
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
-import { createLifecycleLogger, isolateLifecycleLogger, type LifecycleLogger } from "./logging.js";
-import { loadInstanceRepos, runTsPreflight } from "./preflight-engine-ts.js";
-import type { TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
+import { createLifecycleLogger, isolateLifecycleLogger, profileLogValue, repositoryLogValue, type LifecycleLogger } from "./logging.js";
+import { loadInstanceRepos, runTsPreflight, validateRequiredPreflightWiring } from "./preflight-engine-ts.js";
+import type { PreflightWiringField, TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
 import { mergeProfileEnvironment } from "./runtime-environment.js";
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
@@ -20,8 +20,7 @@ export type DispatcherCycleOptions = {
   /** Complete caller-supplied environment, or a per-profile environment resolver. */
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
-  /** Sandbox launch for a start decision; agentId is the opaque per-agent
-   * identity the caller may use to key the session mutex lock (REHOR-218). */
+  /** Sandbox launch for a start decision; agentId identifies the session mutex. */
   launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>) => Promise<SessionCompletion>;
   /**
    * Mints the short-lived memory credential the preflight engine uses for
@@ -91,12 +90,15 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
   // A preflight error must identify its owner: fixed identifiers only (the
   // human-meaningful profile name and config repository, plus the opaque
   // agentId for correlation with cycle results). Transcripts never enter logs.
-  const logPreflightError = (profile: string, repository: string, agentId: string, reason: "configuration" | "execution" = "execution"): void => {
+  const logPreflightError = (profile: string, repository: string, agentId: string, reason: "configuration" | "execution" = "execution", configurationField?: PreflightWiringField): void => {
+    const safeProfile = profileLogValue(profile);
+    const safeRepository = repositoryLogValue(repository);
     logger.log("preflight.error", "failure", {
       reason,
-      profile,
-      repository,
+      ...(safeProfile !== undefined ? { profile: safeProfile } : {}),
+      ...(safeRepository !== undefined ? { repository: safeRepository } : {}),
       agentId,
+      ...(configurationField ? { configurationField } : {}),
     });
   };
   // Mint once per cycle so every profile shares one short-lived credential.
@@ -139,9 +141,14 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
       const id = agentId(repository.url, profile.name);
       try {
         const status = await (async () => {
-          // Credential minting failure fails the profile rather than running
-          // unauthenticated requests that could masquerade as empty results.
-          if (memoryToken === null) return "error" as const;
+          if (options.signal?.aborted) return "shutdown" as const;
+          const inherited = typeof options.env === "function" ? await options.env(profile) : options.env;
+          const env = mergeProfileEnvironment(inherited, profile.preflightEnv);
+          const required = validateRequiredPreflightWiring(env.BOT_INSTANCE_ID, env.BOT_MEMORY_URL, memoryToken);
+          if (!required.ok) {
+            logPreflightError(profile.name, repository.url, id, memoryToken === null && required.field === "memory credential" ? "execution" : "configuration", required.field);
+            return "error" as const;
+          }
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
           if (options.signal?.aborted) return "shutdown" as const;
           let checks = lastChecks.get(options.dispatcher);
@@ -154,18 +161,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           const last = checks.get(id);
           if (last !== undefined && now - last < intervalMs) return "throttled" as const;
           checks.set(id, now);
-          const inherited = typeof options.env === "function" ? await options.env(profile) : options.env;
-          const env = mergeProfileEnvironment(inherited, profile.preflightEnv);
-          // The TS engine executes the reviewed @rehor/preflights package
-          // in-process against the declarative instance.yaml configuration —
-          // no scripts are materialized from the synced checkout. Memory
-          // wiring reuses the per-cycle minted credential; the instance
-          // identity and memory route come from the per-profile environment
-          // exactly as the removed Python scripts read them.
           const repos = await loadInstanceRepos(profile.instanceDir);
           const wiring: TsPreflightWiring = {
-            instanceId: env.BOT_INSTANCE_ID ?? "",
-            memory: { baseUrl: env.BOT_MEMORY_URL ?? "", token: memoryToken ?? "" },
+            ...required.wiring,
             ...(options.serviceGatewayUrl ? { proxyBaseUrl: options.serviceGatewayUrl.href } : {}),
             ...(repos !== undefined ? { repos } : {}),
           };

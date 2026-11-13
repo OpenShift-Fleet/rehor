@@ -12,11 +12,8 @@ import { createPopulatedRegistry } from "@rehor/preflights/preflights";
 import type { AgentProfile } from "./agent-profiles.js";
 
 /**
- * The work-preflight result contract (REHOR-259), kept shape-identical to the
- * removed Python runner's protocol so the decision flows into
- * `buildInputEnvelope` and the dispatcher cycle unchanged: a start carries
- * the agent prompt, a skip/error carries a transcript, and the per-entry
- * script results carry ids, statuses, and content for the cycle report.
+ * A start carries the agent prompt; skip/error carry a transcript. Per-entry
+ * results carry ids, statuses, and content for the cycle report.
  * Error results additionally carry a `reason`: `configuration` failures
  * (invalid `preflights:`, missing wiring) never heal by retrying, while
  * `execution` failures (network, upstream API) may.
@@ -33,18 +30,13 @@ export type WorkPreflightResult =
   | { action: "skip" | "error"; transcript: string; scripts: WorkPreflightScriptResult[]; reason?: "configuration" | "execution" };
 
 /**
- * TS preflight execution engine (REHOR-259) — the dispatcher's only preflight
- * path. Preflight logic comes from the reviewed `@rehor/preflights` workspace
- * package instead of Python scripts executed out of synced config
- * repositories: the config repository supplies declarative `preflights:`
- * data, never executed code, removing that arbitrary-code-execution surface.
+ * The dispatcher runs reviewed `@rehor/preflights` implementations against
+ * declarative configuration from the config repository.
  *
- * Aggregation keeps the semantics of the removed Python multi-script runner:
- * any `start` among non-errored entries → start, all `skip` → skip, all
+ * Aggregation: any `start` among non-errored entries → start, all `skip` → skip, all
  * `error` → error; errored entries are excluded from the decision so one
- * broken integration cannot block work another preflight found. One
- * deliberate difference from the Python protocol (the settled spike
- * decision): the prompt is assembled from `start` results only — skip/error
+ * broken integration cannot block work another preflight found.
+ * The prompt is assembled from `start` results only — skip/error
  * content stays in the per-entry script results for the cycle report and
  * never enters the agent prompt.
  */
@@ -106,13 +98,23 @@ const missingInstanceId = "Preflight engine requires an instance identity (BOT_I
 const missingMemoryUrl = "Preflight engine requires BOT_MEMORY_URL";
 const missingMemoryToken = "Preflight engine requires a minted memory credential";
 
+export type PreflightWiringField = "BOT_INSTANCE_ID" | "BOT_MEMORY_URL" | "memory credential";
+
+/** Validate without including configuration values in diagnostics. */
+export function validateRequiredPreflightWiring(instanceId: unknown, baseUrl: unknown, token: unknown):
+  | { ok: true; wiring: Pick<TsPreflightWiring, "instanceId" | "memory"> }
+  | { ok: false; field: PreflightWiringField; message: string } {
+  if (typeof instanceId !== "string" || !instanceId.trim()) return { ok: false, field: "BOT_INSTANCE_ID", message: missingInstanceId };
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return { ok: false, field: "BOT_MEMORY_URL", message: missingMemoryUrl };
+  if (typeof token !== "string" || !token.trim()) return { ok: false, field: "memory credential", message: missingMemoryToken };
+  return { ok: true, wiring: { instanceId, memory: { baseUrl, token } } };
+}
+
 /**
  * Run the TS preflight engine for one profile. Never throws for
  * configuration or execution problems — every failure is an `error`
  * `WorkPreflightResult` whose transcript is prefixed with the instance
- * identity (profile name, plus the config repository when the caller
- * supplied one), surfaced to the agent owner through cycle reporting and
- * lifecycle logs.
+ * identity (profile name, plus the config repository when supplied).
  */
 export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkPreflightResult> {
   const registry = options.registry ?? populatedRegistry;
@@ -121,14 +123,13 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   const failure = (transcript: string, reason: "configuration" | "execution"): WorkPreflightResult =>
     ({ action: "error", transcript: `${identity}: ${transcript}`, scripts: [], reason });
 
+  const wiring = validateRequiredPreflightWiring(options.wiring?.instanceId, options.wiring?.memory?.baseUrl, options.wiring?.memory?.token);
+  if (!wiring.ok) return failure(wiring.message, "configuration");
+
   // Entry resolution: an explicit `preflights:` list replaces the default
   // set; an omitted field inherits the workflow's central default. Neither
-  // present is a configuration error — the engine itself is the scripts, so
-  // "nothing to run" is never a valid silent state (an explicit empty list
-  // remains a deliberate "no preflights" declaration). Agents relying on the
-  // removed Python path without a `preflights:` field fail loudly here until
-  // their config repositories declare preflights (REHOR-232 tracks the
-  // fleet).
+  // present is a configuration error; an explicit empty list is a deliberate
+  // "no preflights" declaration.
   const declared: readonly unknown[] | undefined = profile.preflights ?? workflowDefaults[profile.workflow];
   if (declared === undefined) {
     return failure(noPreflightsMessage(profile.workflow), "configuration");
@@ -146,28 +147,14 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
     return failure(transcript, "configuration");
   }
 
-  // Wiring checks: the memory-server route, the minted credential, and the
-  // instance identity are dispatcher-owned. Missing values are errors with
-  // stable messages, never unauthenticated or unfiltered requests.
-  if (!options.wiring.instanceId?.trim()) {
-    return failure(missingInstanceId, "configuration");
-  }
-  if (!options.wiring.memory?.baseUrl?.trim()) {
-    return failure(missingMemoryUrl, "configuration");
-  }
-  if (!options.wiring.memory.token) {
-    return failure(missingMemoryToken, "configuration");
-  }
-
   // One run context per invocation, shared by all entries: task/capacity
-  // fetches happen once per run and per-run bookkeeping state (the state-file
-  // replacement) accumulates across entries.
+  // fetches happen once per run and per-run bookkeeping state accumulates.
   const proxy = options.wiring.proxyBaseUrl;
   let context;
   try {
     context = createPreflightRunContext({
-      instanceId: options.wiring.instanceId,
-      memory: { baseUrl: options.wiring.memory.baseUrl, token: options.wiring.memory.token },
+      instanceId: wiring.wiring.instanceId,
+      memory: wiring.wiring.memory,
       ...(proxy ? { jira: { baseUrl: proxy }, proxy } : {}),
       ...(options.wiring.repos ? { repos: options.wiring.repos } : {}),
     });
@@ -196,7 +183,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
     return { action: "error", transcript: `${identity}: Preflight cancelled`, scripts: results, reason: "execution" };
   }
 
-  // Aggregation, mirroring the removed Python multi-script semantics:
+  // Aggregation:
   // errored entries are excluded from the decision so one broken integration
   // cannot block work another preflight found; all-errored is an error.
   const ok = results.filter((result) => result.status !== "error");

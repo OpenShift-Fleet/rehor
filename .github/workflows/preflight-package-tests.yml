@@ -6,6 +6,7 @@ on:
       - 'packages/preflights/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'nx.json'
       - '.npmrc'
       - 'biome.json'
       - '.github/workflows/preflight-package-tests.yml'
@@ -16,6 +17,7 @@ on:
       - 'packages/preflights/**'
       - 'package.json'
       - 'package-lock.json'
+      - 'nx.json'
       - '.npmrc'
       - 'biome.json'
       - '.github/workflows/preflight-package-tests.yml'
@@ -65,4 +67,4 @@ jobs:
           npm ci --userconfig "$npmrc"
 
       - name: Run tests
-        run: npm test --workspace=@rehor/preflights
+        run: npm exec -- nx run @rehor/preflights:test

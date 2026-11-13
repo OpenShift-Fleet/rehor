@@ -6,12 +6,7 @@
 # Compile on the builder's native architecture, regardless of target platform.
 # Dependencies are installed offline from the lockfile and prefetched npm cache.
 #
-# The dispatcher's only preflight path is the TS engine (REHOR-259): the
-# @rehor/preflights workspace package executes declarative instance.yaml
-# configuration in-process. No Python, no MCP client, and no gh/glab executor
-# shims are installed — the removed Python preflight runner was their only
-# consumer. Git stays: config repositories are still cloned, but they now
-# supply data (instance.yaml, project-repos.json), never executed code.
+# Preflights run in-process using the @rehor/preflights workspace package.
 
 FROM --platform=${BUILDPLATFORM} registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS builder
 USER 0
@@ -25,7 +20,7 @@ RUN npm ci --offline --no-audit --ignore-scripts
 
 COPY packages/agent-dispatcher/src packages/agent-dispatcher/src
 COPY packages/preflights/src packages/preflights/src
-RUN npm run build --workspace=@rehor/agent-dispatcher
+RUN npm exec --offline -- nx run @rehor/agent-dispatcher:build --skip-nx-cache
 
 # npm links the local SDK workspace from node_modules/@nvidia/openshell-sdk to
 # /app/packages/openshell-sdk, and @rehor/preflights from

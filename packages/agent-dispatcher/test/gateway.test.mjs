@@ -234,7 +234,11 @@ test("partial runtime gateway config fails without exposing values", () => {
 test("configured repository checks require gateway authentication", () => {
   const result = spawnSync(process.execPath, ["dist/index.js"], {
     cwd: new URL("..", import.meta.url), encoding: "utf8",
-    env: { AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.invalid/private.git"]' }, timeout: 5000,
+    env: {
+      AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.invalid/private.git"]',
+      AGENT_DISPATCHER_AUTH_NAMESPACE: "agents", AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT: "agent",
+      AGENT_DISPATCHER_AUTH_MEMORY_URL: "https://memory.example/health", BOT_MEMORY_URL: "https://memory.example/mcp",
+    }, timeout: 5000,
   });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "Agent dispatcher gateway or preflight tooling configuration failed");

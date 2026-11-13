@@ -173,9 +173,8 @@ test("preflight identity fields accept safe identifiers only; transcripts never 
     message: "secret",
   });
   for (const options of [
-    { profile: "bad name!", repository: "https://github.com/org/repo.git", agentId },
     { profile: "/etc/passwd", agentId },
-    { profile: "x".repeat(129), agentId },
+    { profile: "x".repeat(2049), agentId },
     { profile: "ok", repository: "https://user:secret@example.test/repo.git", agentId },
     { profile: "ok", repository: "not a url", agentId },
     { profile: "ok", repository: "https://github.com/org/repo.git?query=1", agentId },
@@ -201,6 +200,31 @@ test("preflight identity fields accept safe identifiers only; transcripts never 
   assert.ok(lines.every((line) => !line.includes("secret")));
 });
 
+test("preflight identity preserves Unicode and removes userinfo and control characters", () => {
+  const { logger, lines } = fixture();
+  const agentId = "b".repeat(64);
+  logger.log("preflight.error", "failure", {
+    profile: "Řehoř 例\n\u001b\u202e",
+    repository: "ssh://private-user%40token@example.test/org/config.git",
+    agentId,
+  });
+  assert.deepEqual(JSON.parse(lines[0]), {
+    event: "preflight.error", status: "failure", level: 50,
+    profile: "Řehoř 例\\u{a}\\u{1b}\\u{202e}",
+    repository: "ssh://example.test/org/config.git", agentId,
+  });
+  assert.doesNotMatch(lines[0], /private-user|token|\u001b|\u202e/);
+  for (const repository of [
+    "ssh://user:private-password@example.test/org/config.git",
+    "https://private-user@example.test/org/config.git",
+    "ssh://user@example.test/org/config.git?secret=private-query",
+    "ssh://user@example.test/org/config.git#private-fragment",
+    "ssh://user@example.test/org/\nconfig.git",
+    `https://example.test/${"x".repeat(2048)}`,
+  ]) logger.log("preflight.error", "failure", { profile: "agent", repository, agentId });
+  assert.equal(lines.length, 1);
+});
+
 test("preflight reasons use a fixed allowlist", () => {
   const { logger, lines } = fixture();
   for (const reason of ["configuration", "execution"]) logger.log("preflight.error", "failure", { reason });
@@ -211,6 +235,13 @@ test("preflight reasons use a fixed allowlist", () => {
     { event: "preflight.error", status: "failure", reason: "configuration", level: 50 },
     { event: "preflight.error", status: "failure", reason: "execution", level: 50 },
   ]);
+});
+
+test("preflight wiring fields use a fixed allowlist", () => {
+  const { logger, lines } = fixture();
+  for (const configurationField of ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"]) logger.log("preflight.error", "failure", { configurationField });
+  for (const configurationField of ["secret-token", "", null, 1, {}]) logger.log("preflight.error", "failure", { configurationField });
+  assert.deepEqual(lines.map(JSON.parse).map(({ configurationField }) => configurationField), ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"]);
 });
 
 test("broken clocks omit duration without leaking errors", () => {
@@ -460,7 +491,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -501,7 +532,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,

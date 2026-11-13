@@ -152,18 +152,28 @@ test("skip transcripts carry the [PREFLIGHT ERROR] summary like the Python runne
   assert.match(result.transcript, /^\[PREFLIGHT ERROR\] failer: x{200}\n\nnothing to do$/);
 });
 
-test("missing dispatcher wiring fails closed with stable messages", async () => {
-  const { registry } = fakeRegistry({ one: { status: "skip", content: "" } });
+test("missing dispatcher wiring fails closed even without preflight entries", async () => {
+  const { registry, calls } = fakeRegistry({ one: { status: "skip", content: "" } });
   for (const [w, message] of [
     [wiring({ instanceId: "" }), "agent: Preflight engine requires an instance identity (BOT_INSTANCE_ID)"],
+    [wiring({ instanceId: " \t" }), "agent: Preflight engine requires an instance identity (BOT_INSTANCE_ID)"],
+    [wiring({ instanceId: undefined }), "agent: Preflight engine requires an instance identity (BOT_INSTANCE_ID)"],
     [wiring({ memory: { baseUrl: "", token: "t" } }), "agent: Preflight engine requires BOT_MEMORY_URL"],
+    [wiring({ memory: { baseUrl: "  ", token: "t" } }), "agent: Preflight engine requires BOT_MEMORY_URL"],
+    [wiring({ memory: { baseUrl: undefined, token: "t" } }), "agent: Preflight engine requires BOT_MEMORY_URL"],
     [wiring({ memory: { baseUrl: "https://memory.example", token: "" } }), "agent: Preflight engine requires a minted memory credential"],
+    [wiring({ memory: { baseUrl: "https://memory.example", token: " \n" } }), "agent: Preflight engine requires a minted memory credential"],
+    [wiring({ memory: { baseUrl: "https://memory.example", token: undefined } }), "agent: Preflight engine requires a minted memory credential"],
   ]) {
-    const result = await runTsPreflight({ profile: profile({ preflights: ["one"] }), wiring: w, registry });
-    assert.equal(result.action, "error");
-    assert.equal(result.transcript, message);
-    assert.deepEqual(result.scripts, []);
+    for (const preflights of [["one"], [], undefined]) {
+      const result = await runTsPreflight({ profile: profile({ preflights }), wiring: w, registry });
+      assert.equal(result.action, "error");
+      assert.equal(result.reason, "configuration");
+      assert.equal(result.transcript, message);
+      assert.deepEqual(result.scripts, []);
+    }
   }
+  assert.deepEqual(calls, []);
 });
 
 test("signal abort between entries cancels the run without executing later entries", async () => {

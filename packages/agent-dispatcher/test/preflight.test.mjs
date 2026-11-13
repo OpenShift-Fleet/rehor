@@ -123,6 +123,19 @@ test("invalid sandbox route configuration fails startup without logging route va
   }
 });
 
+test("configured repositories require deployment memory route at startup", () => {
+  for (const value of [undefined, "", " \t", "https://private-memory.example/mcp"]) {
+    const env = { ...baseEnv, AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]' };
+    if (value !== undefined) env.BOT_MEMORY_URL = value;
+    const result = spawnSync(process.execPath, ["dist/index.js"], {
+      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 5000,
+    });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.stdout + result.stderr, /private-memory|memory\.example|Bearer/);
+    if (value === undefined || value === "") assert.match(result.stderr, /BOT_MEMORY_URL is required/);
+  }
+});
+
 test("TokenRequest uses projected credentials, default audience, and exact memory endpoint; each get() mints fresh", async () => {
   const f = fixture();
   const provider = createCredentialProvider(config(), f.deps);
