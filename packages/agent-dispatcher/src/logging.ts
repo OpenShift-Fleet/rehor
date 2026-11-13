@@ -1,7 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { fstatSync, writeSync } from "node:fs";
 import { pino } from "pino";
-import type { DispatcherCycleResult } from "./dispatcher-cycle.js";
 import type { PreflightDiagnostic } from "./preflight-diagnostics.js";
 import type { PreflightWiringField } from "./preflight-engine-ts.js";
 
@@ -14,7 +13,9 @@ const EVENTS = [
   "memory.token",
   "gateway.authentication",
   "gateway.oidc",
+  "preflight.cycle",
   "preflight.error",
+  "preflight.run",
   "sandbox.session",
   "sandbox.cleanup",
   "sandbox.retention",
@@ -24,6 +25,12 @@ const EVENTS = [
   "ready",
   "shutdown",
 ] as const;
+
+/**
+ * Stages long enough that a hang must be diagnosable from a start record.
+ * Every other timed event collapses to a single completion record.
+ */
+const ANNOUNCED_STAGES = ["startup", "shutdown", "sandbox.session"] as const;
 
 const STATUSES = ["start", "success", "failure"] as const;
 const CATEGORIES = [
@@ -39,6 +46,24 @@ const SESSION_STAGES = ["input", "policy", "workspace", "provider", "sandbox", "
 const SESSION_ERROR_CODES = ["invalid_argument", "not_found", "permission_denied", "unauthenticated", "deadline_exceeded", "unavailable", "cancelled", "readiness_timeout", "other"] as const;
 const RECONCILE_REASONS = ["never-provisioned", "workspace-gone", "sandbox-gone", "reconciled-terminal", "adopted", "adopt-timeout", "record-failure", "startup-timeout"] as const;
 const PREFLIGHT_REASONS = ["configuration", "execution"] as const;
+/** Fixed explanation for a busy cycle record; never derived from transcripts. */
+const CYCLE_REASONS = ["session in progress"] as const;
+/**
+ * Outcome of a preflight entry or a dispatcher-cycle profile, plus the
+ * cycle-level failure modes that precede any profile processing.
+ */
+const DECISIONS = [
+  "start",
+  "skip",
+  "busy",
+  "error",
+  "no-scripts",
+  "throttled",
+  "shutdown",
+  "sync-error",
+  "discovery-error",
+  "invalid-config",
+] as const;
 const PREFLIGHT_WIRING_FIELDS = ["BOT_INSTANCE_ID", "BOT_MEMORY_URL", "memory credential"] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Opaque cycle agent id: sha256 hex. */
@@ -55,6 +80,8 @@ export type SessionStage = (typeof SESSION_STAGES)[number];
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number];
 export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
 export type PreflightReason = (typeof PREFLIGHT_REASONS)[number];
+export type CycleReason = (typeof CYCLE_REASONS)[number];
+export type LifecycleDecision = (typeof DECISIONS)[number];
 export type LifecycleDetails = { stage?: SessionStage; errorCode?: SessionErrorCode };
 
 export interface LogOptions {
@@ -76,7 +103,7 @@ export interface LogOptions {
   update?: boolean;
   /** Startup reconciliation (REHOR-218): run ID, outcome reason, adoption. */
   runId?: string;
-  reason?: ReconcileReason | PreflightReason;
+  reason?: ReconcileReason | PreflightReason | CycleReason;
   adopted?: boolean;
   /**
    * Instance identity for preflight error reporting: the agent
@@ -97,11 +124,13 @@ export interface LogOptions {
   diagnostics?: readonly PreflightDiagnostic[];
   /** Registered preflight id naming the failed entry in per-entry records. */
   preflightId?: string;
+  /** Outcome of a preflight entry run or a dispatcher-cycle profile. */
+  decision?: LifecycleDecision;
 }
 
 export interface LifecycleLogger {
   log(event: LifecycleEvent, status: LifecycleStatus, options?: LogOptions): void;
-  start(event: LifecycleEvent): {
+  start(event: LifecycleEvent, options?: LogOptions): {
     success(category?: ErrorCategory, details?: LifecycleDetails): void;
     failure(category?: ErrorCategory, details?: LifecycleDetails): void;
   };
@@ -119,9 +148,9 @@ export function isolateLifecycleLogger(logger?: LifecycleLogger): LifecycleLogge
     log(event, status, options) {
       try { ignoreRejection(logger?.log(event, status, options)); } catch { /* Logging is best effort. */ }
     },
-    start(event) {
+    start(event, options) {
       let operation: ReturnType<LifecycleLogger["start"]> | undefined;
-      try { operation = logger?.start(event); ignoreRejection(operation); } catch { /* Logging is best effort. */ }
+      try { operation = logger?.start(event, options); ignoreRejection(operation); } catch { /* Logging is best effort. */ }
       return {
         success(category) { try { ignoreRejection(operation?.success(category)); } catch { /* Ignore logger failures. */ } },
         failure(category) { try { ignoreRejection(operation?.failure(category)); } catch { /* Ignore logger failures. */ } },
@@ -168,12 +197,7 @@ function writeStdoutLine(line: string): void {
   }
 }
 
-const stdout = pino({ base: undefined, timestamp: false }, { write: writeStdoutLine });
-
-/** Cycle results contain only statuses and opaque IDs; never emit preflight output. */
-export function writePreflightCycle(result: DispatcherCycleResult): void {
-  try { writeStdoutLine(`${JSON.stringify({ event: "preflight.cycle", result })}\n`); } catch { /* Best effort. */ }
-}
+const stdout = pino({ base: undefined, timestamp: pino.stdTimeFunctions.isoTime }, { write: writeStdoutLine });
 
 /** Preserve the scaffold greeting on the same sink as lifecycle records. */
 export function writeStartupGreeting(): void {
@@ -242,7 +266,7 @@ export function createLifecycleLogger(deps: {
 } = {}): LifecycleLogger {
   const custom = deps.write;
   const logger = custom
-    ? pino({ base: undefined, timestamp: false }, {
+    ? pino({ base: undefined, timestamp: pino.stdTimeFunctions.isoTime }, {
         write: (line: string) => {
           try { ignoreRejection(custom(line)); } catch { /* Logging is best effort. */ }
         },
@@ -276,6 +300,7 @@ export function createLifecycleLogger(deps: {
       const configurationField = options?.configurationField;
       const diagnostics = options?.diagnostics === undefined ? undefined : diagnosticsLogValue(options.diagnostics);
       const preflightId = options?.preflightId;
+      const decision = options?.decision;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
@@ -294,7 +319,7 @@ export function createLifecycleLogger(deps: {
       if (update !== undefined && typeof update !== "boolean") return;
       // Run IDs are opaque generated UUIDs; anything else is rejected.
       if (runId !== undefined && (typeof runId !== "string" || !UUID_PATTERN.test(runId))) return;
-      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason) && !isMember(PREFLIGHT_REASONS, reason)) return;
+      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason) && !isMember(PREFLIGHT_REASONS, reason) && !isMember(CYCLE_REASONS, reason)) return;
       if (adopted !== undefined && typeof adopted !== "boolean") return;
       if (options?.profile !== undefined && profile === undefined) return;
       if (options?.repository !== undefined && repository === undefined) return;
@@ -302,8 +327,9 @@ export function createLifecycleLogger(deps: {
       if (configurationField !== undefined && !isMember(PREFLIGHT_WIRING_FIELDS, configurationField)) return;
       if (options?.diagnostics !== undefined && diagnostics === undefined) return;
       if (preflightId !== undefined && (typeof preflightId !== "string" || !PREFLIGHT_ID.test(preflightId))) return;
+      if (decision !== undefined && !isMember(DECISIONS, decision)) return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason | PreflightReason; adopted?: boolean; profile?: string; repository?: string; agentId?: string; configurationField?: PreflightWiringField; diagnostics?: PreflightDiagnostic[]; preflightId?: string } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason | PreflightReason | CycleReason; adopted?: boolean; profile?: string; repository?: string; agentId?: string; configurationField?: PreflightWiringField; diagnostics?: PreflightDiagnostic[]; preflightId?: string; decision?: LifecycleDecision } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
@@ -326,6 +352,7 @@ export function createLifecycleLogger(deps: {
       if (configurationField !== undefined) record.configurationField = configurationField;
       if (diagnostics !== undefined) record.diagnostics = diagnostics;
       if (preflightId !== undefined) record.preflightId = preflightId;
+      if (decision !== undefined) record.decision = decision;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.
@@ -341,15 +368,17 @@ export function createLifecycleLogger(deps: {
     }
   }
 
-  function start(event: LifecycleEvent) {
+  function start(event: LifecycleEvent, options?: LogOptions) {
     const valid = isMember(EVENTS, event);
     const started = valid ? clock() : undefined;
-    if (valid) log(event, "start");
+    // Only long-running stages announce a start record; cheap events collapse
+    // to a single completion record so the stream stays one line per step.
+    if (valid && isMember(ANNOUNCED_STAGES, event)) log(event, "start", options);
     const finish = (status: "success" | "failure", category?: ErrorCategory, details?: LifecycleDetails) => {
       if (!valid) return;
       const ended = clock();
       const durationMs = started !== undefined && ended !== undefined ? ended - started : undefined;
-      log(event, status, { ...details, durationMs: Number.isFinite(durationMs) ? durationMs : undefined, category });
+      log(event, status, { ...options, ...details, durationMs: Number.isFinite(durationMs) ? durationMs : undefined, category });
     };
     return {
       success: (category?: ErrorCategory, details?: LifecycleDetails) => finish("success", category, details),

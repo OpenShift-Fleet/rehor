@@ -3,7 +3,7 @@ import { discoverAgentProfiles } from "./agent-profiles.js";
 import type { AgentProfile } from "./agent-profiles.js";
 import { parseConfigRepositories, syncConfigRepositories } from "./config-repositories.js";
 import type { SessionCompletion, SessionDispatcher } from "./dispatch-sessions.js";
-import { createLifecycleLogger, isolateLifecycleLogger, profileLogValue, repositoryLogValue, type LifecycleLogger } from "./logging.js";
+import { createLifecycleLogger, isolateLifecycleLogger, profileLogValue, repositoryLogValue, type LifecycleDecision, type LifecycleLogger, type LogOptions } from "./logging.js";
 import { isPreflightDiagnostic, PreflightConfigurationError, type PreflightDiagnostic } from "./preflight-diagnostics.js";
 import { loadInstanceRepos, runTsPreflight, validateRequiredPreflightWiring } from "./preflight-engine-ts.js";
 import type { PreflightWiringField, TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
@@ -21,8 +21,9 @@ export type DispatcherCycleOptions = {
   /** Complete caller-supplied environment, or a per-profile environment resolver. */
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
-  /** Sandbox launch for a start decision; agentId identifies the session mutex. */
-  launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>) => Promise<SessionCompletion>;
+  /** Sandbox launch for a start decision; agentId identifies the session mutex.
+   * The repository URL arrives last so session records can name the owner. */
+  launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>, repository: string) => Promise<SessionCompletion>;
   /**
    * Mints the short-lived memory credential the preflight engine uses for
    * memory-server task fetches. Called once per cycle; a minting failure
@@ -73,6 +74,29 @@ function agentId(repositoryUrl: string, profileName: string): string {
   return createHash("sha256").update(JSON.stringify([repositoryUrl, profileName])).digest("hex");
 }
 
+/** Sanitized instance identity shared by preflight records: fixed
+ * identifiers only, with the opaque agentId for correlation. */
+function cycleIdentity(profile: string, repository: string, agentId: string): LogOptions {
+  const safeProfile = profileLogValue(profile);
+  const safeRepository = repositoryLogValue(repository);
+  return {
+    ...(safeProfile !== undefined ? { profile: safeProfile } : {}),
+    ...(safeRepository !== undefined ? { repository: safeRepository } : {}),
+    agentId,
+  };
+}
+
+/** Profile statuses map one-to-one onto the cycle-record decision vocabulary. */
+const cycleDecisions: Record<CycleProfileStatus["status"], LifecycleDecision> = {
+  started: "start",
+  busy: "busy",
+  shutdown: "shutdown",
+  skip: "skip",
+  error: "error",
+  "no-scripts": "no-scripts",
+  throttled: "throttled",
+};
+
 /** Diagnostics that satisfy the logging contract; malformed items are
  * dropped rather than rejecting the record's identity fields. */
 function safeDiagnostics(value: unknown): PreflightDiagnostic[] | undefined {
@@ -117,17 +141,27 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
     preflightId?: string;
   };
   const logPreflightError = (profile: string, repository: string, agentId: string, details: PreflightErrorDetails): void => {
-    const safeProfile = profileLogValue(profile);
-    const safeRepository = repositoryLogValue(repository);
     logger.log("preflight.error", "failure", {
       reason: details.reason,
-      ...(safeProfile !== undefined ? { profile: safeProfile } : {}),
-      ...(safeRepository !== undefined ? { repository: safeRepository } : {}),
-      agentId,
+      ...cycleIdentity(profile, repository, agentId),
       ...(details.configurationField !== undefined ? { configurationField: details.configurationField } : {}),
       ...(details.diagnostics !== undefined ? { diagnostics: details.diagnostics } : {}),
       ...(details.preflightId !== undefined ? { preflightId: details.preflightId } : {}),
     });
+  };
+  // Best-effort monotonic clock for record durations; never fails a cycle.
+  const monotonic = (): number | undefined => {
+    try {
+      const value = (options.now ?? performance.now)();
+      return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const elapsed = (startedAt: number | undefined): number | undefined => {
+    if (startedAt === undefined) return undefined;
+    const endedAt = monotonic();
+    return endedAt !== undefined ? Math.max(0, endedAt - startedAt) : undefined;
   };
   // Mint once per cycle so every profile shares one short-lived credential.
   // null marks a minting failure: fail every profile rather than run unauthenticated.
@@ -141,6 +175,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
   try {
     repositories = deps.parseRepositories(options.repositoriesJson);
   } catch {
+    logger.log("preflight.cycle", "failure", { decision: "invalid-config" });
     return { status: "invalid-config", repositories: [] };
   }
 
@@ -148,27 +183,42 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
   for (const [index, repository] of repositories.entries()) {
     if (options.signal?.aborted) break;
     let checkout;
+    const syncStartedAt = monotonic();
     try {
       [checkout] = await deps.syncRepositories(options.cacheRoot, [repository], options.signal);
       if (!checkout) throw new Error("Missing checkout");
     } catch {
+      // Repository identity only: a failed sync has no profile to name.
+      const safeRepository = repositoryLogValue(repository.url);
+      logger.log("preflight.cycle", "failure", {
+        decision: "sync-error",
+        durationMs: elapsed(syncStartedAt),
+        ...(safeRepository !== undefined ? { repository: safeRepository } : {}),
+      });
       results.push({ index, status: "sync-error" });
       continue;
     }
     let profiles;
+    const discoveryStartedAt = monotonic();
     try {
       profiles = await deps.discoverProfiles(checkout.path);
     } catch (error) {
       // A typed preflight-configuration failure carries the profile and the
       // structured issues: log the safe identity and diagnostics before the
       // fail-closed discovery-error result. Unknown errors are never logged.
+      let identity: LogOptions = {};
       if (error instanceof PreflightConfigurationError) {
         const diagnostics = safeDiagnostics(error.diagnostics);
+        identity = cycleIdentity(error.profile, repository.url, agentId(repository.url, error.profile));
         logPreflightError(error.profile, repository.url, agentId(repository.url, error.profile), {
           reason: "configuration",
           ...(diagnostics !== undefined ? { diagnostics } : {}),
         });
+      } else {
+        const safeRepository = repositoryLogValue(repository.url);
+        identity = safeRepository !== undefined ? { repository: safeRepository } : {};
       }
+      logger.log("preflight.cycle", "failure", { decision: "discovery-error", durationMs: elapsed(discoveryStartedAt), ...identity });
       results.push({ index, status: "discovery-error" });
       continue;
     }
@@ -177,6 +227,11 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
     for (const profile of profiles) {
       if (options.signal?.aborted) break;
       const id = agentId(repository.url, profile.name);
+      const identity = cycleIdentity(profile.name, repository.url, id);
+      // Reason for an error decision, reused by the cycle record; skip and
+      // busy outcomes have no per-profile detail beyond fixed strings.
+      let errorReason: "configuration" | "execution" | undefined;
+      const profileStartedAt = monotonic();
       try {
         const status = await (async () => {
           if (options.signal?.aborted) return "shutdown" as const;
@@ -184,8 +239,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           const env = mergeProfileEnvironment(inherited, profile.preflightEnv);
           const required = validateRequiredPreflightWiring(env.BOT_INSTANCE_ID, env.BOT_MEMORY_URL, memoryToken);
           if (!required.ok) {
+            errorReason = memoryToken === null && required.field === "memory credential" ? "execution" : "configuration";
             logPreflightError(profile.name, repository.url, id, {
-              reason: memoryToken === null && required.field === "memory credential" ? "execution" : "configuration",
+              reason: errorReason,
               configurationField: required.field,
             });
             return "error" as const;
@@ -209,6 +265,13 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             ...(repos !== undefined ? { repos } : {}),
           };
           const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
+          if (decision.action === "error") errorReason = decision.reason ?? "execution";
+          // One record per preflight entry: id, outcome, and the owner
+          // identity. Entry content and transcripts never enter the record;
+          // the engine returns no per-entry durations, so none are logged.
+          for (const script of decision.scripts) {
+            logger.log("preflight.run", "success", { preflightId: script.name, decision: script.status, ...identity });
+          }
           // Errored entries are logged independently of the aggregate
           // decision — start, skip, or all-error — with the preflight id
           // only; entry content never enters the record.
@@ -230,7 +293,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           if (options.signal?.aborted) return "shutdown" as const;
           const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => {
             if (decision.action !== "start") return "not-created";
-            return options.launch(profile, id, prompt, decision);
+            return options.launch(profile, id, prompt, decision, repository.url);
           });
           if (dispatched.status === "started") {
             // Defensive even if a future dispatcher implementation rejects completion.
@@ -239,11 +302,22 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           return dispatched.status;
         })();
         profileResults.push({ agentId: id, status });
+        // One completion record per profile: the decision, a duration, and
+        // the owner identity. Busy explains itself; error defers detail to
+        // the preflight.error records.
+        logger.log("preflight.cycle", "success", {
+          decision: cycleDecisions[status],
+          durationMs: elapsed(profileStartedAt),
+          ...(status === "busy" ? { reason: "session in progress" as const } : {}),
+          ...(status === "error" && errorReason !== undefined ? { reason: errorReason } : {}),
+          ...identity,
+        });
       } catch {
         // A thrown preflight or per-profile wiring failure: log the owner
         // identity with the same fixed fields, never the exception detail.
         logPreflightError(profile.name, repository.url, id, { reason: "execution" });
         profileResults.push({ agentId: id, status: "error" });
+        logger.log("preflight.cycle", "success", { decision: "error", reason: "execution", durationMs: elapsed(profileStartedAt), ...identity });
       }
     }
   }
