@@ -1,6 +1,7 @@
 import type { PreflightRegistry } from "../core/registry.js";
 import { createPreflightRegistry } from "../core/registry.js";
 import { ghPrStatus } from "./gh-pr-status/index.js";
+import { glMrStatus } from "./gl-mr-status/index.js";
 
 /**
  * Audit-boundary barrel for preflight implementations. Every preflight gets
@@ -11,5 +12,5 @@ import { ghPrStatus } from "./gh-pr-status/index.js";
  * `repos` map), never through this registry.
  */
 export function createPopulatedRegistry(): PreflightRegistry {
-  return createPreflightRegistry([ghPrStatus]);
+  return createPreflightRegistry([ghPrStatus, glMrStatus]);
 }
