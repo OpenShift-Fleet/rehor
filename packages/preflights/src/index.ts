@@ -38,3 +38,16 @@ export type {
 
 export type { ConfigValidationResult, ResolvedPreflightEntry } from "./core/validate.js";
 export { validateConfig } from "./core/validate.js";
+
+// --- run context (the one shared type re-exported; dispatcher-facing) ---
+
+export type {
+  JiraWiring,
+  MemoryServerWiring,
+  PreflightRunContext,
+  PreflightRunContextOptions,
+  PreflightRunState,
+  ProxyRouteConfig,
+  ProxyWiring,
+} from "./shared/run-context.js";
+export { createPreflightRunContext } from "./shared/run-context.js";
