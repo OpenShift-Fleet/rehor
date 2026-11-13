@@ -9,7 +9,7 @@ vi.mock("../api", () => ({
 }));
 
 vi.mock("../hooks/useWebSocket", () => ({
-  useWS: () => ({ connected: true, lastEvent: null, onEvent: () => () => {} }),
+  useWS: () => ({ connected: true, onEvent: () => () => {} }),
 }));
 
 import { fetchAnalytics, fetchCosts } from "../api";

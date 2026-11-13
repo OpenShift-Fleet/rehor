@@ -16,6 +16,7 @@ import { CircleIcon } from "@patternfly/react-icons";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { fetchInstances } from "../api";
+import { useDebouncedCallback } from "../hooks/useDebouncedCallback";
 import { useWS } from "../hooks/useWebSocket";
 import type { BotInstance } from "../types";
 import {
@@ -41,6 +42,11 @@ export default function Instances() {
     }
   }, []);
 
+  // Bursts of task events coalesce into one trailing refetch.
+  const scheduleLoad = useDebouncedCallback(() => {
+    load();
+  }, 1000);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -65,10 +71,10 @@ export default function Instances() {
         event.type === "task_updated" ||
         event.type === "task_archived"
       ) {
-        load();
+        scheduleLoad();
       }
     });
-  }, [onEvent, load]);
+  }, [onEvent, scheduleLoad]);
 
   return (
     <div>
