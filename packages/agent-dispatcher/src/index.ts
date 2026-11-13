@@ -225,7 +225,7 @@ async function start(): Promise<void> {
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,
-        launch: async (profile, agentId, _prompt, decision) => {
+        launch: async (profile, agentId, _prompt, decision, repository) => {
           if (signal.aborted) return "not-created";
           const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl);
           // The run ID is minted here so the registry record can exist before
@@ -260,7 +260,10 @@ async function start(): Promise<void> {
               })
               : session.run(profile.image.reference, decision, environment, signal));
             sessionRuns.add(work);
-            const running = logger.start("sandbox.session");
+            // Session records name their owner: profile, repository, and the
+            // opaque agentId. The logger validates and drops malformed values.
+            const sessionIdentity = { profile: profile.name, repository, agentId };
+            const running = logger.start("sandbox.session", sessionIdentity);
             let settled: SandboxSessionResult | undefined;
             try {
               const record = await work;
@@ -268,12 +271,12 @@ async function start(): Promise<void> {
               if (isUnresolvedSession(record)) unresolvedSessionResult = true;
               if (record.outcome === "passed") running.success();
               else running.failure("internal", { stage: record.stage, errorCode: record.errorCode });
-              if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success");
-              else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode });
+              if (record.cleanup === "deleted") logger.log("sandbox.cleanup", "success", sessionIdentity);
+              else if (record.cleanup === "unknown") logger.log("sandbox.cleanup", "failure", { category: "internal", stage: record.stage, errorCode: record.errorCode, ...sessionIdentity });
               return record.completion;
             } catch {
               running.failure("internal");
-              logger.log("sandbox.cleanup", "failure", { category: "internal" });
+              logger.log("sandbox.cleanup", "failure", { category: "internal", ...sessionIdentity });
               return "unknown";
             } finally {
               sessionRuns.delete(work);

@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { clientCredentials, OpenShellClient, type ClientCredentialsOptions } from "@nvidia/openshell-sdk";
 import type { GatewayConfig } from "./gateway-config.js";
 import { isolateLifecycleLogger, type ErrorCategory, type LifecycleLogger } from "./logging.js";
@@ -27,20 +28,28 @@ export async function connectGateway(config: GatewayConfig, lifecycle?: Lifecycl
     // when the RPC aborts while discovery or the token response is in flight.
     const pending = new Set<Promise<string>>();
     let startupComplete = false;
+    // The last token returned by the SDK provider: an unchanged token means
+    // the call was served from cache, so nothing is logged. A new value is a
+    // real network acquisition and logs one completion record. Tokens are
+    // compared in memory only and never logged.
+    let lastToken: string | undefined;
     const trackedProvider = {
       async getToken(requestSignal?: AbortSignal): Promise<string> {
         if ((!startupComplete && signal?.aborted) || requestSignal?.aborted) throw new Error();
-        const acquisition = logger.start("gateway.oidc");
+        const startedAt = performance.now();
         let token: string;
         try {
           const work = provider.getToken();
           pending.add(work);
           void work.then(() => pending.delete(work), () => pending.delete(work));
           token = await work;
-          acquisition.success();
         } catch (error) {
-          acquisition.failure("internal");
+          logger.log("gateway.oidc", "failure", { category: "internal", durationMs: Math.max(0, performance.now() - startedAt) });
           throw error;
+        }
+        if (token !== lastToken) {
+          lastToken = token;
+          logger.log("gateway.oidc", "success", { durationMs: Math.max(0, performance.now() - startedAt) });
         }
         if ((!startupComplete && signal?.aborted) || requestSignal?.aborted) throw new Error();
         return token;

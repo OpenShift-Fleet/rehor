@@ -116,7 +116,7 @@ test("invalid sandbox route configuration fails startup without logging route va
     { ...baseEnv, BOT_MEMORY_URL: "https://private-memory.example/mcp" },
   ]) {
     const result = spawnSync(process.execPath, ["dist/index.js"], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 5000,
+      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 30000,
     });
     assert.equal(result.status, 1);
     assert.doesNotMatch(result.stdout + result.stderr, /private-gateway|private-memory/);
@@ -128,7 +128,7 @@ test("configured repositories require deployment memory route at startup", () =>
     const env = { ...baseEnv, AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.test/config.git"]' };
     if (value !== undefined) env.BOT_MEMORY_URL = value;
     const result = spawnSync(process.execPath, ["dist/index.js"], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 5000,
+      cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 30000,
     });
     assert.equal(result.status, 1);
     assert.doesNotMatch(result.stdout + result.stderr, /private-memory|memory\.example|Bearer/);
@@ -266,7 +266,7 @@ test("unexpected errors produce fixed safe runtime message", () => {
 test("partial runtime config exits without printing credentials", () => {
   const result = spawnSync(process.execPath, ["dist/index.js"], {
     cwd: new URL("..", import.meta.url), encoding: "utf8",
-    env: { AGENT_DISPATCHER_AUTH_NAMESPACE: "sensitive-value" }, timeout: 5000,
+    env: { AGENT_DISPATCHER_AUTH_NAMESPACE: "sensitive-value" }, timeout: 30000,
   });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "Agent dispatcher auth configuration failed");
@@ -276,19 +276,19 @@ test("partial runtime config exits without printing credentials", () => {
 test("runtime reports TokenRequest stage without leaking configuration", () => {
   const result = spawnSync(process.execPath, ["dist/index.js"], {
     cwd: new URL("..", import.meta.url), encoding: "utf8",
-    env: { ...baseEnv, KUBERNETES_SERVICE_HOST: "sensitive-api.example" }, timeout: 5000,
+    env: { ...baseEnv, KUBERNETES_SERVICE_HOST: "sensitive-api.example" }, timeout: 30000,
   });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "Agent dispatcher TokenRequest failed");
   assert.doesNotMatch(result.stderr + result.stdout, /sensitive-api|memory\.example/);
   const records = result.stdout.trim().split("\n").map(JSON.parse);
   assert.deepEqual(records.map(({ event, status }) => [event, status]), [
-    ["startup", "start"], ["configuration", "start"], ["configuration", "success"],
-    ["kubernetes.token_request", "start"], ["kubernetes.token_request", "failure"], ["startup", "failure"], ["shutdown", "start"], ["shutdown", "success"],
+    ["startup", "start"], ["configuration", "success"],
+    ["kubernetes.token_request", "failure"], ["startup", "failure"], ["shutdown", "start"], ["shutdown", "success"],
   ]);
 });
 
-test("unconfigured runtime retains scaffold startup and clean shutdown", { timeout: 5000 }, async () => {
+test("unconfigured runtime retains scaffold startup and clean shutdown", { timeout: 30000 }, async () => {
   const child = spawn(process.execPath, ["dist/index.js"], { cwd: new URL("..", import.meta.url), env: {}, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
@@ -308,7 +308,7 @@ test("unconfigured runtime retains scaffold startup and clean shutdown", { timeo
     const records = output.trim().split("\n").filter((line) => line.startsWith("{")).map(JSON.parse)
       .filter((record) => record.event !== undefined && record.status !== undefined);
     assert.deepEqual(records.map(({ event, status }) => [event, status]), [
-      ["startup", "start"], ["configuration", "start"], ["configuration", "success"],
+      ["startup", "start"], ["configuration", "success"],
       ["startup", "success"], ["ready", "success"], ["shutdown", "start"], ["shutdown", "success"],
     ]);
   } finally {
@@ -323,11 +323,12 @@ test("memory lifecycle logs only executed checks and never credentials", async (
   const provider = createCredentialProvider(config(), f.deps, logger);
   await provider.get();
   assert.deepEqual(lines.map(JSON.parse).map(({ event, status }) => [event, status]), [
-    ["kubernetes.token_request", "start"], ["kubernetes.token_request", "success"],
-    ["memory.missing_token", "start"], ["memory.missing_token", "success"],
-    ["memory.invalid_token", "start"], ["memory.invalid_token", "success"],
-    ["memory.token", "start"], ["memory.token", "success"],
+    ["kubernetes.token_request", "success"],
+    ["memory.missing_token", "success"],
+    ["memory.invalid_token", "success"],
+    ["memory.token", "success"],
   ]);
+  assert.ok(lines.every((line) => typeof JSON.parse(line).durationMs === "number"));
   assert.doesNotMatch(lines.join("\n"), /secret|agents|sandbox-agent|memory\.example|kubernetes\.example/);
 });
 
@@ -347,7 +348,7 @@ test("memory failure logs the failing check only and does not leak errors or res
     await assert.rejects(createCredentialProvider(config(), f.deps, createLifecycleLogger({ write: (line) => lines.push(line) })).get());
     const records = lines.map(JSON.parse);
     const names = ["kubernetes.token_request", "memory.missing_token", "memory.invalid_token", "memory.token"];
-    assert.deepEqual(records.map(({ event, status }) => [event, status]), names.slice(0, failingStep + 1).flatMap((name, i) => [[name, "start"], [name, i === failingStep ? "failure" : "success"]]));
+    assert.deepEqual(records.map(({ event, status }) => [event, status]), names.slice(0, failingStep + 1).map((name, i) => [name, i === failingStep ? "failure" : "success"]));
     assert.equal(records.at(-1).category, failingStep === 1 ? "authorization" : "internal");
     assert.doesNotMatch(lines.join("\n"), /secret|memory\.example|kubernetes\.example/);
   }

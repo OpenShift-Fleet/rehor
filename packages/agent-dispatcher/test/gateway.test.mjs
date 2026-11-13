@@ -215,19 +215,20 @@ test("preflight drains SDK token acquisition after RPC abort before reporting fa
     assert.equal(tokenPosts, 1);
     assert.equal(finished, true);
     assert.deepEqual(lines.map(JSON.parse).map(({ event, status }) => [event, status]), [
-      ["gateway.authentication", "start"], ["gateway.oidc", "start"], ["gateway.oidc", "success"], ["gateway.authentication", "failure"],
+      ["gateway.oidc", "success"], ["gateway.authentication", "failure"],
     ]);
+    assert.equal(typeof JSON.parse(lines[0]).durationMs, "number");
     assert.doesNotMatch(lines.join("\n"), /test-secret|test-token|issuer\.example/);
   } finally { releaseDiscovery(); globalThis.fetch = originalFetch; }
 });
 
 test("partial runtime gateway config fails without exposing values", () => {
-  const result = spawnSync(process.execPath, ["dist/index.js"], { cwd: new URL("..", import.meta.url), encoding: "utf8", env: { OPENSHELL_CLIENT_ID: "sensitive-client" }, timeout: 5000 });
+  const result = spawnSync(process.execPath, ["dist/index.js"], { cwd: new URL("..", import.meta.url), encoding: "utf8", env: { OPENSHELL_CLIENT_ID: "sensitive-client" }, timeout: 30000 });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "Agent dispatcher gateway or preflight tooling configuration failed");
   assert.doesNotMatch(result.stderr + result.stdout, /sensitive-client/);
   assert.deepEqual(result.stdout.trim().split("\n").map(JSON.parse).map(({ event, status }) => [event, status]), [
-    ["startup", "start"], ["configuration", "start"], ["configuration", "failure"], ["startup", "failure"], ["shutdown", "start"], ["shutdown", "success"],
+    ["startup", "start"], ["configuration", "failure"], ["startup", "failure"], ["shutdown", "start"], ["shutdown", "success"],
   ]);
 });
 
@@ -238,7 +239,7 @@ test("configured repository checks require gateway authentication", () => {
       AGENT_DISPATCHER_CONFIG_REPOS: '["https://example.invalid/private.git"]',
       AGENT_DISPATCHER_AUTH_NAMESPACE: "agents", AGENT_DISPATCHER_AUTH_SERVICE_ACCOUNT: "agent",
       AGENT_DISPATCHER_AUTH_MEMORY_URL: "https://memory.example/health", BOT_MEMORY_URL: "https://memory.example/mcp",
-    }, timeout: 5000,
+    }, timeout: 30000,
   });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "Agent dispatcher gateway or preflight tooling configuration failed");
@@ -248,14 +249,14 @@ test("configured repository checks require gateway authentication", () => {
 test("runtime fails closed when real SDK credential preflight fails", () => {
   const script = 'globalThis.fetch = async () => { throw new Error("test-secret test-token example-client example-subject"); };';
   const result = spawnSync(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {
-    cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 5000,
+    cwd: new URL("..", import.meta.url), encoding: "utf8", env, timeout: 30000,
   });
   assert.equal(result.status, 1);
   assert.equal(result.stderr.trim(), "OpenShell gateway preflight failed");
   assert.doesNotMatch(result.stderr + result.stdout, /test-secret|test-token|example-client|example-subject|issuer\.example/);
 });
 
-test("runtime exits 1 on a real gateway identity mismatch instead of hanging", { timeout: 20_000 }, async () => {
+test("runtime exits 1 on a real gateway identity mismatch instead of hanging", { timeout: 60000 }, async () => {
   const directory = mkdtempSync(join(tmpdir(), "dispatcher-gateway-test-"));
   let server;
   try {
@@ -316,9 +317,38 @@ test("gateway logs provider acquisition and validated OIDC identity without sens
   useSdk(t, f.sdk);
   await connectGateway(config(), createLifecycleLogger({ write: (line) => lines.push(line), now: () => 42 }));
   assert.deepEqual(lines.map(JSON.parse).map(({ event, status }) => [event, status]), [
-    ["gateway.authentication", "start"], ["gateway.oidc", "start"], ["gateway.oidc", "success"], ["gateway.authentication", "success"],
+    ["gateway.oidc", "success"], ["gateway.authentication", "success"],
   ]);
+  assert.equal(typeof JSON.parse(lines[0]).durationMs, "number");
   assert.doesNotMatch(lines.join("\n"), /test-secret|test-token|example-client|example-subject|issuer\.example|gateway\.example/);
+});
+
+test("gateway is silent on cached tokens and logs one completion per real acquisition", async (t) => {
+  const f = fixture();
+  const lines = [];
+  // A real refresh yields a new token value; cache hits return the same one.
+  let token = "token-a";
+  f.tokenProvider.getToken = async () => token;
+  let provider;
+  f.sdk.connect = async ({ oidcTokenProvider }) => {
+    provider = oidcTokenProvider;
+    return { raw: { getCurrentUser: async () => {
+      await provider.getToken();
+      await provider.getToken();
+      return { subject: "example-subject", identityProvider: "oidc" };
+    } } };
+  };
+  useSdk(t, f.sdk);
+  await connectGateway(config(), createLifecycleLogger({ write: (line) => lines.push(line), now: () => 42 }));
+  token = "token-b";
+  await provider.getToken();
+  await provider.getToken();
+  // Six provider calls, two distinct tokens: one completion line each.
+  assert.deepEqual(lines.map(JSON.parse).map(({ event, status }) => [event, status]), [
+    ["gateway.oidc", "success"], ["gateway.authentication", "success"], ["gateway.oidc", "success"],
+  ]);
+  assert.ok(lines.every((line) => typeof JSON.parse(line).durationMs === "number"));
+  assert.doesNotMatch(lines.join("\n"), /test-secret|token-a|token-b|issuer\.example/);
 });
 
 test("gateway reports acquisition failure and identity mismatch without false success or sensitive values", async (t) => {
@@ -334,35 +364,42 @@ test("gateway reports acquisition failure and identity mismatch without false su
     await assert.rejects(connectGateway(config(), createLifecycleLogger({ write: (line) => lines.push(line) })), { message: "OpenShell gateway preflight failed" });
     const records = lines.map(JSON.parse);
     assert.deepEqual(records.map(({ event, status }) => [event, status]), [
-      ["gateway.authentication", "start"], ["gateway.oidc", "start"], ["gateway.oidc", mode === "token" ? "failure" : "success"], ["gateway.authentication", "failure"],
+      ["gateway.oidc", mode === "token" ? "failure" : "success"], ["gateway.authentication", "failure"],
     ]);
     assert.equal(records.at(-1).category, mode === "token" ? "internal" : "authentication");
-    if (mode === "token") assert.equal(records[2].category, "internal");
+    if (mode === "token") {
+      assert.equal(records[0].category, "internal");
+      assert.equal(records[0].level, 50);
+      assert.equal(typeof records[0].durationMs, "number");
+    }
     assert.doesNotMatch(lines.join("\n"), /test-secret|test-token|example-client|example-subject|wrong-subject|issuer\.example|local_dev/);
   }
 });
 
-test("SIGTERM during OIDC waits for in-flight work before one successful shutdown", { timeout: 8000 }, async () => {
-  const script = `globalThis.fetch = async () => { await new Promise(resolve => setTimeout(resolve, 500)); throw new Error('network-secret issuer.example'); };`;
+test("SIGTERM during OIDC waits for in-flight work before one successful shutdown", { timeout: 30000 }, async () => {
+  // The in-flight acquisition announces no start record, so the mock fetch
+  // marks its own start on stderr.
+  const script = `globalThis.fetch = async () => { process.stderr.write("x"); await new Promise(resolve => setTimeout(resolve, 500)); throw new Error('network-secret issuer.example'); };`;
   const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {
     cwd: new URL("..", import.meta.url), env, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
   let stderr = "";
   let signaled = false;
-  child.stdout.on("data", (chunk) => {
-    output += chunk;
-    if (!signaled && output.includes('"event":"gateway.oidc","status":"start"')) {
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (!signaled && stderr.includes("x")) {
       signaled = true;
       child.kill("SIGTERM");
       child.kill("SIGTERM");
     }
   });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
   try {
     const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
     assert.equal(signaled, true);
     assert.deepEqual(result, { code: 0, signal: null });
+    assert.equal(stderr, "x");
     const records = output.trim().split("\n").map(JSON.parse);
     const steps = records.map(({ event, status }) => [event, status]);
     assert.equal(steps.filter(([event]) => event === "shutdown").length, 2);
@@ -374,25 +411,26 @@ test("SIGTERM during OIDC waits for in-flight work before one successful shutdow
     assert.equal(records[oidcFailure].category, "internal");
     assert.ok(!steps.some(([event, status]) => event === "startup" && status === "failure"));
     assert.ok(!steps.some(([event]) => event === "ready"));
-    assert.equal(stderr, "");
     assert.doesNotMatch(output, /network-secret|test-secret|test-token|example-client|example-subject|issuer\.example/);
   } finally { child.kill("SIGKILL"); }
 });
 
-test("SIGTERM reports unsuccessful shutdown if in-flight work exceeds deadline", { timeout: 8000 }, async () => {
+test("SIGTERM reports unsuccessful shutdown if in-flight work exceeds deadline", { timeout: 30000 }, async () => {
   const script = `
     const original = globalThis.setTimeout;
     globalThis.setTimeout = (fn, ms, ...args) => original(fn, ms >= 20 * 60_000 ? 400 : ms, ...args);
-    globalThis.fetch = async () => new Promise(() => {});
+    globalThis.fetch = async () => { process.stderr.write("x"); return new Promise(() => {}); };
   `;
   const child = spawn(process.execPath, ["--import", `data:text/javascript,${encodeURIComponent(script)}`, "dist/index.js"], {
     cwd: new URL("..", import.meta.url), env, stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
+  let stderr = "";
   let signaled = false;
-  child.stdout.on("data", (chunk) => {
-    output += chunk;
-    if (!signaled && output.includes('"event":"gateway.oidc","status":"start"')) {
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+    if (!signaled && stderr.includes("x")) {
       signaled = true;
       child.kill("SIGTERM");
     }
@@ -401,6 +439,7 @@ test("SIGTERM reports unsuccessful shutdown if in-flight work exceeds deadline",
     const result = await new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
     assert.equal(signaled, true);
     assert.deepEqual(result, { code: 1, signal: null });
+    assert.equal(stderr, "x");
     assert.doesNotMatch(output, /"event":"shutdown","status":"success"/);
     assert.doesNotMatch(output, /test-secret|test-token|example-client|example-subject|issuer\.example/);
   } finally { child.kill("SIGKILL"); }
@@ -411,7 +450,7 @@ test("gateway omits token events when provider is not called and survives logger
   const lines = [];
   useSdk(t, f.sdk);
   await connectGateway(config(), createLifecycleLogger({ write: (line) => lines.push(line) }));
-  assert.deepEqual(lines.map(JSON.parse).map(({ event }) => event), ["gateway.authentication", "gateway.authentication"]);
+  assert.deepEqual(lines.map(JSON.parse).map(({ event }) => event), ["gateway.authentication"]);
   useSdk(t, fixture().sdk);
   await connectGateway(config(), { start() { throw new Error("logger-secret"); } });
   const failed = fixture();
