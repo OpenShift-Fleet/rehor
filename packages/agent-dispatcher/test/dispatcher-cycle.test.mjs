@@ -11,6 +11,14 @@ import { createLifecycleLogger } from "../dist/logging.js";
 
 const urls = ["https://example.test/one.git", "https://example.test/two.git"];
 const start = (prompt = "secret-prompt") => ({ action: "start", prompt, scripts: [] });
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** Parse a lifecycle record, requiring an ISO 8601 timestamp, and strip it. */
+const parsed = (line) => {
+  const { time, ...record } = JSON.parse(line);
+  assert.match(time, ISO_TIME);
+  return record;
+};
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -118,7 +126,7 @@ test("required wiring failures identify every profile without exposing values or
     const credential = field === "memory credential"
       ? value === undefined ? undefined : async () => { if (value === "throw") throw new Error("private-mint-error"); return value; }
       : async () => "private-minted-credential";
-    const opts = options({ env, memoryCredential: credential,
+    const opts = options({ env, memoryCredential: credential, now: () => 0,
       logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
       launch: async () => { calls++; return "gone"; },
       dependencies: {
@@ -130,9 +138,13 @@ test("required wiring failures identify every profile without exposing values or
     const result = await runDispatcherCycle(opts);
     assert.deepEqual(result.repositories.map((repo) => repo.profiles[0].status), ["error", "error"]);
     assert.equal(calls, 0);
-    assert.deepEqual(lines.map(JSON.parse), result.repositories.map((repo, i) => ({
+    assert.deepEqual(lines.map(parsed).filter((record) => record.event === "preflight.error"), result.repositories.map((repo, i) => ({
       level: 50, event: "preflight.error", status: "failure", reason, profile: "profile", repository: urls[i],
       agentId: repo.profiles[0].agentId, configurationField: field,
+    })));
+    assert.deepEqual(lines.map(parsed).filter((record) => record.event === "preflight.cycle"), result.repositories.map((repo, i) => ({
+      level: 30, event: "preflight.cycle", status: "success", decision: "error", durationMs: 0, reason,
+      profile: "profile", repository: urls[i], agentId: repo.profiles[0].agentId,
     })));
     assert.doesNotMatch(JSON.stringify([result, lines]), /private-mint|identity-例|memory\.example/);
   }
@@ -172,16 +184,19 @@ test("mint failures are reported even while a profile is busy", async () => {
   opts.memoryCredential = async () => { throw new Error("private-exception"); };
   const result = await runDispatcherCycle(opts);
   assert.equal(result.repositories[0].profiles[0].status, "error");
-  assert.equal(JSON.parse(lines[0]).reason, "execution");
-  assert.equal(JSON.parse(lines[0]).configurationField, "memory credential");
-  assert.doesNotMatch(lines[0], /private-exception/);
+  const error = lines.map(parsed).find((record) => record.event === "preflight.error");
+  assert.equal(error.reason, "execution");
+  assert.equal(error.configurationField, "memory credential");
+  const cycle = lines.map(parsed).find((record) => record.event === "preflight.cycle" && record.decision === "error");
+  assert.equal(cycle.reason, "execution");
+  assert.doesNotMatch(lines.join("\n"), /private-exception/);
   session.resolve();
   await opts.dispatcher.drain();
 });
 
 test("preflight errors identify Unicode profiles and sanitize SSH userinfo", async () => {
   const lines = [];
-  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]), env: {},
+  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]), env: {}, now: () => 0,
     logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
     dependencies: {
       syncRepositories: async () => [{ name: "config", path: "one", revision: "abc" }],
@@ -190,17 +205,22 @@ test("preflight errors identify Unicode profiles and sanitize SSH userinfo", asy
     },
   });
   const result = await runDispatcherCycle(opts);
-  assert.deepEqual(JSON.parse(lines[0]), {
+  assert.deepEqual(parsed(lines[0]), {
     level: 50, event: "preflight.error", status: "failure", reason: "configuration",
     profile: "unicode-例", repository: "ssh://example.test/config.git",
     agentId: result.repositories[0].profiles[0].agentId, configurationField: "BOT_INSTANCE_ID",
   });
-  assert.doesNotMatch(lines[0], /private-user/);
+  assert.deepEqual(parsed(lines[1]), {
+    level: 30, event: "preflight.cycle", status: "success", decision: "error", reason: "configuration", durationMs: 0,
+    profile: "unicode-例", repository: "ssh://example.test/config.git",
+    agentId: result.repositories[0].profiles[0].agentId,
+  });
+  assert.doesNotMatch(lines.join("\n"), /private-user/);
 });
 
 test("owner identifiers are sanitized before reaching an injected logger", async () => {
   const logs = [];
-  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]),
+  const opts = options({ repositoriesJson: JSON.stringify(["ssh://private-user@example.test/config.git"]), now: () => 0,
     logger: { log: (event, status, fields) => logs.push({ event, status, ...fields }), start: () => ({ success: () => {}, failure: () => {} }) },
     dependencies: {
       syncRepositories: async () => [{ name: "config", path: "one", revision: "abc" }],
@@ -209,15 +229,20 @@ test("owner identifiers are sanitized before reaching an injected logger", async
     },
   });
   const result = await runDispatcherCycle(opts);
-  assert.deepEqual(logs, [{ event: "preflight.error", status: "failure", reason: "execution",
-    profile: "profile-例\\u{a}\\u{1b}", repository: "ssh://example.test/config.git",
-    agentId: result.repositories[0].profiles[0].agentId }]);
+  assert.deepEqual(logs, [
+    { event: "preflight.error", status: "failure", reason: "execution",
+      profile: "profile-例\\u{a}\\u{1b}", repository: "ssh://example.test/config.git",
+      agentId: result.repositories[0].profiles[0].agentId },
+    { event: "preflight.cycle", status: "success", decision: "error", reason: "execution", durationMs: 0,
+      profile: "profile-例\\u{a}\\u{1b}", repository: "ssh://example.test/config.git",
+      agentId: result.repositories[0].profiles[0].agentId },
+  ]);
   assert.doesNotMatch(JSON.stringify(logs), /private-user|private-transcript/);
 });
 
 test("invalid owner identifiers retain opaque agent identity", async () => {
   const lines = [];
-  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), env: {},
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), env: {}, now: () => 0,
     logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
     dependencies: {
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
@@ -225,9 +250,13 @@ test("invalid owner identifiers retain opaque agent identity", async () => {
     },
   });
   const result = await runDispatcherCycle(opts);
-  assert.deepEqual(JSON.parse(lines[0]), {
+  assert.deepEqual(parsed(lines[0]), {
     level: 50, event: "preflight.error", status: "failure", reason: "configuration",
     repository: urls[0], agentId: result.repositories[0].profiles[0].agentId, configurationField: "BOT_INSTANCE_ID",
+  });
+  assert.deepEqual(parsed(lines[1]), {
+    level: 30, event: "preflight.cycle", status: "success", decision: "error", reason: "configuration", durationMs: 0,
+    repository: urls[0], agentId: result.repositories[0].profiles[0].agentId,
   });
 });
 
@@ -343,6 +372,76 @@ test("overlapping cycles do not repeat a preflight within the cooldown", async (
   await dispatcher.drain();
 });
 
+test("busy cycles carry the fixed reason and full identity", async () => {
+  const logs = [];
+  const waiting = deferred();
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
+    logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
+    launch: async () => { await waiting.promise; return "gone"; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("busy-profile", "one")],
+      preflight: async () => start(),
+    },
+  });
+  await runDispatcherCycle(opts);
+  const second = await runDispatcherCycle(opts);
+  assert.equal(second.repositories[0].profiles[0].status, "busy");
+  const agentId = second.repositories[0].profiles[0].agentId;
+  assert.deepEqual(logs.filter((log) => log.event === "preflight.cycle"), [
+    { event: "preflight.cycle", status: "success", decision: "start", durationMs: 0, profile: "busy-profile", repository: urls[0], agentId },
+    { event: "preflight.cycle", status: "success", decision: "busy", durationMs: 0, reason: "session in progress", profile: "busy-profile", repository: urls[0], agentId },
+  ]);
+  assert.equal(logs.filter((log) => log.event === "preflight.run").length, 0, "a busy profile runs no preflight entries");
+  waiting.resolve();
+  await opts.dispatcher.drain();
+});
+
+test("repository sync failures produce a cycle record with repository identity only", async () => {
+  const logs = [];
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
+    logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
+    dependencies: { syncRepositories: async () => { throw new Error("secret-sync"); } },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.equal(result.repositories[0].status, "sync-error");
+  assert.deepEqual(logs, [{ event: "preflight.cycle", status: "failure", decision: "sync-error", durationMs: 0, repository: urls[0] }]);
+  assert.ok(!JSON.stringify(logs).includes("secret-sync"));
+});
+
+test("throttled and no-scripts profiles produce cycle records without preflight runs", async () => {
+  const logs = [];
+  const calls = [];
+  let now = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
+    logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async (root) => [profile("throttled-profile", root), { ...profile("empty-profile", root), preflights: [] }],
+      preflight: async ({ profile: selected }) => {
+        calls.push(selected.name);
+        return selected.preflights?.length === 0
+          ? { action: "no-scripts", scripts: [] }
+          : { action: "skip", transcript: "secret-transcript", scripts: [] };
+      },
+    },
+  });
+  const first = await runDispatcherCycle(opts);
+  now = 299_999;
+  const second = await runDispatcherCycle(opts);
+  assert.deepEqual(first.repositories[0].profiles.map((item) => item.status), ["skip", "no-scripts"]);
+  assert.deepEqual(second.repositories[0].profiles.map((item) => item.status), ["throttled", "throttled"]);
+  assert.deepEqual(calls, ["throttled-profile", "empty-profile"]);
+  const cycles = logs.filter((log) => log.event === "preflight.cycle");
+  assert.deepEqual(cycles.map(({ decision, profile }) => [decision, profile]), [
+    ["skip", "throttled-profile"], ["no-scripts", "empty-profile"],
+    ["throttled", "throttled-profile"], ["throttled", "empty-profile"],
+  ]);
+  assert.ok(cycles.every((log) => log.status === "success" && log.repository === urls[0] && /^[a-f0-9]{64}$/.test(log.agentId) && !("reason" in log)));
+  assert.equal(logs.filter((log) => log.event === "preflight.run").length, 0);
+  assert.ok(!JSON.stringify(logs).includes("secret-transcript"));
+});
+
 test("decisions, thrown failures and rejected launch stay isolated and redact results", async () => {
   const dispatcher = new SessionDispatcher();
   const launched = [];
@@ -381,11 +480,16 @@ test("decisions, thrown failures and rejected launch stay isolated and redact re
 
 test("invalid repository configuration fails safely before sync", async () => {
   let syncs = 0;
+  const lines = [];
   for (const repositoriesJson of ["secret-not-json", JSON.stringify(["https://user:secret@example.test/repo"]), JSON.stringify([urls[0], urls[0]])]) {
-    const result = await runDispatcherCycle(options({ repositoriesJson, dependencies: { syncRepositories: async () => { syncs++; return []; } } }));
+    const result = await runDispatcherCycle(options({ repositoriesJson, logger: createLifecycleLogger({ write: (line) => lines.push(line) }), dependencies: { syncRepositories: async () => { syncs++; return []; } } }));
     assert.deepEqual(result, { status: "invalid-config", repositories: [] });
   }
   assert.equal(syncs, 0);
+  assert.deepEqual(lines.map(parsed), Array.from({ length: 3 }, () => ({
+    level: 50, event: "preflight.cycle", status: "failure", decision: "invalid-config",
+  })));
+  assert.ok(lines.every((line) => !line.includes("secret")));
 });
 
 /** Minimal config-repo checkout: one instance declaring `preflights:`. */
@@ -534,7 +638,7 @@ test("a validation failure on a named profile logs and reports the instance iden
   const result = await runDispatcherCycle(opts);
   const [record] = result.repositories[0].profiles;
   assert.equal(record.status, "error");
-  assert.equal(logs.length, 1);
+  assert.equal(logs.length, 2);
   assert.deepEqual(logs[0], {
     event: "preflight.error",
     status: "failure",
@@ -546,9 +650,19 @@ test("a validation failure on a named profile logs and reports the instance iden
       { path: "preflights[0].id", code: "unknown_preflight", message: "nope-unknown-id: unknown preflight id", received: '"nope-unknown-id"' },
     ],
   });
+  assert.deepEqual(logs[1], {
+    event: "preflight.cycle",
+    status: "success",
+    decision: "error",
+    reason: "configuration",
+    durationMs: 0,
+    profile: "onboard",
+    repository: urls[0],
+    agentId: record.agentId,
+  });
   assert.match(record.agentId, /^[a-f0-9]{64}$/);
   // Transcripts never enter the log record.
-  assert.ok(!("transcript" in logs[0]));
+  assert.ok(!("transcript" in logs[0]) && !("transcript" in logs[1]));
 });
 
 test("preflight error reasons reach lifecycle logs, including missing reasons and exceptions", async () => {
@@ -570,7 +684,7 @@ test("preflight error reasons reach lifecycle logs, including missing reasons an
   const result = await runDispatcherCycle(opts);
   const profiles = result.repositories[0].profiles;
   assert.deepEqual(profiles.map((item) => item.status), names.map(() => "error"));
-  assert.deepEqual(lines.map(JSON.parse), names.map((name, index) => ({
+  assert.deepEqual(lines.map(parsed).filter((record) => record.event === "preflight.error"), names.map((name, index) => ({
     level: 50, event: "preflight.error", status: "failure",
     reason: name === "configuration" ? "configuration" : "execution",
     profile: name, repository: urls[0], agentId: profiles[index].agentId,
@@ -594,7 +708,7 @@ test("malformed preflight declarations log identity and full diagnostics before 
   for (const [yaml, diagnostics] of cases) {
     const { root } = await checkoutFixture(t, yaml);
     const logs = [];
-    const opts = options({ repositoriesJson: JSON.stringify([urls[0]]),
+    const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
       logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
       env: { BOT_INSTANCE_ID: "fixture-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
       memoryCredential: async () => "fixture-token",
@@ -602,12 +716,17 @@ test("malformed preflight declarations log identity and full diagnostics before 
     });
     const result = await runDispatcherCycle(opts);
     assert.equal(result.repositories[0].status, "discovery-error", yaml);
-    assert.equal(logs.length, 1, yaml);
+    assert.equal(logs.length, 2, yaml);
     assert.deepEqual(logs[0], {
       event: "preflight.error", status: "failure", reason: "configuration",
       profile: "onboard", repository: urls[0],
       agentId: createHash("sha256").update(JSON.stringify([urls[0], "onboard"])).digest("hex"),
       diagnostics,
+    }, yaml);
+    assert.deepEqual(logs[1], {
+      event: "preflight.cycle", status: "failure", decision: "discovery-error", durationMs: 0,
+      profile: "onboard", repository: urls[0],
+      agentId: createHash("sha256").update(JSON.stringify([urls[0], "onboard"])).digest("hex"),
     }, yaml);
     // The cycle envelope keeps statuses only; diagnostics live in the log.
     assert.ok(!JSON.stringify(result).includes("diagnostics"));
@@ -629,7 +748,7 @@ test("semantic parameter failures preserve every engine diagnostic through the r
   for (const [yaml, diagnostics] of cases) {
     const { root } = await checkoutFixture(t, yaml);
     const logs = [];
-    const opts = options({ repositoriesJson: JSON.stringify([urls[0]]),
+    const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
       logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
       env: { BOT_INSTANCE_ID: "fixture-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
       memoryCredential: async () => "fixture-token",
@@ -638,20 +757,23 @@ test("semantic parameter failures preserve every engine diagnostic through the r
     const result = await runDispatcherCycle(opts);
     const [record] = result.repositories[0].profiles;
     assert.equal(record.status, "error", yaml);
-    assert.equal(logs.length, 1, yaml);
+    assert.equal(logs.length, 2, yaml);
     assert.deepEqual(logs[0], {
       event: "preflight.error", status: "failure", reason: "configuration",
       profile: "onboard", repository: urls[0], agentId: record.agentId, diagnostics,
     }, yaml);
-    assert.ok(!("transcript" in logs[0]));
+    assert.deepEqual(logs[1], {
+      event: "preflight.cycle", status: "success", decision: "error", reason: "configuration", durationMs: 0,
+      profile: "onboard", repository: urls[0], agentId: record.agentId,
+    }, yaml);
+    assert.ok(!("transcript" in logs[0]) && !("transcript" in logs[1]));
   }
 });
 
 test("engine configuration diagnostics reach the log once and malformed items are dropped", async () => {
   const logs = [];
   const valid = { path: "preflights[0].with.label", code: "invalid_type", message: "Invalid input: expected string, received number", received: "123" };
-  const opts = options({
-    repositoriesJson: JSON.stringify([urls[0]]),
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
     logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
     dependencies: {
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
@@ -668,6 +790,9 @@ test("engine configuration diagnostics reach the log once and malformed items ar
     event: "preflight.error", status: "failure", reason: "configuration",
     profile: "agent", repository: urls[0], agentId: result.repositories[0].profiles[0].agentId,
     diagnostics: [valid],
+  }, {
+    event: "preflight.cycle", status: "success", decision: "error", reason: "configuration", durationMs: 0,
+    profile: "agent", repository: urls[0], agentId: result.repositories[0].profiles[0].agentId,
   }]);
   assert.ok(!JSON.stringify([logs, result]).includes("secret"));
 });
@@ -685,8 +810,7 @@ test("errored entries log per-preflight execution failures while the aggregate d
       { name: "jira-triage", status: "error", content: "secret-error-content" },
     ] },
   };
-  const opts = options({
-    repositoriesJson: JSON.stringify([urls[0]]),
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0,
     logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
     launch: async (_profile, _agentId, prompt) => { prompts.push(prompt); return "gone"; },
     dependencies: {
@@ -701,9 +825,16 @@ test("errored entries log per-preflight execution failures while the aggregate d
   assert.deepEqual(statuses.map((item) => item.status), ["started", "skip"]);
   // The prompt carries start content only.
   assert.deepEqual(prompts, ["start-only-prompt"]);
+  const identity = (name, index) => ({ profile: name, repository: urls[0], agentId: statuses[index].agentId });
   assert.deepEqual(logs, [
-    { event: "preflight.error", status: "failure", reason: "execution", profile: "mixed-start", repository: urls[0], agentId: statuses[0].agentId, preflightId: "jira-sprint" },
-    { event: "preflight.error", status: "failure", reason: "execution", profile: "mixed-skip", repository: urls[0], agentId: statuses[1].agentId, preflightId: "jira-triage" },
+    { event: "preflight.run", status: "success", preflightId: "gh-pr-status", decision: "start", ...identity("mixed-start", 0) },
+    { event: "preflight.run", status: "success", preflightId: "jira-sprint", decision: "error", ...identity("mixed-start", 0) },
+    { event: "preflight.error", status: "failure", reason: "execution", preflightId: "jira-sprint", ...identity("mixed-start", 0) },
+    { event: "preflight.cycle", status: "success", decision: "start", durationMs: 0, ...identity("mixed-start", 0) },
+    { event: "preflight.run", status: "success", preflightId: "gl-mr-status", decision: "skip", ...identity("mixed-skip", 1) },
+    { event: "preflight.run", status: "success", preflightId: "jira-triage", decision: "error", ...identity("mixed-skip", 1) },
+    { event: "preflight.error", status: "failure", reason: "execution", preflightId: "jira-triage", ...identity("mixed-skip", 1) },
+    { event: "preflight.cycle", status: "success", decision: "skip", durationMs: 0, ...identity("mixed-skip", 1) },
   ]);
   assert.ok(!JSON.stringify([logs, result]).includes("secret"));
 });
@@ -740,10 +871,18 @@ preflights:
   assert.equal(record.status, "error");
   // Every failed entry names its preflight; the aggregate execution record
   // is suppressed because the entry records already describe the failure.
-  assert.equal(logs.length, 2);
-  assert.ok(logs.every((log) => log.event === "preflight.error" && log.status === "failure"
+  const errors = logs.filter((log) => log.event === "preflight.error");
+  assert.equal(errors.length, 2);
+  assert.ok(errors.every((log) => log.status === "failure"
     && log.reason === "execution" && log.profile === "onboard" && log.agentId === record.agentId
     && log.preflightId === "jira-sprint" && !("diagnostics" in log) && !("transcript" in log)));
+  // One run record per declared entry, both errored against the failing route.
+  const runs = logs.filter((log) => log.event === "preflight.run");
+  assert.deepEqual(runs.map((log) => [log.preflightId, log.decision]), [["jira-sprint", "error"], ["jira-sprint", "error"]]);
+  assert.ok(runs.every((log) => log.status === "success" && log.profile === "onboard" && log.agentId === record.agentId));
+  const cycle = logs.find((log) => log.event === "preflight.cycle");
+  assert.equal(cycle.decision, "error");
+  assert.ok(!("transcript" in cycle));
 });
 
 test("a configuration with many issues logs every diagnostic with identity", async (t) => {
@@ -759,8 +898,8 @@ test("a configuration with many issues logs every diagnostic with identity", asy
   const result = await runDispatcherCycle(opts);
   const [record] = result.repositories[0].profiles;
   assert.equal(record.status, "error");
-  assert.equal(lines.length, 1);
-  const log = JSON.parse(lines[0]);
+  assert.equal(lines.length, 2);
+  const log = parsed(lines[0]);
   assert.equal(log.reason, "configuration");
   assert.equal(log.profile, "onboard");
   assert.equal(log.agentId, record.agentId);
@@ -769,6 +908,12 @@ test("a configuration with many issues logs every diagnostic with identity", asy
     path: "preflights[33].with.label", code: "invalid_type",
     message: "Invalid input: expected string, received undefined", received: "undefined",
   });
+  const cycle = parsed(lines[1]);
+  assert.equal(cycle.event, "preflight.cycle");
+  assert.equal(cycle.decision, "error");
+  assert.equal(cycle.reason, "configuration");
+  assert.equal(cycle.profile, "onboard");
+  assert.equal(cycle.agentId, record.agentId);
 });
 
 test("long invalid declaration values retain full received detail", async (t) => {
@@ -820,16 +965,26 @@ test("real engine mixed decisions emit per-preflight failures while aggregation 
   // jira-sprint's Jira search fails against the failing route.
   const started = await cycle(`workflow: onboarding\n${image}preflights:\n  - jira-triage\n  - id: jira-sprint\n    with:\n      label: fixture-label\n`);
   assert.equal(started.status, "started");
-  assert.deepEqual(started.logs.map(({ reason, profile, preflightId }) => ({ reason, profile, preflightId })), [
+  const startedErrors = started.logs.filter((log) => log.event === "preflight.error");
+  assert.deepEqual(startedErrors.map(({ reason, profile, preflightId }) => ({ reason, profile, preflightId })), [
     { reason: "execution", profile: "onboard", preflightId: "jira-sprint" },
   ]);
+  assert.deepEqual(started.logs.filter((log) => log.event === "preflight.run").map((log) => [log.preflightId, log.decision]), [
+    ["jira-triage", "start"], ["jira-sprint", "error"],
+  ]);
+  assert.equal(started.logs.find((log) => log.event === "preflight.cycle").decision, "start");
   // Skip + error: gh-pr-status has nothing to attempt (no tasks) while
   // jira-sprint still fails; the skip wins the aggregate decision.
   const skipped = await cycle(`workflow: onboarding\n${image}preflights:\n  - gh-pr-status\n  - id: jira-sprint\n    with:\n      label: fixture-label\n`);
   assert.equal(skipped.status, "skip");
-  assert.deepEqual(skipped.logs.map(({ reason, profile, preflightId }) => ({ reason, profile, preflightId })), [
+  const skippedErrors = skipped.logs.filter((log) => log.event === "preflight.error");
+  assert.deepEqual(skippedErrors.map(({ reason, profile, preflightId }) => ({ reason, profile, preflightId })), [
     { reason: "execution", profile: "onboard", preflightId: "jira-sprint" },
   ]);
+  assert.deepEqual(skipped.logs.filter((log) => log.event === "preflight.run").map((log) => [log.preflightId, log.decision]), [
+    ["gh-pr-status", "skip"], ["jira-sprint", "error"],
+  ]);
+  assert.equal(skipped.logs.find((log) => log.event === "preflight.cycle").decision, "skip");
   assert.ok(!JSON.stringify([started.logs, skipped.logs]).includes("127.0.0.1"));
 });
 

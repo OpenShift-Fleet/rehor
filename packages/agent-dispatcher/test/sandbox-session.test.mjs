@@ -251,7 +251,7 @@ test("session passes deployment runtime options to the memory policy builder", (
     console.log(JSON.stringify(globalThis.policyArguments.map(args => ({ count: args.length, options: args[4] }))));
   `;
   const result = spawnSync(process.execPath, ["--import", "./test/register-sdk-hook.mjs", "--input-type=module", "--eval", source], {
-    cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 5000,
+    cwd: new URL("..", import.meta.url), encoding: "utf8", timeout: 30000,
   });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), [

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
 import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
 import { isForwardedPreflightVariable } from "./preflight-env.js";
-import { writePreflightCycle } from "./logging.js";
 
 export type DispatcherLoopOptions = {
   repositoriesJson: string;
@@ -17,7 +16,7 @@ export type DispatcherLoopOptions = {
   memoryCredential?: () => Promise<string>;
   /** Services-gateway base URL; the proxy route for external-system preflights. */
   serviceGatewayUrl?: URL;
-  /** Observes each completed cycle; defaults to a structured stdout event. */
+  /** Observes each completed cycle result; lifecycle records are emitted inside the cycle. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
   intervalMs?: number;
@@ -42,13 +41,13 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const signal = options.signal;
   const intervalMs = options.intervalMs ?? 5 * 60_000;
   const cacheRoot = process.env.AGENT_DISPATCHER_CONFIG_DIR || join(tmpdir(), "rehor-agent-dispatcher");
-  const emit = options.onCycle ?? writePreflightCycle;
+  const emit = options.onCycle;
   const env = options.env ?? preflightEnvironment();
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
       const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl });
-      if (!signal?.aborted) emit(result);
+      if (!signal?.aborted) emit?.(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {
       if (!signal?.aborted) {

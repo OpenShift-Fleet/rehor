@@ -156,7 +156,7 @@ Failures at any stage report a fixed message naming the stage, never SDK error d
 
 ## Lifecycle logs
 
-The dispatcher writes JSON lifecycle events to stdout through [pino](https://getpino.io). Records carry `level`, fixed `event` and `status` strings, and optional bounded duration and fixed diagnostic fields. A `preflight.error` includes `profile`, `repository`, and the opaque `agentId`: profile names support Unicode, nonprinting characters are escaped, and repository URLs omit SSH userinfo. Invalid or oversized identity fields are omitted while `agentId` remains. Configuration failures include structured `diagnostics`; per-entry failures identify `preflightId`. Preflight transcripts, prompts, credentials, and exception text are not logged. Failures log at `error` (50); everything else logs at `info` (30).
+The dispatcher writes JSON lifecycle events to stdout through [pino](https://getpino.io). Every record carries an ISO 8601 `time` field so records are orderable and correlatable with cluster logs. Records carry `level`, fixed `event` and `status` strings, and optional bounded duration and fixed diagnostic fields. A `preflight.error` includes `profile`, `repository`, and the opaque `agentId`: profile names support Unicode, nonprinting characters are escaped, and repository URLs omit SSH userinfo. Invalid or oversized identity fields are omitted while `agentId` remains. Configuration failures include structured `diagnostics`; per-entry failures identify `preflightId`. Preflight transcripts, prompts, credentials, and exception text are not logged. Failures log at `error` (50); everything else logs at `info` (30).
 
 | Event | Meaning |
 | --- | --- |
@@ -167,12 +167,18 @@ The dispatcher writes JSON lifecycle events to stdout through [pino](https://get
 | `memory.invalid_token` | Endpoint must reject a deliberately invalid credential. |
 | `memory.token` | Credential expiry validation and authenticated endpoint check. |
 | `gateway.authentication` | Gateway preflight, including the OIDC identity and optional subject checks. |
-| `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
+| `gateway.oidc` | A real token acquisition or refresh completed or failed; cached-token provider hits log nothing. |
+| `preflight.cycle` | One completion record per profile per cycle: `decision`, `durationMs`, a fixed `reason` where applicable, and the profile/repository/agentId identity. |
 | `preflight.error` | A profile or preflight entry failed; carries fixed `reason` (`configuration` or `execution`), instance identity, and applicable diagnostics. |
-| `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail. |
-| `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous. |
+| `preflight.run` | One record per preflight entry execution: `preflightId`, the entry's `decision` (`start`, `skip`, or `error`), and the owner identity. |
+| `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail; records carry the session identity. |
+| `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous; records carry the session identity. |
 | `ready` | Startup completed. |
 | `shutdown` | Shutdown after a signal or startup failure. |
+
+Cycle-record decisions cover the profile outcome (`start`, `skip`, `busy`, `error`, `no-scripts`, `throttled`, `shutdown`) plus the cycle-level failure modes that precede profile processing (`sync-error`, `discovery-error`, `invalid-config`, logged as failures with repository identity when parseable). A `busy` cycle record explains itself with the fixed reason `session in progress`; an `error` record reuses the fixed `configuration`/`execution` reason while the detail lives in the `preflight.error` records. The engine returns no per-entry durations, so `preflight.run` records carry none.
+
+Cheap steps (`configuration`, `kubernetes.token_request`, `memory.*`, `gateway.authentication`, `gateway.oidc`) collapse to a single completion record carrying `durationMs`. Only the long-running stages where a hang must be diagnosable — `startup`, `sandbox.session`, `shutdown` — keep a start record.
 
 Failure records carry a fixed `category` from a closed set, assigned at the failure site so startup problems are diagnosable without exposing details: `configuration` (invalid variables), `credentials` (missing projected service-account files), `network` (connect or timeout failures), `authorization` (TokenRequest or endpoint rejection of a missing/invalid credential), `authentication` (endpoint rejection of a valid credential, or a Gateway identity mismatch), `response` (unparseable TokenRequest response), and `internal` (anything else).
 
