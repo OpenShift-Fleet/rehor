@@ -1,10 +1,10 @@
 # Agent Dispatcher Deployment (REHOR-246)
 
-The agent dispatcher ([`packages/agent-dispatcher`](../packages/agent-dispatcher/README.md)) is deployed as an app-interface-owned, GitOps-managed OpenShift `Deployment` in the stage namespace (`platform-frontend-ai-dev-stage`), running the Konflux-built dispatcher image. This replaces the ad-hoc OpenShift Jobs and manually pushed Quay test tags used during REHOR-233 E2E validation.
+The agent dispatcher ([`packages/agent-dispatcher`](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/agent-dispatcher/README.md)) is deployed as an app-interface-owned, GitOps-managed OpenShift `Deployment` in the stage namespace (`platform-frontend-ai-dev-stage`), running the Konflux-built dispatcher image. This replaces the ad-hoc OpenShift Jobs and manually pushed Quay test tags used during REHOR-233 E2E validation.
 
 ## Preflight execution engine
 
-The dispatcher runs preflights from [`@rehor/preflights`](../packages/preflights/README.md) using configuration from each agent repository.
+The dispatcher runs preflights from [`@rehor/preflights`](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/preflights/README.md) using configuration from each agent repository.
 
 Per-instance declaration:
 
@@ -23,7 +23,7 @@ Each failed profile emits a `preflight.error` lifecycle event with `agentId`, `r
 
 ## Deployed objects
 
-Defined in [`deploy/agent-dispatcher-template.yaml`](../deploy/agent-dispatcher-template.yaml), consumed by the `platform-frontend-ai-dev-agent-dispatcher` resourceTemplate in the app-interface SaaS file:
+Defined in [`deploy/agent-dispatcher-template.yaml`](https://github.com/OpenShift-Fleet/rehor/blob/master/deploy/agent-dispatcher-template.yaml), consumed by the `platform-frontend-ai-dev-agent-dispatcher` resourceTemplate in the app-interface SaaS file:
 
 | Object | Name | Purpose |
 |--------|------|---------|
