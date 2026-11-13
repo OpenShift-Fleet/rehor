@@ -90,6 +90,51 @@ test("retention records expose only opaque gateway names and a bounded duration"
   assert.equal(lines.length, 1, "malformed retention details are dropped, never logged");
 });
 
+test("session lock records expose only fixed contention, holder and failure flags", () => {
+  const { logger, lines } = fixture();
+  logger.log("sandbox.lock", "success", { contended: true, holder: "rehor-agent-dispatcher-7f9d8c6b5-x2k4z" });
+  logger.log("sandbox.lock", "failure", { category: "internal" });
+  logger.log("sandbox.lock", "failure", { renew: true });
+  logger.log("sandbox.lock", "failure", { release: true });
+  assert.deepEqual(lines.map(JSON.parse), [
+    { event: "sandbox.lock", status: "success", contended: true, holder: "rehor-agent-dispatcher-7f9d8c6b5-x2k4z", level: 30 },
+    { event: "sandbox.lock", status: "failure", category: "internal", level: 50 },
+    { event: "sandbox.lock", status: "failure", renew: true, level: 50 },
+    { event: "sandbox.lock", status: "failure", release: true, level: 50 },
+  ]);
+  for (const options of [
+    { holder: "not a pod name" }, { holder: "Pod_Name" }, { holder: "" }, { holder: "-leading" }, { holder: "trailing-" }, { holder: 7 },
+    { contended: "yes" }, { renew: 1 }, { release: null },
+  ]) {
+    logger.log("sandbox.lock", "success", options);
+  }
+  assert.equal(lines.length, 4, "malformed lock details are dropped, never logged");
+});
+
+test("registry and reconcile records expose only fixed identifiers and outcomes", () => {
+  const { logger, lines } = fixture();
+  const runId = "01234567-89ab-cdef-0123-456789abcdef";
+  logger.log("sandbox.registry", "failure", { register: true });
+  logger.log("sandbox.registry", "failure", { update: true });
+  logger.log("sandbox.reconcile", "success", { runId, reason: "adopted", adopted: true });
+  logger.log("sandbox.reconcile", "failure", { runId, reason: "startup-timeout" });
+  assert.deepEqual(lines.map(JSON.parse), [
+    { event: "sandbox.registry", status: "failure", register: true, level: 50 },
+    { event: "sandbox.registry", status: "failure", update: true, level: 50 },
+    { event: "sandbox.reconcile", status: "success", runId, reason: "adopted", adopted: true, level: 30 },
+    { event: "sandbox.reconcile", status: "failure", runId, reason: "startup-timeout", level: 50 },
+  ]);
+  for (const options of [
+    { runId: "not-a-uuid" }, { runId: "" }, { runId: 42 },
+    { reason: "secret" }, { reason: "ADOPTED" }, { adopted: "yes" }, { adopted: 1 },
+    { register: "true" }, { update: null },
+  ]) {
+    logger.log("sandbox.reconcile", "success", options);
+    logger.log("sandbox.registry", "failure", options);
+  }
+  assert.equal(lines.length, 4, "malformed registry and reconcile details are dropped, never logged");
+});
+
 test("durations are bounded, rounded and measured with an injectable clock", () => {
   const { logger, lines, advance } = fixture();
   logger.log("startup", "success", { durationMs: -4 });
@@ -145,7 +190,7 @@ test("writer errors never escape or get logged, including rejected async writers
 
 test("production wiring preserves decision, filters runner env, and drains signal-racing sessions with mocks only", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -158,7 +203,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
         process.send({ event: 'minted', token: await options.memoryCredential() });
         const decision = { action: 'start', prompt: 'sensitive-prompt', scripts: [{ name: '01-work.py', status: 'start', content: 'sensitive-content' }] };
         const profile = { configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' } };
-        const completed = options.launch(profile, decision.prompt, decision);
+        const completed = options.launch(profile, 'fixture-agent-id', decision.prompt, decision);
         void completed.then(completion => process.send({ event: 'completion', completion }));
         await new Promise(resolve => setImmediate(resolve));
       }
@@ -356,7 +401,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -398,7 +443,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 8000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => undefined; export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -409,7 +454,7 @@ test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps no
       export async function runDispatcherLoop(options) {
         const decision = { action: 'start', prompt: 'work', scripts: [] };
         const profile = { image: { reference: 'registry.example/agent:runner' }, preflightEnv: {} };
-        const completion = await options.launch(profile, decision.prompt, decision);
+        const completion = await options.launch(profile, 'fixture-agent-id', decision.prompt, decision);
         process.send({ event: 'completion', completion });
       }
     `,

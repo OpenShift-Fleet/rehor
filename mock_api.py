@@ -146,6 +146,40 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/bot-status":
             self.send_json(BOT_STATUS)
 
+        elif path == "/api/locks":
+            # Session mutex leases (REHOR-218); expiry is authoritative.
+            self.send_json(
+                [
+                    {
+                        "key": "agent-session:mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "acquired_at": "2026-11-13T10:00:00Z",
+                        "expires_at": "2026-11-13T10:30:00Z",
+                    }
+                ]
+            )
+
+        elif path == "/api/session-registry":
+            # Durable session records (REHOR-218); the dispatcher interprets state.
+            self.send_json(
+                [
+                    {
+                        "run_id": "b1a2c3d4-0000-4000-8000-000000000001",
+                        "agent_id": "mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "lock_token": "b1a2c3d4-0000-4000-8000-000000000002",
+                        "state": "open",
+                        "workspace_name": "wmocksessionregistry1",
+                        "sandbox_name": "smocksessionregistry1",
+                        "provider_name": "vmocksessionregistry1",
+                        "profile_name": "pmocksessionregistry1",
+                        "started_at": "2026-11-13T10:00:00Z",
+                        "updated_at": "2026-11-13T10:05:00Z",
+                        "detail": None,
+                    }
+                ]
+            )
+
         elif path == "/api/instances":
             self.send_json(
                 [
@@ -447,6 +481,8 @@ if __name__ == "__main__":
     print("  GET  /api/tasks             - List tasks (with filters)")
     print("  GET  /api/stats             - Task & memory stats")
     print("  GET  /api/bot-status        - Bot status")
+    print("  GET  /api/locks             - Session locks (REHOR-218)")
+    print("  GET  /api/session-registry  - Session registry (REHOR-218)")
     print("  GET  /api/instances         - Bot instances")
     print("  GET  /api/memories          - List memories (with filters)")
     print("  GET  /api/memories/:id      - Get memory by ID")
