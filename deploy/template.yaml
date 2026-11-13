@@ -593,6 +593,14 @@ objects:
             value: ${OPENAI_ALLOWED_MODELS}
           - name: JIRA_URL
             value: https://redhat.atlassian.net
+          # REHOR-263 pathname destinations on the HTTP gateway: /github
+          # and /gitlab reuse GH_TOKEN/GITLAB_TOKEN from devbot-secrets;
+          # these upstream URLs have no in-code defaults, so the routes
+          # stay fail-closed (503) without them.
+          - name: GITHUB_API_URL
+            value: https://api.github.com
+          - name: GITLAB_API_URL
+            value: https://gitlab.cee.redhat.com
           - name: JIRA_USERNAME
             valueFrom:
               secretKeyRef:
