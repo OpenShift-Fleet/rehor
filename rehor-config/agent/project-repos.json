@@ -54,7 +54,7 @@
   },
   "insights-rbac": {
     "url": "https://github.com/platex-rehor-bot/insights-rbac.git",
-    "upstream": "https://github.com/RedHatInsights/insights-rbac.git"
+    "upstream": "https://github.com/project-kessel/insights-rbac.git"
   },
   "javascript-clients": {
     "url": "https://github.com/platex-rehor-bot/javascript-clients.git",
