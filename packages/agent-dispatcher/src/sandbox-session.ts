@@ -4,7 +4,7 @@ import type { OpenShellClient } from "@nvidia/openshell-sdk";
 import { DeletionOutcome, NetworkPolicyRuleSchema, ProviderProfileCategory, ProviderReadinessState, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { create, equals } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import type { WorkPreflightResult } from "./work-preflight.js";
+import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 import { buildInputEnvelope, INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "./input-envelope.js";
 import { createMemoryPolicy } from "./memory-policy.js";
 import { withPublicEgress } from "./egress-policy.js";

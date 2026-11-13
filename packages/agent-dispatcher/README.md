@@ -6,9 +6,9 @@ With no memory, Gateway, or agent repository configuration, the dispatcher start
 
 ## Agent work preflights
 
-Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the memory URL must identify the exact `/health` endpoint. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing. Startup fails fast when `python3` or `git` are unavailable; synchronization failures surface only a coarse category (timeout, unavailable, rejected) so Git output and arguments never leak credentials.
+Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the memory URL must identify the exact `/health` endpoint. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing. Startup fails fast when `git` is unavailable; synchronization failures surface only a coarse category (timeout, unavailable, rejected) so Git output and arguments never leak credentials.
 
-Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's scripts — an instance cannot override operational variables the dispatcher forwards itself (`PATH`, proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. For example:
+Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's sandbox runtime — an instance cannot override operational variables the dispatcher forwards itself (proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. For example:
 
 ```yaml
 workflow: onboarding
@@ -19,11 +19,18 @@ preflight:
   env:
     BOT_INSTANCE_ID: onboarding-test
     BOT_LABEL: onboarding-test
+preflights:
+  - id: onboarding
+    with:
+      label: onboarding-test
+  - gh-pr-status
 ```
 
-Shared Python workflow scripts and helpers come from the repository's pinned `dev-bot` submodule. Python execution is a stopgap: existing preflight scripts run unchanged during migration, but preflights will move to `.mjs` and only `.mjs` preflights will be supported long-term. The instance's `project-repos.json` is used as-is, never merged with the shared map. Checks run sequentially and at most once per agent every five minutes; the in-memory timer resets on restart. Python preflight failures use the existing aggregation contract: an actionable successful script can produce a start decision despite another script's failure. Missing scripts never produce a start decision.
+Preflight execution is the TypeScript engine (REHOR-259) from the reviewed [`@rehor/preflights`](../preflights/README.md) workspace package — the dispatcher's only preflight path; the Python script runner and its interpreter dependencies are removed. The config repository supplies declarative data, never executed code: each agent declares its preflights in the `preflights:` field (shorthand strings or `{ id, with }` parameter entries, validated fail-closed against the package's registry with stable per-entry messages), and an agent whose `instance.yaml` omits the field inherits the central default set registered for its workflow. A profile with neither a declaration nor a registered default fails loudly with an error result — never a silent skip — until its config repository declares preflights (REHOR-232 tracks the fleet). An explicit empty list (`[]`) is a deliberate "no preflights" declaration.
 
-Only non-secret `BOT_` variables, `PATH`, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment. When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle and forwards it to private preflight subprocesses as `BOT_MEMORY_TOKEN` (never via the dispatcher process environment). Its private transport authenticates requests to the configured memory task endpoint without following redirects; authorization failures fail the preflight instead of reporting empty results. Dispatcher preflights use a dispatcher-owned Jira MCP client, independent of agent skills. Preflight scripts and their imports execute from a private materialized runtime copy, so a symlinked script cannot resolve shared helpers, the repository map, or state files in the synced checkout. Supply service endpoints and any required executor integration separately. The image includes Python 3.12, Git, the Python MCP client, and the executor client's `gh`/`glab` shims. Only trusted repositories should be configured: their scripts execute in the dispatcher.
+The engine runs entries sequentially in declared order, at most once per agent every five minutes (the in-memory timer resets on restart), against one per-run context: the per-cycle minted memory credential, the instance identity (`BOT_INSTANCE_ID`), the memory route (`BOT_MEMORY_URL`), and — when the services gateway is configured — the single authenticated proxy route whose `/jira`, `/github`, and `/gitlab` path prefixes carry external-system traffic (credentials are injected on the upstream leg; the package never sees them). The instance's `project-repos.json` is used as-is, never merged with the shared map. Aggregation keeps the previous multi-script contract: an actionable `start` among non-errored entries produces a start decision despite another entry's failure; all-skip is a skip; all-error is an error. The agent prompt is assembled from `start` results only — skip and error content goes to the cycle report, never the prompt. Memory-server authorization failures fail the preflight instead of reporting empty results. Only trusted repositories should be configured: they no longer ship executable preflight code, but they still select images and parameters.
+
+Only non-secret `BOT_` variables, `JIRA_MCP_URL`, `EXECUTOR_ADDR`, and proxy settings are forwarded from the dispatcher environment (for the sandbox runtime environment; the engine's own wiring is passed explicitly, not through environment variables). When authentication is configured, the dispatcher also mints a short-lived memory credential per cycle for the engine's task fetches (never via the dispatcher process environment). `PATH` is no longer forwarded: it existed for the removed Python subprocess runner.
 
 ## Sandbox dispatch
 
@@ -35,7 +42,7 @@ The dispatcher writes one UTF-8 JSON envelope to `/tmp/rehor-input.json` using e
 {"schemaVersion":1,"runId":"…","prompt":"…","metadata":{"action":"start","scripts":[{"name":"…","status":"…"}]}}
 ```
 
-The 64 KiB limit applies to the complete serialized envelope. An oversized or invalid envelope fails dispatch without creating a sandbox. Empty or whitespace-only prompts and `skip` or `error` decisions do not create a sandbox. Runs with no scripts are rejected earlier by work-preflight as `no-scripts`; the envelope builder does not enforce that rule. Prompt contents travel through stdin, not environment variables, argv, sandbox configuration, or logs. The runner exec receives fixed per-exec controls, `REHOR_INPUT_SOURCE=sandbox` and `REHOR_INPUT_FILE=/tmp/rehor-input.json`, alongside its non-secret runtime settings; its output is discarded by the dispatcher. OpenShell SDK supports environment, argv, and stdin input, but stdin keeps prompt content out of inspectable configuration and process arguments. Each runner exec has a unique durable request ID; sandbox creation and exec are not automatically retried.
+The 64 KiB limit applies to the complete serialized envelope. An oversized or invalid envelope fails dispatch without creating a sandbox. Empty or whitespace-only prompts and `skip` or `error` decisions do not create a sandbox. Runs with an explicitly empty `preflights: []` declaration are rejected earlier by the engine as `no-scripts`; the envelope builder does not enforce that rule. Prompt contents travel through stdin, not environment variables, argv, sandbox configuration, or logs. The runner exec receives fixed per-exec controls, `REHOR_INPUT_SOURCE=sandbox` and `REHOR_INPUT_FILE=/tmp/rehor-input.json`, alongside its non-secret runtime settings; its output is discarded by the dispatcher. OpenShell SDK supports environment, argv, and stdin input, but stdin keeps prompt content out of inspectable configuration and process arguments. Each runner exec has a unique durable request ID; sandbox creation and exec are not automatically retried.
 
 Non-secret `BOT_` settings and explicitly allowed service/proxy settings are forwarded to the sandbox, with agent-profile settings applied per agent. The dispatcher does not copy its raw process environment, `PATH`, or authentication credentials into the sandbox; the memory credential is delivered through its OpenShell provider. Existing memory and Gateway authentication variables below remain unchanged.
 
@@ -149,7 +156,7 @@ Failures at any stage report a fixed message naming the stage, never SDK error d
 
 ## Lifecycle logs
 
-The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose default stdout destination is synchronous (sonic-boom `sync: true`) and EPIPE-safe. Synchronous writes are what is wanted before the `process.exit(1)` at the shutdown deadline: no record is lost. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), an optional fixed `category` on failure, and closed-set session `stage`/`errorCode` fields. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
+The dispatcher writes one JSON object per lifecycle event to stdout through [pino](https://getpino.io), whose default stdout destination is synchronous (sonic-boom `sync: true`) and EPIPE-safe. Synchronous writes are what is wanted before the `process.exit(1)` at the shutdown deadline: no record is lost. Records carry pino's `level` plus fixed `event` and `status` strings, an optional integer `durationMs` (rounded, bounded to 0–86,400,000), an optional fixed `category` on failure, closed-set session `stage`/`errorCode` fields, and — on `preflight.error` — the instance identity fields `profile` (agent profile name), `repository` (config-repository URL), and `agentId` (the opaque cycle id, correlating with cycle results). Identity fields are strictly validated (safe-identifier charset, credential-free URL shape, sha256 hex); an unsafe value drops the record, and preflight transcripts or prompt content are never logged. Failures log at `error` (50); everything else logs at `info` (30). No raw error, credential, identity, URL, request, or response content is ever included, and the logger accepts no free-form message text.
 
 | Event | Meaning |
 | --- | --- |
@@ -161,6 +168,7 @@ The dispatcher writes one JSON object per lifecycle event to stdout through [pin
 | `memory.token` | Credential expiry validation and authenticated endpoint check. |
 | `gateway.authentication` | Gateway preflight, including the OIDC identity and optional subject checks. |
 | `gateway.oidc` | An SDK token-provider call starts and completes/fails. |
+| `preflight.error` | A profile's preflight run failed; carries fixed `reason` (`configuration` or `execution`) and the instance identity fields below. |
 | `sandbox.session` | Sandbox input delivery and runner execution start and complete/fail. |
 | `sandbox.cleanup` | Run-owned resource cleanup succeeds or remains ambiguous. |
 | `ready` | Startup completed. |
@@ -172,9 +180,9 @@ Only attempted steps are logged: disabled preflights produce no events, and a fa
 
 ## Container image
 
-The SDK does not require GitHub Packages authentication: `package-lock.json` resolves `@nvidia/openshell-sdk` to the local workspace. Hermeto prefetches the lockfile's remaining npm dependencies, and both npm install stages use `npm ci --offline`. The executor-client stage runs `go mod download`, and the final image installs Python 3.12 and `mcp==1.30.0` with `dnf` and `pip`; these steps are not configured offline, so the build is not fully offline or hermetic.
+The SDK does not require GitHub Packages authentication: `package-lock.json` resolves `@nvidia/openshell-sdk` to the local workspace, and `@rehor/preflights` is a workspace dependency of the dispatcher. Hermeto prefetches the lockfile's remaining npm dependencies, and both npm install stages use `npm ci --offline`. With the Python runner removed, no `dnf`/`pip`/`go` steps remain: the build is fully offline and hermetic.
 
-The Containerfile copies `packages/openshell-sdk` into both dependency stages. The final image copies it to `/app/packages/openshell-sdk` alongside `node_modules`; this path is required by the local workspace link at `node_modules/@nvidia/openshell-sdk`. Copying the link without its target would break SDK resolution at runtime.
+The Containerfile copies `packages/openshell-sdk` and `packages/preflights` into the dependency stages. The final image copies them to `/app/packages/…` alongside `node_modules`; those paths are required by the local workspace links at `node_modules/@nvidia/openshell-sdk` and `node_modules/@rehor/preflights`. Copying a link without its target would break module resolution at runtime.
 
 From the repository root, provide the repository as build context. This does not read or send `packages/agent-dispatcher/.env`:
 
@@ -185,15 +193,17 @@ tar -cf - package.json package-lock.json nx.json \
   packages/agent-dispatcher/tsconfig.json \
   packages/agent-dispatcher/Containerfile \
   packages/agent-dispatcher/src \
-  packages/agent-dispatcher/preflight \
-  packages/openshell-sdk \
-  proxy/executor | \
+  packages/preflights/package.json \
+  packages/preflights/project.json \
+  packages/preflights/tsconfig.json \
+  packages/preflights/src \
+  packages/openshell-sdk | \
   podman build \
     -f packages/agent-dispatcher/Containerfile \
     -t registry.example.com/team/agent-dispatcher:dev -
 ```
 
-The final UBI 9 Node.js 22 image contains the compiled dispatcher, production dependencies, Python 3.12, Git, and the executor client, hard-linked as `gh` and `glab`. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
+The final UBI 9 Node.js 22 image contains the compiled dispatcher, its production dependencies (including the built `@rehor/preflights` package and its SDK clients), and Git. It runs as UID 1001 and supports an OpenShift-assigned arbitrary UID. Configure runtime authentication separately from dependency installation.
 
 ## Development
 

@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { runDispatcherCycle } from "../dist/dispatcher-cycle.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
+import { createLifecycleLogger } from "../dist/logging.js";
 
 const urls = ["https://example.test/one.git", "https://example.test/two.git"];
 const start = (prompt = "secret-prompt") => ({ action: "start", prompt, scripts: [] });
@@ -25,7 +25,7 @@ const options = (extra = {}) => ({
 test("launch receives agent ID, original start decision and script metadata with mock-only dependencies", async () => {
   const decision = {
     action: "start", prompt: "sensitive prompt",
-    scripts: [{ name: "01-work.py", status: "start", content: "sensitive content" }],
+    scripts: [{ name: "gh-pr-status", status: "start", content: "sensitive content" }],
   };
   const selected = profile("agent", "one");
   const calls = [];
@@ -35,7 +35,6 @@ test("launch receives agent ID, original start decision and script metadata with
     dependencies: {
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
       discoverProfiles: async () => [selected],
-      prepareRuntime: async () => ({ botRoot: "one", dispose: async () => {} }),
       preflight: async () => decision,
     },
   });
@@ -48,7 +47,7 @@ test("launch receives agent ID, original start decision and script metadata with
   assert.equal(calls[0][2], decision.prompt);
   assert.equal(calls[0][3], decision);
   assert.deepEqual(calls[0][3].scripts, decision.scripts);
-  assert.doesNotMatch(JSON.stringify(result), /sensitive|01-work/);
+  assert.doesNotMatch(JSON.stringify(result), /sensitive|gh-pr-status/);
 });
 
 test("each agent waits five minutes between checks, including skip and error", async () => {
@@ -59,10 +58,9 @@ test("each agent waits five minutes between checks, including skip and error", a
     dependencies: {
       syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
       discoverProfiles: async (root) => [profile("same", root)],
-      prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
-      preflight: async ({ botRoot }) => {
-        calls.push(botRoot);
-        return { action: botRoot === "one" ? "skip" : "error", transcript: "", scripts: [] };
+      preflight: async ({ repositoryUrl, wiring }) => {
+        calls.push(repositoryUrl);
+        return { action: repositoryUrl.endsWith("/one.git") ? "skip" : "error", transcript: "", scripts: [] };
       },
     },
   });
@@ -72,25 +70,24 @@ test("each agent waits five minutes between checks, including skip and error", a
   assert.deepEqual(await statuses(), ["throttled", "throttled"]);
   now = 300_000;
   assert.deepEqual(await statuses(), ["skip", "error"]);
-  assert.deepEqual(calls, ["one", "two", "one", "two"]);
+  assert.deepEqual(calls, [urls[0], urls[1], urls[0], urls[1]]);
 });
 
-test("per-agent preflight environment overrides shared defaults", async () => {
+test("per-agent preflight environment overrides shared instance identity", async () => {
   const seen = [];
   const opts = options({
     env: { BOT_INSTANCE_ID: "shared", BOT_LABEL: "shared" },
     dependencies: {
       syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
       discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_INSTANCE_ID: root, BOT_LABEL: `${root}-label` } }],
-      prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
-      preflight: async ({ env }) => { seen.push(env); return { action: "skip", transcript: "", scripts: [] }; },
+      preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
     },
   });
   await runDispatcherCycle(opts);
-  assert.deepEqual(seen, [{ BOT_INSTANCE_ID: "one", BOT_LABEL: "one-label" }, { BOT_INSTANCE_ID: "two", BOT_LABEL: "two-label" }]);
+  assert.deepEqual(seen.map((wiring) => wiring.instanceId), ["one", "two"]);
 });
 
-test("deployment memory URL cannot be replaced by profile in preflight", async () => {
+test("deployment memory URL cannot be replaced by profile in preflight wiring", async () => {
   for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
     const seen = [];
     const opts = options({
@@ -98,18 +95,61 @@ test("deployment memory URL cannot be replaced by profile in preflight", async (
       dependencies: {
         syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
         discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_MEMORY_URL: "https://untrusted.example/mcp" } }],
-        prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
-        preflight: async ({ env }) => { seen.push(env); return { action: "skip", transcript: "", scripts: [] }; },
+        preflight: async ({ wiring }) => { seen.push(wiring.memory.baseUrl); return { action: "skip", transcript: "", scripts: [] }; },
       },
     });
     await runDispatcherCycle(opts);
     assert.equal(seen.length, 2);
-    for (const env of seen) {
-      assert.equal(env.BOT_MEMORY_URL, deploymentUrl);
-      assert.equal(env.JIRA_MCP_URL, "http://jira.internal/mcp");
-      assert.equal(env.EXECUTOR_ADDR, "executor.internal:9090");
-    }
+    for (const baseUrl of seen) assert.equal(baseUrl, deploymentUrl ?? "");
   }
+});
+
+test("cycle wiring threads the minted credential, services gateway, and instance repos", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "dispatcher-wiring-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const instanceDir = join(root, "instance", "agent");
+  await mkdir(instanceDir, { recursive: true });
+  await writeFile(join(instanceDir, "project-repos.json"), JSON.stringify({ "my-repo": { upstream: "https://github.com/org/my-repo.git" } }));
+  const seen = [];
+  const opts = (extra = {}) => options({
+    repositoriesJson: JSON.stringify([urls[0]]),
+    env: { BOT_INSTANCE_ID: "fixture-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
+    memoryCredential: async () => "fixture-token",
+    serviceGatewayUrl: new URL("https://services.example/"),
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("agent", "one"), instanceDir }],
+      preflight: async (invocation) => { seen.push(invocation); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+    ...extra,
+  });
+  await runDispatcherCycle(opts());
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].profile.instanceDir, instanceDir);
+  assert.equal(seen[0].repositoryUrl, urls[0]);
+  assert.deepEqual(seen[0].wiring, {
+    instanceId: "fixture-instance",
+    memory: { baseUrl: "https://memory.example/mcp", token: "fixture-token" },
+    proxyBaseUrl: "https://services.example/",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo.git" } },
+  });
+  // No services gateway: no proxy route is invented and repos are omitted
+  // when the instance directory has no project-repos.json.
+  seen.length = 0;
+  const bare = join(root, "instance", "bare");
+  await mkdir(bare, { recursive: true });
+  const second = opts({ serviceGatewayUrl: undefined, dependencies: {
+    syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+    discoverProfiles: async () => [{ ...profile("bare", "one"), instanceDir: bare }],
+    preflight: async (invocation) => { seen.push(invocation); return { action: "skip", transcript: "", scripts: [] }; },
+  }, dispatcher: new SessionDispatcher() });
+  await runDispatcherCycle(second);
+  // No services gateway and no project-repos.json: no proxy route or repos
+  // are invented; the instance identity and memory wiring still apply.
+  assert.deepEqual(seen[0].wiring, {
+    instanceId: "fixture-instance",
+    memory: { baseUrl: "https://memory.example/mcp", token: "fixture-token" },
+  });
 });
 
 test("sequential preflights, parallel sessions, busy check and stable unique identities", async () => {
@@ -117,25 +157,23 @@ test("sequential preflights, parallel sessions, busy check and stable unique ide
   const waiting = deferred();
   const dispatcher = new SessionDispatcher();
   const opts = options({ dispatcher, launch: async (p, _agentId, prompt) => {
-    events.push(`launch:${p.botRoot}:${prompt}`);
+    events.push(`launch:${prompt}`);
     await waiting.promise;
     return "gone";
   }, dependencies: {
-    prepareRuntime: async (p) => ({ botRoot: p.botRoot, preflightDirs: { workflow: `${p.botRoot}/runtime-preflight` }, dispose: async () => {} }),
     syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
     discoverProfiles: async (root) => [profile("same", root)],
-    preflight: async ({ botRoot, workflow, instanceDir, env, preflightDirs }) => {
-      events.push(`preflight:${botRoot}`);
-      assert.equal(workflow, "same");
-      assert.equal(instanceDir, `${botRoot}/same`);
-      assert.deepEqual(preflightDirs, { workflow: `${botRoot}/runtime-preflight` });
-      assert.deepEqual(env, { BOT_INSTANCE_ID: "secret-instance" });
-      return start(botRoot);
+    preflight: async ({ wiring, signal, repositoryUrl }) => {
+      assert.equal(wiring.instanceId, "secret-instance");
+      assert.equal(signal, undefined);
+      const which = repositoryUrl.endsWith("/one.git") ? "one" : "two";
+      events.push(`preflight:${which}`);
+      return start(which);
     },
   } });
   const first = await runDispatcherCycle(opts);
   await tick();
-  assert.deepEqual(events, ["preflight:one", "launch:one:one", "preflight:two", "launch:two:two"]);
+  assert.deepEqual(events, ["preflight:one", "launch:one", "preflight:two", "launch:two"]);
   assert.deepEqual(first.repositories.map((r) => r.profiles[0].status), ["started", "started"]);
   const ids = first.repositories.map((r) => r.profiles[0].agentId);
   assert.notEqual(ids[0], ids[1]);
@@ -158,7 +196,6 @@ test("overlapping cycles do not repeat a preflight within the cooldown", async (
   const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), dispatcher,
     launch: async () => { await session.promise; return "gone"; },
     dependencies: {
-      prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
       discoverProfiles: async () => [profile("same", "one")],
       preflight: async () => { calls++; entered.resolve(); await waiting.promise; return start(); },
@@ -185,10 +222,9 @@ test("decisions, thrown failures and rejected launch stay isolated and redact re
   const names = ["skip", "error", "none", "throws", "resolver", "reject", "start"];
   const opts = options({ dispatcher,
     repositoriesJson: JSON.stringify(["https://example.test/sync.git", "https://example.test/discovery.git", urls[0], urls[1]]),
-    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return { BOT_LABEL: p.name }; },
+    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return { BOT_INSTANCE_ID: p.name }; },
     launch: async (p) => { launched.push(p.name); if (p.name === "reject") throw new Error("secret-launch"); return "gone"; },
     dependencies: {
-      prepareRuntime: async (p) => ({ botRoot: p.botRoot, dispose: async () => {} }),
       syncRepositories: async (_root, [repo]) => {
         if (repo.name === "sync") throw new Error("secret-sync");
         return [{ name: repo.name, path: repo.name, revision: "secret-revision" }];
@@ -197,11 +233,11 @@ test("decisions, thrown failures and rejected launch stay isolated and redact re
         if (root === "discovery") throw new Error("secret-discovery");
         return (root === "one" ? names : ["other"]).map((name) => profile(name, root));
       },
-      preflight: async ({ workflow, env }) => {
-        assert.equal(env.BOT_LABEL, workflow);
-        if (workflow === "throws") throw new Error("secret-preflight");
-        if (workflow === "skip" || workflow === "error") return { action: workflow, transcript: "secret-transcript", scripts: [] };
-        if (workflow === "none") return { action: "no-scripts", scripts: [] };
+      preflight: async ({ wiring }) => {
+        assert.equal(wiring.instanceId.length > 0, true);
+        if (wiring.instanceId === "throws") throw new Error("secret-preflight");
+        if (wiring.instanceId === "skip" || wiring.instanceId === "error") return { action: wiring.instanceId, transcript: "secret-transcript", scripts: [] };
+        if (wiring.instanceId === "none") return { action: "no-scripts", scripts: [] };
         return start();
       },
     },
@@ -225,109 +261,26 @@ test("invalid repository configuration fails safely before sync", async () => {
   assert.equal(syncs, 0);
 });
 
-test("real discovery and Python runner receive supplied onboarding context; no scripts never launch", async (t) => {
+/** Minimal config-repo checkout: one instance declaring `preflights:`. */
+async function checkoutFixture(t, instanceYaml) {
   const root = await mkdtemp(join(tmpdir(), "dispatcher-cycle-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bot = join(root, "dev-bot");
-  const workflow = join(bot, "presets", "workflows", "onboarding", "preflight");
   const agent = join(root, "instance", "onboard", "agent");
-  await Promise.all([agent, workflow, join(bot, "presets", "shared", "preflight"), join(bot, ".claude", "skills"), join(bot, "data")].map((dir) => mkdir(dir, { recursive: true })));
-  await writeFile(join(agent, "instance.yaml"), "workflow: onboarding\nimage: { repository: registry.example/team/name }\n");
-  await writeFile(join(workflow, "work.py"), `import json, os\nassert os.environ['BOT_INSTANCE_ID'] == 'supplied-id'\nassert os.environ['BOT_LABEL'] == 'supplied-label'\nprint(json.dumps({'status': 'start', 'content': 'secret-prompt'}))\n`);
-  const calls = [];
-  let now = 0;
-  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
-    env: { PATH: process.env.PATH, BOT_INSTANCE_ID: "supplied-id", BOT_LABEL: "supplied-label" },
-    launch: async (p, _agentId, prompt) => { calls.push([p.name, prompt]); return "gone"; },
-    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
-  });
-  const first = await runDispatcherCycle(opts);
-  await opts.dispatcher.drain();
-  assert.equal(first.repositories[0].profiles[0].status, "started");
-  assert.deepEqual(calls, [["onboard", "secret-prompt"]]);
-  assert.doesNotMatch(JSON.stringify(first), /secret|supplied|onboard/);
-  await rm(join(workflow, "work.py"));
-  now = 300_000;
-  const second = await runDispatcherCycle(opts);
-  assert.equal(second.repositories[0].profiles[0].status, "no-scripts");
-  assert.equal(calls.length, 1);
-});
-
-test("checked-in onboarding preflight flows through cycle with hermetic services", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "dispatcher-onboarding-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const bot = join(root, "dev-bot");
-  const agent = join(root, "instance", "onboard", "agent");
-  const workflow = join(bot, "presets", "workflows", "onboarding", "preflight");
-  const shared = join(bot, "presets", "shared", "preflight");
-  const skills = join(bot, ".claude", "skills");
-  await Promise.all([agent, workflow, shared, skills, join(bot, "data")].map((dir) => mkdir(dir, { recursive: true })));
-  await writeFile(join(agent, "instance.yaml"), "workflow: onboarding\nimage: { repository: registry.example/team/name }\n");
-  const source = fileURLToPath(new URL("../../../", import.meta.url));
   await Promise.all([
-    copyFile(join(source, "presets/workflows/onboarding/preflight/03-onboarding-jira.py"), join(workflow, "03-onboarding-jira.py")),
-    ...["common.py", "onboarding_preflight.py"].map((name) => copyFile(join(source, "presets/shared/preflight", name), join(shared, name))),
+    mkdir(agent, { recursive: true }),
+    mkdir(join(bot, "presets", "workflows", "onboarding"), { recursive: true }),
+    mkdir(join(bot, "presets", "workflows", "jira-sprint"), { recursive: true }),
   ]);
+  await writeFile(join(agent, "instance.yaml"), instanceYaml);
+  return { root, agent };
+}
+
+async function memoryServer(t, authorize = true) {
   const requests = [];
   const server = createServer((req, res) => {
-    requests.push(req.url);
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ items: [] }));
-  });
-  await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const port = server.address().port;
-  await writeFile(join(shared, "sitecustomize.py"), `import socket\n_original = socket.socket.connect\ndef _local_only(sock, address):\n    if not isinstance(address, tuple) or address[0] != '127.0.0.1' or address[1] != ${port}:\n        raise RuntimeError('external network disabled')\n    return _original(sock, address)\nsocket.socket.connect = _local_only\nsocket.socket.connect_ex = lambda *args: (_ for _ in ()).throw(RuntimeError('external network disabled'))\n`);
-  await writeFile(join(skills, "jira_mcp.py"), "raise RuntimeError('agent helper must not run')\n");
-  await mkdir(join(shared, "mcp", "client"), { recursive: true });
-  await writeFile(join(shared, "mcp", "__init__.py"), `import json, os\nfrom types import SimpleNamespace\nclass ClientSession:\n    def __init__(self, read, write): pass\n    async def __aenter__(self): return self\n    async def __aexit__(self, *args): pass\n    async def initialize(self): pass\n    async def call_tool(self, name, args):\n        assert name == 'jira_search'\n        assert 'labels = "fixture-label"' in args['jql']\n        issues = [{'key': 'REHOR-123', 'fields': {'summary': 'Synthetic candidate', 'status': {'name': 'New'}, 'labels': ['fixture-label']}}] if os.environ['FIXTURE_WORK'] == 'yes' else []\n        return SimpleNamespace(isError=False, content=[SimpleNamespace(text=json.dumps({'issues': issues}))])\n`);
-  await writeFile(join(shared, "mcp", "client", "__init__.py"), "");
-  await writeFile(join(shared, "mcp", "client", "streamable_http.py"), `from contextlib import asynccontextmanager\n@asynccontextmanager\nasync def streamablehttp_client(url):\n    assert url == 'http://fixture.invalid/mcp'\n    yield None, None, None\n`);
-  const calls = [];
-  let now = 0;
-  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
-    env: { PATH: process.env.PATH, JIRA_MCP_URL: "http://fixture.invalid/mcp", BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR", FIXTURE_WORK: "yes" },
-    launch: async (p, _agentId, prompt) => { calls.push([p.name, prompt]); return "gone"; },
-    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
-  });
-  const started = await runDispatcherCycle(opts);
-  await opts.dispatcher.drain();
-  assert.equal(started.repositories[0].profiles[0].status, "started");
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], "onboard");
-  assert.match(calls[0][1], /REHOR-123.*Synthetic candidate/);
-  assert.equal(requests.length, 2);
-  assert.ok(requests.every((url) => url.includes("instance_id=fixture-instance")));
-  opts.env.FIXTURE_WORK = "no";
-  now = 300_000;
-  const skipped = await runDispatcherCycle(opts);
-  assert.equal(skipped.repositories[0].profiles[0].status, "skip");
-  assert.equal(calls.length, 1);
-  assert.equal(requests.length, 4);
-  assert.doesNotMatch(JSON.stringify([started, skipped]), /fixture|Synthetic|REHOR-123|onboard/);
-});
-
-test("memory authorization failures are errors and the minted credential is forwarded", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "dispatcher-auth-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const bot = join(root, "dev-bot");
-  const agent = join(root, "instance", "onboard", "agent");
-  const workflow = join(bot, "presets", "workflows", "onboarding", "preflight");
-  const shared = join(bot, "presets", "shared", "preflight");
-  const skills = join(bot, ".claude", "skills");
-  await Promise.all([agent, workflow, shared, skills, join(bot, "data")].map((dir) => mkdir(dir, { recursive: true })));
-  await writeFile(join(agent, "instance.yaml"), "workflow: onboarding\nimage: { repository: registry.example/team/name }\n");
-  const source = fileURLToPath(new URL("../../../", import.meta.url));
-  await Promise.all([
-    copyFile(join(source, "presets/workflows/onboarding/preflight/03-onboarding-jira.py"), join(workflow, "03-onboarding-jira.py")),
-    ...["common.py", "onboarding_preflight.py"].map((name) => copyFile(join(source, "presets/shared/preflight", name), join(shared, name))),
-  ]);
-  // Only requests carrying the minted credential succeed; anything else is 401.
-  const seen = [];
-  const server = createServer((req, res) => {
-    seen.push(req.headers.authorization);
-    if (req.headers.authorization !== "Bearer fixture-token") {
-      res.writeHead(401, { "content-type": "application/json" });
+    requests.push({ url: req.url, authorization: req.headers.authorization });
+    if (authorize && req.headers.authorization !== "Bearer fixture-token") {      res.writeHead(401, { "content-type": "application/json" });
       res.end("{}");
       return;
     }
@@ -335,29 +288,162 @@ test("memory authorization failures are errors and the minted credential is forw
     res.end(JSON.stringify({ items: [] }));
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  const port = server.address().port;
-  await writeFile(join(skills, "jira_mcp.py"), `def jira_call(name, args):\n    return {'issues': []}\ndef jira_cleanup():\n    pass\n`);
+  t.after(() => new Promise((resolve) => server.close(() => resolve())));
+  return { requests, port: server.address().port };
+}
+
+test("real discovery and TS engine dispatch a declared preflight with hermetic services", async (t) => {
+  const { root } = await checkoutFixture(t, "workflow: onboarding\nimage: { repository: registry.example/team/name }\npreflights:\n  - jira-triage\n");
+  const { requests, port } = await memoryServer(t);
+  const calls = [];
+  let now = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
+    env: { BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label" },
+    memoryCredential: async () => "fixture-token",
+    serviceGatewayUrl: new URL("https://services.example/"),
+    launch: async (p, _agentId, prompt) => { calls.push([p.name, prompt]); return "gone"; },
+    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
+  });
+  const result = await runDispatcherCycle(opts);
+  await opts.dispatcher.drain();
+  assert.equal(result.repositories[0].profiles[0].status, "started");
+  assert.deepEqual(calls.map(([name]) => [name]), [["onboard"]]);
+  assert.match(calls[0][1], /No active tasks/);
+  // jira-triage fetches tasks and capacity once each, authenticated and
+  // instance-filtered; the jira client is wired but never called (no tasks).
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((request) => request.url.startsWith("/api/tasks?") && request.url.includes("instance_id=fixture-instance")));
+  assert.doesNotMatch(JSON.stringify(result), /fixture|onboard|No active tasks/);
+});
+
+test("workflow defaults inherit; a profile with neither defaults nor declarations errors loudly", async (t) => {
+  const { root, agent } = await checkoutFixture(t, "workflow: jira-sprint\nimage: { repository: registry.example/team/name }\n");
+  const config = join(agent, "instance.yaml");
+  const { port } = await memoryServer(t);
+  let now = 0;
+  const cycle = () => {
+    const dispatcher = new SessionDispatcher();
+    const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now, dispatcher,
+      env: { BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance" },
+      memoryCredential: async () => "fixture-token",
+      serviceGatewayUrl: new URL("https://services.example/"),
+      launch: async () => "gone",
+      dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
+    });
+    return { opts, dispatcher, status: async () => (await runDispatcherCycle(opts)).repositories[0].profiles[0].status };
+  };
+  // jira-sprint inherits the central default set (gh-pr-status, gl-mr-status);
+  // with no active tasks both skip, so nothing is dispatched.
+  const inherited = cycle();
+  assert.equal(await inherited.status(), "skip");
+  await inherited.dispatcher.drain();
+  // A workflow without a default set and without declared preflights is a
+  // loud error — never a silent skip (the migration contract, REHOR-232).
+  now = 300_000;
+  await writeFile(config, "workflow: onboarding\nimage: { repository: registry.example/team/name }\n");
+  const missing = cycle();
+  assert.equal(await missing.status(), "error");
+  // An explicit empty declaration is a deliberate no-preflights profile.
+  now = 600_000;
+  await writeFile(config, "workflow: onboarding\nimage: { repository: registry.example/team/name }\npreflights: []\n");
+  const empty = cycle();
+  assert.equal(await empty.status(), "no-scripts");
+});
+
+test("memory authorization failures are errors and the minted credential is required", async (t) => {
+  const { root } = await checkoutFixture(t, "workflow: onboarding\nimage: { repository: registry.example/team/name }\npreflights:\n  - jira-triage\n");
+  const { requests, port } = await memoryServer(t);
   let now = 0;
   const opts = (extra = {}) => options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
-    env: { PATH: process.env.PATH, BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label", BOT_JIRA_PROJECT: "REHOR" },
-    memoryCredential: async () => "fixture-token",
+    env: { BOT_MEMORY_URL: `http://127.0.0.1:${port}`, BOT_INSTANCE_ID: "fixture-instance", BOT_LABEL: "fixture-label" },
+    serviceGatewayUrl: new URL("https://services.example/"),
+    launch: async () => "gone",
     dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
     ...extra,
   });
-  // Authenticated access: the credential is forwarded on every memory request.
-  const authenticated = await runDispatcherCycle(opts());
-  assert.equal(authenticated.repositories[0].profiles[0].status, "skip");
-  assert.ok(seen.length > 0);
-  assert.ok(seen.every((authorization) => authorization === "Bearer fixture-token"));
-  // Without a credential the endpoint rejects the request; the preflight must
-  // fail as an error, never a successful empty result.
-  now = 300_000;
-  const rejected = await runDispatcherCycle(opts({ memoryCredential: undefined, dispatcher: new SessionDispatcher() }));
-  assert.equal(rejected.repositories[0].profiles[0].status, "error");
+  // Without a credential provider the engine refuses to run unauthenticated.
+  const unauthenticated = await runDispatcherCycle(opts());
+  assert.equal(unauthenticated.repositories[0].profiles[0].status, "error");
+  assert.equal(requests.length, 0);
   // A minting failure also fails the profile instead of running unauthenticated.
-  now = 600_000;
+  now = 300_000;
   const unminted = await runDispatcherCycle(opts({ memoryCredential: async () => { throw new Error("mint-secret"); }, dispatcher: new SessionDispatcher() }));
   assert.equal(unminted.repositories[0].profiles[0].status, "error");
-  assert.doesNotMatch(JSON.stringify([authenticated, rejected, unminted]), /fixture-token|mint-secret|127\.0\.0\.1/);
+  // With the credential, memory fetches authenticate; the preflight starts.
+  now = 600_000;
+  const authenticatedOpts = opts({ memoryCredential: async () => "fixture-token", dispatcher: new SessionDispatcher() });
+  const authenticated = await runDispatcherCycle(authenticatedOpts);
+  await authenticatedOpts.dispatcher.drain();
+  assert.equal(authenticated.repositories[0].profiles[0].status, "started");
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every((request) => request.authorization === "Bearer fixture-token"));
+  assert.doesNotMatch(JSON.stringify([unauthenticated, unminted, authenticated]), /fixture-token|mint-secret|127\.0\.0\.1/);
+});
+
+test("abort signal is forwarded to the preflight engine", async () => {
+  const controller = new AbortController();
+  const seen = [];
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), signal: controller.signal,
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("same", "one")],
+      preflight: async (invocation) => { seen.push(invocation.signal); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  await runDispatcherCycle(opts);
+  assert.deepEqual(seen, [controller.signal]);
+});
+
+test("a validation failure on a named profile logs and reports the instance identity", async (t) => {
+  const { root } = await checkoutFixture(t, "workflow: onboarding\nimage: { repository: registry.example/team/name }\npreflights:\n  - nope-unknown-id\n");
+  const logs = [];
+  let now = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => now,
+    logger: { log: (event, status, details) => logs.push({ event, status, ...details }), start: () => ({ success: () => {}, failure: () => {} }) },
+    env: { BOT_INSTANCE_ID: "fixture-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
+    memoryCredential: async () => "fixture-token",
+    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }] },
+  });
+  const result = await runDispatcherCycle(opts);
+  const [record] = result.repositories[0].profiles;
+  assert.equal(record.status, "error");
+  assert.equal(logs.length, 1);
+  assert.deepEqual(logs[0], {
+    event: "preflight.error",
+    status: "failure",
+    reason: "configuration",
+    profile: "onboard",
+    repository: urls[0],
+    agentId: record.agentId,
+  });
+  assert.match(record.agentId, /^[a-f0-9]{64}$/);
+  // Transcripts never enter the log record.
+  assert.ok(!("transcript" in logs[0]));
+});
+
+test("preflight error reasons reach lifecycle logs, including missing reasons and exceptions", async () => {
+  const lines = [];
+  const names = ["configuration", "execution", "missing", "throws", "resolver"];
+  const opts = options({
+    repositoriesJson: JSON.stringify([urls[0]]),
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    env: (p) => { if (p.name === "resolver") throw new Error("secret-resolver"); return {}; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => names.map((name) => profile(name, "one")),
+      preflight: async ({ profile: selected }) => {
+        if (selected.name === "throws") throw new Error("secret-exception");
+        return { action: "error", transcript: "secret-transcript", scripts: [], ...(selected.name === "missing" ? {} : { reason: selected.name }) };
+      },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  const profiles = result.repositories[0].profiles;
+  assert.deepEqual(profiles.map((item) => item.status), names.map(() => "error"));
+  assert.deepEqual(lines.map(JSON.parse), names.map((name, index) => ({
+    level: 50, event: "preflight.error", status: "failure",
+    reason: name === "configuration" ? "configuration" : "execution",
+    profile: name, repository: urls[0], agentId: profiles[index].agentId,
+  })));
+  assert.ok(lines.every((line) => !line.includes("secret")));
 });

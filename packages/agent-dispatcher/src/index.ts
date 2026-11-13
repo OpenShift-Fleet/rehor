@@ -6,9 +6,8 @@ import { createCredentialProvider, preflightFailureMessage } from "./preflight.j
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
 import { createLifecycleLogger, writeStartupGreeting, type LifecycleEvent, type LogOptions } from "./logging.js";
-import { parseConfigRepositories } from "./config-repositories.js";
+import { parseConfigRepositories, verifyConfigRepositoryTools } from "./config-repositories.js";
 import { runDispatcherLoop, preflightEnvironment } from "./dispatcher-loop.js";
-import { verifyPreflightTools } from "./work-preflight.js";
 import { SandboxSession, type SandboxSessionResult } from "./sandbox-session.js";
 import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
@@ -117,10 +116,11 @@ async function start(): Promise<void> {
     runtimeLayout = readRuntimeLayout(process.env);
     if (repositoriesJson !== undefined) {
       if (!gatewayConfig || !authConfig || !provider || !parseConfigRepositories(repositoriesJson).length) throw new Error();
-      // Work preflights execute Python from the base image; config repository
-      // synchronization needs Git. Fail startup instead of degrading into
-      // undiagnosable per-cycle errors.
-      await verifyPreflightTools();
+      // Config repository synchronization needs Git: the repositories now
+      // supply declarative preflight configuration (instance.yaml), never
+      // executed code. Fail startup instead of degrading into undiagnosable
+      // per-cycle errors.
+      await verifyConfigRepositoryTools();
     }
   } catch {
     configuration.failure("configuration");
@@ -218,6 +218,7 @@ async function start(): Promise<void> {
       loopPromise = runDispatcherLoop({
         repositoriesJson, signal,
         env: hostEnvironment,
+        ...(serviceGatewayUrl ? { serviceGatewayUrl } : {}),
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,

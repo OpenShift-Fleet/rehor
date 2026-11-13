@@ -2,6 +2,25 @@
 
 The agent dispatcher ([`packages/agent-dispatcher`](../packages/agent-dispatcher/README.md)) is deployed as an app-interface-owned, GitOps-managed OpenShift `Deployment` in the stage namespace (`platform-frontend-ai-dev-stage`), running the Konflux-built dispatcher image. This replaces the ad-hoc OpenShift Jobs and manually pushed Quay test tags used during REHOR-233 E2E validation.
 
+## Preflight execution engine (REHOR-259)
+
+The dispatcher's **only** preflight path is the TypeScript engine from the reviewed [`@rehor/preflights`](../packages/preflights/README.md) workspace package. The Python preflight runner and everything only it needed are removed: no Python interpreter or MCP client is installed in the dispatcher image, no `gh`/`glab` executor shims are shipped, no preflight scripts are materialized from synced config repositories, and `PATH` is no longer forwarded for preflight subprocesses. **Security rationale:** preflight logic previously executed as Python scripts pulled from cloned agent config repositories — an arbitrary-code-execution surface on every config-repo sync. The config repositories now supply declarative data only (`instance.yaml`, `project-repos.json`); every preflight implementation lives in the centrally reviewed package, registered behind one registry (`createPopulatedRegistry()`).
+
+Per-instance declaration (all instances must comply — the migration contract tracked by REHOR-232):
+
+- Each agent's `instance.yaml` declares its preflights in the `preflights:` field: shorthand entries (`- jira-triage`) or parameterized entries (`- id: jira-sprint` with a `with:` map of plain literal values). Entries are parsed strictly at profile discovery — a malformed entry fails the whole repository's discovery with a message naming the instance, entry, parameter, and reason (`fleetshift-config: preflights[1].with.label: Invalid input: expected string, received number (got 5)`), never a silent drop.
+- An omitted `preflights:` field inherits the central default set registered for the workflow (`workflowDefaults` in the package, e.g. `jira-sprint` → `gh-pr-status`, `gl-mr-status`). A custom workflow has no central default.
+- A profile with **neither** a declaration **nor** a registered workflow default fails loudly with an error result — never a silent skip. Agents that relied on the removed Python path without a `preflights:` field will surface as per-profile `error` statuses after this change; that is intended: config repositories must declare their preflights (REHOR-232 tracks the fleet). An explicit `preflights: []` is a deliberate "no preflights" declaration (`no-scripts`).
+- Before anything executes, every entry is validated fail-closed against the registry (unknown id, missing required parameter, unknown parameter name, malformed entry) with stable per-entry owner-facing messages; an invalid configuration never heals by retrying and is re-evaluated on the next config sync. Execution failures (network, upstream API) remain retryable errors. Aggregation keeps the previous contract: any `start` among non-errored entries dispatches despite another entry's failure; the agent prompt is assembled from `start` results only.
+
+### Services-gateway wiring (REHOR-259)
+
+The engine's external-system traffic (Jira REST, GitHub, GitLab) routes through the single authenticated services gateway (`AGENT_DISPATCHER_SERVICE_GATEWAY_URL`): the gateway's `/jira`, `/github`, and `/gitlab` pathname routes (REHOR-263) compose on that base, and the proxy injects credentials on the upstream leg — the preflight package never sees them. When the gateway URL is not configured, preflights that need an external system fail with an execution error (never a silent skip); memory-server access is unaffected. The per-cycle minted memory credential (TokenRequest) authenticates task fetches; `BOT_INSTANCE_ID` (per-profile `preflight.env`) is the instance filter, exactly as the removed Python scripts read it.
+
+### Error reporting and instance identity
+
+Every preflight error identifies its owner. Error transcripts are prefixed with `<profile name> (<config repository url>)`, and each failed profile emits a `preflight.error` lifecycle event carrying strictly validated fixed fields — `profile`, `repository`, `agentId` (the opaque cycle id, for correlation with cycle results) — plus a `configuration` category for invalid preflight configurations (distinct from retryable execution failures). Transcripts and prompt content never enter logs or cycle results.
+
 ## Deployed objects
 
 Defined in [`deploy/agent-dispatcher-template.yaml`](../deploy/agent-dispatcher-template.yaml), consumed by the `platform-frontend-ai-dev-agent-dispatcher` resourceTemplate in the app-interface SaaS file:
@@ -22,8 +41,9 @@ There is deliberately no Service, Route, or HTTP listener, and no liveness/readi
 | `AGENT_DISPATCHER_CONFIG_REPOS` | `["https://github.com/OpenShift-Fleet/rehor-onboarding-agent.git"]` | JSON array; non-empty and valid or startup fails (fail-closed) |
 | `AGENT_DISPATCHER_RUNTIME_LAYOUT` | `legacy` | Switch to `private` only after runner images are rebuilt with the matching `Dockerfile.runner` (REHOR-233) — pilot scope (REHOR-245) |
 | `AGENT_DISPATCHER_AUTH_*` | Vault-backed `devbot-secrets` keys with matching env names | Memory TokenRequest namespace, target service account, and exact HTTPS `/health` Route URL |
-| `JIRA_MCP_URL` | `http://devbot-proxy:8444/mcp` | In-cluster endpoint serves dispatcher-side preflights; sandbox-visible authenticated Route is REHOR-237 phase 2 / REHOR-241 |
-| `EXECUTOR_ADDR` | `devbot-proxy:9090` | gh/glab shim endpoint for preflights |
+| `AGENT_DISPATCHER_SERVICE_GATEWAY_URL` | services Route origin when enabled | Authenticated single route whose `/jira`, `/github`, and `/gitlab` path prefixes carry preflight traffic (see [Services gateway wiring](#services-gateway-wiring-rehor-259)) |
+| `JIRA_MCP_URL` | `http://devbot-proxy:8444/mcp` | Sandbox runtime Jira MCP endpoint (agent `mcp.json` references it); the TS preflight engine reaches Jira through the services-gateway proxy route instead |
+| `EXECUTOR_ADDR` | `devbot-proxy:9090` | gh/glab shim endpoint for the sandbox thin clients; the TS preflight engine makes no executor calls |
 | `OPENSHELL_*` | Vault-backed `devbot-secrets` keys with matching env names | Gateway/OIDC configuration, including optional `OPENSHELL_SERVICE_ACCOUNT_SUBJECT` |
 
 Secrets come only from the Vault-synced `devbot-secrets` Secret:

@@ -12,6 +12,7 @@ const EVENTS = [
   "memory.token",
   "gateway.authentication",
   "gateway.oidc",
+  "preflight.error",
   "sandbox.session",
   "sandbox.cleanup",
   "sandbox.retention",
@@ -35,6 +36,7 @@ const CATEGORIES = [
 const SESSION_STAGES = ["input", "policy", "workspace", "provider", "sandbox", "readiness", "write", "runner", "complete"] as const;
 const SESSION_ERROR_CODES = ["invalid_argument", "not_found", "permission_denied", "unauthenticated", "deadline_exceeded", "unavailable", "cancelled", "readiness_timeout", "other"] as const;
 const RECONCILE_REASONS = ["never-provisioned", "workspace-gone", "sandbox-gone", "reconciled-terminal", "adopted", "adopt-timeout", "record-failure", "startup-timeout"] as const;
+const PREFLIGHT_REASONS = ["configuration", "execution"] as const;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type LifecycleEvent = (typeof EVENTS)[number];
@@ -43,6 +45,7 @@ export type ErrorCategory = (typeof CATEGORIES)[number];
 export type SessionStage = (typeof SESSION_STAGES)[number];
 export type SessionErrorCode = (typeof SESSION_ERROR_CODES)[number];
 export type ReconcileReason = (typeof RECONCILE_REASONS)[number];
+export type PreflightReason = (typeof PREFLIGHT_REASONS)[number];
 export type LifecycleDetails = { stage?: SessionStage; errorCode?: SessionErrorCode };
 
 export interface LogOptions {
@@ -64,8 +67,16 @@ export interface LogOptions {
   update?: boolean;
   /** Startup reconciliation (REHOR-218): run ID, outcome reason, adoption. */
   runId?: string;
-  reason?: ReconcileReason;
+  reason?: ReconcileReason | PreflightReason;
   adopted?: boolean;
+  /**
+   * Instance identity for preflight error reporting (REHOR-259): the agent
+   * profile name and its config-repository URL, plus the cycle's opaque
+   * agentId for correlation with cycle results. Fixed identifiers only.
+   */
+  profile?: string;
+  repository?: string;
+  agentId?: string;
 }
 
 export interface LifecycleLogger {
@@ -153,6 +164,30 @@ function isMember<T extends string>(list: readonly T[], value: unknown): value i
   return typeof value === "string" && list.some((item) => item === value);
 }
 
+/**
+ * Agent profile (instance directory) names carry no charset guarantee from
+ * discovery, so the log field accepts only the safe identifier shape real
+ * names use (letters, digits, dots, underscores, hyphens; bounded length).
+ * Anything else is rejected, never logged — the agentId still correlates.
+ */
+const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** Opaque cycle agent id: sha256 hex. */
+const AGENT_ID = /^[a-f0-9]{64}$/;
+
+/** Config-repository URL: http(s), credential-free, no query or fragment. */
+function isRepositoryUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return (parsed.protocol === "https:" || parsed.protocol === "http:")
+    && parsed.username === "" && parsed.password === ""
+    && parsed.search === "" && parsed.hash === "";
+}
+
 /** Emits only fixed lifecycle identifiers and categories; never accepts message text. */
 export function createLifecycleLogger(deps: {
   write?: (line: string) => void;
@@ -188,6 +223,9 @@ export function createLifecycleLogger(deps: {
       const runId = options?.runId;
       const reason = options?.reason;
       const adopted = options?.adopted;
+      const profile = options?.profile;
+      const repository = options?.repository;
+      const agentId = options?.agentId;
       if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration))) return;
       if (category !== undefined && !isMember(CATEGORIES, category)) return;
       if (stage !== undefined && !isMember(SESSION_STAGES, stage)) return;
@@ -206,10 +244,13 @@ export function createLifecycleLogger(deps: {
       if (update !== undefined && typeof update !== "boolean") return;
       // Run IDs are opaque generated UUIDs; anything else is rejected.
       if (runId !== undefined && (typeof runId !== "string" || !UUID_PATTERN.test(runId))) return;
-      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason)) return;
+      if (reason !== undefined && !isMember(RECONCILE_REASONS, reason) && !isMember(PREFLIGHT_REASONS, reason)) return;
       if (adopted !== undefined && typeof adopted !== "boolean") return;
+      if (profile !== undefined && (typeof profile !== "string" || !PROFILE_NAME.test(profile))) return;
+      if (repository !== undefined && !isRepositoryUrl(repository)) return;
+      if (agentId !== undefined && (typeof agentId !== "string" || !AGENT_ID.test(agentId))) return;
 
-      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason; adopted?: boolean } = { event, status };
+      const record: { event: LifecycleEvent; status: LifecycleStatus; durationMs?: number; category?: ErrorCategory; stage?: SessionStage; errorCode?: SessionErrorCode; workspaceName?: string; sandboxName?: string; retentionMs?: number; contended?: boolean; holder?: string; renew?: boolean; release?: boolean; register?: boolean; update?: boolean; runId?: string; reason?: ReconcileReason | PreflightReason; adopted?: boolean; profile?: string; repository?: string; agentId?: string } = { event, status };
       if (duration !== undefined) record.durationMs = Math.round(Math.min(MAX_DURATION_MS, Math.max(0, duration)));
       if (category !== undefined) record.category = category;
       if (stage !== undefined) record.stage = stage;
@@ -226,6 +267,9 @@ export function createLifecycleLogger(deps: {
       if (runId !== undefined) record.runId = runId;
       if (reason !== undefined) record.reason = reason;
       if (adopted !== undefined) record.adopted = adopted;
+      if (profile !== undefined) record.profile = profile;
+      if (repository !== undefined) record.repository = repository;
+      if (agentId !== undefined) record.agentId = agentId;
       logger[status === "failure" ? "error" : "info"](record);
     } catch {
       // Logging must never expose writer/input errors or replace application errors.

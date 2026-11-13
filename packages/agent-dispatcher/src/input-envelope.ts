@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { WorkPreflightResult } from "./work-preflight.js";
+import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 
 /** Fixed delivery path inside the sandbox (mode 0600, see REHOR-226 contract). */
 export const INPUT_FILE_PATH = "/tmp/rehor-input.json";
