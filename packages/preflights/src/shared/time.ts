@@ -11,6 +11,14 @@ const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}(?:[T ].*)?$/;
 const TIMEZONE_SUFFIX = /(?:Z|[+-]\d{2}:\d{2}|[+-]\d{4})$/;
 const COMPACT_OFFSET = /^(.*\d{2}:\d{2}:\d{2})([+-]\d{4})$/;
 
+/**
+ * The UTC calendar date, `YYYY-MM-DD` — the deterministic daily task key
+ * component.
+ */
+export function isoDateUtc(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
 export function parseIso(ts: unknown): Date | null {
   if (!ts) return null;
   const text = String(ts).trim();

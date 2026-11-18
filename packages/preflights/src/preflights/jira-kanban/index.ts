@@ -4,6 +4,7 @@ import type { PreflightExecutionResult } from "../../core/results.js";
 import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
+import { nonBlank } from "../../shared/strings.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -26,9 +27,6 @@ import {
  * search instead of sprint queries. Returns start only when there is
  * genuinely actionable work (same decision table as jira-sprint).
  */
-
-/** Rejects blank strings (empty or whitespace-only) without altering the value. */
-const nonBlank = (value: string) => value.trim() !== "";
 
 const jiraKanbanInput = z.strictObject({
   /**

@@ -12,6 +12,8 @@ import {
   taskMetadata,
 } from "./shapes.js";
 
+export { ACTIVE_TASK_STATUSES } from "../../shared/memory-server.js";
+
 /**
  * Active-task triage shared by jira-sprint, jira-kanban, and jira-triage —
  * the port of the Phase 1 loop the three Python scripts duplicated. Each
@@ -20,9 +22,6 @@ import {
  * reads the full comment history; the comments carried for the rendered
  * prompt are a bounded selection (see selectPromptComments).
  */
-
-/** Task statuses the preflights treat as active (the Python active filter). */
-export const ACTIVE_TASK_STATUSES: readonly string[] = ["in_progress", "pr_open", "pr_changes"];
 
 /**
  * Fields requested for an active task's Jira issue. Comments come from the
