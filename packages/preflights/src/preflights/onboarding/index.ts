@@ -4,6 +4,7 @@ import type { PreflightExecutionResult } from "../../core/results.js";
 import { fmtComments, fmtTaskHeader, getTaskPrs } from "../../shared/format.js";
 import type { JiraClient, JiraIssue } from "../../shared/jira.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
+import { nonBlank } from "../../shared/strings.js";
 import { isNewer } from "../../shared/time.js";
 import { executionErrorResult, JIRA_CLIENT_NOT_WIRED } from "../jira-common/errors.js";
 import { isRecord, issueComments, taskMetadata } from "../jira-common/shapes.js";
@@ -48,9 +49,6 @@ const ONBOARDING_SEARCH_FIELDS: readonly string[] = [
   "labels",
   "created",
 ];
-
-/** Rejects blank strings (empty or whitespace-only) without altering the value. */
-const nonBlank = (value: string) => value.trim() !== "";
 
 const onboardingInput = z.strictObject({
   /**

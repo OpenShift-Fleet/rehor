@@ -1,6 +1,7 @@
 import type { FetchLike, HttpClient, QueryValue } from "./http.js";
 import { createHttpClient, PreflightHttpError } from "./http.js";
 import type { PreflightRunState } from "./run-context.js";
+import { isoDateUtc } from "./time.js";
 
 /**
  * Memory-server client — the port of the memory-server half of the Python
@@ -79,7 +80,9 @@ export class MemoryAuthRejectedError extends PreflightHttpError {
 
 const TASKS_LIMIT = 50;
 const CAPACITY_MAX = 10;
-const ACTIVE_STATUSES: readonly string[] = ["in_progress", "pr_open", "pr_changes"];
+
+/** Task statuses the preflights treat as active (the Python active filter). */
+export const ACTIVE_TASK_STATUSES: readonly string[] = ["in_progress", "pr_open", "pr_changes"];
 
 interface TasksResponse {
   readonly items?: readonly MemoryTask[];
@@ -96,6 +99,37 @@ export function normalizeMemoryBaseUrl(baseUrl: string): string {
     base = base.slice(0, -"/mcp".length).replace(/\/+$/, "");
   }
   return base;
+}
+
+/**
+ * Deterministic task keys — the cross-run pacing gate that replaced the
+ * Python cycle-sleep. The daily key of a task prefix: `${prefix}-${UTC
+ * date}`, stable across every run of the same UTC day.
+ */
+export function dailyTaskKey(prefix: string, now: Date): string {
+  return `${prefix}-${isoDateUtc(now)}`;
+}
+
+/** The first task whose external key equals `key`, when one exists. */
+export function findTaskByKey(tasks: readonly MemoryTask[], key: string): MemoryTask | undefined {
+  return tasks.find((task) => task?.external_key === key);
+}
+
+/**
+ * Count active tasks (status in {@link ACTIVE_TASK_STATUSES}) whose
+ * external key starts with `${prefix}:` — the per-item tasks the agent
+ * creates — or equals the daily key.
+ */
+export function countActiveTasksWithPrefix(
+  tasks: readonly MemoryTask[],
+  prefix: string,
+  includeKey: string,
+): number {
+  return tasks.filter(
+    (task) =>
+      ACTIVE_TASK_STATUSES.includes(task?.status ?? "") &&
+      (task?.external_key?.startsWith(`${prefix}:`) || task?.external_key === includeKey),
+  ).length;
 }
 
 export function createMemoryServerClient(config: MemoryServerClientConfig): MemoryServerClient {
@@ -144,7 +178,7 @@ export function createMemoryServerClient(config: MemoryServerClientConfig): Memo
     // The server applies only the first exclude_status; the active-status
     // filter is client-side, exactly like the Python helper.
     const items = Array.isArray(data?.items) ? data.items : [];
-    const active = items.filter((task) => ACTIVE_STATUSES.includes(task?.status ?? "")).length;
+    const active = items.filter((task) => ACTIVE_TASK_STATUSES.includes(task?.status ?? "")).length;
     const capacity = { active, max: CAPACITY_MAX };
     state?.set("capacity", capacity);
     return capacity;

@@ -20,8 +20,8 @@ src/
   - `entry.ts` — the Zod shape of one `preflights:` entry: a shorthand string or `{ id, with }`.
  - `validate.ts` — `validateConfig`: whole-list validation before execution, stable per-entry messages.
   - `results.ts` — the `start` / `skip` / `error` execution results plus the pre-execution `invalid` representation.
- - `defaults.ts` — `workflowDefaults` and `validateWorkflowDefaults`.
-- **`src/shared/`** — internal modules the preflight implementations import directly: the HTTP client factory, the memory-server client, the Jira REST client, the GitHub client, the run context (`createPreflightRunContext`), and the repos/time/format helpers.
+  - `defaults.ts` — `workflowDefaults` and `validateWorkflowDefaults`.
+- **`src/shared/`** — internal modules the preflight implementations import directly: the HTTP client factory, the memory-server client, the Jira REST client, the GitHub client with its `defineGitHubPreflight` factory, the run context (`createPreflightRunContext`), the failure-evidence and deterministic task-key helpers, and the repos/time/format/strings helpers.
 - **`src/preflights/`** — one directory per preflight plus `index.ts`, the registration barrel (`createPopulatedRegistry`). `jira-common/` holds the triage and candidate logic the Jira preflights share; it is not a registered preflight itself.
 
 ## Consuming the package
@@ -73,6 +73,9 @@ The registered ids — one registration line each in `createPopulatedRegistry` (
 | ------------ | -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------- |
 | gh-pr-status | GitHub PR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
 | gl-mr-status | GitLab MR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
+| hcc-merged-pr-violations | merged PRs with failed non-security checks | —            | `scan_only_repos` (—), `lookback_hours` (24), `max_concurrent` (5), `max_prs_per_repo` (50), `task_prefix` (`"merge-violations"`) |
+| hcc-test-anti-pattern-scan | test-file discovery for anti-pattern analysis | `scan_only_repos` | `max_repos_per_scan` (3), `max_files_per_repo` (20), `task_prefix` (`"test-scan"`), `patterns` (`["**/*.spec.ts", "**/*.test.ts"]`), `framework_indicators` (`["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]`), `exclude_substrings` (`["node_modules/", "dist/", "build/", ".playwright/", "playwright-report/", "test-results/"]`) |
+| hcc-weekly-report | weekly-report task dispatch (generate / feedback / merge) | `repo` | `branch_pattern` (`"hcc-team-weekly-report"`), `merge_hour_utc` (10)             |
 | jira-sprint  | active-task triage + sprint/backlog candidate search | `label`             | `include_backlog` (false), `email` (—), `interrupted_retry_minutes` (30)         |
 | jira-kanban  | active-task triage + kanban candidate search        | `project`, `label`    | `statuses` (`["New", "Backlog", "To Do"]`), `jql_extra` (—), `email` (—), `interrupted_retry_minutes` (30) |
 | jira-triage  | active-task triage only                            | —                     | `interrupted_retry_minutes` (30)                                                 |
@@ -89,6 +92,46 @@ Checks the GitHub PRs of the instance's active tasks — state, mergeability, CI
 The GitLab counterpart of `gh-pr-status`: checks the MRs of the instance's active tasks — state, pipelines, mergeability/conflicts, unresolved discussion threads, and notes — and classifies them into the same merged / closed / ci_fail / conflict / feedback / clean buckets, with the same addressed-CI and review-feedback rules. `start` when any actionable bucket is non-empty, `skip` otherwise. GitLab is reached through the run context's proxy route (`/gitlab` prefix, gitbeaker transport with a fail-fast custom requester); bare repo names resolve through the instance project-repos map.
 
 - `suppress_terminal_if_addressed` (default `false`) — the onboarding mode: merged/closed MRs whose feedback was already addressed are not reported as terminal, so the onboarding agent keeps seeing them until it finishes.
+
+### `hcc-merged-pr-violations`
+
+Port of the hcc quality-monitor preflight `01-check-merged-prs.py`: scans the instance's GitHub-hosted repos for PRs merged within the lookback window whose check rollup contains `FAILURE` conclusions, excluding security scans (the `lib/security_scans.py` patterns, ported verbatim — a PR whose only failures are security scans is not a violation). `start` with the violation list (repo, PR, title, author, merge date, failed check names) when any exist, `skip` otherwise. Repos come from the instance project-repos map; bare names resolve to their GitHub upstreams, non-GitHub repos are skipped.
+
+Time/task gates, in order: memory-server capacity; the deterministic daily task `${task_prefix}-{UTC date}` — a task with that external key in *any* status means today was already scanned (the replacement for the Python 24h cycle-sleep); and `max_concurrent` active tasks whose external key starts with `${task_prefix}:` or equals the daily key. The start content carries a `- **Task ID**: {daily key}` line — **the agent is expected to create that deterministic daily task** when it starts work, so the gate closes the day's scan.
+
+Fetch failures follow the shared failure policy: a repo-listing or PR-detail failure skips that repo/PR and is reported as UNFETCHABLE evidence; when every attempted fetch of a class failed, the run is an `error` naming the required route — never a silent "no violations" skip.
+
+- `scan_only_repos` (optional) — restrict the scan to these repo names; omitted scans every repo in the project-repos map. An empty match skips.
+- `lookback_hours` (default `24`, positive int) — merges older than this are ignored; PRs with unparseable `mergedAt` are excluded like the Python.
+- `max_concurrent` (default `5`, positive int) — skip while this many violation tasks are already active.
+- `max_prs_per_repo` (default `50`, positive int) — merged PRs fetched per repo.
+- `task_prefix` (default `"merge-violations"`) — prefix of the deterministic daily task and of the per-violation tasks the agent creates.
+
+### `hcc-test-anti-pattern-scan`
+
+Port of the hcc quality-monitor preflight `02-scan-test-anti-patterns.py`: lists the file tree of the first `max_repos_per_scan` whitelisted GitHub-hosted repos, matches test files by suffix pattern (excluding configured path substrings, capped at `max_files_per_repo` per repo), detects the framework (`playwright` when any indicator file is present, else `generic`), and emits the compact per-repo file list the agent analyzes for anti-patterns. `start` when any test files were found, `skip` otherwise.
+
+Time/task gates, in order: memory-server capacity; the deterministic daily task `${task_prefix}-{UTC date}` (any status closes the day); and the ported `MAX_CONCURRENT_SCANS = 5` constant — skip while 5 or more active tasks have an external key starting with `${task_prefix}:` or equal to the daily key. The start content carries a `- **Task ID**: {daily key}` line — **the agent is expected to create that deterministic daily task** when it starts work.
+
+Pattern matching is the Python's simplified matcher: a pattern matches a file when the pattern stripped of its `**` directory prefix and a leading `*` is a suffix of the file path (`**/*.spec.ts` → any path ending `.spec.ts`); a file is excluded when any `exclude_substrings` entry is a substring of its path. Listing failures follow the same shared failure policy as `hcc-merged-pr-violations` (isolated with evidence; all attempted failing → `error`).
+
+- `scan_only_repos` (required, nonempty) — the whitelist of repo names; this scan is intentionally scoped, never fleet-wide. An empty match against the project-repos map skips.
+- `max_repos_per_scan` (default `3`, positive int) — repos scanned per run, in map order.
+- `max_files_per_repo` (default `20`, positive int) — test files analyzed per repo.
+- `task_prefix` (default `"test-scan"`) — prefix of the deterministic daily task and of the per-scan tasks the agent creates.
+- `patterns` (default `["**/*.spec.ts", "**/*.test.ts"]`) — test file patterns, suffix-matched as above.
+- `framework_indicators` (default `["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]`) — file-path substrings that mark a repo as using the framework.
+- `exclude_substrings` (default `["node_modules/", "dist/", "build/", ".playwright/", "playwright-report/", "test-results/"]`) — path substrings that exclude a file.
+
+### `hcc-weekly-report`
+
+Port of the hcc manager-tasks preflight `01-task-dispatch.py`: decides which weekly-report phase the cycle is in. Only Monday and Tuesday act (UTC calendar day); Sunday maps to the previous Friday, so the reporting week is keyed `weekly-report-{friday}`. Monday without a task for the week starts the *generate* phase; a task with new PR feedback starts the *feedback* phase; Tuesday at or after `merge_hour_utc` UTC with no blocking reviews starts the *merge* phase; merged/closed/done tasks and everything else skip.
+
+The task is looked up by `external_key` in the memory server; its PRs are enriched through the gh-pr-status machinery (`enrichGh`/`hasNewFeedback`) with the same failure policy — an isolated PR/comment fetch failure is tolerated with evidence, a total fetch failure is an `error` naming the required route.
+
+- `repo` (required) — upstream repository of the weekly reports, `owner/repo` (the Python `UPSTREAM_REPO` constant).
+- `branch_pattern` (default `"hcc-team-weekly-report"`) — the branch name pattern (Python `BRANCH_PATTERN`); the generate content names `{git_user}/{branch_pattern}-{friday}`.
+- `merge_hour_utc` (default `10`, integer 0–23) — UTC hour from which the Tuesday merge step may run (Python `MERGE_HOUR_UTC`).
 
 ### `jira-sprint`
 
@@ -126,6 +169,8 @@ Finds new onboarding tickets by label and checks active onboarding tasks for new
 ## Differences from the Python implementation
 
 The port preserves statuses, aggregation rules, formatting, and cooldowns. Beyond the transport switch — `gh`/`glab` CLI subprocesses and the Jira MCP client replaced by SDK clients on the auth-proxy route — these deliberate changes exist:
+
+- The `hcc-*` preflights come from the hcc-framework-agent-dev instance repository (custom Python preflights that had no shared-preset counterpart), not from `presets/shared/preflight/`. They share the transport switch and add three agreed adaptations: the Python per-instance 24h cycle-sleep scripts are replaced by deterministic daily task gates keyed `${task_prefix}-{UTC date}` (any task with that external key closes the day); the per-instance config files (`test-config.yaml`, script constants) are flattened into `with:` parameters with the same defaults; and the agent — not the preflight — creates the deterministic daily task named in the start content.
 
 - The agent prompt is assembled from `start` results only; `skip` and `error` content goes to the cycle report and logs instead.
 - The inter-script state file (`data/preflight-state.json`) is an in-memory per-run context object — same keys and semantics, no file.
