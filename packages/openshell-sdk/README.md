@@ -41,7 +41,7 @@ console.log(sandbox.serviceUrls[''])
 await client.sandbox.waitReady(sandbox.name, 120)
 
 const result = await client.sandbox.exec(sandbox.name, ['/bin/sh', '-c', 'echo hello'])
-console.log(result.stdout.toString())
+console.log(result.stdout.toString)
 
 const deletion = await client.sandbox.delete(sandbox.name)
 console.log(deletion.outcome) // completed, accepted, or already_absent
@@ -66,7 +66,7 @@ its wait when using a non-default workspace.
 
 Sandbox refs from `create`, `get`, and `list` carry `createdAtMs` (epoch milliseconds), absent when the gateway omits it.
 
-`connect()` constructs a lazy client; call `health()` when startup must verify
+`connect` constructs a lazy client; call `health` when startup must verify
 gateway reachability. Static `oidcToken` and `edgeToken` values remain fixed for
 the client's lifetime. For long-running service automation, use the renewable
 client-credentials provider:
@@ -79,7 +79,7 @@ const client = await OpenShellClient.connect({
   oidcTokenProvider: clientCredentials({
     issuer: 'https://idp.example.com/realms/openshell',
     clientId: 'openshell-service',
-    clientSecret: () => process.env.OPENSHELL_OIDC_CLIENT_SECRET!,
+ clientSecret: => process.env.OPENSHELL_OIDC_CLIENT_SECRET!,
     scopes: ['sandbox:read', 'sandbox:write'],
     audience: 'openshell-gateway',
   }),
@@ -166,10 +166,10 @@ of output in 64 KiB chunks. Once the queue fills, receiving waits for the caller
 to drain it; cancellation interrupts that wait. The bound excludes the transport's
 current response frame and its own buffers.
 
-Call `closeInput()` (or its compatibility alias `close()`) to end stdin and resize input while continuing to receive output. Later writes and resizes throw. Call `cancel()` to abort the RPC. Both close and cancel are idempotent. The helper ships raw bytes only; raw mode, signal forwarding, and SIGWINCH stay with the caller. Input closure is not a terminal Ctrl-D keystroke.
+Call `closeInput` (or its compatibility alias `close`) to end stdin and resize input while continuing to receive output. Later writes and resizes throw. Call `cancel` to abort the RPC. Both close and cancel are idempotent. The helper ships raw bytes only; raw mode, signal forwarding, and SIGWINCH stay with the caller. Input closure is not a terminal Ctrl-D keystroke.
 
-`execInteractive()` returns `ExecInteractiveSessionControl`, which extends the
-original `ExecInteractiveSession` with `closeInput()`, `cancel()`, and `exitCode`.
+`execInteractive` returns `ExecInteractiveSessionControl`, which extends the
+original `ExecInteractiveSession` with `closeInput`, `cancel`, and `exitCode`.
 Existing mocks and wrappers can keep implementing the original interface without
 adding those members. Use the extended type when a wrapper exposes the new controls.
 
@@ -185,7 +185,7 @@ const code = await session.done
 
 ## Port forwarding
 
-`forward` binds a local TCP listener and tunnels each accepted connection into the sandbox for the lifetime of the Node process. Call `close()` on teardown.
+`forward` binds a local TCP listener and tunnels each accepted connection into the sandbox for the lifetime of the Node process. Call `close` on teardown.
 
 ```ts
 const fwd = await client.sandbox.forward(name, {
@@ -255,11 +255,11 @@ await client.sandboxTemplates.listAll({ workspace: 'default', pageSize: 100 })
 await client.sandboxTemplates.delete('python', { workspace: 'default' })
 ```
 
-Use `allWorkspaces: true` on `list()` for a platform-admin view. The
+Use `allWorkspaces: true` on `list` for a platform-admin view. The
 discriminated option type makes `workspace` and `allWorkspaces` mutually
 exclusive. Omitting both options explicitly selects the `default` workspace.
 List methods follow continuation tokens through a lazy `Pager`; each advance
-fetches one RPC page. Use `listAll()` only
+fetches one RPC page. Use `listAll` only
 when you want to exhaust the collection. `pageSize` controls one request and
 `pageToken` resumes a saved traversal.
 
@@ -279,7 +279,7 @@ The SDK's goal is agent parity: anything the OpenShell gateway can do should be 
 - `client.gateway` (`GatewayClient`) is planned: gateway-scoped config and settings, health, and cluster status.
 - `client.providers` (`ProviderClient`) is available today for operator-only credential retrieval. Provider CRUD and profile helpers remain planned.
 
-`health()` lives at the root today and will move under `client.gateway` (with a root alias) when that lands.
+`health` lives at the root today and will move under `client.gateway` (with a root alias) when that lands.
 
 Curated methods are added deliberately, so some gateway RPCs are not yet wrapped in a typed helper. Rather than ship methods that exist but throw, the SDK omits what it has not curated and gives you the raw escape hatch below to reach the full gateway surface today. Omission means "not yet ergonomic," never "impossible."
 
@@ -314,8 +314,8 @@ The raw layer returns the generated wire messages verbatim, preserving proto dis
 
 The SDK ships primitives, not the CLI's terminal experience. Some things are intentionally out of scope:
 
-- **Interactive `connect()` / PTY ownership.** `execInteractive`, `createSshSession`, and `forward` are the transport primitives; raw mode, OpenSSH `ProxyCommand`, and terminal glue stay in the CLI.
-- **`upload()` / `download()`.** There is no file-transfer RPC — the CLI does tar-over-SSH. For small payloads, `exec`/`execStream` with `stdin` covers it. A first-class gateway file-transfer RPC is a follow-up.
+- **Interactive `connect` / PTY ownership.** `execInteractive`, `createSshSession`, and `forward` are the transport primitives; raw mode, OpenSSH `ProxyCommand`, and terminal glue stay in the CLI.
+- **`upload` / `download`.** There is no file-transfer RPC — the CLI does tar-over-SSH. For small payloads, `exec`/`execStream` with `stdin` covers it. A first-class gateway file-transfer RPC is a follow-up.
 - **Detached / background forwards.** An in-process forward cannot outlive its caller; `forward` is process-lifetime only.
 
 ## Development

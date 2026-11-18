@@ -89,8 +89,7 @@ After generating files, the bot (or user) must:
 
 1. **Run `build-single.sh`** to regenerate the `auto-generated/` directory for the tenant:
    ```bash
-   cd <konflux_repo>/tenants-config
-   ./build-single.sh <tenant-name-without-tenant-suffix>
+ cd <konflux_repo>/tenants-config./build-single.sh <tenant-name-without-tenant-suffix>
    ```
    Requires `kustomize` (install via `brew install kustomize` or `./get-kustomize.sh`).
 

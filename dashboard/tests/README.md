@@ -15,7 +15,7 @@ tests/
 
 The `fixtures/api_payloads.py` module provides:
 
-- **Factory functions**: `task()`, `memory()`, `cycle_run()`, `cycle_entry()`
+- **Factory functions**: `task`, `memory`, `cycle_run`, `cycle_entry`
 - **Default datasets**: `TASKS`, `MEMORIES`, `CYCLE_RUNS`, `COSTS`, etc.
 
 Both the mock API server (`~/dev/mock_api.py`) and test files import from this module, ensuring data stays in sync.
@@ -43,7 +43,7 @@ Example:
 from fixtures import task, TASKS
 
 
-def test_my_feature():
+def test_my_feature:
     custom_task = task(99, "CUSTOM-1", "Custom task", "in_progress")
     assert custom_task["id"] == 99
 ```

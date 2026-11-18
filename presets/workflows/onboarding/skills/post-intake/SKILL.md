@@ -20,7 +20,7 @@ python3 .claude/skills/post-intake/post_intake.py '<json_config>' 2>&1
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345"
+ "epic_key": "TEAM-12345"
 }
 ```
 

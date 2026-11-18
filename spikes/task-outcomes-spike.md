@@ -2,7 +2,7 @@
 
 Status: proposal
 
-For Fleet / Org Pulse implementation guidance, see the [task outcomes dashboard adoption guide](task-outcomes-dashboard-adoption.md). It documents the current API contract, category-aware counts, filters, compatibility, and rollout sequence.
+For current Fleet / Org Pulse implementation guidance, see the [task outcomes dashboard adoption guide](../docs/task-outcomes-dashboard-adoption.md). This spike records design history, not current API behavior.
 
 ## Goal
 
@@ -40,7 +40,7 @@ The agent LLM labels each evidence item with a bounded resolution. Memory Server
     },
     {
       "source": "jira",
-      "reference": "RHCLOUD-42232",
+      "reference": "TEAM-123",
       "kind": "state",
       "disposition": "Release Pending / Done",
       "resolution": "accepted",
