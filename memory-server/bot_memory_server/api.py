@@ -547,7 +547,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
-            repo = $5, instance_id = COALESCE($7, instance_id),
+            repo = $5, instance_id = COALESCE($6, instance_id),
             cycle_start = CASE WHEN state = 'idle' AND $1 = 'working' THEN NOW() ELSE cycle_start END,
             updated_at = NOW()
         WHERE id = 1 RETURNING *
