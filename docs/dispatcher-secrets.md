@@ -48,7 +48,10 @@ In `secret(name, key)`, `name` is the approved Kubernetes Secret name and `key` 
 
 Target Secret names are unique within a namespace. Kubernetes RBAC grants access to the whole Secret object, not individual keys, so keep each target object limited to one workload's approved values. If a requested Secret or key is missing or denied, resolution fails closed and the dispatcher does not create a partially configured sandbox.
 
-`preflight.env` is separate: it configures dispatcher-side preflight scripts and is not delivered as the sandbox environment. `envs` selects runner build presets; it is not a secret store.
+Top-level `env` configures allowed non-secret `BOT_*` profile settings for both
+dispatcher wiring and the sandbox runner. The legacy `preflight.env` form has
+the same behavior. Neither form is a secret store. `envs` selects runner build
+presets and is separate from both `env` and the planned `sandbox.env`.
 
 ### 5. Verify without exposing values
 
