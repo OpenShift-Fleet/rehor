@@ -18,8 +18,7 @@ Cost data is stored in `costs.jsonl` in the project root. Each line is a JSON ob
 - `no_work` — whether the cycle found no work (idle)
 
 If `costs.jsonl` doesn't exist or is empty, backfill it from `bot.log`:
-```bash
-./costs.sh backfill
+```bash./costs.sh backfill
 ```
 
 ## What to report
@@ -34,15 +33,11 @@ If `costs.jsonl` doesn't exist or is empty, backfill it from `bot.log`:
 ## Quick commands
 
 ```bash
-# All cycles
-./costs.sh
+# All cycles./costs.sh
 
-# Today only
-./costs.sh today
+# Today only./costs.sh today
 
-# Specific date
-./costs.sh 2026-03-31
+# Specific date./costs.sh 2026-03-31
 
-# Last 7 days
-./costs.sh week
+# Last 7 days./costs.sh week
 ```

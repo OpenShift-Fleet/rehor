@@ -1,8 +1,7 @@
-# HyperShell Migration: Integration Requirements
+# HyperShell Migration Spike: Integration Requirements
 
 **Status:** Original HyperShell deployment passed authenticated access to actual memory `/health` (`200`). **HYP2/IBM deployment is blocked: sandbox-to-Rehoř access did not succeed.** Proxy integration and full application operations remain pending.
 
-**Tracking:** [REHOR-154](https://redhat.atlassian.net/browse/REHOR-154) (epic), [REHOR-162](https://redhat.atlassian.net/browse/REHOR-162) (spike).
 
 **Goal:** Run short-lived sandboxes in HyperShell, retain Rehoř memory/dashboard and credential-injecting proxies, and keep credentials outside sandboxes. Identify required OpenShift resource and networking changes explicitly.
 
@@ -25,7 +24,7 @@ Existing OAuth Proxy already has `--openshift-delegate-urls` and `--openshift-sa
 
 HYP2 (`0.1.2-rhaiv.0`, SDK `0.1.2`) passed Gateway authentication, Dispatcher TokenRequest/preflight, provider creation, and eventual sandbox readiness. **Remote memory curl did not obtain an HTTP response.** Memory DNS resolved to private Rehoř addresses; local VPN access does not establish IBM/HYP2-to-Rehoř routing. Platform owners must verify private network access/peering or provide an approved reachable authenticated endpoint before adopting HYP2.
 
-Observed direct curl failure was `getpeername() failed with errno 95: Operation not supported`; an explicit local egress-proxy attempt also failed to connect. Runtime/socket compatibility remains a possible contributor, so missing VPN/peering is not yet conclusively isolated. Gateway TLS verification was bypassed only with approval for this disposable test; production needs a trusted, hostname-matching certificate. Gateway URL was supplied through a Secret, not embedded in image/source or lifecycle logs. Test resources were cleaned up.
+Observed direct curl failure was `getpeername failed with errno 95: Operation not supported`; an explicit local egress-proxy attempt also failed to connect. Runtime/socket compatibility remains a possible contributor, so missing VPN/peering is not yet conclusively isolated. Gateway TLS verification was bypassed only with approval for this disposable test; production needs a trusted, hostname-matching certificate. Gateway URL was supplied through a Secret, not embedded in image/source or lifecycle logs. Test resources were cleaned up.
 
 ## Selected Flow
 
@@ -71,7 +70,7 @@ Audience is **nonsecret configuration**, not a credential. With an authenticated
 oc -n <namespace> create token <memory-service-account> --duration=10m |
   python3 -c '
 import base64, json, sys
-token = sys.stdin.read().strip()
+token = sys.stdin.read.strip
 payload = token.split(".")[1]
 claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 audiences = claims["aud"]

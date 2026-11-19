@@ -42,15 +42,11 @@ jq -r '.. | objects | select(has("text") and (.text | type == "string")) | .text
 
 ## 2. Map Decision Path
 
-Trace in this order:
+First identify the execution path.
 
-1. `bot/run.py` calls `run_preflight()`.
-2. `bot/preflight.py` discovers scripts, runs each, and aggregates results.
-3. Workflow wrappers under `presets/workflows/*/preflight/` import shared
-   implementations.
-4. Shared implementations under `presets/shared/preflight/` classify current
-   tasks, PRs/MRs, comments, capacity, and candidates.
-5. Any non-error `start` currently launches `run_cycle()`.
+**Dispatcher-managed:** inspect dispatcher `preflight.cycle` and `preflight.error` events, then the registered check in `packages/preflights/src/preflights/` and engine in `packages/agent-dispatcher/`. Only `start` results enter the one-shot OpenCode runner.
+
+**Legacy polling:** `bot/run.py` invokes `bot/preflight.py`; workflow entry points under `presets/workflows/*/preflight/` import shared Python modules from `presets/shared/preflight/`. These scripts only apply to non-dispatched deployments.
 
 Check these invariants:
 
@@ -62,7 +58,7 @@ Check these invariants:
   evidence; routine validation/confirmation must not create `start`.
 - Handled CI failures need no new session unless new feedback exists.
 - Missing or unresolved `repo:` labels cannot create eligible new work.
-- `skip` path must not call `run_cycle()`.
+- `skip` path must not call `run_cycle`.
 
 ## 3. Capture Source Fixtures
 
@@ -103,7 +99,7 @@ Test decision boundaries separately:
 - two consolidation PRs with no shared tier/ecosystem -> `skip`
 - all script results skip -> runner does not invoke `run_cycle`
 
-Prefer testing actual shared preflight `main()` with mocked provider calls over
+Prefer testing actual shared preflight `main` with mocked provider calls over
 testing copied output strings. Add runner integration coverage when signal
 behavior matters.
 
@@ -154,5 +150,5 @@ Record in test or change summary:
 | no-repo ticket launches cycle | candidate eligibility | unmatched repo label |
 | bot comment launches cycle | author classification | CI bot comment after `last_addressed` |
 | repeated unchanged consolidation starts | custom candidate predicate | two PRs in different tiers -> `skip` |
-| status says idle but session ran | runner/preflight boundary | `run_cycle.assert_not_called()` |
+| status says idle but session ran | runner/preflight boundary | `run_cycle.assert_not_called` |
 | one bad script hides valid work | aggregation | mixed error/start |

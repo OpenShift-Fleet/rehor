@@ -7,7 +7,7 @@ This file is for **local development only**. Claude runtime paths in `bot/run.py
 - **Runtime instructions**: `presets/core/AGENTS.md` — edit this when changing bot behavior
 - **Workflow-specific**: `presets/workflows/<name>/AGENTS.md` — per-workflow extensions
 - **Claude aliases**: preset `CLAUDE.md` files are relative symlinks to canonical `AGENTS.md` files
-- **Claude assembly**: `bot/run.py` → `assemble_claude_md()`; `coordinator/src/instructions.ts` → `assembleInstructions()`
+- **Claude assembly**: `bot/run.py` → `assemble_claude_md`; `coordinator/src/instructions.ts` → `assembleInstructions`
 - **OpenCode**: loads core, optional shared, and selected workflow `AGENTS.md` through native `instructions`, plus native profile resources; no Claude assembly
 
 ## How Assembly Works

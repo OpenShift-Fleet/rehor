@@ -54,7 +54,7 @@ Credentials live in the **proxy container** (including Jira credentials — mcp-
 | `GPG_PRIVATE_KEY_B64` | `base64 -i .ssh/gpg-private.asc` | **Proxy** | commit signing |
 | `GOOGLE_SA_KEY_B64` | `base64 -w 0 ~/.config/gcloud/application_default_credentials.json` (or `base64 < sa-key.json`) | **Proxy** | Vertex AI auth (Claude API). See [2.3](#23-vertex-ai-personal-credentials) |
 | `VERTEX_ALLOWED_MODELS` | Comma-separated model IDs | **Bot + Proxy** | Required by coordinator for OpenCode Vertex; proxy enforces allowlist for all Vertex calls |
-| `OPENAI_API_KEY` | API key from the OpenAI dashboard (Vault key `openai-api-key`) | **Proxy** | OpenAI-compatible gateway on port 8450. Never set on the bot; rotate by updating Vault/`.env` and restarting the **proxy** (no bot image rebuild) |
+| `OPENAI_API_KEY` | API key from the OpenAI dashboard; provision through the protected proxy credential source | **Proxy** | OpenAI-compatible gateway on port 8450. Never set on the bot; rotate through the protected credential process and restart the **proxy** (no bot image rebuild) |
 | `OPENAI_ALLOWED_MODELS` | Comma-separated model IDs (e.g. `gpt-6-luna,gpt-4.1,gpt-4.1-mini,gpt-4o`) | **Proxy** | Model allowlist for the OpenAI gateway. Required whenever `OPENAI_API_KEY` is set |
 
 ### 2.2 Set environment variables

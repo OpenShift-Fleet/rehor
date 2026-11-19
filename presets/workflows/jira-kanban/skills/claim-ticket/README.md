@@ -15,7 +15,7 @@ uv run pytest -v
 uv run pytest --cov=scripts --cov-report=html -v
 
 # Execute workflow
-uv run python scripts/claim_ticket_operations.py RHCLOUD-12345
+uv run python scripts/claim_ticket_operations.py TEAM-12345
 ```
 
 ## What It Does
@@ -38,23 +38,23 @@ All operations use **fail-fast error handling**: if any operation fails, executi
 ### From Claude Code
 
 ```bash
-/claim-ticket RHCLOUD-12345
+/claim-ticket TEAM-12345
 ```
 
 ### From Command Line
 
 ```bash
 # Basic usage
-python scripts/claim_ticket_operations.py RHCLOUD-12345
+python scripts/claim_ticket_operations.py TEAM-12345
 
 # With options
-uv run python scripts/claim_ticket_operations.py RHCLOUD-12345 \
+uv run python scripts/claim_ticket_operations.py TEAM-12345 \
   --jira-url=https://custom-jira.example.com \
   --skip=task_add \
   --dry-run
 
 # JSON output
-uv run python scripts/claim_ticket_operations.py RHCLOUD-12345 --json
+uv run python scripts/claim_ticket_operations.py TEAM-12345 --json
 ```
 
 ### From Python
@@ -63,7 +63,7 @@ uv run python scripts/claim_ticket_operations.py RHCLOUD-12345 --json
 from scripts.claim_ticket_operations import execute_claim_ticket_workflow
 
 result = execute_claim_ticket_workflow(
-    jira_key="RHCLOUD-12345",
+ jira_key="TEAM-12345",
     jira_url=None,  # Falls back to JIRA_URL env var
     jira_token=None,  # Falls back to JIRA_API_TOKEN or JIRA_API_TOKEN
     jira_email=None,  # Falls back to JIRA_EMAIL env var
@@ -153,8 +153,7 @@ open htmlcov/index.html
 
 ### File Structure
 
-```
-.claude/skills/claim-ticket/
+```.claude/skills/claim-ticket/
 ├── SKILL.md                        # Skill documentation (Claude Code entrypoint)
 ├── README.md                       # This file
 ├── pyproject.toml                  # Dependencies and tool config
@@ -253,7 +252,7 @@ class ClaimTicketOperations:
 Use `--dry-run` to preview what would happen without executing:
 
 ```bash
-uv run python scripts/claim_ticket_operations.py RHCLOUD-12345 --dry-run
+uv run python scripts/claim_ticket_operations.py TEAM-12345 --dry-run
 ```
 
 This logs all actions but doesn't make API calls or modify tickets.
@@ -308,7 +307,7 @@ Same as parent project (hcc-ai-assistant).
 
 ## Related
 
-- **JIRA**: RHCLOUD-47263
+- **JIRA**: TEAM-47263
 - **Related Skills**:
   - `/post-pr` - Post-PR-creation bookkeeping
   - `/wrap-up` - Post-merge bookkeeping

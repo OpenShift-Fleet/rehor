@@ -95,7 +95,7 @@ The mock server is stateful within a session but resets on restart.
 
 ## Default Data
 
-- **6 tasks** (RHCLOUD-001 through RHCLOUD-006)
+- **6 tasks** (TEAM-001 through TEAM-006)
 - **4 memories** (bug, architecture, decision, workaround)
 - **4 cycle runs** (implementation, review, idle_check)
 - **5 cost entries**

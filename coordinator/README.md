@@ -91,14 +91,14 @@ model drift and parent/session references.
 `RehorRun` is the complete command for one independently attributable model
 attempt. A task is nullable because current triage cycles begin before the
 agent selects or creates a task. `prompt` contains the same fully assembled,
-dynamic prompt currently passed to `claude_agent_sdk.query()`, including
+dynamic prompt currently passed to `claude_agent_sdk.query`, including
 preflight content when present.
 
 `AgentRuntime` has three operations:
 
 1. `start(signal)` starts the runtime and reports capabilities.
 2. `run(run, signal)` streams Rehor-owned events for one attempt.
-3. `stop()` releases runtime resources and is idempotent.
+3. `stop` releases runtime resources and is idempotent.
 
 A valid event stream has these invariants:
 
@@ -119,7 +119,7 @@ payload shapes cannot drift from TypeScript validation.
 
 ## Attempt orchestration
 
-`executeRun()` owns one runtime attempt. It validates the run, starts the
+`executeRun` owns one runtime attempt. It validates the run, starts the
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
 terminal event after preserving all accepted partial events. The coordinator
@@ -173,12 +173,12 @@ selection can change without changing lifecycle orchestration.
 
 Factories receive only a normalized `RehorRun` and return an `AgentRuntime`.
 Provider SDK clients, server processes, and sessions remain private to the
-adapter. `executeSelectedRun()` feeds an explicitly selected adapter into the existing
-`executeRun()` lifecycle. `executeConfiguredRun()` resolves the adapter from
+adapter. `executeSelectedRun` feeds an explicitly selected adapter into the existing
+`executeRun` lifecycle. `executeConfiguredRun` resolves the adapter from
 `RehorRun.runtimeId`, which is the normalized per-instance selection. Both
 paths preserve event validation, projection, timeout, and cleanup behavior.
 
-`createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
+`createDefaultRuntimeRegistry` registers the Claude Agent SDK adapter under
 runtime ID `claude` and remains the production default. Its options are
 Claude-specific; the reference-preserving `ConfigPreparationResult` is not
 passed directly to it because the legacy Python runner still owns resolved
@@ -210,7 +210,7 @@ const result = await executeSelectedRun(
 );
 ```
 
-`renderOpenCodeConfigForCycle()` is the lower-level equivalent for callers
+`renderOpenCodeConfigForCycle` is the lower-level equivalent for callers
 that need the deterministic artifact before constructing a runtime. It consumes
 the reference-only `openCodeMcpServers` view from preparation. The bridge's
 `optionalMcpServers` list is explicit: missing grants for those persona-specific
@@ -225,7 +225,7 @@ Provider and model names reject blocked/coordinator-controlled variables but
 otherwise remain literal and are not added to the agent passthrough list.
 The factory requires the prepared `nativeConfig` snapshot, then renders it for the selected run. `OpenCodeRuntime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
-same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
+same snapshot in its constructor and writes it through `writeOpenCodeConfig`;
 OpenCode then applies native project configuration and agent precedence. `OpenCodeRuntime` validates
 the rendered snapshot before its supervisor starts a child. External provider and
 plugin packages require exact pins; the native OpenAI runtimes need no package
@@ -308,10 +308,10 @@ independent of these V2 accounting semantics.
 
 ## Cycle input preparation
 
-`prepareCycleInput()` prepares one cycle without starting an agent runtime. It
-asks the Python bridge to sync and merge the existing config, assembles the
-instruction layers deterministically, and runs the existing Python preflight
-protocol:
+`prepareCycleInput` prepares one cycle without starting an agent runtime.
+Both paths use the Python bridge for config preparation. A dispatched sandbox
+consumes the validated one-shot input envelope and never calls the Python
+preflight runner. For non-dispatched polling, the input flow is:
 
 ```text
 Python config bridge → workflow/instance config + config sync
@@ -327,7 +327,7 @@ Python config bridge → workflow/instance config + config sync
 ```
 
 `PythonCoordinatorBridge` communicates through one JSON request/response over a
-child process. It reuses `bot.preflight.run_preflight()` and the config
+child process. It reuses `bot.preflight.run_preflight` and the config
 preparation functions from `bot.run`, so migration does not fork preflight
 classification or config merge behavior. Python logs remain on stderr; stdout
 is reserved for the versioned bridge response.
@@ -456,12 +456,12 @@ Pricing estimates come from the hand-maintained catalog in
 - completed attempt → normal interval unless a valid `data/cycle-sleep.json`
   signal supplies a delay and reason.
 
-`consumeSleepSignal()` reads and removes the Python-compatible sleep signal,
+`consumeSleepSignal` reads and removes the Python-compatible sleep signal,
 including malformed signals, so stale recommendations cannot affect a later
-cycle. `sleep()` accepts an `AbortSignal`, allowing shutdown to interrupt the
+cycle. `sleep` accepts an `AbortSignal`, allowing shutdown to interrupt the
 wait rather than delaying process termination.
 
-`recordIdleCycle()` and `recordActiveCycle()` contain the threshold/cooldown
+`recordIdleCycle` and `recordActiveCycle` contain the threshold/cooldown
 state machine used by the existing idle reminder behavior. They deliberately
 stay transport-neutral: a future memory-server adapter persists the state and
 a future reminder adapter sends the notification only after
@@ -469,11 +469,11 @@ a future reminder adapter sends the notification only after
 
 ## Signal, admission, and shutdown loop
 
-`runCoordinatorLoop()` owns the outer cycle boundary. It acquires an admission
-lease before preparation, never invokes `run()` for preflight `skip`/`error`,
+`runCoordinatorLoop` owns the outer cycle boundary. It acquires an admission
+lease before preparation, never invokes `run` for preflight `skip`/`error`,
 releases the lease in `finally`, and waits through the scheduler between
-cycles. `createLoopSignals()` combines normal cancellation with shutdown, while
-`installProcessSignalHandlers()` keeps SIGINT/SIGTERM registration outside the
+cycles. `createLoopSignals` combines normal cancellation with shutdown, while
+`installProcessSignalHandlers` keeps SIGINT/SIGTERM registration outside the
 loop for testability.
 
 Admission remains a port because deployment can keep using the Python file lock

@@ -8,17 +8,16 @@ With no memory, Gateway, or agent repository configuration, the dispatcher start
 
 Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the authenticated memory URL must identify the exact `/health` endpoint. Set deployment-owned `BOT_MEMORY_URL` to the exact HTTPS `/mcp` endpoint on the same origin; missing or invalid values fail startup. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing. Startup fails fast when `git` is unavailable; synchronization failures surface only a coarse category (timeout, unavailable, rejected) so Git output and arguments never leak credentials.
 
-Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Every profile requires a nonblank `BOT_INSTANCE_ID`; `preflight.env` overrides the deployment value for that profile. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's sandbox runtime — an instance cannot override deployment-owned `BOT_MEMORY_URL` or operational variables the dispatcher forwards itself (proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. Missing or blank identity, memory URL, or minted memory credential blocks preflight and sandbox execution, including for an empty preflight list. A `preflight.error` record identifies the profile and missing field without exposing values. For example:
+Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Every profile requires a nonblank `BOT_INSTANCE_ID`; top-level `env` overrides the deployment value for that profile. Allowed non-secret `BOT_` settings are used for dispatcher wiring and passed to the sandbox runner. The legacy `preflight.env` form remains supported, but declaring both forms fails discovery. An instance cannot override deployment-owned `BOT_MEMORY_URL` or operational variables the dispatcher forwards itself (proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. Missing or blank identity, memory URL, or minted memory credential blocks preflight and sandbox execution, including for an empty preflight list. A `preflight.error` record identifies the profile and missing field without exposing values. Deploy a dispatcher that supports top-level `env` before migrating an existing profile. For example:
 
 ```yaml
 workflow: onboarding
 image:
   repository: quay.io/example/onboarding-agent
   tag: v1
-preflight:
-  env:
-    BOT_INSTANCE_ID: onboarding-test
-    BOT_LABEL: onboarding-test
+env:
+  BOT_INSTANCE_ID: onboarding-test
+  BOT_LABEL: onboarding-test
 preflights:
   - id: onboarding
     with:
@@ -27,6 +26,8 @@ preflights:
 ```
 
 Preflight execution uses [`@rehor/preflights`](../preflights/README.md). Each agent declares preflights in `preflights:` using shorthand strings or `{ id, with }` parameter entries. An omitted field inherits the workflow's central default set. A profile with neither a declaration nor a registered default returns an error. An explicit empty list (`[]`) declares no preflights. Entries are validated against the registry before anything executes: invalid configuration fails the whole profile with structured diagnostics naming the instance identity and every invalid entry's issue path, issue code, message, and received value. Raw transcripts, prompts, upstream response bodies, and credentials never enter lifecycle logs.
+
+New preflights must be [contributed to this repository](../preflights/README.md#adding-a-preflight). Instance repositories provide configuration only; no executable preflight discovery runs in the dispatcher.
 
 The engine runs entries sequentially in declared order, at most once per agent every five minutes (the in-memory timer resets on restart). Each entry's execution is bounded at 120 seconds. External Jira, GitHub, and GitLab preflights always use the configured services proxy — the dispatcher never contacts those vendors directly. The dispatcher authenticates the dispatcher-to-proxy hop with the per-cycle short-lived minted bearer; the proxy alone injects vendor credentials on the upstream leg. The run context also carries the instance identity, memory route, and the instance's `project-repos.json` used as-is. Transport honors dispatcher abort during active requests. An actionable `start` among non-errored entries produces a start decision despite another entry's failure; all-skip is a skip; all-error is an error. The agent prompt contains `start` results only. Individual failed entries are logged even when the aggregate decision is still `start` or `skip`. Memory-server authorization failures fail the preflight instead of reporting empty results.
 
@@ -46,13 +47,15 @@ The 64 KiB limit applies to the complete serialized envelope. An oversized or in
 
 Non-secret `BOT_` settings and explicitly allowed service/proxy settings are forwarded to the sandbox, with agent-profile settings applied per agent. The dispatcher does not copy its raw process environment, `PATH`, or authentication credentials into the sandbox; the memory credential is delivered through its OpenShell provider. Existing memory and Gateway authentication variables below remain unchanged.
 
-On completion, the dispatcher verifies resource ownership and confirms sandbox absence before dependent cleanup, then removes all run-owned resources. Ambiguous cleanup fails closed and retains the agent's in-flight reservation. `SessionDispatcher` allows one in-flight run per agent per process; reservations are process-local and cannot be recovered after a dispatcher restart.
+On completion, the dispatcher verifies resource ownership and confirms sandbox absence before dependent cleanup, then removes run-owned resources. Ambiguous cleanup retains the process-local reservation. With the session mutex enabled, the memory server also coordinates per-agent admission across replicas and holds the session registry for startup reconciliation. See the [deployment guide](../../docs/agent-dispatcher-deployment.md#durable-session-registry-and-startup-reconciliation).
 
-The current bootstrap policy authorizes only Python access to the configured HTTPS memory `/health` endpoint, plus the optional model-gateway route below. Legacy layout keeps `/home/botuser/app` read-only and permits writes under `/tmp`, `/home/botuser/repos`, and `/home/botuser/data`. Private layout requests `/opt/rehor`, `/opt/opencode`, and the configured runtime source read-only, and `/tmp` and the configured runtime parent writable. The effective policy must retain every requested read-only and read-write path. Gateway-added write paths are accepted only when they are normalized absolute paths that do not overlap any requested read-only path; root, ancestor/descendant overlaps, and ambiguous path forms fail closed. Unexpected `includeWorkdir: true` also fails closed. Safe exact additions such as `/dev/null` remain supported. See [`sandbox-session.ts`](src/sandbox-session.ts) and [`runtime-layout.ts`](src/runtime-layout.ts) for the check. Full memory MCP/proxy connectivity and runtime permissions remain REHOR-215 dependencies; the dispatcher does not infer broad egress from environment variables. Do not deploy for real agent work until those dependencies are ready.
+The sandbox policy starts with memory `/health`; configured routes add memory MCP, model, and service-gateway access as applicable. When `AGENT_DISPATCHER_SERVICE_GATEWAY_URL` is set, the dispatcher supplies sandbox URLs for Jira MCP and the HTTP executor. This is separate from TypeScript preflights, which use the services gateway's vendor REST routes, not the sandbox endpoints. The dispatcher does not infer broad egress from environment variables; verify effective routes and policy before enrolling an instance.
+
+Legacy layout keeps `/home/botuser/app` read-only and permits writes under `/tmp`, `/home/botuser/repos`, and `/home/botuser/data`. Private layout requests `/opt/rehor`, `/opt/opencode`, and the configured runtime source read-only, and `/tmp` and the configured runtime parent writable. The effective policy must retain every requested read-only and read-write path. Gateway-added write paths are accepted only when they are normalized absolute paths that do not overlap any requested read-only path; root, ancestor/descendant overlaps, and ambiguous path forms fail closed. Unexpected `includeWorkdir: true` also fails closed. Safe exact additions such as `/dev/null` remain supported. See [`sandbox-session.ts`](src/sandbox-session.ts) and [`runtime-layout.ts`](src/runtime-layout.ts) for the check.
 
 ### Model-gateway route
 
-`AGENT_DISPATCHER_MODEL_PROXY_URL` optionally points dispatched runs at the authenticated OpenAI-compatible model-gateway Route (REHOR-237). The value is validated like other configured endpoints and must be the exact HTTPS `/v1` endpoint — no userinfo, query, or fragment. An unset value keeps the memory-only policy; a set-but-invalid value fails startup.
+`AGENT_DISPATCHER_MODEL_PROXY_URL` optionally points dispatched runs at the authenticated OpenAI-compatible model-gateway Route. The value is validated like other configured endpoints and must be the exact HTTPS `/v1` endpoint — no userinfo, query, or fragment. An unset value keeps the memory-only policy; a set-but-invalid value fails startup.
 
 - When set, the sandbox bootstrap policy gains a `model-proxy` rule scoped to the `/v1/**` subtree on that host, admitting `GET /v1/models`, `POST /v1/chat/completions`, and `POST /v1/responses`, bound to the same run-scoped provider credential as memory health.
 - The runner environment receives `REHOR_MODEL_PROXY_URL` with the validated URL; the dispatcher never forwards its own ambient value of that variable.
@@ -68,7 +71,7 @@ The image package is readable by arbitrary sandbox UIDs. Never bake credentials 
 
 Sandbox dispatch requires explicit `BOT_EXECUTION_ENGINE=coordinator`; the entrypoint rejects the default Python engine and other values. Configure onboarding instances for the OpenCode runtime. The TypeScript coordinator reads the delivered envelope from `REHOR_INPUT_FILE` with fail-closed validation (any missing, malformed, unsupported, or oversized input exits nonzero without running local preflights or launching an agent), runs exactly one dispatched cycle without rerunning preflights, then exits. An empty or whitespace-only prompt skips the launch and exits zero. Unset or `legacy` keeps the runner's polling behavior, so non-dispatcher deployments and the legacy Python runner remain unchanged. Dispatcher deployments set `REHOR_INPUT_SOURCE` and `REHOR_INPUT_FILE` per exec; configure the engine separately. The prompt travels only through the input file.
 
-### Public egress policy (REHOR-253)
+### Public egress policy
 
 `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` is a global dispatcher-deployment opt-in (default `false`, parsed fail-closed: only the exact strings `true`/`false` are accepted) for the centrally compiled public-egress rule. When enabled, the sandbox bootstrap policy gains one additional `public_egress` network rule, merged at policy construction and owned entirely by the dispatcher deployment: teams, instance configs, agent profiles, and `preflightEnv` contribute nothing, and the rule is a compile-time constant with no parameters. Unset or invalid values keep today's memory-only behavior; the flag is a rollout switch for an approved deployment change, never a per-agent knob.
 
@@ -84,12 +87,9 @@ The rule's binaries are the reviewed system toolset grounded in `Dockerfile.runn
 - **Browser binary:** the Playwright Chromium executable lives at a version-dynamic path under `/opt/pw-browsers`; rather than grant a wildcard, it receives no network egress. Browser downloads are performed by `node`/`npx` (covered); E2E tests must use local servers.
 - **Effective-policy verification is strict under the flag:** while `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED=true`, the effective network rule set returned by the Gateway must match the requested set exactly — any extra network rule fails the session closed before the writer or runner executes. With the flag off (default), the existing permissive contract is unchanged: additive Gateway baseline rules and safe filesystem additions remain accepted.
 
-### Reviewed-head E2E evidence (PR #620)
+### Dispatch smoke-test scope
 
-
-The full-route live E2E ran on pre-review-fix commit `a619b14`: runner exited 0 after the coordinator consumed the real preflight transcript once. The onboarding instance recorded orphan cycle 62208 (2,611 tokens across three turns); memory and Jira MCP initialization returned HTTP 200, and sandbox cleanup succeeded. The test forced three real `skip` results into `start` and used temporary policy changes. It proves the one-shot runner path and initialization/cleanup, not normal production skip behavior or real task work. Subsequent review fixes for the teardown race, OpenCode-only sandbox guard, and effective filesystem policy have local/container regression coverage but have not been rerun against Gateway live. No clean production image was validated, and production networking was not wired. Earlier -11/-12 attempts failed only because a stricter test-only filesystem guard rejected Gateway's `/dev/null` default; they were not failures of the production PR guard.
-
-Follow-ups: REHOR-241 (dispatcher configuration), REHOR-242 (auth route scope), REHOR-243/244 (no-work classification and tool-call reporting), and REHOR-245 (real onboarding/pilot validation).
+A forced-start smoke test exercises one-shot dispatch, runner initialization, and cleanup. It does not validate normal no-work behavior, actionable task work, a clean production image, or production networking.
 
 ## Memory credential preflight
 
@@ -112,9 +112,9 @@ env:
 
 Configure the full externally reachable memory endpoint including the path, not only the route hostname. The URL must be HTTPS without userinfo, query, or fragment, and its certificate must be trusted by Node.
 
-The dispatcher mints the token through the Kubernetes TokenRequest API using the standard in-cluster host and the projected service-account token and CA files. The dispatcher's own service account needs `create` permission on the target `serviceaccounts/token` resource; the two service accounts need not be the same. The requested token lifetime is one hour; the API server may return a different expiry. A per-session memory-provider credential is minted once and is not refreshed; it must remain valid for the runner lifetime. Credential refresh is a REHOR-215 follow-up and shorter-lived tokens can expire during long runs.
+The dispatcher mints the token through the Kubernetes TokenRequest API using the standard in-cluster host and the projected service-account token and CA files. The dispatcher's own service account needs `create` permission on the target `serviceaccounts/token` resource; the two service accounts need not be the same. The requested token lifetime is one hour; the API server may return a different expiry. A per-session memory-provider credential is minted once and is not refreshed; it must remain valid for the runner lifetime. Credential refresh is a follow-up and shorter-lived tokens can expire during long runs.
 
-A preflight passes only when the endpoint rejects a request without credentials and a request with a deliberately invalid bearer token with 401 or 403, and returns 2xx for the minted token. Requests have a five-second deadline, verify TLS, never follow redirects or retry, and never log credentials or response bodies. `createCredentialProvider` mints and revalidates a fresh credential on each `get()`; startup calls it once.
+A preflight passes only when the endpoint rejects a request without credentials and a request with a deliberately invalid bearer token with 401 or 403, and returns 2xx for the minted token. Requests have a five-second deadline, verify TLS, never follow redirects or retry, and never log credentials or response bodies. `createCredentialProvider` mints and revalidates a fresh credential on each `get`; startup calls it once.
 
 ## OpenShell Gateway preflight
 

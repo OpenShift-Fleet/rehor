@@ -1,4 +1,4 @@
-# Org Pulse Rehor Module Spike
+# Org Pulse Module Spike
 
 Status: proposal
 
