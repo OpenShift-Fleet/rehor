@@ -8,17 +8,16 @@ With no memory, Gateway, or agent repository configuration, the dispatcher start
 
 Set `AGENT_DISPATCHER_CONFIG_REPOS` to a JSON array of trusted HTTPS or SSH Git repository URLs. Both the memory and Gateway configurations below must also be enabled; the authenticated memory URL must identify the exact `/health` endpoint. Set deployment-owned `BOT_MEMORY_URL` to the exact HTTPS `/mcp` endpoint on the same origin; missing or invalid values fail startup. `AGENT_DISPATCHER_CONFIG_DIR` optionally selects the writable checkout cache; the default is `rehor-agent-dispatcher` under the system temporary directory. The dispatcher checks each repository's default-branch SHA and fetches its pinned submodules when the revision changes or the local copy is missing. Startup fails fast when `git` is unavailable; synchronization failures surface only a coarse category (timeout, unavailable, rejected) so Git output and arguments never leak credentials.
 
-Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Every profile requires a nonblank `BOT_INSTANCE_ID`; `preflight.env` overrides the deployment value for that profile. Non-secret `BOT_` settings under `preflight.env` are passed to that agent's sandbox runtime — an instance cannot override deployment-owned `BOT_MEMORY_URL` or operational variables the dispatcher forwards itself (proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. Missing or blank identity, memory URL, or minted memory credential blocks preflight and sandbox execution, including for an empty preflight list. A `preflight.error` record identifies the profile and missing field without exposing values. For example:
+Each `instance/*/agent/instance.yaml` selects a workflow and provides an image repository and optional tag. The omitted tag defaults to `latest`. Every profile requires a nonblank `BOT_INSTANCE_ID`; top-level `env` overrides the deployment value for that profile. Allowed non-secret `BOT_` settings are used for dispatcher wiring and passed to the sandbox runner. The legacy `preflight.env` form remains supported, but declaring both forms fails discovery. An instance cannot override deployment-owned `BOT_MEMORY_URL` or operational variables the dispatcher forwards itself (proxies, `JIRA_MCP_URL`, `EXECUTOR_ADDR`); credentials belong in runtime secret mechanisms, not the repository. Missing or blank identity, memory URL, or minted memory credential blocks preflight and sandbox execution, including for an empty preflight list. A `preflight.error` record identifies the profile and missing field without exposing values. Deploy a dispatcher that supports top-level `env` before migrating an existing profile. For example:
 
 ```yaml
 workflow: onboarding
 image:
   repository: quay.io/example/onboarding-agent
   tag: v1
-preflight:
-  env:
-    BOT_INSTANCE_ID: onboarding-test
-    BOT_LABEL: onboarding-test
+env:
+  BOT_INSTANCE_ID: onboarding-test
+  BOT_LABEL: onboarding-test
 preflights:
   - id: onboarding
     with:
