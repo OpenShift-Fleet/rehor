@@ -10,6 +10,7 @@ import { composeRoute, isPreflightHttpError, PreflightHttpError } from "./http.j
 import type { MemoryServerClient } from "./memory-server.js";
 import type { ProjectReposMap } from "./repos.js";
 import type { PreflightRunContext } from "./run-context.js";
+import { parseIso } from "./time.js";
 
 /**
  * GitHub client — replaces the Python `gh` CLI calls of `gh_pr_status.py`
@@ -59,12 +60,19 @@ import type { PreflightRunContext } from "./run-context.js";
  * any page requested after the deadline. The GraphQL call keeps its native
  * fetch deadline (an AbortSignal.timeout passed with the request).
  *
- * The hcc quality-monitor ports add two listing calls: merged PRs
- * (`gh pr list --state merged` via the REST pulls endpoint, paginated with
- * Octokit under the same operation-scoped deadline) and repository file
- * paths (`gh api repos/.../git/trees/{branch}?recursive=1`, one direct
- * proxy fetch with a native deadline) — both reusing the same route
- * boundary, headerless transport, and timeout discipline.
+ * The hcc quality-monitor ports add two listing calls: merged PRs and
+ * repository file paths (`gh api repos/.../git/trees/{branch}?recursive=1`,
+ * one direct proxy fetch with a native deadline) — both reusing the same
+ * route boundary, headerless transport, and timeout discipline. Merged-PR
+ * listing has two modes. The legacy mode REST-paginates the pulls
+ * endpoint (`state=closed`, `sort=updated`, Octokit under one
+ * operation-scoped deadline). The window mode — `mergedSince` given —
+ * runs a GraphQL `search` over `repo:... is:pr is:merged merged:>=<ISO>`
+ * instead: the pulls endpoint cannot sort or filter by merge date, so its
+ * updated-desc ordering misses window merges whenever old merged PRs
+ * were updated more recently than the window's merges; the search
+ * qualifier bounds the window server-side, so the walk stays bounded and
+ * still stops at the caller's limit.
  */
 
 /** Route prefix this package requires on the auth proxy for GitHub. */
@@ -157,14 +165,25 @@ export interface GitHubClient {
    */
   getPrComments(ownerRepo: string, number: number): Promise<readonly CommentRecord[]>;
   /**
-   * List recently merged pull requests — `gh pr list --state merged --json
-   * number,title,url,author,mergedAt`. REST-paginates
-   * `GET /repos/{owner}/{repo}/pulls` (`state=closed`, `sort=updated`,
-   * `direction=desc`), keeps only entries with a non-null `merged_at`
-   * (closed-but-unmerged PRs ride along in those pages and are dropped),
-   * and stops as soon as `limit` merged PRs are collected.
+   * List merged pull requests — `gh pr list --state merged --json
+   * number,title,url,author,mergedAt`, bounded and safe. Without
+   * `mergedSince`, REST-paginates `GET /repos/{owner}/{repo}/pulls`
+   * (`state=closed`, `sort=updated`, `direction=desc`), keeps only entries
+   * with a non-null `merged_at` (closed-but-unmerged PRs ride along in
+   * those pages and are dropped), and stops as soon as `limit` merged PRs
+   * are collected. With `mergedSince` (a Date or ISO-8601 timestamp), a
+   * GraphQL `search` over `repo:... is:pr is:merged merged:>=<ISO>`
+   * replaces the REST walk — the pulls endpoint cannot sort or filter by
+   * merge date, so its updated-desc ordering can return old
+   * recently-updated merges and stop at `limit` before the window's
+   * merges; the search qualifier restricts the window server-side, and
+   * pagination still stops at `limit` collected PRs.
    */
-  listMergedPrs(ownerRepo: string, limit: number): Promise<readonly GhMergedPr[]>;
+  listMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    mergedSince?: Date | string,
+  ): Promise<readonly GhMergedPr[]>;
   /**
    * List a repository's file paths — `gh api repos/{owner}/{repo}/git/trees/
    * {branch}?recursive=1` projected to its `type === "blob"` nodes. The
@@ -241,6 +260,53 @@ interface PrStatusResponse {
       readonly statusCheckRollup?: {
         readonly contexts?: { readonly nodes?: readonly RollupNode[] | null } | null;
       } | null;
+    } | null;
+  } | null;
+}
+
+/**
+ * Merged-PR search — the date-bounded window listing. The pulls REST
+ * endpoint only sorts (`created`, `updated`, `popularity`,
+ * `long-running`), never by merge date, so a lookback window cannot be
+ * expressed there; the search qualifier `merged:>=<ISO timestamp>` can,
+ * and `type: ISSUE` with `is:pr` restricts the result union to pull
+ * requests. One page of 100 results per request, cursor-paginated.
+ */
+const MERGED_PR_SEARCH_QUERY = `query MergedPrSearch($search: String!, $cursor: String) {
+  search(query: $search, type: ISSUE, first: 100, after: $cursor) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        mergedAt
+        author {
+          login
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`;
+
+/** A `search` node — only the PullRequest fragments of the ISSUE union. */
+interface MergedPrSearchNode {
+  readonly number?: number | null;
+  readonly title?: string | null;
+  readonly url?: string | null;
+  readonly mergedAt?: string | null;
+  readonly author?: { readonly login?: string | null } | null;
+}
+
+interface MergedPrSearchResponse {
+  readonly search?: {
+    readonly nodes?: readonly (MergedPrSearchNode | null)[] | null;
+    readonly pageInfo?: {
+      readonly hasNextPage?: boolean | null;
+      readonly endCursor?: string | null;
     } | null;
   } | null;
 }
@@ -646,21 +712,43 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
   }
 
   /**
-   * List merged PRs via the REST pulls endpoint — the Python `gh pr list
-   * --state merged --limit N` call of the hcc quality-monitor preflights.
-   * Paginates with Octokit under one operation-scoped deadline (the budget
-   * a single `gh pr list` subprocess had) and stops as soon as `limit`
-   * merged PRs are collected. Only entries with a non-null `merged_at`
-   * count: the endpoint is queried with `state=closed`, so closed-but-
-   * unmerged PRs ride along in the pages and are dropped here, exactly
-   * like `gh pr list --state merged` filtered them upstream.
+   * List merged PRs, bounded and safe. The window mode (`mergedSince`
+   * given) is a GraphQL `search` restricted to `repo:... is:pr is:merged
+   * merged:>=<ISO>` — see {@link searchMergedPrs}: the pulls endpoint
+   * cannot filter by merge date, and its updated-desc ordering can return
+   * old recently-updated merges and stop at `limit` before the window's
+   * merges, missing them entirely. The legacy mode (no `mergedSince`) is
+   * the Python `gh pr list --state merged --limit N` call of the hcc
+   * quality-monitor preflights — see {@link listMergedPrsByUpdates}.
    */
-  async function listMergedPrs(ownerRepo: string, limit: number): Promise<GhMergedPr[]> {
-    const { owner, repo } = splitOwnerRepo(ownerRepo);
-    const path = `/repos/${ownerRepo}/pulls`;
+  async function listMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    mergedSince?: Date | string,
+  ): Promise<GhMergedPr[]> {
+    splitOwnerRepo(ownerRepo);
     if (!Number.isInteger(limit) || limit <= 0) {
       return [];
     }
+    if (mergedSince !== undefined) {
+      return searchMergedPrs(ownerRepo, limit, normalizeMergedSince(mergedSince));
+    }
+    return listMergedPrsByUpdates(ownerRepo, limit);
+  }
+
+  /**
+   * The legacy merged-PR listing — the Python `gh pr list --state merged
+   * --limit N` call. Paginates the REST pulls endpoint with Octokit under
+   * one operation-scoped deadline (the budget a single `gh pr list`
+   * subprocess had) and stops as soon as `limit` merged PRs are
+   * collected. Only entries with a non-null `merged_at` count: the
+   * endpoint is queried with `state=closed`, so closed-but-unmerged PRs
+   * ride along in the pages and are dropped here, exactly like
+   * `gh pr list --state merged` filtered them upstream.
+   */
+  async function listMergedPrsByUpdates(ownerRepo: string, limit: number): Promise<GhMergedPr[]> {
+    const { owner, repo } = splitOwnerRepo(ownerRepo);
+    const path = `/repos/${ownerRepo}/pulls`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -707,6 +795,84 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
         });
       }
       throw toPreflightHttpError(error, route, `${route}${path}`, "GET", timeoutMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The window mode of merged-PR listing: a GraphQL `search` restricted
+   * to `repo:"org/repo" is:pr is:merged merged:>=<ISO>` — the only
+   * GitHub API shape that filters by merge date server-side, so merges
+   * inside the lookback window are found even when older merged PRs were
+   * updated (and thus sorted by the pulls endpoint) more recently than
+   * the window's merges. Cursor-paginated under one operation-scoped
+   * deadline, stopped at `limit`, on the same headerless route-confined
+   * transport as every other call.
+   */
+  async function searchMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    sinceIso: string,
+  ): Promise<GhMergedPr[]> {
+    const path = "/graphql";
+    const searchQuery = `repo:"${ownerRepo}" is:pr is:merged merged:>=${sinceIso}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const deadlineFetch = createProxyFetch(rawFetch, geometry, {
+        signal: controller.signal,
+        timeoutMs,
+      });
+      const merged: GhMergedPr[] = [];
+      let cursor: string | null = null;
+      while (merged.length < limit) {
+        const response: MergedPrSearchResponse = await graphql<MergedPrSearchResponse>(
+          MERGED_PR_SEARCH_QUERY,
+          {
+            baseUrl: route,
+            search: searchQuery,
+            cursor,
+            request: { fetch: deadlineFetch },
+          },
+        );
+        const connection: MergedPrSearchResponse["search"] = response?.search;
+        for (const node of connection?.nodes ?? []) {
+          if (node?.mergedAt == null) continue;
+          merged.push({
+            number: typeof node.number === "number" ? node.number : 0,
+            title: node.title ?? "",
+            url: node.url ?? "",
+            author: node.author?.login ?? null,
+            mergedAt: node.mergedAt,
+          });
+          if (merged.length >= limit) {
+            return merged;
+          }
+        }
+        const nextCursor: string | null = connection?.pageInfo?.endCursor ?? null;
+        if (
+          connection?.pageInfo?.hasNextPage !== true ||
+          nextCursor === null ||
+          nextCursor === "" ||
+          nextCursor === cursor
+        ) {
+          break;
+        }
+        cursor = nextCursor;
+      }
+      return merged;
+    } catch (error) {
+      if (controller.signal.aborted && !isPreflightHttpError(error)) {
+        throw new PreflightHttpError({
+          status: null,
+          method: "POST",
+          url: `${route}${path}`,
+          route,
+          message: `POST ${route}${path} timed out after ${timeoutMs}ms`,
+        });
+      }
+      throw toPreflightHttpError(error, route, `${route}${path}`, "POST", timeoutMs);
     } finally {
       clearTimeout(timer);
     }
@@ -792,6 +958,25 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
  */
 function normalizeRollupEntry(node: RollupNode): GhStatusCheckEntry {
   return { ...node };
+}
+
+/**
+ * Normalize the merge-window bound to the ISO-8601 UTC timestamp the
+ * search qualifier takes (`merged:>=YYYY-MM-DDTHH:MM:SSZ`, second
+ * precision — the granularity GitHub documents for date qualifiers and
+ * stamps on merge times). Strings parse with the shared `parseIso`
+ * (naive values are UTC, like the Python helper); an unparseable bound
+ * is a caller programming error, not an HTTP failure, so it throws
+ * before any fetch runs.
+ */
+function normalizeMergedSince(mergedSince: Date | string): string {
+  const date = mergedSince instanceof Date ? mergedSince : parseIso(mergedSince);
+  if (date === null || Number.isNaN(date.getTime())) {
+    throw new Error(
+      `mergedSince must be a Date or an ISO-8601 timestamp: ${JSON.stringify(mergedSince)}`,
+    );
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /**

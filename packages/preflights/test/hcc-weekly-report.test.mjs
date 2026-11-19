@@ -9,10 +9,12 @@ import { createMemoryServerClient } from "../dist/shared/memory-server.js";
 /**
  * Port of the hcc-framework-agent-dev manager-tasks preflight
  * `01-task-dispatch.py` coverage, adapted to the TS module API: the day
- * schedule, the per-week task lookup, and the generate / feedback / merge
- * phases, all driven through an injected clock. Fixture-based only: the
- * memory-server client takes an injectable fetch and the GitHub client is
- * a fake object, so no test touches the network.
+ * schedule, the per-week task lookup (exact key, archived-visible,
+ * pagination-independent), and the generate / feedback / merge phases, all
+ * driven through an injected clock. Fixture-based only: the memory-server
+ * client takes an injectable fetch (backed by a server-simulating double
+ * that pages and filters like the live API) and the GitHub client is a
+ * fake object, so no test touches the network.
  */
 
 const jsonResponse = (value, status = 200) =>
@@ -21,11 +23,36 @@ const jsonResponse = (value, status = 200) =>
     headers: { "Content-Type": "application/json" },
   });
 
-const fixtureMemoryClient = (tasks) =>
-  createMemoryServerClient({
+/**
+ * Realistic memory-server double for `GET /api/tasks`: applies the first
+ * `exclude_status` value (the server's behavior), pages by
+ * `limit`/`offset`, and reports `total` — so tests exercise the same
+ * request flow the live exact-key lookup uses. Records every request URL
+ * for paging and query assertions; `status` forces a failing server.
+ */
+const memoryServer = (tasks, { status = 200 } = {}) => {
+  const requests = [];
+  const client = createMemoryServerClient({
     baseUrl: "http://memory:8080",
-    fetch: async () => jsonResponse({ items: tasks }),
+    fetch: async (url) => {
+      requests.push(url);
+      if (status !== 200) {
+        return jsonResponse({ error: "memory server unavailable" }, status);
+      }
+      const parsed = new URL(url);
+      const exclude = parsed.searchParams.get("exclude_status");
+      const limit = Number(parsed.searchParams.get("limit") ?? 20);
+      const offset = Number(parsed.searchParams.get("offset") ?? 0);
+      const visible = exclude === null ? tasks : tasks.filter((task) => task.status !== exclude);
+      const items = visible.slice(offset, offset + limit);
+      return jsonResponse({ items, total: visible.length, limit, offset });
+    },
   });
+  return { client, requests };
+};
+
+/** Plain server double for tests that don't assert on the requests. */
+const fixtureMemoryClient = (tasks) => memoryServer(tasks).client;
 
 /** Fake GitHubClient: one PR shape, one comment list, call recording. */
 const fakeGithub = ({ pr = null, comments = [] } = {}) => {
@@ -59,6 +86,7 @@ const weeklyTask = (overrides = {}) => ({
   external_key: TASK_ID,
   status: "in_progress",
   repo: "org/repo",
+  source_type: "scheduled",
   metadata: { prs: [{ repo: "org/repo", number: 7, host: "github" }] },
   ...overrides,
 });
@@ -147,6 +175,128 @@ test("a done task skips", async () => {
     status: "skip",
     content: `Task ${TASK_ID} already done`,
   });
+});
+
+// --- exact-key lookup: archived, pagination, sources, fail-closed ---
+
+test("an archived weekly task is found and never restarts generation", async () => {
+  // The listing lookup the Python script used excludes archived tasks;
+  // an archived week task must still gate the week (the exact-key
+  // lookup sees it) instead of re-entering the generate phase.
+  const { client, requests } = memoryServer([weeklyTask({ status: "archived" })]);
+  const github = fakeGithub();
+  const result = await run(
+    { memory: client, github, now: MONDAY },
+    { repo: "RedHatInsights/weekly-status" },
+  );
+  assert.deepEqual(result, {
+    status: "skip",
+    content: `Task ${TASK_ID} already archived`,
+  });
+  assert.deepEqual(github.calls.prs, []);
+  // The lookup must not ask the server to hide archived tasks.
+  assert.ok(requests.length > 0);
+  assert.ok(requests.every((url) => !url.includes("exclude_status")));
+});
+
+test("a weekly task beyond the newest 50 is found through offset paging", async () => {
+  // 60 tasks with the week's task at index 55 — past the newest-50
+  // window a plain listing caps at. The old lookup would have missed it
+  // and re-started the generate phase on Monday.
+  const tasks = Array.from({ length: 60 }, (_, i) => ({
+    external_key: `other-task-${i}`,
+    status: "in_progress",
+  }));
+  tasks[55] = weeklyTask({ metadata: {} });
+  const { client, requests } = memoryServer(tasks);
+  const github = fakeGithub();
+  const result = await run(
+    { memory: client, github, now: MONDAY },
+    { repo: "RedHatInsights/weekly-status" },
+  );
+  assert.deepEqual(result, {
+    status: "skip",
+    content: `Task ${TASK_ID} [in_progress], no action needed`,
+  });
+  assert.deepEqual(github.calls.prs, []);
+  const offsets = requests.map((url) => new URL(url).searchParams.get("offset"));
+  assert.ok(offsets.includes("50"), `expected a second page request, got: ${requests.join(" ")}`);
+});
+
+test("the canonical scheduled-source task wins over a same-key legacy task", async () => {
+  const tasks = [
+    weeklyTask({ source_type: "jira", metadata: {} }),
+    weeklyTask({ source_type: "scheduled", status: "done", metadata: {} }),
+  ];
+  const result = await run(
+    { memory: fixtureMemoryClient(tasks), github: fakeGithub(), now: MONDAY },
+    { repo: "RedHatInsights/weekly-status" },
+  );
+  assert.deepEqual(result, {
+    status: "skip",
+    content: `Task ${TASK_ID} already done`,
+  });
+});
+
+test("a legacy task created with the task_add default source still gates the week", async () => {
+  const github = fakeGithub();
+  const result = await run(
+    {
+      memory: fixtureMemoryClient([weeklyTask({ source_type: "jira", metadata: {} })]),
+      github,
+      now: MONDAY,
+    },
+    { repo: "RedHatInsights/weekly-status" },
+  );
+  assert.deepEqual(result, {
+    status: "skip",
+    content: `Task ${TASK_ID} [in_progress], no action needed`,
+  });
+  assert.deepEqual(github.calls.prs, []);
+});
+
+test("a task-lookup failure errors the cycle instead of reading as no task", async () => {
+  // Fail closed: an unreachable answer must never become a Monday
+  // generate start for a week whose task may already exist.
+  const github = fakeGithub();
+  await assert.rejects(
+    run(
+      { memory: memoryServer([weeklyTask()], { status: 500 }).client, github, now: MONDAY },
+      { repo: "RedHatInsights/weekly-status" },
+    ),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "PreflightHttpError");
+      return true;
+    },
+  );
+  assert.deepEqual(github.calls.prs, []);
+});
+
+test("a paused task does not trigger feedback or merge without an explicit unpause", async () => {
+  // Tuesday past the merge hour with fresh PR feedback — the exact
+  // situation that would otherwise start a phase — but the task is
+  // parked; only an unpause reopens dispatch.
+  const github = fakeGithub({
+    pr: OPEN_PR,
+    comments: [{ a: "reviewer", t: "2026-07-21T10:00:00Z", b: "please fix the summary" }],
+  });
+  const result = await run(
+    {
+      memory: fixtureMemoryClient([
+        weeklyTask({ status: "paused", last_addressed: "2026-07-21T08:00:00Z" }),
+      ]),
+      github,
+      now: TUESDAY,
+    },
+    { repo: "RedHatInsights/weekly-status" },
+  );
+  assert.deepEqual(result, {
+    status: "skip",
+    content: `Task ${TASK_ID} is paused — explicit unpause required before further dispatch`,
+  });
+  assert.deepEqual(github.calls.prs, []);
+  assert.deepEqual(github.calls.comments, []);
 });
 
 test("a merged PR skips", async () => {

@@ -8,13 +8,11 @@ import {
 import type { GhMergedPr, GhPrData, GitHubClient } from "../../shared/github.js";
 import { defineGitHubPreflight } from "../../shared/github.js";
 import type { MemoryServerClient } from "../../shared/memory-server.js";
-import {
-  countActiveTasksWithPrefix,
-  dailyTaskKey,
-  findTaskByKey,
-} from "../../shared/memory-server.js";
+import { countActiveTasksWithPrefix } from "../../shared/memory-server.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import { upstreamRepo } from "../../shared/repos.js";
+import type { LocalScheduleWindow } from "../../shared/schedule.js";
+import { isWithinLocalWindow } from "../../shared/schedule.js";
 import { nonBlank } from "../../shared/strings.js";
 import { parseIso } from "../../shared/time.js";
 
@@ -26,16 +24,21 @@ import { parseIso } from "../../shared/time.js";
  * Scans the instance's GitHub-hosted repos for PRs merged within the
  * lookback window whose check rollup contains `FAILURE` conclusions, minus
  * security scans (`lib/security_scans.py` patterns, ported verbatim below).
- * `start` (with Markdown for the agent prompt) when violations exist,
- * `skip` otherwise.
+ * `start` (with Markdown for the agent prompt) when untracked violations
+ * exist, `skip` otherwise.
  *
  * Behavior parity with the Python script, with the agreed adaptations:
  *
- * - The Python 24h cycle-sleep is replaced by a deterministic daily task
- *   gate: the scan runs at most once per UTC day, keyed by the
- *   `${task_prefix}-{date}` task the start content tells the agent to
- *   create. A task with that external_key — any status — means today was
- *   already scanned.
+ * - The Python 24h cycle-sleep and the port's former daily aggregate task
+ *   are gone: gating is per finding. Each violation's task is keyed
+ *   `${task_prefix}:{repo}:{pr_number}` with `source_type: "jira"` (the
+ *   quality workflow convention); a task with that external key — any
+ *   status, archived included — means the finding is already tracked and
+ *   is skipped, while every other finding is still reported. No aggregate
+ *   marker is created or consulted, and one tracked finding never hides an
+ *   independent one. The exact-key lookups fail closed: any memory-server
+ *   fetch, auth, or protocol error fails the run instead of being mistaken
+ *   for "not tracked yet".
  * - The `test-config.yaml` whitelist (`scan_only_repos`) and the constants
  *   become flattened input parameters with the same defaults.
  * - The `gh` CLI subprocesses become the package's GitHub client on the
@@ -44,7 +47,24 @@ import { parseIso } from "../../shared/time.js";
  *   attempted fetch of a class failed, the run escalates to an `error`
  *   naming the required route instead of a silent "no violations" skip.
  *   Tolerated failures are recorded as UNFETCHABLE evidence.
+ * - The port adds a time gate: the manager is only active on weekdays
+ *   09:00–23:00 Europe/Prague, so cycles outside that local window skip
+ *   before any state is read. The window is DST-aware through the shared
+ *   schedule helper (the zone's wall clock at the injected instant decides,
+ *   not a fixed UTC offset).
  */
+
+/**
+ * The manager's active window for this preflight: weekdays (Monday=0 …
+ * Friday=4) 09:00–23:00 Europe/Prague. Start inclusive, end exclusive,
+ * DST-aware through the shared schedule helper.
+ */
+const ACTIVE_WINDOW: LocalScheduleWindow = {
+  days: [0, 1, 2, 3, 4],
+  startHour: 9,
+  endHour: 23,
+  timeZone: "Europe/Prague",
+};
 
 export const HCC_MERGED_PR_VIOLATIONS_INPUT = z.strictObject({
   /**
@@ -65,10 +85,11 @@ export const HCC_MERGED_PR_VIOLATIONS_INPUT = z.strictObject({
   /** Merged PRs fetched per repo (Python `MAX_PRS_PER_REPO`). */
   max_prs_per_repo: z.number().int().positive().default(50),
   /**
-   * Prefix of the deterministic daily task (and of the per-violation tasks
-   * the agent creates; the Python external_key prefix, pluralized).
+   * Prefix of the per-violation tasks the agent creates (the Python
+   * external_key prefix); each task's key is
+   * `${task_prefix}:{repo}:{pr_number}`.
    */
-  task_prefix: z.string().default("merge-violations"),
+  task_prefix: z.string().default("merge-violation"),
 });
 
 export type HccMergedPrViolationsParams = z.infer<typeof HCC_MERGED_PR_VIOLATIONS_INPUT>;
@@ -117,6 +138,14 @@ export interface MergeViolation {
   readonly failedChecks: readonly string[];
 }
 
+/**
+ * The per-finding task key — the quality workflow convention:
+ * `${task_prefix}:{repo}:{pr_number}`, `source_type: "jira"`.
+ */
+function violationTaskKey(params: HccMergedPrViolationsParams, violation: MergeViolation): string {
+  return `${params.task_prefix}:${violation.repo}:${violation.number}`;
+}
+
 /** Dependencies of the ported `main()` flow, injectable for tests. */
 export interface HccMergedPrViolationsDeps {
   readonly memory: MemoryServerClient;
@@ -127,8 +156,10 @@ export interface HccMergedPrViolationsDeps {
 }
 
 /**
- * The ported `main()` flow: capacity gate, deterministic daily task gate,
- * concurrency gate, then per-repo merged-PR scanning.
+ * The ported `main()` flow: active-window gate, capacity gate, concurrency
+ * gate, per-repo merged-PR scanning, then per-finding dedup against the
+ * memory server (tracked findings — any status, archived included — are
+ * skipped; the rest are started with their exact task keys).
  */
 export async function runHccMergedPrViolations(
   deps: HccMergedPrViolationsDeps,
@@ -137,23 +168,29 @@ export async function runHccMergedPrViolations(
   const now = deps.now?.() ?? new Date();
   const sinceMs = now.getTime() - params.lookback_hours * 3_600_000;
 
+  // Active-window gate: weekdays 09:00–23:00 Europe/Prague, local wall
+  // clock at this instant (DST-aware). Outside it, skip before any state
+  // is read or any upstream system is touched.
+  if (!isWithinLocalWindow(now, ACTIVE_WINDOW)) {
+    return {
+      status: "skip",
+      content: "Outside the manager active window (Mon–Fri 09:00–23:00 Europe/Prague)",
+    };
+  }
+
   // Capacity gate (Python get_capacity).
   const capacity = await deps.memory.getCapacity();
   if (capacity.active >= capacity.max) {
     return { status: "skip", content: `At capacity (${capacity.active}/${capacity.max})` };
   }
 
-  // Deterministic daily task gate — the agreed replacement for the Python
-  // 24h cycle-sleep: one scan per UTC day, keyed by the task the start
-  // content tells the agent to create.
-  const dailyKey = dailyTaskKey(params.task_prefix, now);
-  const tasks = await deps.memory.getTasks();
-  if (findTaskByKey(tasks, dailyKey) !== undefined) {
-    return { status: "skip", content: `Already scanned today (${dailyKey})` };
-  }
-
   // Concurrency gate (Python MAX_CONCURRENT_VIOLATIONS).
-  const activeViolations = countActiveTasksWithPrefix(tasks, params.task_prefix, dailyKey);
+  const tasks = await deps.memory.getTasks();
+  const activeViolations = countActiveTasksWithPrefix(
+    tasks,
+    params.task_prefix,
+    params.task_prefix,
+  );
   if (activeViolations >= params.max_concurrent) {
     return {
       status: "skip",
@@ -183,7 +220,11 @@ export async function runHccMergedPrViolations(
 
     let prs: readonly GhMergedPr[];
     try {
-      prs = await deps.github.listMergedPrs(upstreamPath, params.max_prs_per_repo);
+      prs = await deps.github.listMergedPrs(
+        upstreamPath,
+        params.max_prs_per_repo,
+        new Date(sinceMs),
+      );
     } catch (error) {
       // Isolated repo-listing failure: skip this repo, keep scanning.
       repoTracker.recordFailure(upstreamPath, error);
@@ -266,28 +307,61 @@ export async function runHccMergedPrViolations(
     };
   }
 
-  // Content mirrors the Python format exactly, plus the Task ID line that
-  // tells the agent which deterministic daily task to create.
+  // Per-finding dedup: each violation is gated by its own exact task key,
+  // looked up across every status (archived included) with the quality
+  // workflow's source type. A tracked finding is skipped; every untracked
+  // one is still reported — one tracked finding never hides an independent
+  // one, and no aggregate marker is consulted or fabricated. The lookup
+  // fails closed: a fetch, auth, or protocol error propagates and errors
+  // the run rather than being mistaken for "not tracked yet".
+  const untracked: MergeViolation[] = [];
+  for (const violation of violations) {
+    const tracked = await deps.memory.getTaskByKey(violationTaskKey(params, violation), {
+      sourceType: "jira",
+    });
+    if (tracked === undefined) {
+      untracked.push(violation);
+    }
+  }
+
+  const evidence: ReadonlyArray<readonly [FetchTracker, string]> = [
+    [repoTracker, "repo"],
+    [prTracker, "PR"],
+  ];
+
+  if (untracked.length === 0) {
+    return {
+      status: "skip",
+      content: appendFetchEvidence(
+        `All ${violations.length} violation(s) already tracked`,
+        evidence,
+      ),
+    };
+  }
+
+  // Content mirrors the Python format, plus the per-finding Task ID line
+  // that tells the agent the exact external_key (and source type) to
+  // create the task with.
   const lines = [
-    `# Merge Violations (${violations.length} total)`,
+    `# Merge Violations (${untracked.length} total)`,
     "",
-    `- **Task ID**: ${dailyKey}`,
+    "Track each Jira ticket using its Task ID as external_key, source_type jira,",
+    "instance_id from BOT_INSTANCE_ID, and metadata.jira_key set to the ticket key.",
+    "Keep the task active while awaiting feedback.",
     "",
     "high:",
   ];
-  for (const violation of violations) {
+  for (const violation of untracked) {
     lines.push(
       `  - ${violation.repo} #${violation.number}: ${violation.title} ` +
         `(@${violation.author}, ${violation.mergedDate})`,
     );
     lines.push(`    failed: ${violation.failedChecks.join(", ")}`);
+    lines.push(`    Task ID: ${violationTaskKey(params, violation)}`);
   }
   return {
     status: "start",
-    content: appendFetchEvidence(`${lines.join("\n")}\n`, [
-      [repoTracker, "repo"],
-      [prTracker, "PR"],
-    ]),
+    content: appendFetchEvidence(`${lines.join("\n")}\n`, evidence),
   };
 }
 
