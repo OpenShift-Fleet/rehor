@@ -31,6 +31,7 @@ preflights:
 | `image.repository`, `image.tag` | Runner image. Set an explicit reviewed build tag; omission uses `latest`. |
 | `envs` | Environment presets for the runner build; `null` enables all, `[]` disables all. |
 | `preflight.env` | Allowed non-secret profile settings. Set a stable, unique `BOT_INSTANCE_ID`; profile settings cannot override the deployment's memory route. |
+| `sandbox.env` | **Planned; not currently supported by deployed dispatchers.** Intended for static sandbox environment values and approved workload-scoped secret references. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for the user setup guide and proposed syntax. |
 | `preflights` | Registered check IDs and literal parameters. See [Dispatcher Preflights](custom-preflight.md) for defaults and contribution rules, and the [Preflight Reference](preflight-reference.md) for each check's inputs. |
 | `cycle_timeout_seconds` | Optional per-instance timeout override. |
 
@@ -38,4 +39,4 @@ preflights:
 
 Dispatched sandboxes use `runtime: opencode`. The `provider` and optional `model` must match the configured model route and allowlist. OpenCode defaults to `rehor-openai` when no provider is selected; select a different provider only when its route is available to the sandbox. See [Model Configuration](../models.md) for provider and model resolution.
 
-Keep credentials out of `instance.yaml`. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for current platform authentication and planned instance-secret support.
+Keep credential values and backend paths out of `instance.yaml`. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for Tier 2 sandbox environment references and the platform authentication boundary.

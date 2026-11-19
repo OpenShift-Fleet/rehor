@@ -2,21 +2,61 @@
 
 ## Secret tiers reflect disclosure impact
 
-**Both tiers are sensitive.** Tier describes the potential impact of disclosure, not whether a value is a secret.
+**Both tiers are sensitive.** Tier describes potential impact if a value is disclosed, not whether the value is secret.
 
-- **Tier 1 — platform-impacting or internally revealing credentials.** This includes credentials shared across instances, capable of privileged platform or repository actions, or able to reveal sensitive internal systems or data. Keep them within platform-owned secret and authentication boundaries. Do not make them selectable by instance profiles or expose them to the agent runtime.
-- **Tier 2 — workload-scoped, bounded-impact credentials.** Use only when a workload needs a credential and disclosure is not expected to grant platform access or reveal internal information. For example, a dedicated Slack webhook may allow someone to post to its destination; it can still be abused, must be protected, and should be independently revocable. Scope each credential to one workload and its intended use.
+- **Tier 1 — platform-impacting or internally revealing credentials.** Keep these in platform-owned secret and authentication boundaries. Do not make them selectable in instance configuration or expose them to agent workloads.
+- **Tier 2 — workload-scoped credentials with bounded impact.** Use only when a workload needs a credential and its disclosure would not grant platform access or reveal sensitive internal information. A dedicated webhook can still be abused; scope it to one workload and make it independently revocable.
 
-The [dispatcher](agent-dispatcher-deployment.md) mints a short-lived memory credential per cycle. For service preflights, the gateway authenticates the request and the proxy supplies upstream vendor credentials. These platform credentials are not delivered to the sandbox as ordinary environment values. Instance repositories contain configuration, not credential material or provider-specific secret locations.
+The [dispatcher](agent-dispatcher-deployment.md) mints short-lived credentials for platform services. These platform credentials are not delivered as ordinary sandbox environment values.
 
-## Planned: workload-scoped sandbox secrets
+## Planned: configure a Tier 2 sandbox secret
 
-Dispatcher-managed Tier 2 references are planned but not supported by the current dispatcher. Any implementation must preserve tier boundaries, authorize references before launch, and keep resolved values out of logs and diagnostics.
+Tier 2 references in `sandbox.env` are a **future capability** and are not available in deployed dispatchers yet. This guide describes the intended setup. It will work only after dispatcher rendering support and the matching namespace configuration are deployed.
 
-```mermaid
-flowchart TD
- P[Platform-approved secret source] --> S[Workload-scoped secret]
- S --> D[Dispatcher resolves approved reference]
+### 1. Choose an eligible credential
+
+Confirm the credential is workload-scoped and safe to expose to the agent process running in that sandbox. Do not use this feature for Tier 1 or platform-shared credentials. Any process in the sandbox can read the resulting environment value.
+
+### 2. Arrange Vault storage
+
+Use a Vault location owned by the team responsible for the workload. If suitable storage or write permission does not exist, ask the platform/Vault owner to set it up before adding a reference. Store the value through the approved Vault process; never put secret values or Vault paths in a public instance repository.
+
+### 3. Allow the secret in the workload namespace
+
+Coordinate with the namespace owner to:
+
+- Configure ESO to read only the approved Vault path.
+- Add an `ExternalSecret` mapping from the Vault property to a target Kubernetes Secret name and key. Map only the properties the workload needs; do not sync an entire Vault object by default.
+- Allow the `ExternalSecret` resource in the namespace.
+- Grant the dispatcher `get` on that target Secret name only. Do not grant `list` or `watch` on Secrets.
+- Mark the target as an approved Tier 2 Secret for dispatcher resolution.
+
+This mapping belongs in private platform configuration. It connects the private Vault location/property to the Kubernetes target name/key; instance authors do not need the Vault path.
+
+### 4. Reference it from `instance.yaml`
+
+Use `sandbox.env` for values delivered to the sandbox runner:
+
+```yaml
+sandbox:
+  env:
+    WEBHOOK_URL: "${{ secret('workload-credentials', 'endpoint') }}"
+    FEATURE_FLAG: "enabled"
 ```
 
-The proposed profile syntax is `${{ secret('name', 'key') }}` under `sandbox.env`. A profile refers to an approved workload-scoped secret by name and key; it contains neither the credential nor its backing-store location. Authorization and resolution must complete before sandbox creation. Invalid or denied references fail closed. A resolved Tier 2 value is available to the workload that receives it, so disclosure can still cause harm; this mechanism must never pass Tier 1 credentials to agent workloads.
+In `secret(name, key)`, `name` is the approved Kubernetes Secret name and `key` is a key in that Kubernetes Secret. Neither argument is a Vault path or a Vault property name unless the private mapping intentionally uses the same text. Only approved `secret()` references are supported; this is not a general-purpose template language. Plain strings pass through unchanged.
+
+Target Secret names are unique within a namespace. Kubernetes RBAC grants access to the whole Secret object, not individual keys, so keep each target object limited to one workload's approved values. If a requested Secret or key is missing or denied, resolution fails closed and the dispatcher does not create a partially configured sandbox.
+
+`preflight.env` is separate: it configures dispatcher-side preflight scripts and is not delivered as the sandbox environment. `envs` selects runner build presets; it is not a secret store.
+
+### 5. Verify without exposing values
+
+After deployment, check that the `ExternalSecret` reports a successful sync and that the target Secret exists. Do not print or copy secret values into logs, tickets, prompts, or public repositories. Rotation is handled by ESO's configured refresh interval; do not pin a Vault version unless the owning team has a specific rollback requirement.
+
+## Runtime guarantees and limits
+
+- Secret resolution completes before sandbox creation.
+- Resolved values are not written to prompts, logs, or diagnostics.
+- The value is available to code running inside the sandbox and can be disclosed by that workload. Use only independently revocable, workload-scoped Tier 2 credentials.
+- Tier 1 credentials remain within platform-owned authentication and secret mechanisms; they must never be mapped into `sandbox.env`.

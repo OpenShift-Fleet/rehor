@@ -2,7 +2,7 @@
 
 Planned improvements and new capabilities for the Řehoř autonomous development tool.
 
-For the planned workload-scoped sandbox secret references and impact boundaries, see [Dispatcher Credentials and Secrets](dispatcher-secrets.md#planned-workload-scoped-sandbox-secrets).
+For the planned workload-scoped sandbox secret references and impact boundaries, see [Dispatcher Credentials and Secrets](dispatcher-secrets.md#planned-configure-a-tier-2-sandbox-secret).
 
 ---
 
