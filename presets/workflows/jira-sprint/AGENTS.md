@@ -208,7 +208,7 @@ Before starting work, `jira_get_issue` → check issue links:
    ```
    fix(chatbot): move VA to top of dropdown
 
-   RHCLOUD-46011
+ TEAM-46011
    Reorder addHook calls so VA is registered first.
    ```
 

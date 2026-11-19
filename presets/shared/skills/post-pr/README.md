@@ -18,7 +18,7 @@ uv run pytest --cov=scripts --cov-report=html -v
 uv run python scripts/post_pr_operations.py \
   https://github.com/RedHatInsights/hcc-ai-assistant/pull/123 \
   123 \
-  RHCLOUD-456 \
+ TEAM-456 \
   "Add vector search caching"
 ```
 
@@ -40,7 +40,7 @@ All operations use **fail-fast error handling**: if any operation fails, executi
 ### From Claude Code
 
 ```bash
-/post-pr https://github.com/RedHatInsights/hcc-ai-assistant/pull/123 123 RHCLOUD-456 "Add caching"
+/post-pr https://github.com/RedHatInsights/hcc-ai-assistant/pull/123 123 TEAM-456 "Add caching"
 ```
 
 ### From Command Line
@@ -53,7 +53,7 @@ python scripts/post_pr_operations.py PR_URL PR_NUMBER TICKET_ID SUMMARY
 uv run python scripts/post_pr_operations.py \
   https://github.com/RedHatInsights/hcc-ai-assistant/pull/124 \
   124 \
-  RHCLOUD-457 \
+ TEAM-457 \
   "Fix timeout" \
   --reviewers=user1,user2 \
   --slack-channel=#hcc-alerts \
@@ -64,7 +64,7 @@ uv run python scripts/post_pr_operations.py \
 uv run python scripts/post_pr_operations.py \
   https://github.com/RedHatInsights/hcc-ai-assistant/pull/125 \
   125 \
-  RHCLOUD-458 \
+ TEAM-458 \
   "Update deps" \
   --json
 ```
@@ -77,7 +77,7 @@ from scripts.post_pr_operations import execute_post_pr_workflow
 result = execute_post_pr_workflow(
     pr_url="https://github.com/RedHatInsights/hcc-ai-assistant/pull/123",
     pr_number=123,
-    ticket_id="RHCLOUD-456",
+ ticket_id="TEAM-456",
     summary="Add vector search caching",
     slack_channel="#hcc-ai-assistant",
     reviewers=["user1", "user2"],
@@ -159,8 +159,7 @@ open htmlcov/index.html
 
 ### File Structure
 
-```
-.claude/skills/post-pr/
+```.claude/skills/post-pr/
 ├── SKILL.md                     # Skill documentation (Claude Code entrypoint)
 ├── README.md                    # This file
 ├── pyproject.toml               # Dependencies and tool config
@@ -198,7 +197,7 @@ Managed with **uv** for fast, reliable dependency resolution.
 ### JIRA (via MCP)
 - **Authentication**: Handled by mcp-atlassian server
 - **Operations**: Get transitions, transition issue, add comment
-- **Client**: `jira_call()` from shared `jira_mcp.py`
+- **Client**: `jira_call` from shared `jira_mcp.py`
 
 ### Slack Webhooks
 - **Format**: Incoming webhook with attachment format (httpx)

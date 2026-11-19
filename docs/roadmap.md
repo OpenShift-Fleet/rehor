@@ -2,6 +2,8 @@
 
 Planned improvements and new capabilities for the Řehoř autonomous development tool.
 
+For the planned workload-scoped sandbox secret references and impact boundaries, see [Dispatcher Credentials and Secrets](dispatcher-secrets.md#planned-configure-a-tier-2-sandbox-secret).
+
 ---
 
 ## Suggested priority
@@ -30,25 +32,6 @@ Start with items that are low-cost, reuse existing data, and unblock later work.
 12. **Workflow Presets** — one preset at a time, driven by team demand.
 
 Engineer experience items (§9–§12) pair naturally with platform foundations: run identity provides stable IDs that improvement analysis references, and logging & observability supplies structured events that blocker explanations and failure fingerprinting consume. Prioritize platform foundations first so engineer experience features build on real data rather than ad-hoc log parsing.
-
----
-
-## Status
-
-| Item | Status |
-|------|--------|
-| CI Foundation | In Progress (REHOR-75, 76, 77, 78 shipped; REHOR-107 merged; REHOR-62 runtime container E2E harness bootstrap in progress) |
-| Logging & Observability | Planned |
-| Run Identity | Planned |
-| Shared Memory MCP | Planned |
-| Agentic SDLC Integration | Planned |
-| Model Customization | Planned |
-| Task Blocker Explanation | Planned |
-| Ticket Readiness Doctor | Planned |
-| Failure Fingerprinting | Planned |
-| Onboarding Agent | Planned |
-| Improvement Agent | Planned (after telemetry exists) |
-| Workflow Presets | Planned (scrum-jira exists today) |
 
 ---
 
@@ -193,7 +176,7 @@ Add structured logging and traceability across bot runs so engineers and the pla
 **Why:** The current logging infrastructure is unstructured plain text with no cross-event correlation:
 - `bot/run.py` uses `[%(asctime)s] %(message)s` format — no structured/JSON logging anywhere, no `structlog` or equivalent in the project.
 - No correlation ID links events across a single cycle. The main loop runs preflight → agent cycle → cost recording → transcript storage, but each step logs independently. `session_id` from Claude SDK is captured *after* the cycle ends, never used during it. Preflight scripts have zero ID awareness.
-- Preflight duration is not tracked — `_run_script()` runs subprocesses but never records timing. Only the Claude SDK's `duration_ms` on the agent cycle itself is captured.
+- Preflight duration is not tracked — `_run_script` runs subprocesses but never records timing. Only the Claude SDK's `duration_ms` on the agent cycle itself is captured.
 - Multiple silent failures: dashboard status push uses bare `except Exception: pass` (`bot/agent.py:59-61`); cost API push catches all exceptions at DEBUG level only (`bot/costs.py:88-91`); WebSocket events swallow all errors silently (`server.py:133`).
 - Engineers diagnose issues by grepping `data/bot.log` (plain text, append mode). There is no way to filter by cycle, task, or error class.
 

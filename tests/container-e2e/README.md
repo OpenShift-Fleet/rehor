@@ -1,6 +1,6 @@
-# Container E2E Harness (REHOR-62)
+# Container E2E Harness
 
-This directory contains the first in-repo version of the REHOR-62 container E2E harness.
+This directory contains the first in-repo version of the container E2E harness.
 
 It validates runtime behavior that `container-verify.yml` intentionally does not cover:
 

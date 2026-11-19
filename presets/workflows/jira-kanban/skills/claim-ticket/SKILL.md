@@ -16,13 +16,13 @@ allowed-tools:
 Execute the claim-ticket workflow after selecting a ticket:
 
 ```bash
-python3 .claude/skills/claim-ticket/scripts/claim_ticket_operations.py RHCLOUD-12345 2>&1
+python3.claude/skills/claim-ticket/scripts/claim_ticket_operations.py TEAM-12345 2>&1
 ```
 
 Use `--dry-run` to preview without executing:
 
 ```bash
-python3 .claude/skills/claim-ticket/scripts/claim_ticket_operations.py RHCLOUD-12345 --dry-run 2>&1
+python3.claude/skills/claim-ticket/scripts/claim_ticket_operations.py TEAM-12345 --dry-run 2>&1
 ```
 
 The script executes 8 operations in sequence:
@@ -61,7 +61,7 @@ export BOT_BOARD_NAME="<Your Board Name>"         # Lookup board by name via Jir
 
 ## Authentication
 
-JIRA operations use MCP via jira_call(). No API tokens needed - the mcp-atlassian server handles authentication. Bot identity for ticket assignment comes from `BOT_JIRA_EMAIL`.
+JIRA operations use MCP via jira_call. No API tokens needed - the mcp-atlassian server handles authentication. Bot identity for ticket assignment comes from `BOT_JIRA_EMAIL`.
 
 Memory server operations use direct HTTP (POST /tasks).
 

@@ -2,7 +2,7 @@
 
 Shared preflight implementations for Rehor agents: a private npm workspace package — consumed by `@rehor/agent-dispatcher` through its two declared public entrypoints, the package root and the `@rehor/preflights/preflights` subpath (see [Consuming the package](#consuming-the-package)) — never published to any registry. The dispatcher owns execution; agent configuration repositories never ship executable code. An agent's `instance.yaml` selects preflights by id and supplies plain literal parameters; every implementation lives in this package, registered centrally behind one registry. Inputs are validated fail-closed with Zod before anything executes, and a configuration failure (`invalid`) is distinct from an execution failure (`error`). External systems are reached exclusively through the auth proxy, which injects credentials on the upstream leg.
 
-Design: [`docs/preflight-rework-spike-input.md`](../../docs/preflight-rework-spike-input.md)
+Design rationale: [`spikes/preflight-rework-input.md`](../../spikes/preflight-rework-input.md) (not published on the documentation site)
 
 ## Layout
 
@@ -16,30 +16,30 @@ src/
 
 - **`src/core/`** — the pure contract:
   - `preflight.ts` — `PreflightDefinition`: `id`, Zod input schema, `run(ctx, params)`.
-  - `registry.ts` — `definePreflight()` and `createPreflightRegistry()`; unknown lookups return `undefined` (fail closed), duplicate ids throw at construction.
+ - `registry.ts` — `definePreflight` and `createPreflightRegistry`; unknown lookups return `undefined` (fail closed), duplicate ids throw at construction.
   - `entry.ts` — the Zod shape of one `preflights:` entry: a shorthand string or `{ id, with }`.
-  - `validate.ts` — `validateConfig()`: whole-list validation before execution, stable per-entry messages.
+ - `validate.ts` — `validateConfig`: whole-list validation before execution, stable per-entry messages.
   - `results.ts` — the `start` / `skip` / `error` execution results plus the pre-execution `invalid` representation.
-  - `defaults.ts` — `workflowDefaults` and `validateWorkflowDefaults()`.
-- **`src/shared/`** — internal modules the preflight implementations import directly: the HTTP client factory, the memory-server client, the Jira REST client, the GitHub client, the run context (`createPreflightRunContext()`), and the repos/time/format helpers.
-- **`src/preflights/`** — one directory per preflight plus `index.ts`, the registration barrel (`createPopulatedRegistry()`). `jira-common/` holds the triage and candidate logic the Jira preflights share; it is not a registered preflight itself.
+ - `defaults.ts` — `workflowDefaults` and `validateWorkflowDefaults`.
+- **`src/shared/`** — internal modules the preflight implementations import directly: the HTTP client factory, the memory-server client, the Jira REST client, the GitHub client, the run context (`createPreflightRunContext`), and the repos/time/format helpers.
+- **`src/preflights/`** — one directory per preflight plus `index.ts`, the registration barrel (`createPopulatedRegistry`). `jira-common/` holds the triage and candidate logic the Jira preflights share; it is not a registered preflight itself.
 
 ## Consuming the package
 
 Two public entrypoints, both resolving to build output under `dist/` — `.js` at runtime, `.d.ts` for types, with declaration emit on and deep `dist/` imports refused by the exports map:
 
 - `@rehor/preflights` — the core contract (`validateConfig`, the entry schemas, `definePreflight`, `createPreflightRegistry`, `workflowDefaults`, …) plus `createPreflightRunContext`.
-- `@rehor/preflights/preflights` — `createPopulatedRegistry()`, the zero-argument barrel with every registered preflight.
+- `@rehor/preflights/preflights` — `createPopulatedRegistry`, the zero-argument barrel with every registered preflight.
 
 ```ts
 import { validateConfig } from "@rehor/preflights";
 import { createPopulatedRegistry } from "@rehor/preflights/preflights";
 
-const registry = createPopulatedRegistry();
+const registry = createPopulatedRegistry;
 const result = validateConfig(preflights, registry); // the parsed `preflights:` list
 ```
 
-A consumer smoke test links the package by name from a scratch package outside the repository, imports both entrypoints at runtime, and typechecks a strict NodeNext consumer against the emitted declarations. Dispatcher-side execution wiring is REHOR-258/259 — the example above is configuration validation, not integrated dispatch.
+A consumer smoke test links the package by name from a scratch package outside the repository, imports both entrypoints at runtime, and typechecks a strict NodeNext consumer against the emitted declarations. The dispatcher imports these entrypoints, validates each agent's configuration against the populated registry, and executes registered checks; see the [dispatcher preflight reference](../agent-dispatcher/README.md#agent-work-preflights).
 
 ## Declaring preflights
 
@@ -67,7 +67,7 @@ preflights:
 
 ## Preflight reference
 
-The registered ids — one registration line each in `createPopulatedRegistry()` (`src/preflights/index.ts`):
+The registered ids — one registration line each in `createPopulatedRegistry` (`src/preflights/index.ts`):
 
 | id           | purpose                                            | required inputs       | optional inputs (default)                                                       |
 | ------------ | -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------- |
@@ -127,7 +127,7 @@ Finds new onboarding tickets by label and checks active onboarding tasks for new
 
 The port preserves statuses, aggregation rules, formatting, and cooldowns. Beyond the transport switch — `gh`/`glab` CLI subprocesses and the Jira MCP client replaced by SDK clients on the auth-proxy route — these deliberate changes exist:
 
-- The agent prompt is assembled from `start` results only; `skip`/`error` content goes to the cycle report and logs instead (dispatcher-side, REHOR-259).
+- The agent prompt is assembled from `start` results only; `skip` and `error` content goes to the cycle report and logs instead.
 - The inter-script state file (`data/preflight-state.json`) is an in-memory per-run context object — same keys and semantics, no file.
 - Fetch failures follow the per-class tally of `shared/failure-policy.ts` — PR/MR fetches and their comments/notes are tracked separately. A class with no attempted fetches is no failure at all (the normal skip path). A class with at least one success tolerates its failed items (the Python `gh_pr`/`gl_mr` wrappers degraded to `None`/`[]`): they are skipped and reported as UNFETCHABLE evidence — item label plus HTTP status or transport class, never error messages — and isolated 401/403/429/5xx count as item-specific, because a credential can be scoped to miss one repository. A class that attempted fetches but completed none is an execution `error` naming the required route, whatever the failures — auth, rate limit, upstream 5xx, network/timeout, or an all-404 run. An API-confirmed missing item (GitHub `pullRequest: null`) counts as a success, not a failure. The GitHub client keeps one comment endpoint's comments when the other fails; both failing throws, and the comments class decides. Onboarding's merge check applies the same distinction (see `onboarding`).
 - Jira feedback classification scans the complete fetched comment history — the client pages through every comment — and the renderer bounds how much it prints while preserving the triggering human feedback. The Python truncation-detection heuristic (a workaround for the MCP client's comment cap) is not ported.
@@ -209,12 +209,15 @@ The dispatcher supplies all of it. The package never reads environment variables
 
 ## Adding a preflight
 
-1. Create a directory under `src/preflights/`.
-2. Define the preflight with `definePreflight()`: a stable string `id`, a Zod `strictObject` input schema (the typed single source of truth — `z.infer` derives the param types, and strict mode makes unknown parameter names fail closed), and a `run(ctx, params)` function.
-3. Add exactly one registration line in `createPopulatedRegistry()` in `src/preflights/index.ts`.
-4. Add fixture-based tests (injectable `fetch`; no network).
+All new dispatcher checks must be contributed to this repository through a pull request. Instance repositories may select and configure registered checks, but must not contain executable preflight code.
 
-This is the audit boundary: new preflights land by PR to this repository, so enterprise integrations and their credential use are reviewed centrally through the barrel. Sensitive credentials are never handled here — external systems are reached through the auth proxy, which injects credentials on the upstream leg. `definePreflight()` throws on an empty id or a non-object input schema, and `createPreflightRegistry()` throws on duplicate ids — central-author errors caught at construction, never at agent dispatch time.
+1. Create a directory under `src/preflights/`.
+2. Define the preflight with `definePreflight`: a stable string `id`, a Zod `strictObject` input schema (the typed single source of truth — `z.infer` derives the param types, and strict mode makes unknown parameter names fail closed), and a `run(ctx, params)` function.
+3. Add exactly one registration line in `createPopulatedRegistry` in `src/preflights/index.ts`.
+4. Add fixture-based tests (injectable `fetch`; no network).
+5. Submit the change here for review; do not implement or register a check only in an instance repository.
+
+This is the audit boundary: enterprise integrations and their credential use are reviewed centrally through the barrel. Sensitive credentials are never handled here — external systems are reached through the auth proxy, which injects credentials on the upstream leg. `definePreflight` throws on an empty id or a non-object input schema, and `createPreflightRegistry` throws on duplicate ids — central-author errors caught at construction, never at agent dispatch time.
 
 ## Building and testing
 

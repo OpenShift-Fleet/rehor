@@ -20,7 +20,7 @@ python3 .claude/skills/post-manual-steps/post_manual_steps.py '<json_config>' 2>
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "bot_label": "rehor-ai-myteam",
   "bot_name": "devbot-myteam",
   "dedicated_proxy": false,
