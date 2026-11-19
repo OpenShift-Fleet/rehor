@@ -4,6 +4,7 @@ import type { PreflightExecutionResult } from "../../core/results.js";
 import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
+import { nonBlank } from "../../shared/strings.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -34,9 +35,6 @@ import {
 
 /** Statuses that count as not started for candidate search. */
 const NOT_STARTED_STATUSES: readonly string[] = ["New", "Backlog", "Refinement", "To Do"];
-
-/** Rejects blank strings (empty or whitespace-only) without altering the value. */
-const nonBlank = (value: string) => value.trim() !== "";
 
 const jiraSprintInput = z.strictObject({
   /**
