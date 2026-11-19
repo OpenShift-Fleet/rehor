@@ -73,7 +73,8 @@ The registered ids — one registration line each in `createPopulatedRegistry()`
 | ------------ | -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------- |
 | gh-pr-status | GitHub PR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
 | gl-mr-status | GitLab MR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
-| hcc-merged-pr-violations | merged PRs with failed non-security checks | —            | `scan_only_repos` (—), `lookback_hours` (24), `max_concurrent` (5), `max_prs_per_repo` (50), `task_prefix` (`"merge-violations"`) |
+| hcc-merged-pr-violations | merged PRs with failed non-security checks | —            | `scan_only_repos` (—), `lookback_hours` (24), `max_concurrent` (5), `max_prs_per_repo` (50), `task_prefix` (`"merge-violation"`) |
+| hcc-quality-jira-feedback | new human Jira feedback on ongoing quality tasks | — | `task_prefixes` (`["merge-violation", "test-scan"]`) |
 | hcc-test-anti-pattern-scan | test-file discovery for anti-pattern analysis | `scan_only_repos` | `max_repos_per_scan` (3), `max_files_per_repo` (20), `task_prefix` (`"test-scan"`), `patterns` (`["**/*.spec.ts", "**/*.test.ts"]`), `framework_indicators` (`["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]`), `exclude_substrings` (`["node_modules/", "dist/", "build/", ".playwright/", "playwright-report/", "test-results/"]`) |
 | hcc-weekly-report | weekly-report task dispatch (generate / feedback / merge) | `repo` | `branch_pattern` (`"hcc-team-weekly-report"`), `merge_hour_utc` (10)             |
 | jira-sprint  | active-task triage + sprint/backlog candidate search | `label`             | `include_backlog` (false), `email` (—), `interrupted_retry_minutes` (30)         |
@@ -97,7 +98,7 @@ The GitLab counterpart of `gh-pr-status`: checks the MRs of the instance's activ
 
 Port of the hcc quality-monitor preflight `01-check-merged-prs.py`: scans the instance's GitHub-hosted repos for PRs merged within the lookback window whose check rollup contains `FAILURE` conclusions, excluding security scans (the `lib/security_scans.py` patterns, ported verbatim — a PR whose only failures are security scans is not a violation). `start` with the violation list (repo, PR, title, author, merge date, failed check names) when any exist, `skip` otherwise. Repos come from the instance project-repos map; bare names resolve to their GitHub upstreams, non-GitHub repos are skipped.
 
-Time/task gates, in order: memory-server capacity; the deterministic daily task `${task_prefix}-{UTC date}` — a task with that external key in *any* status means today was already scanned (the replacement for the Python 24h cycle-sleep); and `max_concurrent` active tasks whose external key starts with `${task_prefix}:` or equals the daily key. The start content carries a `- **Task ID**: {daily key}` line — **the agent is expected to create that deterministic daily task** when it starts work, so the gate closes the day's scan.
+The scan runs Mon–Fri 09:00–23:00 Europe/Prague and respects capacity and `max_concurrent`. Each violation is independently gated by `${task_prefix}:{repo}:{pr_number}`; a matching Jira task in any status, including archived, suppresses only that finding. The start content names each untracked finding's task key.
 
 Fetch failures follow the shared failure policy: a repo-listing or PR-detail failure skips that repo/PR and is reported as UNFETCHABLE evidence; when every attempted fetch of a class failed, the run is an `error` naming the required route — never a silent "no violations" skip.
 
@@ -105,27 +106,56 @@ Fetch failures follow the shared failure policy: a repo-listing or PR-detail fai
 - `lookback_hours` (default `24`, positive int) — merges older than this are ignored; PRs with unparseable `mergedAt` are excluded like the Python.
 - `max_concurrent` (default `5`, positive int) — skip while this many violation tasks are already active.
 - `max_prs_per_repo` (default `50`, positive int) — merged PRs fetched per repo.
-- `task_prefix` (default `"merge-violations"`) — prefix of the deterministic daily task and of the per-violation tasks the agent creates.
+- `task_prefix` (default `"merge-violation"`) — prefix of the per-violation tasks the agent creates.
+
+### `hcc-quality-jira-feedback`
+
+Jira feedback channel for the quality workflow's ongoing tasks — the piece the two scans never had: `hcc-merged-pr-violations` and `hcc-test-anti-pattern-scan` only discover new findings, so once a finding becomes a tracked task, human feedback on its Jira issue had no preflight to pick it up. This preflight inspects the instance's active tasks whose `external_key` starts with one of `task_prefixes` (`merge-violation:{repo}:{pr}`, `test-scan:{repo}:{date}`), reads the linked Jira issue key from the task's `metadata.jira_key`, fetches the issue with every comment through the run context's Jira client, and `start`s when a comment newer than the task's `last_addressed` looks like human feedback. The start content names the original task (`Task ID`) and the Jira key and includes the triggering comments, so the agent resumes the existing task instead of creating a new one, with feedback to be handled before new scans.
+
+The Jira key comes from `metadata.jira_key`, never from the `external_key` — for these tasks the external key is the finding identity (repo/pr or repo/date), not a Jira key, which is exactly why the `jira-triage` family (which treats `external_key` as the Jira key) cannot triage them. A tracked task with a missing or invalid `metadata.jira_key` is a named skip reason on that task — never an unrelated error, and never a link fabricated from the external key.
+
+- Schedule gate: Mon–Fri 09:00–23:00 Europe/Prague — the instance's historical KEDA window — enforced before any fetch through the shared DST-aware schedule helper.
+- Respects task state: only `in_progress`/`pr_open`/`pr_changes` tasks are fetched; paused, done, and archived tasks never start. Active tasks are read through one fully paginated status query per active status, so no newest-50 listing cap can hide an older active task. No interrupted/stale retry — a task without new feedback is clean, and there is no capacity or daily-marker gate.
+- Legacy task pickup (user-approved): besides the instance's own attributed rows, active tasks with no `instance_id` at all — the original quality workflow's tasks — are also picked up, under a strict ownership constraint: the task's `external_key` must match a quality prefix and name, in its deterministic `{prefix}:{repo}:{suffix}` form, a repository that exists as an exact key of the instance's project-repos map with a resolvable upstream (metadata keys like `_config` or entries without an upstream never count), and a populated `task.repo` must agree with that key. A missing or empty repo map therefore selects no unattributed task — no broadening — while instance-attributed quality tasks stay selected without one, as before.
+- Reading the unattributed half is a global read with an ambiguity: the fetch scans the global status-filtered listing (no `instance_id` query) and filters client-side, keeping only rows attributed to the run's instance or truly unassigned; rows naming another instance — and empty-string `instance_id`s, which are not "unassigned" — stay excluded however well their key matches. Ownership of an unattributed row is genuinely ambiguous, which is why the configured-repo match above is the admission gate, and why the memory client still refuses the fetch without a configured instance id. The two fetch scopes (instance-scoped and unattributed-including) are cached separately per run.
+- Fail policy (the jira family's, not the scans' FetchTracker tolerance): any memory or Jira fetch failure is an `error` result — for a feedback check, a tolerated fetch failure would silently skip the very feedback this preflight exists to surface.
+- Feedback detection is the jira triage family's heuristic plus the gh-pr-status author normalization: a comment counts when it is newer than `last_addressed`, does not carry the structured bot markers (`### `, `| `, `PR:`), and its author's display name is not an obvious bot account (`[bot]`, `*-bot`, `*-robot`, `github-actions`, `dependabot`, `renovate`). This is a heuristic, not robust human filtering: bot accounts with human-looking persona names — the instance's own Jira user among them — are indistinguishable from humans by these signals, so a marker-less comment from such an account still counts as feedback. Correctness also rests on the agent stamping `last_addressed` when it addresses feedback.
+- `task_prefixes` (default `["merge-violation", "test-scan"]`) — external-key prefixes of the tracked per-finding tasks. The colon matters: the `${prefix}-${date}` daily scan-marker tasks are deliberately not matched.
 
 ### `hcc-test-anti-pattern-scan`
 
 Port of the hcc quality-monitor preflight `02-scan-test-anti-patterns.py`: lists the file tree of the first `max_repos_per_scan` whitelisted GitHub-hosted repos, matches test files by suffix pattern (excluding configured path substrings, capped at `max_files_per_repo` per repo), detects the framework (`playwright` when any indicator file is present, else `generic`), and emits the compact per-repo file list the agent analyzes for anti-patterns. `start` when any test files were found, `skip` otherwise.
 
-Time/task gates, in order: memory-server capacity; the deterministic daily task `${task_prefix}-{UTC date}` (any status closes the day); and the ported `MAX_CONCURRENT_SCANS = 5` constant — skip while 5 or more active tasks have an external key starting with `${task_prefix}:` or equal to the daily key. The start content carries a `- **Task ID**: {daily key}` line — **the agent is expected to create that deterministic daily task** when it starts work.
+The scan runs Mon–Fri 09:00–23:00 Europe/Prague and respects capacity and a five-active-task limit. A task keyed `${task_prefix}:{repo}:{UTC date}` in any status suppresses that repository only. After analyzing a repository, the agent must record its scan even when no ticket is needed; a ticketed task remains active with `metadata.jira_key` for feedback. Repositories with no matching test files have no tracking task and are checked again on subsequent preflights.
 
-Pattern matching is the Python's simplified matcher: a pattern matches a file when the pattern stripped of its `**` directory prefix and a leading `*` is a suffix of the file path (`**/*.spec.ts` → any path ending `.spec.ts`); a file is excluded when any `exclude_substrings` entry is a substring of its path. Listing failures follow the same shared failure policy as `hcc-merged-pr-violations` (isolated with evidence; all attempted failing → `error`).
+Pattern matching follows the Python scanner's simplified suffix rules: recognized test suffixes match regardless of directory prefix (`e2e/**/*.test.ts` matches any `.test.ts` file). Other patterns match a literal suffix after removing `**/` and leading `*`. A file is excluded when any `exclude_substrings` entry is a substring of its path. Listing failures follow the same shared failure policy as `hcc-merged-pr-violations` (isolated with evidence; all attempted failing → `error`).
 
 - `scan_only_repos` (required, nonempty) — the whitelist of repo names; this scan is intentionally scoped, never fleet-wide. An empty match against the project-repos map skips.
 - `max_repos_per_scan` (default `3`, positive int) — repos scanned per run, in map order.
 - `max_files_per_repo` (default `20`, positive int) — test files analyzed per repo.
-- `task_prefix` (default `"test-scan"`) — prefix of the deterministic daily task and of the per-scan tasks the agent creates.
+- `task_prefix` (default `"test-scan"`) — prefix of the per-repository daily scan tasks the agent creates.
 - `patterns` (default `["**/*.spec.ts", "**/*.test.ts"]`) — test file patterns, suffix-matched as above.
 - `framework_indicators` (default `["playwright.config.ts", "playwright.config.js", "playwright.config.mjs"]`) — file-path substrings that mark a repo as using the framework.
 - `exclude_substrings` (default `["node_modules/", "dist/", "build/", ".playwright/", "playwright-report/", "test-results/"]`) — path substrings that exclude a file.
 
+Example quality-monitor preflight selection:
+
+```yaml
+preflights:
+  - hcc-quality-jira-feedback
+  - id: hcc-merged-pr-violations
+    with:
+      scan_only_repos: [insights-chrome, landing-page-frontend, astro-virtual-assistant-frontend]
+  - id: hcc-test-anti-pattern-scan
+    with:
+      scan_only_repos: [insights-chrome, landing-page-frontend, astro-virtual-assistant-frontend]
+```
+
+The instance workflow must record each completed repository scan, including scans that need no Jira ticket, and store `metadata.jira_key` on ticketed tasks. Registering these preflights alone does not migrate or deploy the instance.
+
 ### `hcc-weekly-report`
 
-Port of the hcc manager-tasks preflight `01-task-dispatch.py`: decides which weekly-report phase the cycle is in. Only Monday and Tuesday act (UTC calendar day); Sunday maps to the previous Friday, so the reporting week is keyed `weekly-report-{friday}`. Monday without a task for the week starts the *generate* phase; a task with new PR feedback starts the *feedback* phase; Tuesday at or after `merge_hour_utc` UTC with no blocking reviews starts the *merge* phase; merged/closed/done tasks and everything else skip.
+Port of the hcc manager-tasks preflight `01-task-dispatch.py`: decides which weekly-report phase the cycle is in. It runs Monday and Tuesday 07:00–21:00 Europe/Prague; the reporting week is keyed `weekly-report-{friday}` using the UTC calendar. Monday without a task for the week starts the *generate* phase; a task with new PR feedback starts the *feedback* phase; Tuesday at or after `merge_hour_utc` UTC starts the *merge* phase; merged/closed/done/archived/paused tasks and everything else skip.
 
 The task is looked up by `external_key` in the memory server; its PRs are enriched through the gh-pr-status machinery (`enrichGh`/`hasNewFeedback`) with the same failure policy — an isolated PR/comment fetch failure is tolerated with evidence, a total fetch failure is an `error` naming the required route.
 
@@ -170,7 +200,7 @@ Finds new onboarding tickets by label and checks active onboarding tasks for new
 
 The port preserves statuses, aggregation rules, formatting, and cooldowns. Beyond the transport switch — `gh`/`glab` CLI subprocesses and the Jira MCP client replaced by SDK clients on the auth-proxy route — these deliberate changes exist:
 
-- The `hcc-*` preflights come from the hcc-framework-agent-dev instance repository (custom Python preflights that had no shared-preset counterpart), not from `presets/shared/preflight/`. They share the transport switch and add three agreed adaptations: the Python per-instance 24h cycle-sleep scripts are replaced by deterministic daily task gates keyed `${task_prefix}-{UTC date}` (any task with that external key closes the day); the per-instance config files (`test-config.yaml`, script constants) are flattened into `with:` parameters with the same defaults; and the agent — not the preflight — creates the deterministic daily task named in the start content.
+- The `hcc-*` preflights port custom instance workflows. Time windows and per-finding task keys replace runner-local cycle sleeps; instance settings become `with:` parameters. A separate Jira feedback check can resume ongoing quality tasks. The agent creates and updates tasks, not the preflight.
 
 - The agent prompt is assembled from `start` results only; `skip`/`error` content goes to the cycle report and logs instead (dispatcher-side, REHOR-259).
 - The inter-script state file (`data/preflight-state.json`) is an in-memory per-run context object — same keys and semantics, no file.

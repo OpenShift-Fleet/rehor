@@ -10,6 +10,7 @@ test("populated registry registers every landed preflight", () => {
     "gh-pr-status",
     "gl-mr-status",
     "hcc-merged-pr-violations",
+    "hcc-quality-jira-feedback",
     "hcc-test-anti-pattern-scan",
     "hcc-weekly-report",
     "jira-kanban",
@@ -27,6 +28,7 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("hcc-merged-pr-violations").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("hcc-quality-jira-feedback").input), []);
   assert.deepEqual(requiredInputNames(registry.get("hcc-test-anti-pattern-scan").input), [
     "scan_only_repos",
   ]);
@@ -59,8 +61,18 @@ test("hcc preflights apply their documented defaults and fail closed on missing 
         lookback_hours: 24,
         max_concurrent: 5,
         max_prs_per_repo: 50,
-        task_prefix: "merge-violations",
+        task_prefix: "merge-violation",
       },
+    },
+  ]);
+
+  // The quality Jira-feedback check has no required inputs either.
+  const qualityFeedback = validateConfig(["hcc-quality-jira-feedback"], registry);
+  assert.equal(qualityFeedback.ok, true);
+  assert.deepEqual(qualityFeedback.entries, [
+    {
+      id: "hcc-quality-jira-feedback",
+      params: { task_prefixes: ["merge-violation", "test-scan"] },
     },
   ]);
 

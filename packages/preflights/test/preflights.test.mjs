@@ -9,6 +9,7 @@ test("populated registry registers the ported preflights", () => {
     "gh-pr-status",
     "gl-mr-status",
     "hcc-merged-pr-violations",
+    "hcc-quality-jira-feedback",
     "hcc-test-anti-pattern-scan",
     "hcc-weekly-report",
     "jira-kanban",

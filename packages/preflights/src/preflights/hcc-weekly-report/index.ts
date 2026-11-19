@@ -9,8 +9,9 @@ import { fmtComments, fmtTaskHeader } from "../../shared/format.js";
 import type { GitHubClient } from "../../shared/github.js";
 import { defineGitHubPreflight } from "../../shared/github.js";
 import type { MemoryServerClient } from "../../shared/memory-server.js";
-import { findTaskByKey } from "../../shared/memory-server.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
+import type { LocalScheduleWindow } from "../../shared/schedule.js";
+import { isWithinLocalWindow } from "../../shared/schedule.js";
 import { isoDateUtc } from "../../shared/time.js";
 import type { GhFetchTrackers } from "../gh-pr-status/index.js";
 import { enrichGh, hasNewFeedback } from "../gh-pr-status/index.js";
@@ -23,11 +24,11 @@ import { enrichGh, hasNewFeedback } from "../gh-pr-status/index.js";
  * Only Monday and Tuesday act. Monday without a task for the week starts
  * the generate phase; a task with new PR feedback starts the feedback
  * phase; Tuesday at/after `merge_hour_utc` with no blocking reviews starts
- * the merge phase; merged/closed/done tasks and everything else skip. The
- * task for a week is keyed `weekly-report-{friday}` in the memory server
- * (the weekly-status repo organizes reports by Friday date), and the task's
- * PRs are enriched through the gh-pr-status machinery (`enrichGh`,
- * `hasNewFeedback`) with the same failure policy.
+ * the merge phase; merged/closed/done/archived/paused tasks and everything
+ * else skip. The task for a week is keyed `weekly-report-{friday}` in the
+ * memory server (the weekly-status repo organizes reports by Friday
+ * date), and the task's PRs are enriched through the gh-pr-status
+ * machinery (`enrichGh`, `hasNewFeedback`) with the same failure policy.
  *
  * Behavior parity with the Python script, with the agreed adaptations:
  *
@@ -40,7 +41,41 @@ import { enrichGh, hasNewFeedback } from "../gh-pr-status/index.js";
  * - The Python `main()` logged each check's skip reason to stderr and
  *   emitted a generic skip; the port surfaces the check's reason as the
  *   skip content, where the cycle report can see it.
+ * - The port adds a time gate: the manager is KEDA-scheduled 07:00–21:00
+ *   Europe/Prague (its effective timezone — the GitOps UTC comment is
+ *   stale), and this preflight dispatches Monday/Tuesday, so cycles
+ *   outside Mon/Tue 07:00–21:00 Europe/Prague skip before any state is
+ *   read. The UTC weekday, merge hour, and Friday-calendar selection are
+ *   unchanged.
+ * - The port looks the week's task up by exact key (`getTaskByKey`)
+ *   instead of scanning the newest-50 active listing: the deterministic
+ *   gate must also see archived tasks and tasks displaced past the newest
+ *   50, or a Monday cycle would re-start the generate phase for a week
+ *   whose task already exists. The canonical lookup targets the
+ *   `scheduled` source the manager-tasks workflow creates its tasks with
+ *   (AGENTS.md `task_add`), with a same-key any-source fallback so tasks
+ *   created before that convention (or with the `task_add` default source)
+ *   still gate the week; every lookup failure errors the cycle instead of
+ *   masquerading as "no task yet".
+ * - The port treats a `paused` task as parked: it never triggers the
+ *   feedback or merge phases, because unpausing is an explicit human
+ *   action (the Python script never saw paused weekly tasks — the listing
+ *   it read predated pause support in this workflow).
  */
+
+/**
+ * The manager's effective active window intersected with this preflight's
+ * dispatch days: KEDA runs the manager 07:00–21:00 Europe/Prague on
+ * Mon–Wed/Fri, the weekly-report dispatch only acts Monday/Tuesday, so
+ * the intersection is Mon/Tue 07:00–21:00 Europe/Prague. Start inclusive,
+ * end exclusive, DST-aware through the shared schedule helper.
+ */
+const ACTIVE_WINDOW: LocalScheduleWindow = {
+  days: [0, 1],
+  startHour: 7,
+  endHour: 21,
+  timeZone: "Europe/Prague",
+};
 
 export const HCC_WEEKLY_REPORT_INPUT = z.strictObject({
   /**
@@ -108,12 +143,30 @@ export async function runHccWeeklyReport(
     return { status: "skip", content: "Not a scheduled day" };
   }
 
+  // Inside the dispatch days but outside the manager's active hours
+  // (07:00–21:00 Europe/Prague) — skip before touching memory or GitHub.
+  if (!isWithinLocalWindow(now, ACTIVE_WINDOW)) {
+    return {
+      status: "skip",
+      content: "Outside the manager active window (Mon/Tue 07:00–21:00 Europe/Prague)",
+    };
+  }
+
   const friday = fridayOfWeek(now);
   const fridayStr = isoDateUtc(friday);
   const taskId = `weekly-report-${fridayStr}`;
 
-  const tasks = await deps.memory.getTasks();
-  const task = findTaskByKey(tasks, taskId) ?? null;
+  // Exact-key lookup over the whole task table — archived tasks included,
+  // independent of the newest-50 listing cap — so an existing week never
+  // re-enters the generate phase. The canonical source is `scheduled`
+  // (the manager-tasks `task_add` convention); the any-source fallback
+  // keeps tasks created with a different source (the `task_add` default
+  // is `jira`) gating the week too. Both lookups fail closed: an error
+  // propagates and errors the cycle — it must never read as "no task".
+  const task =
+    (await deps.memory.getTaskByKey(taskId, { sourceType: "scheduled" })) ??
+    (await deps.memory.getTaskByKey(taskId)) ??
+    null;
 
   // No task exists yet — generate phase (Monday only).
   if (task === null) {
@@ -137,6 +190,22 @@ export async function runHccWeeklyReport(
 
   if (status === "done") {
     return { status: "skip", content: `Task ${taskId} already done` };
+  }
+
+  // Archived is terminal like done: the week's work is finished (or
+  // removed) — never a reason to generate, feed back, or merge again.
+  if (status === "archived") {
+    return { status: "skip", content: `Task ${taskId} already archived` };
+  }
+
+  // Paused is an explicit human parking of the task: without an unpause
+  // it must not trigger the feedback or merge phases (no PR enrichment
+  // either — there is nothing to decide from while parked).
+  if (status === "paused") {
+    return {
+      status: "skip",
+      content: `Task ${taskId} is paused — explicit unpause required before further dispatch`,
+    };
   }
 
   // Enrich the task's PRs with GitHub data, tracked and escalated exactly
