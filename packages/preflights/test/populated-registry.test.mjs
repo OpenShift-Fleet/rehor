@@ -9,9 +9,19 @@ test("populated registry registers every landed preflight", () => {
   assert.deepEqual(registry.ids(), [
     "gh-pr-status",
     "gl-mr-status",
+    "hcc-merged-pr-violations",
+    "hcc-quality-jira-feedback",
+    "hcc-test-anti-pattern-scan",
+    "hcc-weekly-report",
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
+    "obsint-backlog-scan",
+    "obsint-cve-ci-review",
+    "obsint-cve-scan",
+    "obsint-jenkins-status",
+    "obsint-mintmaker-prs",
+    "obsint-weekly-status-update",
     "onboarding",
   ]);
 });
@@ -23,6 +33,86 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("onboarding").input), ["label"]);
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("hcc-merged-pr-violations").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("hcc-quality-jira-feedback").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("hcc-test-anti-pattern-scan").input), [
+    "scan_only_repos",
+  ]);
+  assert.deepEqual(requiredInputNames(registry.get("hcc-weekly-report").input), ["repo"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-backlog-scan").input), ["label"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-cve-scan").input), ["label"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-jenkins-status").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-mintmaker-prs").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-weekly-status-update").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-cve-ci-review").input), []);
+});
+
+test("hcc preflights apply their documented defaults and fail closed on missing required inputs", () => {
+  const weekly = validateConfig(
+    [{ id: "hcc-weekly-report", with: { repo: "RedHatInsights/weekly-status" } }],
+    registry,
+  );
+  assert.equal(weekly.ok, true);
+  assert.deepEqual(weekly.entries, [
+    {
+      id: "hcc-weekly-report",
+      params: {
+        repo: "RedHatInsights/weekly-status",
+        branch_pattern: "hcc-team-weekly-report",
+        merge_hour_utc: 10,
+      },
+    },
+  ]);
+
+  const violations = validateConfig(["hcc-merged-pr-violations"], registry);
+  assert.equal(violations.ok, true);
+  assert.deepEqual(violations.entries, [
+    {
+      id: "hcc-merged-pr-violations",
+      params: {
+        lookback_hours: 24,
+        max_concurrent: 5,
+        max_prs_per_repo: 50,
+        task_prefix: "merge-violation",
+      },
+    },
+  ]);
+
+  // The quality Jira-feedback check has no required inputs either.
+  const qualityFeedback = validateConfig(["hcc-quality-jira-feedback"], registry);
+  assert.equal(qualityFeedback.ok, true);
+  assert.deepEqual(qualityFeedback.entries, [
+    {
+      id: "hcc-quality-jira-feedback",
+      params: { task_prefixes: ["merge-violation", "test-scan"] },
+    },
+  ]);
+
+  // The test scan requires its whitelist, so shorthand fails closed.
+  const scan = validateConfig(["hcc-test-anti-pattern-scan"], registry);
+  assert.equal(scan.ok, false);
+  assert.deepEqual(scan.invalid, [
+    {
+      id: "hcc-test-anti-pattern-scan",
+      messages: ['hcc-test-anti-pattern-scan: missing required parameter "scan_only_repos"'],
+    },
+  ]);
+
+  const scanExplicit = validateConfig(
+    [{ id: "hcc-test-anti-pattern-scan", with: { scan_only_repos: ["repo-a"] } }],
+    registry,
+  );
+  assert.equal(scanExplicit.ok, true);
+  assert.deepEqual(scanExplicit.entries[0].params.task_prefix, "test-scan");
+  assert.deepEqual(scanExplicit.entries[0].params.patterns, ["**/*.spec.ts", "**/*.test.ts"]);
+  assert.deepEqual(scanExplicit.entries[0].params.exclude_substrings, [
+    "node_modules/",
+    "dist/",
+    "build/",
+    ".playwright/",
+    "playwright-report/",
+    "test-results/",
+  ]);
 });
 
 test("jira-triage shorthand entries validate; required-input preflights fail closed", () => {

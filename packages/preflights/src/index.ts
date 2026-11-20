@@ -43,11 +43,27 @@ export { validateConfig } from "./core/validate.js";
 
 export type {
   JiraWiring,
+  JenkinsWiring,
   MemoryServerWiring,
+  PersistentStateWiring,
   PreflightRunContext,
   PreflightRunContextOptions,
   PreflightRunState,
   ProxyRouteConfig,
   ProxyWiring,
+  SlackWiring,
 } from "./shared/run-context.js";
 export { createPreflightRunContext } from "./shared/run-context.js";
+export type { SlackClient, SlackClientConfig, SlackWebhookConfig } from "./shared/slack.js";
+export type {
+  JenkinsBuild,
+  JenkinsBuildDetail,
+  JenkinsClient,
+  JenkinsClientConfig,
+  JenkinsFailureSummary,
+  JenkinsInstance,
+  JenkinsInstances,
+  JenkinsJob,
+  JenkinsStage,
+} from "./shared/jenkins.js";
+export type { MemoryRecord } from "./shared/memory-server.js";

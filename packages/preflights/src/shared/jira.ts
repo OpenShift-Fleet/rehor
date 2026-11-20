@@ -99,6 +99,12 @@ export interface JiraClient {
    * `jira_get_issue` + `comment_limit` calls, without the oldest-first cap.
    */
   getIssueWithComments(issueKey: string, options?: JiraIssueOptions): Promise<JiraIssue>;
+  /**
+   * Update issue fields (PUT `/issue/{key}`) — the write path the CVE
+   * groomer needs for fixVersion assignment. Throws on failure; callers
+   * that treat the write as best-effort catch per issue.
+   */
+  updateIssue(issueKey: string, fields: Readonly<Record<string, unknown>>): Promise<void>;
 }
 
 /** A page from the enhanced JQL search endpoint (`/search/jql`). */
@@ -223,7 +229,14 @@ export function createJiraClient(config: JiraClientConfig): JiraClient {
     return { ...issue, fields };
   }
 
-  return { searchIssues, getIssue, getIssueComments, getIssueWithComments };
+  async function updateIssue(
+    issueKey: string,
+    fields: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    await http.putJson<unknown>(`${apiRoot}/issue/${encodeURIComponent(issueKey)}`, { fields });
+  }
+
+  return { searchIssues, getIssue, getIssueComments, getIssueWithComments, updateIssue };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
+import type { JenkinsInstances, SlackWebhookConfig } from "@rehor/preflights";
 import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
 import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
 import { isForwardedPreflightVariable } from "./preflight-env.js";
@@ -17,6 +18,12 @@ export type DispatcherLoopOptions = {
   memoryCredential?: () => Promise<string>;
   /** Services-gateway base URL; the proxy route for external-system preflights. */
   serviceGatewayUrl?: URL;
+  /** Persistent preflight state directory; see the cycle options. */
+  preflightStateDir?: string;
+  /** Slack webhook channels; see the cycle options. */
+  slackWebhooks?: SlackWebhookConfig;
+  /** Jenkins endpoints and idp job overrides; see the cycle options. */
+  jenkins?: { instances: JenkinsInstances; idpJobs?: readonly string[] };
   /** Observes each completed cycle; defaults to a structured stdout event. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
@@ -47,7 +54,7 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
-      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl });
+      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl, preflightStateDir: options.preflightStateDir, slackWebhooks: options.slackWebhooks, jenkins: options.jenkins });
       if (!signal?.aborted) emit(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {

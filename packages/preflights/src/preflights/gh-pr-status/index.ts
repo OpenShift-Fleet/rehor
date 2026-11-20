@@ -11,6 +11,7 @@ import { fmtComments, fmtTaskHeader, getTaskPrs, isBotAuthor } from "../../share
 import type { GhPrData, GitHubClient } from "../../shared/github.js";
 import { createGitHubClient } from "../../shared/github.js";
 import type { MemoryServerClient, MemoryTask } from "../../shared/memory-server.js";
+import { ACTIVE_TASK_STATUSES } from "../../shared/memory-server.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import { upstreamRepo } from "../../shared/repos.js";
 import type { PreflightRunContext, PreflightRunState } from "../../shared/run-context.js";
@@ -101,8 +102,6 @@ export interface GhPrStatusOptions {
    */
   readonly suppressTerminalIfAddressed?: boolean;
 }
-
-const ACTIVE_STATUSES: readonly string[] = ["in_progress", "pr_open", "pr_changes"];
 
 const BUCKET_SECTIONS: readonly (readonly [keyof GhStatusBuckets, string])[] = [
   ["merged", "MERGED"],
@@ -311,7 +310,7 @@ export async function runGhPrStatus(
 ): Promise<PreflightExecutionResult> {
   const tasks = await deps.memory.getTasks();
   const capacity = await deps.memory.getCapacity();
-  const active = tasks.filter((task) => ACTIVE_STATUSES.includes(task?.status ?? ""));
+  const active = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task?.status ?? ""));
 
   if (active.length === 0) {
     return {
