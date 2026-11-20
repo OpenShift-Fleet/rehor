@@ -150,6 +150,15 @@ export interface MemoryServerClient {
    * caller must constrain.
    */
   getActiveTasks(options?: ActiveTaskFetchOptions): Promise<readonly MemoryTask[]>;
+  listMemories(tag: string, limit?: number): Promise<readonly MemoryRecord[]>;
+  deleteMemory(id: string | number): Promise<void>;
+  archiveTask(externalKey: string): Promise<void>;
+}
+
+export interface MemoryRecord {
+  readonly id: string | number;
+  readonly content: string;
+  readonly tags: readonly string[];
 }
 
 /**
@@ -575,6 +584,31 @@ export function createMemoryServerClient(config: MemoryServerClientConfig): Memo
   }
 
   return {
+    async listMemories(tag, limit = 100) {
+      try {
+        const data = await http.getJson<{ items: readonly MemoryRecord[] }>("/api/memories", {
+          query: { tag, limit },
+        });
+        if (!Array.isArray(data?.items)) throw new Error("Invalid memory listing");
+        return data.items;
+      } catch (error) {
+        throw authReject(error);
+      }
+    },
+    async deleteMemory(id) {
+      try {
+        await http.delete<unknown>(`/api/memories/${encodeURIComponent(String(id))}`);
+      } catch (error) {
+        throw authReject(error);
+      }
+    },
+    async archiveTask(externalKey) {
+      try {
+        await http.delete<unknown>(`/api/tasks/${encodeURIComponent(externalKey)}`);
+      } catch (error) {
+        throw authReject(error);
+      }
+    },
     getTasks(): Promise<readonly MemoryTask[]> {
       const cached = state?.get("tasks");
       if (cached !== undefined) return Promise.resolve(cached as readonly MemoryTask[]);

@@ -15,6 +15,12 @@ test("populated registry registers the ported preflights", () => {
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
+    "obsint-backlog-scan",
+    "obsint-cve-ci-review",
+    "obsint-cve-scan",
+    "obsint-jenkins-status",
+    "obsint-mintmaker-prs",
+    "obsint-weekly-status-update",
     "onboarding",
   ]);
   assert.equal(registry.has("gh-pr-status"), true);

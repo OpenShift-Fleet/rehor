@@ -3,6 +3,24 @@ import test from "node:test";
 import { isPreflightHttpError } from "../dist/shared/http.js";
 import { createJiraClient, JIRA_PATH_PREFIX } from "../dist/shared/jira.js";
 
+test("Jira fix-version updates accept an empty success response", async () => {
+  const fields = { fixVersions: [{ name: "2026Q4" }] };
+  let request;
+  const client = createJiraClient({
+    baseUrl: "https://proxy.example",
+    fetch: async (url, init) => {
+      request = { url, method: init.method, body: JSON.parse(init.body) };
+      return new Response(null, { status: 204 });
+    },
+  });
+  await client.updateIssue("TEST-1", fields);
+  assert.deepEqual(request, {
+    url: "https://proxy.example/jira/rest/api/2/issue/TEST-1",
+    method: "PUT",
+    body: { fields },
+  });
+});
+
 const jsonResponse = (value, status = 200) =>
   new Response(JSON.stringify(value), {
     status,
