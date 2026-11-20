@@ -16,6 +16,12 @@ test("populated registry registers every landed preflight", () => {
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
+    "obsint-backlog-scan",
+    "obsint-cve-ci-review",
+    "obsint-cve-scan",
+    "obsint-jenkins-status",
+    "obsint-mintmaker-prs",
+    "obsint-weekly-status-update",
     "onboarding",
   ]);
 });
@@ -33,6 +39,12 @@ test("required inputs match the spike doc's parameter mapping", () => {
     "scan_only_repos",
   ]);
   assert.deepEqual(requiredInputNames(registry.get("hcc-weekly-report").input), ["repo"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-backlog-scan").input), ["label"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-cve-scan").input), ["label"]);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-jenkins-status").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-mintmaker-prs").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-weekly-status-update").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("obsint-cve-ci-review").input), []);
 });
 
 test("hcc preflights apply their documented defaults and fail closed on missing required inputs", () => {

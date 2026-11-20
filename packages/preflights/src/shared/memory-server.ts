@@ -150,6 +150,31 @@ export interface MemoryServerClient {
    * caller must constrain.
    */
   getActiveTasks(options?: ActiveTaskFetchOptions): Promise<readonly MemoryTask[]>;
+  /**
+   * Memory entries carrying `tag`, bounded by `limit` (default 100) — the
+   * REST `/api/memories` listing the watchduty and mintmaker cleanups scan
+   * for tracked-work bookkeeping. Every fetch, auth, or protocol failure
+   * throws (fail closed).
+   */
+  listMemories(tag: string, limit?: number): Promise<readonly MemoryRecord[]>;
+  /**
+   * Delete one memory entry by id — the cleanup path for recovered Jenkins
+   * jobs and merged bot PRs. Throws on failure; callers that treat cleanup
+   * as best-effort catch per entry.
+   */
+  deleteMemory(id: string | number): Promise<void>;
+  /**
+   * Archive one task by `external_key` (the REST soft delete). Throws on
+   * failure; callers that treat cleanup as best-effort catch per entry.
+   */
+  archiveTask(externalKey: string): Promise<void>;
+}
+
+/** One memory entry as the REST `/api/memories` listing returns it. */
+export interface MemoryRecord {
+  readonly id: string | number;
+  readonly content: string;
+  readonly tags: readonly string[];
 }
 
 /**
@@ -196,6 +221,10 @@ export const ACTIVE_TASK_STATUSES: readonly string[] = ["in_progress", "pr_open"
 interface TasksResponse {
   readonly items?: readonly MemoryTask[];
   readonly total?: number;
+}
+
+interface MemoriesResponse {
+  readonly items?: readonly MemoryRecord[];
 }
 
 /** One successfully fetched listing page, shared across key lookups. */
@@ -574,6 +603,39 @@ export function createMemoryServerClient(config: MemoryServerClientConfig): Memo
     ]);
   }
 
+  /**
+   * Memory listing + the two write-path cleanups. These bypass the per-run
+   * caches: cleanup must observe current server state, and deletes must
+   * always reach the server.
+   */
+  async function listMemories(tag: string, limit = 100): Promise<readonly MemoryRecord[]> {
+    let data: MemoriesResponse;
+    try {
+      data = await http.getJson<MemoriesResponse>("/api/memories", {
+        query: { tag, limit },
+      });
+    } catch (error) {
+      throw authReject(error);
+    }
+    return Array.isArray(data?.items) ? [...data.items] : [];
+  }
+
+  async function deleteMemory(id: string | number): Promise<void> {
+    try {
+      await http.delete<unknown>(`/api/memories/${encodeURIComponent(String(id))}`);
+    } catch (error) {
+      throw authReject(error);
+    }
+  }
+
+  async function archiveTask(externalKey: string): Promise<void> {
+    try {
+      await http.delete<unknown>(`/api/tasks/${encodeURIComponent(externalKey)}`);
+    } catch (error) {
+      throw authReject(error);
+    }
+  }
+
   return {
     getTasks(): Promise<readonly MemoryTask[]> {
       const cached = state?.get("tasks");
@@ -644,6 +706,9 @@ export function createMemoryServerClient(config: MemoryServerClientConfig): Memo
       });
       return activeTasksInFlight;
     },
+    listMemories,
+    deleteMemory,
+    archiveTask,
   };
 }
 

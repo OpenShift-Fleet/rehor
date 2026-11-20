@@ -192,6 +192,13 @@ export interface GitHubClient {
    * {@link PreflightHttpError}.
    */
   listRepoFiles(ownerRepo: string, branch?: string): Promise<readonly string[]>;
+  /**
+   * Fetch raw file contents — the `gh api repos/{owner}/{repo}/contents/
+   * {path}` raw-media fetch the Python preflights used for CSV reports and
+   * weekly status files. Resolves `null` on HTTP 404 (an expected "not
+   * there yet"); every other failure throws {@link PreflightHttpError}.
+   */
+  getFileContents(ownerRepo: string, path: string, ref?: string): Promise<string | null>;
 }
 
 // The fields mirror `gh pr view --json state,mergeable,statusCheckRollup,
@@ -940,12 +947,54 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     return files;
   }
 
+  /** Raw file contents via the contents API; null on 404 (gh api raw). */
+  async function getFileContents(
+    ownerRepo: string,
+    path: string,
+    ref?: string,
+  ): Promise<string | null> {
+    const encodedPath = path
+      .split("/")
+      .filter((segment) => segment !== "")
+      .map(encodeURIComponent)
+      .join("/");
+    if (encodedPath === "") {
+      throw new Error("getFileContents requires a non-empty path");
+    }
+    const query = ref === undefined || ref === "" ? "" : `?ref=${encodeURIComponent(ref)}`;
+    const url = `${route}/repos/${ownerRepo}/contents/${encodedPath}${query}`;
+    const response = await withTimeout(
+      () =>
+        proxyFetch(url, {
+          method: "GET",
+          headers: { Accept: "application/vnd.github.raw+json" },
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
+      timeoutMs,
+      route,
+      url,
+      "GET",
+    );
+    if (response.status === 404) return null;
+    if (!response.ok) {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: await describeGitHubHttpStatus("GET", url, response, route),
+      });
+    }
+    return await response.text();
+  }
+
   return {
     route,
     getPr,
     getPrComments,
     listMergedPrs,
     listRepoFiles,
+    getFileContents,
   };
 }
 
