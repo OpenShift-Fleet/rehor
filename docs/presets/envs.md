@@ -139,8 +139,7 @@ Installs Chromium and the chrome-devtools MCP server for visual verification. Th
 
 ```
 # Dev proxy hostname — resolves to localhost where Caddy listens
-127.0.0.1    stage.foo.redhat.com
-::1          stage.foo.redhat.com
+127.0.0.1 stage.foo.redhat.com::1 stage.foo.redhat.com
 ```
 
 The entrypoint loads this file automatically. Instances without `extra-hosts` are unaffected. Use this when Chrome needs to resolve hostnames that don't exist in public DNS (e.g. dev-proxy targets).

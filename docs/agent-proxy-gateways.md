@@ -1,4 +1,4 @@
-# Agent Proxy Gateways (REHOR-251/252/253)
+# Agent Proxy Gateways
 
 One authenticated, path-routed HTTP OpenShift gateway in front of the existing proxy services, plus a centrally owned sandbox egress policy. New gateway and egress flags are **disabled by default**. No public gRPC or forward-proxy endpoint is added. Legacy Squid, proxy endpoints and internal gRPC remain until all agents migrate.
 
@@ -6,11 +6,11 @@ One authenticated, path-routed HTTP OpenShift gateway in front of the existing p
 
 ## Scope
 
-Cross-cluster sandboxed agents cannot reach in-namespace ClusterIP services, so every credential-injecting proxy behind `devbot-proxy` needs an authenticated public entry point. The model gateway already provides one pattern (oauth-proxy Route, REHOR-237). This work adds **one** public endpoint, pointing at the existing proxy pod:
+Cross-cluster sandboxed agents cannot reach in-namespace ClusterIP services, so every credential-injecting proxy behind `devbot-proxy` needs an authenticated public entry point. The model gateway provides an oauth-proxy Route pattern. This design uses **one** public endpoint, pointing at the existing proxy pod:
 
-- **Services HTTP gateway** (REHOR-251/252): one edge-terminated, oauth-proxy-authenticated Route multiplexing the existing HTTP listeners — including the executor command API — behind fixed path prefixes.
+- **Services HTTP gateway**: one edge-terminated, oauth-proxy-authenticated Route multiplexing the existing HTTP listeners — including the executor command API — behind fixed path prefixes.
 
-Ordinary (non-credential-bearing) sandbox egress is **not** proxied through a new public endpoint: it is centrally managed by the dispatcher's OpenShell supervisor policy whitelist, migrated from the existing Squid allowlist (REHOR-253 — see [Egress policy migration](#egress-policy-migration-rehor-253)). Credential-bearing APIs stay on this hub proxy; vendor credentials are never delivered through OpenShell.
+Ordinary (non-credential-bearing) sandbox egress is **not** proxied through a new public endpoint: it is centrally managed by the dispatcher's OpenShell supervisor policy whitelist, migrated from the existing Squid allowlist (see [Egress policy migration](#egress-policy)). Credential-bearing APIs stay on this hub proxy; vendor credentials are never delivered through OpenShell.
 
 There is **no public gRPC endpoint and no public forward proxy**. The existing executor listener (`EXECUTOR_LISTEN`, `:9090` in-cluster or the unix socket in local dev) is retained and serves **both** protocols: legacy gRPC (HTTP/2) and the new HTTP/1.1 `POST /executor/execute`, multiplexed on the same listener. Older gRPC clients continue on the same port, unchanged. Squid keeps running on `:3128` for legacy deployments, unchanged.
 
@@ -40,7 +40,7 @@ The Route selects the existing proxy pod through the `${PROXY_NAME}-gateways` Cl
 
 Existing ports (Squid `:3128`, executor `:9090`, `:8443`–`:8451`, model-auth `:8452`) and the model Route `${PROXY_NAME}-model` are unchanged. In-namespace callers keep using ClusterIP addresses directly, e.g. `http://devbot-proxy:8450`.
 
-## HTTP services gateway (REHOR-251)
+## HTTP services gateway
 
 A single authenticated Route fronts a fixed path-prefix multiplexer (`http_gateway.go`, `NewHTTPGateway`). Routing is a compile-time table; no request path, header, query, or body can select or modify an upstream. The mux is **not** an authentication boundary — the `oauth-services` sidecar owns identity checks, using the same tight SAR as the model gateway (not the memory dashboard's broad `projects/list` rule).
 
@@ -61,7 +61,7 @@ A single authenticated Route fronts a fixed path-prefix multiplexer (`http_gatew
 
 Behavior details (from `http_gateway.go`): `CONNECT` is rejected with `405`; a route whose backend is not configured fails closed with `503`; `/healthz` is served by the mux itself; dot-segment and double-slash traversal is rejected with `403`; streaming responses (MCP SSE, model completions, git pack negotiation) are flushed immediately; same-origin relative `Location` headers from backends are rewritten back into the route's gateway prefix (so a backend redirect stays on its route), absolute redirects (the git smart-HTTP case) pass through unchanged.
 
-## HTTP executor endpoint (REHOR-252)
+## HTTP executor endpoint
 
 Executor commands — the `gh`/`glab`/`gpg` shims behind the bot's credential helpers — are exposed through HTTP instead of a public gRPC endpoint. HTTP works with OpenShell's existing HTTP/1 header mediation.
 
@@ -108,7 +108,7 @@ What may cross into a spoke sandbox:
 - The services Route is reached over the router's normal public HTTPS; sandboxes need no extra trust material.
 - Plain HTTP carrying real tokens is not allowed cross-cluster. The legacy in-namespace plain paths — including the unauthenticated internal executor HTTP endpoint — stay inside the original NetworkPolicy boundary and remain fine for in-cluster callers.
 
-## Egress policy migration (REHOR-253)
+## Egress policy
 
 Sandbox ordinary egress — everything that is **not** a credential-bearing API — is centrally managed by the dispatcher's OpenShell supervisor policy whitelist, migrated from the existing Squid allowlist. No public forward proxy, CONNECT authentication, or custom certificate is built for this.
 

@@ -90,8 +90,8 @@ The proxy maintains a map of allowed hosts and their auth configuration:
 type GitHost struct {
     Scheme   string            // "https"
     AuthType string            // "bearer" or "basic"
-    Token    func() string     // token getter (reads env at call time)
-    Username func() string     // for basic auth only
+ Token func string // token getter (reads env at call time)
+ Username func string // for basic auth only
     TLSInsecureSkipVerify bool  // break-glass only, defaults to false
     TLSCACertFile string        // optional PEM bundle path for custom CAs
     TLSCACertPEM string         // optional PEM content for custom CAs
@@ -101,13 +101,13 @@ var hosts = map[string]GitHost{
     "github.com": {
         Scheme:   "https",
         AuthType: "bearer",
-        Token:    func() string { return os.Getenv("GH_TOKEN") },
+ Token: func string { return os.Getenv("GH_TOKEN") },
     },
     "gitlab.cee.redhat.com": {
         Scheme:   "https",
         AuthType: "basic",
-        Username: func() string { return os.Getenv("GL_USERNAME") },
-        Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
+ Username: func string { return os.Getenv("GL_USERNAME") },
+ Token: func string { return os.Getenv("GITLAB_TOKEN") },
     },
 }
 ```
@@ -177,7 +177,7 @@ package executor
 // URL scheme: http://devbot-proxy:8447/<host>/<path>
 // Example:    http://proxy:8447/github.com/org/repo.git/info/refs
 //           → https://github.com/org/repo.git/info/refs + Authorization header
-func NewGitAuthProxy() http.Handler
+func NewGitAuthProxy http.Handler
 ```
 
 Follows the exact same pattern as `jira.go` and `vertex.go`:
@@ -298,7 +298,7 @@ After the git-auth proxy is validated, remove credential helper support:
 
 1. Remove `gh auth git-credential` from executor policy allowlist
 2. Remove `glab credential-helper` handler from executor server
-3. Remove credential helper lines from `.gitconfig` generation in `setup_git()`
+3. Remove credential helper lines from `.gitconfig` generation in `setup_git`
 4. Remove `needsStdin` cases for credential helpers in executor client
 
 This is a separate follow-up — both paths can coexist during migration.
@@ -314,7 +314,7 @@ This is a separate follow-up — both paths can coexist during migration.
 
 ### Phase 2: Switch Workload to URL Rewrite
 
-- Update `setup_git()` in `bot/run.py` to use `insteadOf` when `GIT_AUTH_PROXY` env var is set
+- Update `setup_git` in `bot/run.py` to use `insteadOf` when `GIT_AUTH_PROXY` env var is set
 - Deploy and validate pushes work through the proxy
 - Both credential-helper and proxy paths work simultaneously
 

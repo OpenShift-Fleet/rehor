@@ -1,4 +1,4 @@
-# Branch Protection Rollout (REHOR-77)
+# Branch Protection Rollout
 
 This runbook documents how to apply, verify, and roll back branch protection on the `master` branch of `OpenShift-Fleet/rehor`.
 
@@ -75,7 +75,7 @@ Try merging a PR with a failing or missing check via the GitHub UI to confirm it
 
 ## Validation evidence (authoring phase, before admin apply)
 
-The following dry-runs were executed while implementing REHOR-77:
+The following dry-runs verify the branch-protection configuration:
 
 - `make verify-required-checks PR=403` -> PASS, both required Konflux checks passed
 - `make verify-required-checks PR=407` -> FAIL, merge conflicts detected (`mergeable=CONFLICTING`, `mergeStateStatus=DIRTY`)
@@ -140,4 +140,3 @@ If branch protection is blocking legitimate merges:
 
 - **Policy authoring**: any contributor (via PR to update JSON files)
 - **Policy application**: repository admin (Martin or equivalent)
-- **Ticket**: REHOR-77
