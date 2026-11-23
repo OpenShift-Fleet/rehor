@@ -16,7 +16,6 @@ import { createSessionRegistryClient, reconcileOpenSessions } from "./session-re
 import type { SessionCompletion } from "./dispatch-sessions.js";
 
 const logger = createLifecycleLogger();
-const startup = logger.start("startup");
 const keepAlive = setInterval(() => {}, 60_000);
 const stopController = new AbortController();
 // Each session cleanup has a shared 20-minute deadline, leaving two minutes
@@ -82,6 +81,11 @@ const shutdown = (): void => {
 
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+// Signal handlers must be registered before the first observable stdout
+// record: the startup announcement below is a synchronous write, and a
+// SIGTERM delivered between that write and the registration above would
+// kill the process by default action instead of draining (REHOR-275).
+const startup = logger.start("startup");
 
 async function start(): Promise<void> {
   let provider: ReturnType<typeof createCredentialProvider> | undefined;
