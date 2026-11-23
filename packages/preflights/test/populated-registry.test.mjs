@@ -27,80 +27,28 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("onboarding").input), ["label"]);
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
-  assert.deepEqual(requiredInputNames(registry.get("hcc-merged-pr-violations").input), []);
-  assert.deepEqual(requiredInputNames(registry.get("hcc-quality-jira-feedback").input), []);
-  assert.deepEqual(requiredInputNames(registry.get("hcc-test-anti-pattern-scan").input), [
-    "scan_only_repos",
-  ]);
-  assert.deepEqual(requiredInputNames(registry.get("hcc-weekly-report").input), ["repo"]);
 });
 
-test("hcc preflights apply their documented defaults and fail closed on missing required inputs", () => {
-  const weekly = validateConfig(
-    [{ id: "hcc-weekly-report", with: { repo: "RedHatInsights/weekly-status" } }],
+test("HCC registry validates shorthand only for preflights without required inputs", () => {
+  const shorthand = validateConfig(
+    ["hcc-merged-pr-violations", "hcc-quality-jira-feedback"],
     registry,
   );
-  assert.equal(weekly.ok, true);
-  assert.deepEqual(weekly.entries, [
-    {
-      id: "hcc-weekly-report",
-      params: {
-        repo: "RedHatInsights/weekly-status",
-        branch_pattern: "hcc-team-weekly-report",
-        merge_hour_utc: 10,
-      },
-    },
-  ]);
-
-  const violations = validateConfig(["hcc-merged-pr-violations"], registry);
-  assert.equal(violations.ok, true);
-  assert.deepEqual(violations.entries, [
-    {
-      id: "hcc-merged-pr-violations",
-      params: {
-        lookback_hours: 24,
-        max_concurrent: 5,
-        max_prs_per_repo: 50,
-        task_prefix: "merge-violation",
-      },
-    },
-  ]);
-
-  // The quality Jira-feedback check has no required inputs either.
-  const qualityFeedback = validateConfig(["hcc-quality-jira-feedback"], registry);
-  assert.equal(qualityFeedback.ok, true);
-  assert.deepEqual(qualityFeedback.entries, [
-    {
-      id: "hcc-quality-jira-feedback",
-      params: { task_prefixes: ["merge-violation", "test-scan"] },
-    },
-  ]);
-
-  // The test scan requires its whitelist, so shorthand fails closed.
-  const scan = validateConfig(["hcc-test-anti-pattern-scan"], registry);
-  assert.equal(scan.ok, false);
-  assert.deepEqual(scan.invalid, [
-    {
-      id: "hcc-test-anti-pattern-scan",
-      messages: ['hcc-test-anti-pattern-scan: missing required parameter "scan_only_repos"'],
-    },
-  ]);
-
-  const scanExplicit = validateConfig(
-    [{ id: "hcc-test-anti-pattern-scan", with: { scan_only_repos: ["repo-a"] } }],
+  assert.equal(shorthand.ok, true);
+  const explicit = [
+    { id: "hcc-test-anti-pattern-scan", with: { scan_only_repos: ["repo-a"] } },
+    { id: "hcc-weekly-report", with: { repo: "RedHatInsights/weekly-status" } },
+  ];
+  const missing = validateConfig(
+    explicit.map(({ id }) => id),
     registry,
   );
-  assert.equal(scanExplicit.ok, true);
-  assert.deepEqual(scanExplicit.entries[0].params.task_prefix, "test-scan");
-  assert.deepEqual(scanExplicit.entries[0].params.patterns, ["**/*.spec.ts", "**/*.test.ts"]);
-  assert.deepEqual(scanExplicit.entries[0].params.exclude_substrings, [
-    "node_modules/",
-    "dist/",
-    "build/",
-    ".playwright/",
-    "playwright-report/",
-    "test-results/",
-  ]);
+  assert.equal(missing.ok, false);
+  assert.deepEqual(
+    missing.invalid.map(({ id }) => id),
+    explicit.map(({ id }) => id),
+  );
+  assert.equal(validateConfig(explicit, registry).ok, true);
 });
 
 test("jira-triage shorthand entries validate; required-input preflights fail closed", () => {

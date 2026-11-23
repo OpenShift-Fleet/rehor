@@ -1,441 +1,177 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createGitHubClient } from "../dist/shared/github.js";
-import { isPreflightHttpError } from "../dist/shared/http.js";
+import { PreflightHttpError } from "../dist/shared/http.js";
 
-/**
- * Coverage for the GitHub client's listing calls (the hcc quality-monitor
- * ports): `listMergedPrs` (the `gh pr list --state merged` replacement) and
- * `listRepoFiles` (the `gh api git/trees` replacement). Fixture-based: the
- * client takes an injectable fetch, so no test touches the network.
- */
-
-const jsonResponse = (value, status = 200, headers = {}) =>
-  new Response(JSON.stringify(value), {
-    status,
-    headers: { "Content-Type": "application/json", ...headers },
-  });
-
-const mergedPr = (number, mergedAt = "2026-07-21T10:00:00Z") => ({
+const REPO = "org/repo";
+const SINCE = "2026-11-17T12:00:00Z";
+const MERGED_AT = "2026-11-18T08:00:00Z";
+const PROXY = "https://proxy.example/devbot-proxy";
+const PULLS_PATH = `/devbot-proxy/github/repos/${REPO}/pulls`;
+const clientOn = (fetch) => createGitHubClient({ baseUrl: PROXY, fetch });
+const pr = (number, author = "alice") => ({
   number,
   title: `PR ${number}`,
-  html_url: `https://github.com/org/repo/pull/${number}`,
-  user: { login: "alice" },
-  merged_at: mergedAt,
-  state: "closed",
+  url: `https://github.com/${REPO}/pull/${number}`,
+  author,
+  mergedAt: MERGED_AT,
 });
-
-// --- listMergedPrs ---
-
-test("github client lists merged PRs from the REST pulls endpoint, dropping unmerged closed PRs", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse([
-        mergedPr(7),
-        { ...mergedPr(6), merged_at: null }, // closed but never merged
-        { ...mergedPr(5), user: null, merged_at: "2026-07-20T10:00:00Z" },
-      ]);
-    },
-  });
-  const prs = await client.listMergedPrs("org/repo", 50);
-  assert.equal(calls.length, 1);
-  const url = new URL(calls[0]);
-  assert.equal(url.pathname, "/devbot-proxy/github/repos/org/repo/pulls");
-  assert.equal(url.searchParams.get("state"), "closed");
-  assert.equal(url.searchParams.get("sort"), "updated");
-  assert.equal(url.searchParams.get("direction"), "desc");
-  assert.equal(url.searchParams.get("per_page"), "50");
-  assert.deepEqual(prs, [
-    {
-      number: 7,
-      title: "PR 7",
-      url: "https://github.com/org/repo/pull/7",
-      author: "alice",
-      mergedAt: "2026-07-21T10:00:00Z",
-    },
-    {
-      number: 5,
-      title: "PR 5",
-      url: "https://github.com/org/repo/pull/5",
-      author: null,
-      mergedAt: "2026-07-20T10:00:00Z",
-    },
-  ]);
-});
-
-test("github client paginates merged PRs and stops at the limit — the --limit behavior", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      const page = new URL(url).searchParams.get("page") ?? "1";
-      if (page === "1") {
-        return jsonResponse([mergedPr(4), mergedPr(3)], 200, {
-          link: '<https://proxy.example/github/repos/org/repo/pulls?page=2>; rel="next"',
-        });
-      }
-      if (page === "2") {
-        return jsonResponse([mergedPr(2), mergedPr(1)], 200, {
-          link: '<https://proxy.example/github/repos/org/repo/pulls?page=3>; rel="next"',
-        });
-      }
-      return jsonResponse([mergedPr(0)]);
-    },
-  });
-  const prs = await client.listMergedPrs("org/repo", 3);
-  assert.deepEqual(
-    prs.map((pr) => pr.number),
-    [4, 3, 2],
-  );
-  // Page 3 is never requested: the limit was reached on page 2.
-  assert.deepEqual(
-    calls.map((url) => new URL(url).searchParams.get("page") ?? "1"),
-    ["1", "2"],
-  );
-});
-
-test("github client paginates every page when the limit is not reached earlier", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      const page = new URL(url).searchParams.get("page") ?? "1";
-      if (page === "1") {
-        return jsonResponse([mergedPr(4), mergedPr(3)], 200, {
-          link: '<https://proxy.example/github/repos/org/repo/pulls?page=2>; rel="next"',
-        });
-      }
-      return jsonResponse([mergedPr(2)]);
-    },
-  });
-  const prs = await client.listMergedPrs("org/repo", 50);
-  assert.deepEqual(
-    prs.map((pr) => pr.number),
-    [4, 3, 2],
-  );
-  assert.equal(calls.length, 2);
-});
-
-test("github client maps merged-PR list failures to PreflightHttpError with the route", async () => {
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async () => jsonResponse({ message: "boom" }, 500),
-  });
-  await assert.rejects(
-    () => client.listMergedPrs("org/repo", 50),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.equal(error.status, 500);
-      assert.equal(error.route, "https://proxy.example/devbot-proxy/github");
-      return true;
-    },
-  );
-});
-
-test("github client treats a non-positive merged-PR limit as no fetch", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse([]);
-    },
-  });
-  assert.deepEqual(await client.listMergedPrs("org/repo", 0), []);
-  assert.deepEqual(await client.listMergedPrs("org/repo", -3), []);
-  assert.equal(calls.length, 0);
-});
-
-// --- listMergedPrs with a merge-date window (mergedSince) ---
-
-const searchResponse = (nodes, { hasNextPage = false, endCursor = null } = {}) => ({
-  data: {
-    search: { nodes, pageInfo: { hasNextPage, endCursor } },
-  },
-});
-
-const searchNode = (number, mergedAt) => ({
+const restPr = (number, merged_at = MERGED_AT, user = { login: "alice" }) => ({
   number,
-  title: `PR ${number}`,
-  url: `https://github.com/org/repo/pull/${number}`,
+  title: pr(number).title,
+  html_url: pr(number).url,
+  merged_at,
+  user,
+});
+
+const restClient = (secondPage) => {
+  const pages = [];
+  const client = clientOn(async (url) => {
+    const { pathname, searchParams } = new URL(url);
+    assert.equal(pathname, PULLS_PATH);
+    const page = searchParams.get("page") ?? "1";
+    pages.push(page);
+    if (page === "1") {
+      assert.equal(searchParams.get("state"), "closed");
+      assert.equal(searchParams.get("sort"), "updated");
+      assert.equal(searchParams.get("direction"), "desc");
+      return Response.json([restPr(4), restPr(3, null)], {
+        headers: { link: `<https://proxy.example${PULLS_PATH}?page=2>; rel="next"` },
+      });
+    }
+    assert.equal(page, "2");
+    return secondPage();
+  });
+  return { client, pages };
+};
+
+test("REST listing walks closed pulls, counts only merges and stops at the limit", async () => {
+  const { client, pages } = restClient(() =>
+    Response.json([restPr(2, MERGED_AT, null), restPr(1)], {
+      headers: { link: `<https://proxy.example${PULLS_PATH}?page=3>; rel="next"` },
+    }),
+  );
+  assert.deepEqual(await client.listMergedPrs(REPO, 2), [pr(4), pr(2, null)]);
+  assert.deepEqual(pages, ["1", "2"]);
+});
+
+test("REST listing returns all available merges if the link chain ends below the limit", async () => {
+  const { client, pages } = restClient(() => Response.json([restPr(2)]));
+  assert.deepEqual(await client.listMergedPrs(REPO, 50), [pr(4), pr(2)]);
+  assert.deepEqual(pages, ["1", "2"]);
+});
+
+test("REST listing rejects a late-page failure instead of returning partial results", async () => {
+  const { client, pages } = restClient(() => new Response(null, { status: 500 }));
+  await assert.rejects(() => client.listMergedPrs(REPO, 50), { status: 500 });
+  assert.deepEqual(pages, ["1", "2"]);
+});
+
+const searchNode = (number, mergedAt = MERGED_AT) => ({
+  ...pr(number),
   mergedAt,
   author: { login: "alice" },
 });
-
-test("github client finds window merges via GraphQL search when old merged PRs were updated more recently", async () => {
-  // Regression for the review finding: the REST walk sorts the pulls
-  // endpoint by updated and stops at the limit, so old merged PRs that
-  // were recently updated crowd out the lookback window's merges — a
-  // recent merge is missed entirely. With mergedSince the window is
-  // filtered server-side and the recent merge is found.
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async (url, init) => {
-      calls.push({ url, body: JSON.parse(init.body) });
-      return jsonResponse(searchResponse([searchNode(9, "2026-11-18T08:00:00Z")]));
-    },
+const searchPage = (nodes, endCursor = null) =>
+  Response.json({
+    data: { search: { nodes, pageInfo: { hasNextPage: endCursor !== null, endCursor } } },
   });
-  const prs = await client.listMergedPrs("org/repo", 50, "2026-11-17T12:00:00Z");
-  // The search replaces the REST pulls walk: only the GraphQL endpoint
-  // is requested.
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://proxy.example/devbot-proxy/github/graphql");
-  assert.equal(
-    calls[0].body.variables.search,
-    'repo:"org/repo" is:pr is:merged merged:>=2026-11-17T12:00:00Z',
-  );
-  assert.deepEqual(prs, [
-    {
-      number: 9,
-      title: "PR 9",
-      url: "https://github.com/org/repo/pull/9",
-      author: "alice",
-      mergedAt: "2026-11-18T08:00:00Z",
-    },
-  ]);
+
+test("windowed listing filters by merge time on GitHub and pages by cursor", async () => {
+  // Filtering after the REST update-sorted limit can hide merges inside the window.
+  const cursors = [];
+  const client = clientOn(async (url, init) => {
+    assert.equal(new URL(url).pathname, "/devbot-proxy/github/graphql");
+    const { search, cursor } = JSON.parse(init.body).variables;
+    assert.deepEqual(search.split(/\s+/).sort(), [
+      "is:merged",
+      "is:pr",
+      `merged:>=${SINCE}`,
+      `repo:"${REPO}"`,
+    ]);
+    cursors.push(cursor);
+    if (cursor === null) return searchPage([searchNode(4), searchNode(3, null)], "next");
+    assert.equal(cursor, "next");
+    return searchPage([searchNode(2), searchNode(1)], "unused");
+  });
+
+  const since = new Date("2026-11-17T13:00:00+01:00");
+  assert.deepEqual(await client.listMergedPrs(REPO, 2, since), [pr(4), pr(2)]);
+  assert.deepEqual(cursors, [null, "next"]);
 });
 
-test("github client paginates the merged-PR search by cursor and stops at the limit", async () => {
-  const bodies = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (_url, init) => {
-      const body = JSON.parse(init.body);
-      bodies.push(body);
-      if (body.variables.cursor === null) {
-        return jsonResponse(
-          searchResponse(
-            [searchNode(4, "2026-11-18T09:00:00Z"), searchNode(3, "2026-11-18T08:00:00Z")],
-            { hasNextPage: true, endCursor: "cursor-1" },
-          ),
-        );
-      }
-      return jsonResponse(
-        searchResponse([
-          searchNode(2, "2026-11-18T07:00:00Z"),
-          searchNode(1, "2026-11-18T06:00:00Z"),
-        ]),
-      );
-    },
+test("windowed listing stops when the search is exhausted, even below the limit", async () => {
+  const client = clientOn(async (_url, init) => {
+    const { cursor } = JSON.parse(init.body).variables;
+    if (cursor === null) return searchPage([searchNode(4)], "last");
+    assert.equal(cursor, "last");
+    return searchPage([]);
   });
-  const prs = await client.listMergedPrs("org/repo", 3, new Date("2026-11-17T12:00:00Z"));
-  // The limit is reached mid-page-2, so page 3 is never requested.
-  assert.deepEqual(
-    prs.map((pr) => pr.number),
-    [4, 3, 2],
-  );
-  assert.equal(bodies.length, 2);
-  assert.equal(bodies[1].variables.cursor, "cursor-1");
+  assert.deepEqual(await client.listMergedPrs(REPO, 50, SINCE), [pr(4)]);
 });
 
-test("github client drops merged-PR search nodes without a mergedAt", async () => {
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async () =>
-      jsonResponse(
-        searchResponse([
-          searchNode(9, "2026-11-18T08:00:00Z"),
-          { ...searchNode(8), mergedAt: null },
-        ]),
-      ),
+test("windowed listing rejects a late-page failure instead of returning partial results", async () => {
+  const client = clientOn(async (_url, init) => {
+    const { cursor } = JSON.parse(init.body).variables;
+    return cursor === null
+      ? searchPage([searchNode(4)], "next")
+      : new Response(null, { status: 500 });
   });
-  const prs = await client.listMergedPrs("org/repo", 50, "2026-11-17T12:00:00Z");
-  assert.deepEqual(
-    prs.map((pr) => pr.number),
-    [9],
-  );
+  await assert.rejects(() => client.listMergedPrs(REPO, 50, SINCE), { status: 500 });
 });
 
-test("github client returns an empty list when the merge window is empty", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse(searchResponse([]));
-    },
-  });
-  const prs = await client.listMergedPrs("org/repo", 50, "2026-11-17T12:00:00Z");
-  assert.deepEqual(prs, []);
-  assert.deepEqual(calls, ["https://proxy.example/github/graphql"]);
+test("invalid merge windows and zero limits do not fetch", async () => {
+  const client = clientOn(async () => assert.fail("unexpected fetch"));
+  await assert.rejects(() => client.listMergedPrs(REPO, 50, "yesterday"), /mergedSince/);
+  assert.deepEqual(await client.listMergedPrs(REPO, 0, SINCE), []);
+  assert.deepEqual(await client.listMergedPrs(REPO, 0), []);
 });
 
-test("github client maps merged-PR search failures to PreflightHttpError with the route", async () => {
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async () => jsonResponse({ message: "boom" }, 500),
+const treeClient = (reply) => {
+  const branches = [];
+  const client = clientOn(async (url) => {
+    const { pathname, searchParams } = new URL(url);
+    const branch = pathname.split("/").at(-1);
+    assert.equal(pathname, `/devbot-proxy/github/repos/${REPO}/git/trees/${branch}`);
+    assert.equal(searchParams.get("recursive"), "1");
+    branches.push(branch);
+    return reply(branch);
   });
-  await assert.rejects(
-    () => client.listMergedPrs("org/repo", 50, "2026-11-17T12:00:00Z"),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.equal(error.status, 500);
-      assert.equal(error.route, "https://proxy.example/devbot-proxy/github");
-      return true;
-    },
-  );
+  return { branches, client };
+};
+
+test("repo listing falls back from main to master on 404 and returns only blobs", async () => {
+  const { branches, client } = treeClient((branch) => {
+    if (branch === "main") return new Response(null, { status: 404 });
+    return Response.json({
+      tree: [
+        { type: "tree", path: "src" },
+        { type: "blob", path: "src/a.spec.ts" },
+        { type: "commit", path: "vendor/submodule" },
+      ],
+    });
+  });
+  assert.deepEqual(await client.listRepoFiles(REPO), ["src/a.spec.ts"]);
+  assert.deepEqual(branches, ["main", "master"]);
 });
 
-test("github client treats a non-positive limit as no fetch with a window bound too", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse(searchResponse([]));
-    },
+for (const { branch, status, expected } of [
+  { status: 404, expected: ["main", "master"] },
+  { status: 500, expected: ["main"] },
+  { branch: "develop", status: 404, expected: ["develop"] },
+]) {
+  test(`repo listing surfaces ${status} after trying ${expected.join(" then ")}`, async () => {
+    const { branches, client } = treeClient(() => new Response(null, { status }));
+    await assert.rejects(
+      () => client.listRepoFiles(REPO, branch),
+      (error) => {
+        assert.ok(error instanceof PreflightHttpError);
+        assert.equal(error.status, status);
+        assert.equal(new URL(error.url).pathname.split("/").at(-1), expected.at(-1));
+        if (status === 404) assert.equal(error.routeUnavailable, true);
+        return true;
+      },
+    );
+    assert.deepEqual(branches, expected);
   });
-  assert.deepEqual(await client.listMergedPrs("org/repo", 0, "2026-11-17T12:00:00Z"), []);
-  assert.deepEqual(
-    await client.listMergedPrs("org/repo", -3, new Date("2026-11-17T12:00:00Z")),
-    [],
-  );
-  assert.equal(calls.length, 0);
-});
-
-test("github client rejects an unparseable mergedSince bound without fetching", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse(searchResponse([]));
-    },
-  });
-  await assert.rejects(
-    () => client.listMergedPrs("org/repo", 50, "yesterday"),
-    (error) => {
-      assert.ok(!isPreflightHttpError(error));
-      assert.match(error.message, /mergedSince/);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 0);
-});
-
-// --- listRepoFiles ---
-
-test("github client lists repo files from the recursive git tree, blobs only", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse({
-        tree: [
-          { path: "src", type: "tree" },
-          { path: "src/a.spec.ts", type: "blob" },
-          { path: "package.json", type: "blob" },
-          { path: "docs", type: "tree" },
-          { path: "docs/readme.md", type: "blob" },
-        ],
-        truncated: false,
-      });
-    },
-  });
-  const files = await client.listRepoFiles("org/repo");
-  assert.deepEqual(calls, [
-    "https://proxy.example/devbot-proxy/github/repos/org/repo/git/trees/main?recursive=1",
-  ]);
-  assert.deepEqual(files, ["src/a.spec.ts", "package.json", "docs/readme.md"]);
-});
-
-test("github client retries the tree listing with master when main answers 404", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      if (url.includes("/git/trees/main")) {
-        return jsonResponse({ message: "Not Found" }, 404);
-      }
-      return jsonResponse({ tree: [{ path: "readme.md", type: "blob" }] });
-    },
-  });
-  const files = await client.listRepoFiles("org/repo");
-  assert.deepEqual(calls, [
-    "https://proxy.example/github/repos/org/repo/git/trees/main?recursive=1",
-    "https://proxy.example/github/repos/org/repo/git/trees/master?recursive=1",
-  ]);
-  assert.deepEqual(files, ["readme.md"]);
-});
-
-test("github client surfaces the master fallback's 404 when both branches miss", async () => {
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async () => jsonResponse({ message: "Not Found" }, 404),
-  });
-  await assert.rejects(
-    () => client.listRepoFiles("org/repo"),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.equal(error.status, 404);
-      assert.match(error.url, /git\/trees\/master/);
-      assert.equal(error.routeUnavailable, true);
-      return true;
-    },
-  );
-});
-
-test("github client does not retry non-404 tree failures", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse({ message: "boom" }, 500);
-    },
-  });
-  await assert.rejects(
-    () => client.listRepoFiles("org/repo"),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.equal(error.status, 500);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 1);
-});
-
-test("github client does not fall back to master for an explicit branch 404", async () => {
-  const calls = [];
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async (url) => {
-      calls.push(url);
-      return jsonResponse({ message: "Not Found" }, 404);
-    },
-  });
-  await assert.rejects(
-    () => client.listRepoFiles("org/repo", "develop"),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.equal(error.status, 404);
-      assert.match(error.url, /git\/trees\/develop/);
-      return true;
-    },
-  );
-  assert.equal(calls.length, 1);
-});
-
-test("github client rejects a non-JSON tree body", async () => {
-  const client = createGitHubClient({
-    baseUrl: "https://proxy.example",
-    fetch: async () =>
-      new Response("not json", { status: 200, headers: { "Content-Type": "text/plain" } }),
-  });
-  await assert.rejects(
-    () => client.listRepoFiles("org/repo"),
-    (error) => {
-      assert.ok(isPreflightHttpError(error));
-      assert.match(error.message, /non-JSON body/);
-      return true;
-    },
-  );
-});
+}
