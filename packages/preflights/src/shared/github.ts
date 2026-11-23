@@ -1,8 +1,16 @@
 import { GraphqlResponseError, graphql } from "@octokit/graphql";
 import { Octokit } from "@octokit/rest";
+import type { z } from "zod";
+import type { Preflight } from "../core/registry.js";
+import { definePreflight } from "../core/registry.js";
+import type { PreflightExecutionResult } from "../core/results.js";
 import type { CommentRecord } from "./format.js";
 import type { FetchLike, FetchRequestInit } from "./http.js";
 import { composeRoute, isPreflightHttpError, PreflightHttpError } from "./http.js";
+import type { MemoryServerClient } from "./memory-server.js";
+import type { ProjectReposMap } from "./repos.js";
+import type { PreflightRunContext } from "./run-context.js";
+import { parseIso } from "./time.js";
 
 /**
  * GitHub client — replaces the Python `gh` CLI calls of `gh_pr_status.py`
@@ -51,6 +59,20 @@ import { composeRoute, isPreflightHttpError, PreflightHttpError } from "./http.j
  * into the endpoint's fetch, aborting in-flight page requests and refusing
  * any page requested after the deadline. The GraphQL call keeps its native
  * fetch deadline (an AbortSignal.timeout passed with the request).
+ *
+ * The hcc quality-monitor ports add two listing calls: merged PRs and
+ * repository file paths (`gh api repos/.../git/trees/{branch}?recursive=1`,
+ * one direct proxy fetch with a native deadline) — both reusing the same
+ * route boundary, headerless transport, and timeout discipline. Merged-PR
+ * listing has two modes. The legacy mode REST-paginates the pulls
+ * endpoint (`state=closed`, `sort=updated`, Octokit under one
+ * operation-scoped deadline). The window mode — `mergedSince` given —
+ * runs a GraphQL `search` over `repo:... is:pr is:merged merged:>=<ISO>`
+ * instead: the pulls endpoint cannot sort or filter by merge date, so its
+ * updated-desc ordering misses window merges whenever old merged PRs
+ * were updated more recently than the window's merges; the search
+ * qualifier bounds the window server-side, so the walk stays bounded and
+ * still stops at the caller's limit.
  */
 
 /** Route prefix this package requires on the auth proxy for GitHub. */
@@ -100,6 +122,19 @@ export interface GhPrData {
   readonly statusCheckRollup?: readonly GhStatusCheckEntry[] | null;
 }
 
+/**
+ * A merged pull request — the fields `gh pr list --state merged --json
+ * number,title,url,author,mergedAt` returned (the REST `html_url` is the
+ * `url`; `author` is the login string, null for a deleted user).
+ */
+export interface GhMergedPr {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly author: string | null;
+  readonly mergedAt: string | null;
+}
+
 export interface GitHubClientConfig {
   /** Proxy base URL, e.g. `https://proxy.example/devbot-proxy`. */
   readonly baseUrl: string;
@@ -129,6 +164,34 @@ export interface GitHubClient {
    * error naming both failures.
    */
   getPrComments(ownerRepo: string, number: number): Promise<readonly CommentRecord[]>;
+  /**
+   * List merged pull requests — `gh pr list --state merged --json
+   * number,title,url,author,mergedAt`, bounded and safe. Without
+   * `mergedSince`, REST-paginates `GET /repos/{owner}/{repo}/pulls`
+   * (`state=closed`, `sort=updated`, `direction=desc`), keeps only entries
+   * with a non-null `merged_at` (closed-but-unmerged PRs ride along in
+   * those pages and are dropped), and stops as soon as `limit` merged PRs
+   * are collected. With `mergedSince` (a Date or ISO-8601 timestamp), a
+   * GraphQL `search` over `repo:... is:pr is:merged merged:>=<ISO>`
+   * replaces the REST walk — the pulls endpoint cannot sort or filter by
+   * merge date, so its updated-desc ordering can return old
+   * recently-updated merges and stop at `limit` before the window's
+   * merges; the search qualifier restricts the window server-side, and
+   * pagination still stops at `limit` collected PRs.
+   */
+  listMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    mergedSince?: Date | string,
+  ): Promise<readonly GhMergedPr[]>;
+  /**
+   * List a repository's file paths — `gh api repos/{owner}/{repo}/git/trees/
+   * {branch}?recursive=1` projected to its `type === "blob"` nodes. The
+   * default branch is "main"; an HTTP 404 for "main" retries once with
+   * "master" (the Python fallback). Every other failure throws the normal
+   * {@link PreflightHttpError}.
+   */
+  listRepoFiles(ownerRepo: string, branch?: string): Promise<readonly string[]>;
 }
 
 // The fields mirror `gh pr view --json state,mergeable,statusCheckRollup,
@@ -201,10 +264,77 @@ interface PrStatusResponse {
   } | null;
 }
 
+/**
+ * Merged-PR search — the date-bounded window listing. The pulls REST
+ * endpoint only sorts (`created`, `updated`, `popularity`,
+ * `long-running`), never by merge date, so a lookback window cannot be
+ * expressed there; the search qualifier `merged:>=<ISO timestamp>` can,
+ * and `type: ISSUE` with `is:pr` restricts the result union to pull
+ * requests. One page of 100 results per request, cursor-paginated.
+ */
+const MERGED_PR_SEARCH_QUERY = `query MergedPrSearch($search: String!, $cursor: String) {
+  search(query: $search, type: ISSUE, first: 100, after: $cursor) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        mergedAt
+        author {
+          login
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`;
+
+/** A `search` node — only the PullRequest fragments of the ISSUE union. */
+interface MergedPrSearchNode {
+  readonly number?: number | null;
+  readonly title?: string | null;
+  readonly url?: string | null;
+  readonly mergedAt?: string | null;
+  readonly author?: { readonly login?: string | null } | null;
+}
+
+interface MergedPrSearchResponse {
+  readonly search?: {
+    readonly nodes?: readonly (MergedPrSearchNode | null)[] | null;
+    readonly pageInfo?: {
+      readonly hasNextPage?: boolean | null;
+      readonly endCursor?: string | null;
+    } | null;
+  } | null;
+}
+
 interface RestComment {
   readonly user?: { readonly login?: string | null } | null;
   readonly created_at?: string | null;
   readonly body?: string | null;
+}
+
+/** A closed pull request from the REST pulls list — the fields the port reads. */
+interface RestPullRequest {
+  readonly number?: number | null;
+  readonly title?: string | null;
+  readonly html_url?: string | null;
+  readonly user?: { readonly login?: string | null } | null;
+  readonly merged_at?: string | null;
+}
+
+/** One git-tree node — the fields the `--jq` projection read (`type`, `path`). */
+interface GitTreeNode {
+  readonly path?: string | null;
+  readonly type?: string | null;
+}
+
+/** Response of `GET /repos/{owner}/{repo}/git/trees/{ref}?recursive=1`. */
+interface GitTreeResponse {
+  readonly tree?: readonly GitTreeNode[] | null;
 }
 
 /** The configured proxy route, split for URL boundary enforcement. */
@@ -581,10 +711,241 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     return comments;
   }
 
+  /**
+   * List merged PRs, bounded and safe. The window mode (`mergedSince`
+   * given) is a GraphQL `search` restricted to `repo:... is:pr is:merged
+   * merged:>=<ISO>` — see {@link searchMergedPrs}: the pulls endpoint
+   * cannot filter by merge date, and its updated-desc ordering can return
+   * old recently-updated merges and stop at `limit` before the window's
+   * merges, missing them entirely. The legacy mode (no `mergedSince`) is
+   * the Python `gh pr list --state merged --limit N` call of the hcc
+   * quality-monitor preflights — see {@link listMergedPrsByUpdates}.
+   */
+  async function listMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    mergedSince?: Date | string,
+  ): Promise<GhMergedPr[]> {
+    splitOwnerRepo(ownerRepo);
+    if (!Number.isInteger(limit) || limit <= 0) {
+      return [];
+    }
+    if (mergedSince !== undefined) {
+      return searchMergedPrs(ownerRepo, limit, normalizeMergedSince(mergedSince));
+    }
+    return listMergedPrsByUpdates(ownerRepo, limit);
+  }
+
+  /**
+   * The legacy merged-PR listing — the Python `gh pr list --state merged
+   * --limit N` call. Paginates the REST pulls endpoint with Octokit under
+   * one operation-scoped deadline (the budget a single `gh pr list`
+   * subprocess had) and stops as soon as `limit` merged PRs are
+   * collected. Only entries with a non-null `merged_at` count: the
+   * endpoint is queried with `state=closed`, so closed-but-unmerged PRs
+   * ride along in the pages and are dropped here, exactly like
+   * `gh pr list --state merged` filtered them upstream.
+   */
+  async function listMergedPrsByUpdates(ownerRepo: string, limit: number): Promise<GhMergedPr[]> {
+    const { owner, repo } = splitOwnerRepo(ownerRepo);
+    const path = `/repos/${ownerRepo}/pulls`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const deadlineFetch = createProxyFetch(rawFetch, geometry, {
+        signal: controller.signal,
+        timeoutMs,
+      });
+      // No auth option anywhere: the proxy injects credentials upstream, so
+      // Octokit runs headerless.
+      const listOctokit = new Octokit({ baseUrl: route, request: { fetch: deadlineFetch } });
+      const merged: GhMergedPr[] = [];
+      const pages = listOctokit.paginate.iterator("GET /repos/{owner}/{repo}/pulls", {
+        owner,
+        repo,
+        state: "closed",
+        sort: "updated",
+        direction: "desc",
+        per_page: Math.min(limit, 100),
+      });
+      for await (const page of pages) {
+        for (const pr of page.data as unknown as readonly RestPullRequest[]) {
+          if (pr?.merged_at == null) continue;
+          merged.push({
+            number: typeof pr.number === "number" ? pr.number : 0,
+            title: pr.title ?? "",
+            url: pr.html_url ?? "",
+            author: pr.user?.login ?? null,
+            mergedAt: pr.merged_at,
+          });
+          if (merged.length >= limit) {
+            return merged;
+          }
+        }
+      }
+      return merged;
+    } catch (error) {
+      if (controller.signal.aborted && !isPreflightHttpError(error)) {
+        throw new PreflightHttpError({
+          status: null,
+          method: "GET",
+          url: `${route}${path}`,
+          route,
+          message: `GET ${route}${path} timed out after ${timeoutMs}ms`,
+        });
+      }
+      throw toPreflightHttpError(error, route, `${route}${path}`, "GET", timeoutMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * The window mode of merged-PR listing: a GraphQL `search` restricted
+   * to `repo:"org/repo" is:pr is:merged merged:>=<ISO>` — the only
+   * GitHub API shape that filters by merge date server-side, so merges
+   * inside the lookback window are found even when older merged PRs were
+   * updated (and thus sorted by the pulls endpoint) more recently than
+   * the window's merges. Cursor-paginated under one operation-scoped
+   * deadline, stopped at `limit`, on the same headerless route-confined
+   * transport as every other call.
+   */
+  async function searchMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    sinceIso: string,
+  ): Promise<GhMergedPr[]> {
+    const path = "/graphql";
+    const searchQuery = `repo:"${ownerRepo}" is:pr is:merged merged:>=${sinceIso}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const deadlineFetch = createProxyFetch(rawFetch, geometry, {
+        signal: controller.signal,
+        timeoutMs,
+      });
+      const merged: GhMergedPr[] = [];
+      let cursor: string | null = null;
+      while (merged.length < limit) {
+        const response: MergedPrSearchResponse = await graphql<MergedPrSearchResponse>(
+          MERGED_PR_SEARCH_QUERY,
+          {
+            baseUrl: route,
+            search: searchQuery,
+            cursor,
+            request: { fetch: deadlineFetch },
+          },
+        );
+        const connection: MergedPrSearchResponse["search"] = response?.search;
+        for (const node of connection?.nodes ?? []) {
+          if (node?.mergedAt == null) continue;
+          merged.push({
+            number: typeof node.number === "number" ? node.number : 0,
+            title: node.title ?? "",
+            url: node.url ?? "",
+            author: node.author?.login ?? null,
+            mergedAt: node.mergedAt,
+          });
+          if (merged.length >= limit) {
+            return merged;
+          }
+        }
+        const nextCursor: string | null = connection?.pageInfo?.endCursor ?? null;
+        if (
+          connection?.pageInfo?.hasNextPage !== true ||
+          nextCursor === null ||
+          nextCursor === "" ||
+          nextCursor === cursor
+        ) {
+          break;
+        }
+        cursor = nextCursor;
+      }
+      return merged;
+    } catch (error) {
+      if (controller.signal.aborted && !isPreflightHttpError(error)) {
+        throw new PreflightHttpError({
+          status: null,
+          method: "POST",
+          url: `${route}${path}`,
+          route,
+          message: `POST ${route}${path} timed out after ${timeoutMs}ms`,
+        });
+      }
+      throw toPreflightHttpError(error, route, `${route}${path}`, "POST", timeoutMs);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * List a repository's file paths from its recursive git tree — the Python
+   * `gh api repos/{org_repo}/git/trees/{branch}?recursive=1 --jq '.tree[]
+   * | select(.type == "blob") | .path'` call. The Python retried "main" with
+   * "master" on any listing failure; here only an HTTP 404 for "main"
+   * retries (other failures are real errors, not a missing default branch),
+   * and the failure surfaces as the normal execution error either way.
+   */
+  async function listRepoFiles(ownerRepo: string, branch = "main"): Promise<string[]> {
+    if (branch === "main") {
+      try {
+        return await gitTreeBlobPaths(ownerRepo, "main");
+      } catch (error) {
+        if (isPreflightHttpError(error) && error.status === 404) {
+          return await gitTreeBlobPaths(ownerRepo, "master");
+        }
+        throw error;
+      }
+    }
+    return gitTreeBlobPaths(ownerRepo, branch);
+  }
+
+  /** Fetch one branch's recursive git tree and project its blob paths. */
+  async function gitTreeBlobPaths(ownerRepo: string, branch: string): Promise<string[]> {
+    const url = `${route}/repos/${ownerRepo}/git/trees/${branch}?recursive=1`;
+    const response = await withTimeout(
+      () => proxyFetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }),
+      timeoutMs,
+      route,
+      url,
+      "GET",
+    );
+    if (!response.ok) {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: await describeGitHubHttpStatus("GET", url, response, route),
+      });
+    }
+    let data: GitTreeResponse;
+    try {
+      data = (await response.json()) as GitTreeResponse;
+    } catch {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: `GET ${url} returned a non-JSON body (HTTP ${response.status})`,
+      });
+    }
+    const files: string[] = [];
+    for (const node of data?.tree ?? []) {
+      if (node?.type === "blob" && typeof node.path === "string" && node.path !== "") {
+        files.push(node.path);
+      }
+    }
+    return files;
+  }
+
   return {
     route,
     getPr,
     getPrComments,
+    listMergedPrs,
+    listRepoFiles,
   };
 }
 
@@ -597,6 +958,25 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
  */
 function normalizeRollupEntry(node: RollupNode): GhStatusCheckEntry {
   return { ...node };
+}
+
+/**
+ * Normalize the merge-window bound to the ISO-8601 UTC timestamp the
+ * search qualifier takes (`merged:>=YYYY-MM-DDTHH:MM:SSZ`, second
+ * precision — the granularity GitHub documents for date qualifiers and
+ * stamps on merge times). Strings parse with the shared `parseIso`
+ * (naive values are UTC, like the Python helper); an unparseable bound
+ * is a caller programming error, not an HTTP failure, so it throws
+ * before any fetch runs.
+ */
+function normalizeMergedSince(mergedSince: Date | string): string {
+  const date = mergedSince instanceof Date ? mergedSince : parseIso(mergedSince);
+  if (date === null || Number.isNaN(date.getTime())) {
+    throw new Error(
+      `mergedSince must be a Date or an ISO-8601 timestamp: ${JSON.stringify(mergedSince)}`,
+    );
+  }
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 /**
@@ -704,4 +1084,82 @@ function toPreflightHttpError(
     message += `: ${detail}`;
   }
   return new PreflightHttpError({ status, method, url, route, message });
+}
+
+/**
+ * Describe a non-2xx response of a direct proxy fetch the way the shared
+ * HTTP client does: the status, the 404 route-unavailable note, and a
+ * bounded body excerpt.
+ */
+async function describeGitHubHttpStatus(
+  method: string,
+  url: string,
+  response: Response,
+  route: string,
+): Promise<string> {
+  let message = `${method} ${url} failed with HTTP ${response.status}`;
+  if (response.status === 404) {
+    message += ` (required route "${route}" is not available on the proxy)`;
+  }
+  const bodyText = await response.text().catch(() => "");
+  if (bodyText !== "") {
+    message += `: ${bodyText.slice(0, 200)}`;
+  }
+  return message;
+}
+
+/** What `defineGitHubPreflight` wires into a preflight's run flow. */
+export interface GitHubPreflightDeps {
+  readonly memory: MemoryServerClient;
+  readonly github: GitHubClient;
+  readonly repos: ProjectReposMap;
+}
+
+/**
+ * Define a GitHub-backed preflight for registration — the shared wrapper of
+ * the run-context wiring every GitHub preflight repeats: the GitHub client
+ * is built from the run's auth-proxy route (string or config form), the
+ * repo map defaults to empty, and the memory-server client is shared per
+ * run. An unwired proxy route or a thrown failure surfaces as an
+ * id-prefixed `error` result, never a silent skip.
+ */
+export function defineGitHubPreflight<S extends z.ZodObject>(options: {
+  readonly id: string;
+  readonly input: S;
+  readonly run: (
+    deps: GitHubPreflightDeps,
+    params: z.infer<S>,
+  ) => Promise<PreflightExecutionResult>;
+}): Preflight {
+  const { id, input, run } = options;
+  return definePreflight({
+    id,
+    input,
+    run: async (
+      ctx: PreflightRunContext,
+      params: z.infer<S>,
+    ): Promise<PreflightExecutionResult> => {
+      if (ctx.proxy === undefined) {
+        return {
+          status: "error",
+          content: `${id}: auth proxy route is not wired for this run (missing proxy base URL)`,
+        };
+      }
+      try {
+        return await run(
+          {
+            memory: ctx.memory,
+            github: createGitHubClient(
+              typeof ctx.proxy === "string" ? { baseUrl: ctx.proxy } : ctx.proxy,
+            ),
+            repos: ctx.repos ?? {},
+          },
+          params,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { status: "error", content: `${id}: ${message}` };
+      }
+    },
+  });
 }

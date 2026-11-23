@@ -2,6 +2,10 @@ import type { PreflightRegistry } from "../core/registry.js";
 import { createPreflightRegistry } from "../core/registry.js";
 import { ghPrStatus } from "./gh-pr-status/index.js";
 import { glMrStatus } from "./gl-mr-status/index.js";
+import { hccMergedPrViolations } from "./hcc-merged-pr-violations/index.js";
+import { hccQualityJiraFeedback } from "./hcc-quality-jira-feedback/index.js";
+import { hccTestAntiPatternScan } from "./hcc-test-anti-pattern-scan/index.js";
+import { hccWeeklyReport } from "./hcc-weekly-report/index.js";
 import { jiraKanban } from "./jira-kanban/index.js";
 import { jiraSprint } from "./jira-sprint/index.js";
 import { jiraTriage } from "./jira-triage/index.js";
@@ -19,6 +23,10 @@ export function createPopulatedRegistry(): PreflightRegistry {
   return createPreflightRegistry([
     ghPrStatus,
     glMrStatus,
+    hccMergedPrViolations,
+    hccQualityJiraFeedback,
+    hccTestAntiPatternScan,
+    hccWeeklyReport,
     jiraKanban,
     jiraSprint,
     jiraTriage,

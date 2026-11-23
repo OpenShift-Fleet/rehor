@@ -9,6 +9,10 @@ test("populated registry registers every landed preflight", () => {
   assert.deepEqual(registry.ids(), [
     "gh-pr-status",
     "gl-mr-status",
+    "hcc-merged-pr-violations",
+    "hcc-quality-jira-feedback",
+    "hcc-test-anti-pattern-scan",
+    "hcc-weekly-report",
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
@@ -23,6 +27,28 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("onboarding").input), ["label"]);
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
+});
+
+test("HCC registry validates shorthand only for preflights without required inputs", () => {
+  const shorthand = validateConfig(
+    ["hcc-merged-pr-violations", "hcc-quality-jira-feedback"],
+    registry,
+  );
+  assert.equal(shorthand.ok, true);
+  const explicit = [
+    { id: "hcc-test-anti-pattern-scan", with: { scan_only_repos: ["repo-a"] } },
+    { id: "hcc-weekly-report", with: { repo: "RedHatInsights/weekly-status" } },
+  ];
+  const missing = validateConfig(
+    explicit.map(({ id }) => id),
+    registry,
+  );
+  assert.equal(missing.ok, false);
+  assert.deepEqual(
+    missing.invalid.map(({ id }) => id),
+    explicit.map(({ id }) => id),
+  );
+  assert.equal(validateConfig(explicit, registry).ok, true);
 });
 
 test("jira-triage shorthand entries validate; required-input preflights fail closed", () => {
