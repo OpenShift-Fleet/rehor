@@ -87,7 +87,9 @@ async def test_rest_bot_status_updates_singleton_instance_id():
     query, args = singleton_update[1], singleton_update[2]
     # The singleton UPDATE must refresh instance_id (COALESCE keeps the
     # previous value only when the payload omits it).
-    assert "instance_id = COALESCE" in query
+    assert "instance_id = COALESCE($6, instance_id)" in query
+    assert "$7" not in query
+    assert len(args) == 6
     assert args[-1] == "Bořivoj Lodník z Plovoucího hradu"
 
     instance_upsert = next(call for call in pool.calls if call[0] == "execute" and "bot_instances" in call[1])
