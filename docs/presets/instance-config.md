@@ -22,6 +22,11 @@ preflights:
   - id: jira-sprint
     with:
       label: example-agent
+schedule:
+  triggers:
+    - timezone: Europe/Prague
+      start: "0 8 * * 1-5"
+      end: "0 18 * * 1-5"
 ```
 
 | Field | Meaning |
@@ -32,6 +37,7 @@ preflights:
 | `env` | Allowed non-secret `BOT_*` profile settings, shared by dispatcher wiring and the sandbox runner. Set a stable, unique `BOT_INSTANCE_ID`; the deployment owns the memory route. |
 | `sandbox.env` | **Planned; not currently supported by deployed dispatchers.** Intended for static sandbox environment values and approved workload-scoped secret references. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for the user setup guide and proposed syntax. |
 | `preflights` | Registered check IDs and literal parameters. See [Dispatcher Preflights](custom-preflight.md) for defaults and contribution rules, and the [Preflight Reference](preflight-reference.md) for each check's inputs. |
+| `schedule` | Optional KEDA-style cron windows (`triggers` with `timezone`, `start`, `end` five-field crons). Gates only new dispatches; in-flight sessions drain. Malformed declarations fail discovery. See [Agent Scheduling](../scheduling.md). |
 | `cycle_timeout_seconds` | Optional per-instance timeout override. |
 
 ## Runtime and provider selection

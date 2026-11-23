@@ -26,6 +26,10 @@ const deferred = () => {
 };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const profile = (name, root) => ({ name, botRoot: root, workflow: name, instanceDir: `${root}/${name}` });
+// Weekday window in Europe/Prague; 2026-11-23 is a Monday, 2026-11-29 a Sunday.
+const weekdayWindow = { timezone: "Europe/Prague", start: "0 8 * * 1-5", end: "0 18 * * 1-5" };
+const monday = () => new Date("2026-11-23T10:00:00Z");
+const sunday = () => new Date("2026-11-29T10:00:00Z");
 const options = (extra = {}) => ({
   repositoriesJson: JSON.stringify(urls), cacheRoot: "/cache", env: { BOT_INSTANCE_ID: "secret-instance", BOT_MEMORY_URL: "https://memory.example/mcp" },
   memoryCredential: async () => "fixture-token", dispatcher: new SessionDispatcher(), launch: async () => "gone", ...extra,
@@ -395,6 +399,90 @@ test("busy cycles carry the fixed reason and full identity", async () => {
   assert.equal(logs.filter((log) => log.event === "preflight.run").length, 0, "a busy profile runs no preflight entries");
   waiting.resolve();
   await opts.dispatcher.drain();
+});
+
+test("an inactive schedule skips preflight and launch with an off-schedule record", async () => {
+  const lines = [];
+  let preflights = 0;
+  let launches = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0, scheduleClock: sunday,
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    launch: async () => { launches++; return "gone"; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("scheduled", "one"), schedule: { triggers: [weekdayWindow] } }],
+      preflight: async () => { preflights++; return start(); },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.equal(result.repositories[0].profiles[0].status, "off-schedule");
+  assert.equal(preflights, 0);
+  assert.equal(launches, 0);
+  assert.deepEqual(lines.map(parsed), [{
+    level: 30, event: "preflight.cycle", status: "success", decision: "off-schedule", durationMs: 0,
+    profile: "scheduled", repository: urls[0], agentId: result.repositories[0].profiles[0].agentId,
+  }]);
+});
+
+test("an active schedule runs the normal preflight flow", async () => {
+  let calls = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0, scheduleClock: monday,
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("scheduled", "one"), schedule: { triggers: [weekdayWindow] } }],
+      preflight: async () => { calls++; return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.equal(result.repositories[0].profiles[0].status, "skip");
+  assert.equal(calls, 1);
+});
+
+test("an off-schedule cycle consumes no preflight cooldown", async () => {
+  let clock = sunday();
+  let calls = 0;
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0, scheduleClock: () => clock,
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("scheduled", "one"), schedule: { triggers: [weekdayWindow] } }],
+      preflight: async () => { calls++; return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "off-schedule");
+  // The window opens between cycles; the same monotonic clock must not
+  // throttle the first eligible cycle after it.
+  clock = monday();
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "skip");
+  assert.equal(calls, 1);
+});
+
+test("a busy session outranks an inactive schedule", async () => {
+  const waiting = deferred();
+  let clock = monday();
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0, scheduleClock: () => clock,
+    launch: async () => { await waiting.promise; return "gone"; },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [{ ...profile("scheduled", "one"), schedule: { triggers: [weekdayWindow] } }],
+      preflight: async () => start(),
+    },
+  });
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "started");
+  clock = sunday();
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "busy");
+  waiting.resolve();
+  await opts.dispatcher.drain();
+});
+
+test("a profile without a schedule ignores the wall clock", async () => {
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), now: () => 0, scheduleClock: sunday,
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("unscheduled", "one")],
+      preflight: async () => ({ action: "skip", transcript: "", scripts: [] }),
+    },
+  });
+  assert.equal((await runDispatcherCycle(opts)).repositories[0].profiles[0].status, "skip");
 });
 
 test("repository sync failures produce a cycle record with repository identity only", async () => {

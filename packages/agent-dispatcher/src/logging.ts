@@ -59,6 +59,7 @@ const DECISIONS = [
   "error",
   "no-scripts",
   "throttled",
+  "off-schedule",
   "shutdown",
   "sync-error",
   "discovery-error",
