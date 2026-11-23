@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { JenkinsInstances, SlackWebhookConfig } from "@rehor/preflights";
 import { discoverAgentProfiles } from "./agent-profiles.js";
 import type { AgentProfile } from "./agent-profiles.js";
 import { parseConfigRepositories, syncConfigRepositories } from "./config-repositories.js";
@@ -43,6 +44,12 @@ export type DispatcherCycleOptions = {
    * the process stdout lifecycle logger. Injected for tests.
    */
   logger?: LifecycleLogger;
+  /** Persistent preflight state directory; see {@link TsPreflightWiring.stateDir}. */
+  preflightStateDir?: string;
+  /** Slack webhook channels; see {@link TsPreflightWiring.slackWebhooks}. */
+  slackWebhooks?: SlackWebhookConfig;
+  /** Jenkins endpoints and idp job overrides; see {@link TsPreflightWiring.jenkins}. */
+  jenkins?: { instances: JenkinsInstances; idpJobs?: readonly string[] };
   dependencies?: Partial<DispatcherCycleDependencies>;
   /** Monotonic milliseconds; injectable for tests. */
   now?: () => number;
@@ -263,6 +270,9 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             ...required.wiring,
             ...(options.serviceGatewayUrl ? { proxyBaseUrl: options.serviceGatewayUrl.href } : {}),
             ...(repos !== undefined ? { repos } : {}),
+            ...(options.preflightStateDir ? { stateDir: options.preflightStateDir } : {}),
+            ...(options.slackWebhooks ? { slackWebhooks: options.slackWebhooks } : {}),
+            ...(options.jenkins ? { jenkins: options.jenkins } : {}),
           };
           const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
           if (decision.action === "error") errorReason = decision.reason ?? "execution";

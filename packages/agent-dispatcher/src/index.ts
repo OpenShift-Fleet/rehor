@@ -1,7 +1,20 @@
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { readAuthConfig, readBotMemoryUrl, readModelProxyUrl, readPublicEgressEnabled, readSandboxRetentionMs, readSessionLockTtlMs, readServiceGatewayUrl, type AuthConfig } from "./config.js";
+import {
+  readAuthConfig,
+  readBotMemoryUrl,
+  readJenkinsIdpJobs,
+  readJenkinsInstances,
+  readModelProxyUrl,
+  readPreflightStateDir,
+  readPublicEgressEnabled,
+  readSandboxRetentionMs,
+  readSessionLockTtlMs,
+  readServiceGatewayUrl,
+  readSlackWebhooks,
+  type AuthConfig,
+} from "./config.js";
 import { createCredentialProvider, preflightFailureMessage } from "./preflight.js";
 import { readGatewayConfig } from "./gateway-config.js";
 import { connectGateway } from "./gateway.js";
@@ -13,6 +26,7 @@ import { readRuntimeLayout } from "./runtime-layout.js";
 import { sandboxEnvironment } from "./runtime-environment.js";
 import { createSessionLockClient, withSessionLock, type SessionLockLog } from "./session-lock.js";
 import { createSessionRegistryClient, reconcileOpenSessions } from "./session-registry.js";
+import type { JenkinsInstances, SlackWebhookConfig } from "@rehor/preflights";
 import type { SessionCompletion } from "./dispatch-sessions.js";
 
 const logger = createLifecycleLogger();
@@ -98,6 +112,10 @@ async function start(): Promise<void> {
   let publicEgress = false;
   let sandboxRetentionMs = 0;
   let sessionLockTtlMs = 0;
+  let preflightStateDir: string | undefined;
+  let slackWebhooks: SlackWebhookConfig | undefined;
+  let jenkinsInstances: JenkinsInstances | undefined;
+  let jenkinsIdpJobs: readonly string[] | undefined;
   const repositoriesJson = process.env.AGENT_DISPATCHER_CONFIG_REPOS;
   const configuration = logger.start("configuration");
   try {
@@ -108,6 +126,10 @@ async function start(): Promise<void> {
     publicEgress = readPublicEgressEnabled(process.env);
     sandboxRetentionMs = readSandboxRetentionMs(process.env);
     sessionLockTtlMs = readSessionLockTtlMs(process.env);
+    preflightStateDir = readPreflightStateDir(process.env);
+    slackWebhooks = readSlackWebhooks(process.env);
+    jenkinsInstances = readJenkinsInstances(process.env);
+    jenkinsIdpJobs = readJenkinsIdpJobs(process.env);
     if (authConfig) provider = createCredentialProvider(authConfig, {}, logger);
   } catch {
     configuration.failure("configuration");
@@ -226,6 +248,9 @@ async function start(): Promise<void> {
         repositoriesJson, signal,
         env: hostEnvironment,
         ...(serviceGatewayUrl ? { serviceGatewayUrl } : {}),
+        ...(preflightStateDir ? { preflightStateDir } : {}),
+        ...(slackWebhooks ? { slackWebhooks } : {}),
+        ...(jenkinsInstances ? { jenkins: { instances: jenkinsInstances, ...(jenkinsIdpJobs ? { idpJobs: jenkinsIdpJobs } : {}) } } : {}),
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,

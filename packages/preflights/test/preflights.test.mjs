@@ -8,9 +8,19 @@ test("populated registry registers the ported preflights", () => {
   assert.deepEqual(registry.ids(), [
     "gh-pr-status",
     "gl-mr-status",
+    "hcc-merged-pr-violations",
+    "hcc-quality-jira-feedback",
+    "hcc-test-anti-pattern-scan",
+    "hcc-weekly-report",
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
+    "obsint-backlog-scan",
+    "obsint-cve-ci-review",
+    "obsint-cve-scan",
+    "obsint-jenkins-status",
+    "obsint-mintmaker-prs",
+    "obsint-weekly-status-update",
     "onboarding",
   ]);
   assert.equal(registry.has("gh-pr-status"), true);

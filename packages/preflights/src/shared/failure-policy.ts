@@ -146,3 +146,19 @@ export function totalFetchFailureError(
 export function failureEvidenceLines(tracker: FetchTracker, noun: string): readonly string[] {
   return tracker.failures.map((failure) => `  ${noun} ${failure.item}: ${failure.reason}`);
 }
+
+/**
+ * Append tolerated (isolated) fetch failures as evidence — the `###
+ * UNFETCHABLE (N)` section after the content, one line per failed fetch of
+ * every recorded class. Returns the content unchanged when nothing failed.
+ */
+export function appendFetchEvidence(
+  content: string,
+  sections: readonly (readonly [FetchTracker, string])[],
+): string {
+  const failureLines = sections.flatMap(([tracker, noun]) => failureEvidenceLines(tracker, noun));
+  if (failureLines.length === 0) {
+    return content;
+  }
+  return `${content}\n### UNFETCHABLE (${failureLines.length})\n${failureLines.join("\n")}\n`;
+}

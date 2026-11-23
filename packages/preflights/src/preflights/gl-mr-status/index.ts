@@ -9,6 +9,7 @@ import {
 } from "../../shared/failure-policy.js";
 import { fmtComments, fmtTaskHeader, getTaskPrs, isBotAuthor } from "../../shared/format.js";
 import type { MemoryServerClient, MemoryTask } from "../../shared/memory-server.js";
+import { ACTIVE_TASK_STATUSES } from "../../shared/memory-server.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import { upstreamRepo } from "../../shared/repos.js";
 import type { PreflightRunContext, PreflightRunState } from "../../shared/run-context.js";
@@ -50,9 +51,6 @@ export type { GitlabClient, GitlabClientConfig, GlMergeRequest, GlMrNote } from 
  * `ctx.proxy` (base URL + `/gitlab` path prefix) inside `run()`, and an
  * unwired route is an `error` result, never a silent skip.
  */
-
-/** Task statuses whose MRs are checked; same list as the capacity filter. */
-const ACTIVE_STATUSES: readonly string[] = ["in_progress", "pr_open", "pr_changes"];
 
 export const GL_MR_STATUS_INPUT = z.strictObject({
   /**
@@ -291,7 +289,7 @@ export async function runGlMrStatus(
   params: GlMrStatusParams,
 ): Promise<PreflightExecutionResult> {
   const [tasks, capacity] = await Promise.all([deps.memory.getTasks(), deps.memory.getCapacity()]);
-  const active = tasks.filter((task) => ACTIVE_STATUSES.includes(task?.status ?? ""));
+  const active = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task?.status ?? ""));
   if (active.length === 0) {
     return {
       status: "skip",

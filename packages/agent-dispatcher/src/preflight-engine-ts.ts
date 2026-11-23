@@ -4,9 +4,11 @@ import {
   createPreflightRunContext,
   validateConfig,
   workflowDefaults,
+  type JenkinsInstances,
   type PreflightExecutionResult,
   type PreflightRegistry,
   type PreflightRunContextOptions,
+  type SlackWebhookConfig,
 } from "@rehor/preflights";
 import { createPopulatedRegistry } from "@rehor/preflights/preflights";
 import type { AgentProfile } from "./agent-profiles.js";
@@ -67,6 +69,27 @@ export type TsPreflightWiring = {
   proxyBaseUrl?: string;
   /** Instance project-repos.json map when present; absent means no resolution. */
   repos?: ProjectReposMap;
+  /**
+   * Writable directory for persistent cross-run preflight state (throttle
+   * timestamps, weekly markers), one JSON file per instance. Absent wiring
+   * leaves self-throttling preflights unwired — they fail closed with an
+   * execution error rather than re-running throttled work every cycle.
+   */
+  stateDir?: string;
+  /**
+   * Slack webhook channels, secret-rendered deployment configuration.
+   * Values are credentials: they flow only into the run-context Slack
+   * client and never into logs or preflight results. Absent wiring
+   * degrades preflight Slack reports — never an error.
+   */
+  slackWebhooks?: SlackWebhookConfig;
+  /**
+   * Jenkins instance endpoints (and optional idp job-name overrides),
+   * rendered deployment configuration. The corporate Jenkins hosts need
+   * no credentials; absent wiring leaves the watchduty preflights
+   * unwired — they fail closed with an execution error.
+   */
+  jenkins?: { instances: JenkinsInstances; idpJobs?: readonly string[] };
 };
 
 export type TsPreflightOptions = {
@@ -176,6 +199,16 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
       memory: { ...wiring.wiring.memory, fetch: transport.memoryFetch },
       ...(proxy ? { jira: { baseUrl: proxy, fetch: transport.gatewayFetch }, proxy: { baseUrl: proxy, fetch: transport.gatewayFetch } } : {}),
       ...(options.wiring.repos ? { repos: options.wiring.repos } : {}),
+      ...(options.wiring.stateDir ? { persistentState: { dir: options.wiring.stateDir } } : {}),
+      ...(options.wiring.slackWebhooks ? { slack: { webhooks: options.wiring.slackWebhooks } } : {}),
+      ...(options.wiring.jenkins
+        ? {
+            jenkins: {
+              instances: options.wiring.jenkins.instances,
+              ...(options.wiring.jenkins.idpJobs ? { idpJobs: options.wiring.jenkins.idpJobs } : {}),
+            },
+          }
+        : {}),
     });
   } catch {
     return failure("Preflight run context could not be created", "configuration");
