@@ -9,6 +9,7 @@ import { isPreflightDiagnostic, PreflightConfigurationError, type PreflightDiagn
 import { loadInstanceRepos, runTsPreflight, validateRequiredPreflightWiring } from "./preflight-engine-ts.js";
 import type { PreflightWiringField, TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
 import { mergeProfileEnvironment } from "./runtime-environment.js";
+import { isScheduleActive } from "./schedule.js";
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
   syncRepositories: typeof syncConfigRepositories;
@@ -53,12 +54,16 @@ export type DispatcherCycleOptions = {
   dependencies?: Partial<DispatcherCycleDependencies>;
   /** Monotonic milliseconds; injectable for tests. */
   now?: () => number;
+  /** Wall clock for schedule-window evaluation; injectable for tests.
+   * Distinct from the monotonic `now`, which carries durations and
+   * cooldowns only and must never hold absolute time. */
+  scheduleClock?: () => Date;
   signal?: AbortSignal;
 };
 
 export type CycleProfileStatus = {
   agentId: string;
-  status: "started" | "busy" | "shutdown" | "skip" | "error" | "no-scripts" | "throttled";
+  status: "started" | "busy" | "shutdown" | "skip" | "error" | "no-scripts" | "throttled" | "off-schedule";
 };
 
 export type DispatcherCycleResult =
@@ -102,6 +107,7 @@ const cycleDecisions: Record<CycleProfileStatus["status"], LifecycleDecision> = 
   error: "error",
   "no-scripts": "no-scripts",
   throttled: "throttled",
+  "off-schedule": "off-schedule",
 };
 
 /** Diagnostics that satisfy the logging contract; malformed items are
@@ -170,6 +176,10 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
     const endedAt = monotonic();
     return endedAt !== undefined ? Math.max(0, endedAt - startedAt) : undefined;
   };
+  // Wall clock for schedule windows, separate from the monotonic clock:
+  // absolute times may jump (NTP, DST) where durations and cooldowns must
+  // not. Never fails a cycle.
+  const wallClock = options.scheduleClock ?? ((): Date => new Date());
   // Mint once per cycle so every profile shares one short-lived credential.
   // null marks a minting failure: fail every profile rather than run unauthenticated.
   let memoryToken: string | null | undefined;
@@ -255,6 +265,13 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           }
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
           if (options.signal?.aborted) return "shutdown" as const;
+          // Schedule windows gate new dispatches only: in-flight sessions
+          // drain above, and an inactive window returns before the cooldown
+          // updates, so the first cycle inside a window dispatches
+          // immediately.
+          if (profile.schedule !== undefined && !isScheduleActive(profile.schedule.triggers, wallClock())) {
+            return "off-schedule" as const;
+          }
           let checks = lastChecks.get(options.dispatcher);
           if (!checks) {
             checks = new Map();

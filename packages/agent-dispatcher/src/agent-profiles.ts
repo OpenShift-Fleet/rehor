@@ -9,6 +9,7 @@ import {
   PreflightConfigurationError,
   type PreflightDiagnostic,
 } from "./preflight-diagnostics.js";
+import { scheduleDiagnostics, type ScheduleConfig, type ScheduleTrigger } from "./schedule.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
 
@@ -31,6 +32,13 @@ export type AgentProfile = {
    * parameters) happens per run in the engine.
    */
   preflights?: PreflightEntry[];
+  /**
+   * Parsed `schedule:` declaration: KEDA-style cron windows, shape- and
+   * expression-validated here. The dispatcher evaluates it per cycle
+   * against the wall clock; while no window is active the profile is
+   * skipped before any preflight runs. Absent means always eligible.
+   */
+  schedule?: ScheduleConfig;
 };
 
 function contained(root: string, path: string): boolean {
@@ -142,6 +150,18 @@ function configurationError(name: string, diagnostics: readonly PreflightDiagnos
   return new PreflightConfigurationError(name, diagnostics, formatPreflightDiagnostics(name, diagnostics));
 }
 
+/** Strict `schedule:` parsing: undefined passes through (the field is
+ * omitted and the profile is always eligible), but any malformed
+ * declaration fails profile discovery with the full structured
+ * diagnostics, exactly like `preflights:`. */
+function scheduleFrom(value: unknown, name: string): ScheduleConfig | undefined {
+  if (value === undefined) return undefined;
+  const diagnostics = scheduleDiagnostics(value);
+  if (diagnostics.length > 0) throw configurationError(name, diagnostics);
+  const { triggers } = value as { triggers: ScheduleTrigger[] };
+  return { triggers: triggers.map((trigger) => ({ timezone: trigger.timezone, start: trigger.start, end: trigger.end })) };
+}
+
 /** Discover every agent profile in one fixed checkout. Any invalid profile or
  * missing shared dependency rejects the entire result; no partial list escapes.
  * The checkout must remain unchanged until the caller finishes using paths. */
@@ -169,12 +189,13 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     const image = imageFrom(config.image);
     const preflightEnv = profileEnvironment(config.env, config.preflight);
     const preflights = preflightsFrom(config.preflights, name);
+    const schedule = scheduleFrom(config.schedule, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
     const workflowPath = workflow.startsWith("./")
       ? join(instanceDir, workflow.slice(2))
       : join(botRoot, "presets", "workflows", workflow);
     const workflowDir = await checkedPath(workflowPath, workflowBoundary, "directory");
-    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, ...(preflights === undefined ? {} : { preflights }) });
+    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
   }
   if (!profiles.length) throw new Error("No agent profiles found in checkout");
   return profiles;

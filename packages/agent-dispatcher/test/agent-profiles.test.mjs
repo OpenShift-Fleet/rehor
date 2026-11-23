@@ -215,6 +215,93 @@ test("malformed preflights throw a typed configuration failure with diagnostics"
   }
 });
 
+test("parses a declared schedule and omits the key when absent", async (t) => {
+  const { root, realRoot, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: { repository: registry.example/team/name }
+schedule:
+  triggers:
+    - timezone: Europe/Prague
+      start: "0 8 * * 1-5"
+      end: "0 18 * * 1-5"
+    - timezone: UTC
+      start: "0 22 * * *"
+      end: "0 6 * * *"
+`);
+  const [profile] = await discoverAgentProfiles(root);
+  const agent = join(realRoot, "instance", "rehor-onboarding-config", "agent");
+  const bot = join(realRoot, "dev-bot");
+  assert.deepEqual(profile, {
+    name: "rehor-onboarding-config", configPath: join(agent, "instance.yaml"),
+    botRoot: bot, instanceDir: agent, workflow: "onboarding",
+    workflowDir: join(bot, "presets", "workflows", "onboarding"),
+    image: { repository: "registry.example/team/name", tag: "latest", reference: "registry.example/team/name:latest" },
+    preflightEnv: {},
+    schedule: {
+      triggers: [
+        { timezone: "Europe/Prague", start: "0 8 * * 1-5", end: "0 18 * * 1-5" },
+        { timezone: "UTC", start: "0 22 * * *", end: "0 6 * * *" },
+      ],
+    },
+  });
+  await writeFile(config, onboarding);
+  assert.equal("schedule" in (await discoverAgentProfiles(root))[0], false);
+});
+
+test("malformed schedules fail discovery instead of being silently dropped", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  for (const yaml of [
+    `workflow: onboarding\n${image}schedule: 7\n`,
+    `workflow: onboarding\n${image}schedule:\n`,
+    `workflow: onboarding\n${image}schedule: { triggers: [] }\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers: 7\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - 42\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: 5\n      start: "0 8 * * *"\n      end: "0 18 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * * *"\n      end: "0 8 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * * *"\n      end: "0 18 * * *"\n      desiredReplicas: 1\n`,
+    `workflow: onboarding\n${image}schedule:\n  desiredReplicas: 1\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * * *"\n      end: "0 18 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Not/AZone\n      start: "0 8 * * *"\n      end: "0 18 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "61 8 * * *"\n      end: "0 18 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "* * * * * *"\n      end: "0 18 * * *"\n`,
+    `workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * *"\n      end: "0 18 * * *"\n`,
+  ]) {
+    await writeFile(config, yaml);
+    await assert.rejects(discoverAgentProfiles(root), undefined, yaml);
+  }
+});
+
+test("malformed schedules throw a typed configuration failure with diagnostics", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  const cases = [
+    [`workflow: onboarding\n${image}schedule: 7\n`, "rehor-onboarding-config: schedule: Invalid input: expected object with a triggers list (got 7)", [
+      { path: "schedule", code: "invalid_type", message: "Invalid input: expected object with a triggers list", received: "7" },
+    ]],
+    [`workflow: onboarding\n${image}schedule: { triggers: [] }\n`, "rehor-onboarding-config: schedule.triggers: Too small: expected array to have >=1 items (got array (0 items))", [
+      { path: "schedule.triggers", code: "too_small", message: "Too small: expected array to have >=1 items", received: "array (0 items)" },
+    ]],
+    [`workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Europe/Prague\n      start: "0 8 * * *"\n      end: "0 8 * * *"\n`, 'rehor-onboarding-config: schedule.triggers[0]: Invalid input: start and end must differ (got "0 8 * * *")', [
+      { path: "schedule.triggers[0]", code: "custom", message: "Invalid input: start and end must differ", received: '"0 8 * * *"' },
+    ]],
+    [`workflow: onboarding\n${image}schedule:\n  triggers:\n    - timezone: Not/AZone\n      start: "0 8 * * *"\n      end: "0 18 * * *"\n`, 'rehor-onboarding-config: schedule.triggers[0].timezone: Invalid timezone (got "Not/AZone")', [
+      { path: "schedule.triggers[0].timezone", code: "custom", message: "Invalid timezone", received: '"Not/AZone"' },
+    ]],
+  ];
+  for (const [yaml, message, diagnostics] of cases) {
+    await writeFile(config, yaml);
+    await assert.rejects(discoverAgentProfiles(root), (error) => {
+      assert.ok(error instanceof PreflightConfigurationError, yaml);
+      assert.equal(error.profile, "rehor-onboarding-config");
+      assert.equal(error.message, message);
+      assert.deepEqual(error.diagnostics, diagnostics);
+      return true;
+    }, yaml);
+  }
+});
+
 test("rejects missing or malformed workflow and image, traversal, and injection", async (t) => {
   const { root, config } = await fixture(t);
   const image = "image: { repository: registry.example/team/name }\n";

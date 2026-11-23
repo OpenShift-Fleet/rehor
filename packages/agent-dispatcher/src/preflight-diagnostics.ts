@@ -31,9 +31,10 @@ const LIST_PATH = "preflights";
 
 /**
  * Discovery-time configuration failure for one instance profile: the profile
- * name plus the structured diagnostics of its `preflights:` declaration.
- * Thrown so the cycle can log the safe identity and the full issues while
- * the discovery result stays fail-closed (no partial profile list).
+ * name plus the structured diagnostics of its strict instance.yaml
+ * declarations (`preflights:`, `schedule:`). Thrown so the cycle can log the
+ * safe identity and the full issues while the discovery result stays
+ * fail-closed (no partial profile list).
  */
 export class PreflightConfigurationError extends Error {
   readonly profile: string;
@@ -102,7 +103,10 @@ function receivedAt(raw: unknown, path: readonly PropertyKey[]): unknown {
   return current;
 }
 
-function diagnostic(path: string, code: string, message: string, received: unknown): PreflightDiagnostic {
+/** Build one configuration diagnostic from declaration literals: the path,
+ * code, and message are escaped, and the received value is rendered by type.
+ * Shared by every strict instance.yaml field parser (preflights, schedule). */
+export function configurationDiagnostic(path: string, code: string, message: string, received: unknown): PreflightDiagnostic {
   return {
     path: escapeControls(path),
     code,
@@ -119,7 +123,7 @@ function diagnostic(path: string, code: string, message: string, received: unkno
  */
 export function preflightEntryDiagnostics(entries: unknown): PreflightDiagnostic[] {
   if (!Array.isArray(entries)) {
-    return [diagnostic(LIST_PATH, "invalid_type", "preflights must be a list of preflight entries", entries)];
+    return [configurationDiagnostic(LIST_PATH, "invalid_type", "preflights must be a list of preflight entries", entries)];
   }
   const diagnostics: PreflightDiagnostic[] = [];
   entries.forEach((raw, index) => {
@@ -133,7 +137,7 @@ export function preflightEntryDiagnostics(entries: unknown): PreflightDiagnostic
       : objectEntrySchema.safeParse(raw);
     const issues = !branch.success ? branch.error.issues : parsed.error.issues;
     for (const issue of issues) {
-      diagnostics.push(diagnostic(
+      diagnostics.push(configurationDiagnostic(
         issue.path.length > 0 ? `${where}.${issue.path.map(String).join(".")}` : where,
         issue.code,
         issueDetail(issue),
@@ -173,7 +177,7 @@ export function preflightConfigurationDiagnostics(entries: unknown, registry: Pr
     }
     const preflight = registry.get(id);
     if (preflight === undefined) {
-      diagnostics.push(diagnostic(`preflights[${index}].id`, "unknown_preflight", `${id}: unknown preflight id`, id));
+      diagnostics.push(configurationDiagnostic(`preflights[${index}].id`, "unknown_preflight", `${id}: unknown preflight id`, id));
       return;
     }
     const parsed = preflight.input.safeParse(supplied);
@@ -186,7 +190,7 @@ export function preflightConfigurationDiagnostics(entries: unknown, registry: Pr
         if (issue.code === "unrecognized_keys") {
           for (const key of issue.keys ?? []) reportedKeys.add(String(key));
         }
-        diagnostics.push(diagnostic(
+        diagnostics.push(configurationDiagnostic(
           issue.path.length > 0 ? `preflights[${index}].with.${issue.path.map(String).join(".")}` : `preflights[${index}].with`,
           issue.code,
           issueDetail(issue),
@@ -198,7 +202,7 @@ export function preflightConfigurationDiagnostics(entries: unknown, registry: Pr
       const declared = new Set(Object.keys(preflight.input.shape));
       for (const key of Object.keys(supplied)) {
         if (!declared.has(key) && !reportedKeys.has(key)) {
-          diagnostics.push(diagnostic(`preflights[${index}].with.${key}`, "unrecognized_keys", `Unrecognized key: "${key}"`, supplied[key]));
+          diagnostics.push(configurationDiagnostic(`preflights[${index}].with.${key}`, "unrecognized_keys", `Unrecognized key: "${key}"`, supplied[key]));
         }
       }
     }
