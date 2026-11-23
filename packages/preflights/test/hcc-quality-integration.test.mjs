@@ -56,6 +56,7 @@ function gateway(tasks, calls) {
         },
       });
     }
+    calls.push("merged PR check details");
     return Response.json({
       data: {
         repository: {
@@ -111,7 +112,7 @@ test("real registered checks share a context: scan finds new work, feedback only
         expected,
         name,
       );
-      assert.ok(calls.includes("/github/graphql"), name);
+      assert.ok(calls.includes("merged PR check details"), name);
       assert.deepEqual(
         calls.filter((path) => path.startsWith("/jira/")),
         tasks.length

@@ -45,7 +45,7 @@ function setup({
   issues = { [ISSUE]: issue() },
   memoryStatus,
   jiraStatus,
-  repos = REPOS,
+  repos,
 } = {}) {
   const calls = { memory: [], jira: [] };
   const memory = createMemoryServerClient({
@@ -92,7 +92,10 @@ test("registered feedback reports an error without Jira wiring", async () => {
 });
 
 test("feedback only fetches during the Prague quality window", async () => {
-  const { run, calls } = setup();
+  const { run, calls } = setup({
+    tasks: [task({ last_addressed: "2026-07-19T10:00:00" })],
+    issues: { [ISSUE]: issue([{ ...HUMAN, created: "2026-07-20T07:00:00" }]) },
+  });
   for (const now of ["2026-11-21T10:00:00Z", "2026-11-16T07:30:00Z", "2026-11-16T22:00:00Z"]) {
     assert.equal((await run(now)).status, "skip", now);
   }
@@ -170,7 +173,7 @@ test("missing, blank, or non-string Jira key is reported without a fabricated lo
 });
 
 test("owned tasks do not need a repo map; unattributed tasks do", async () => {
-  for (const repos of [null, {}]) {
+  for (const repos of [undefined, {}]) {
     const { run, calls } = setup({
       tasks: [legacy({ external_key: "merge-violation:my-repo:124" }), task()],
       repos,

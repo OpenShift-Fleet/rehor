@@ -90,7 +90,8 @@ test("an older legacy task gates generation; the canonical task takes precedence
   const legacy = task({ source_type: "jira" });
   const calls = [];
   const tasks = [...newer, legacy];
-  assert.equal((await run({ tasks, now: TUESDAY, calls })).status, "start");
+  assert.equal((await run({ tasks })).status, "skip");
+  assertPhase(await run({ tasks, now: TUESDAY, calls }), "merge");
   assert.deepEqual(calls, [
     ["pr", REPO, 7],
     ["comments", REPO, 7],
