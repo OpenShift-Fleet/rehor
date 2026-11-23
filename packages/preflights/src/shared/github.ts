@@ -192,6 +192,7 @@ export interface GitHubClient {
    * {@link PreflightHttpError}.
    */
   listRepoFiles(ownerRepo: string, branch?: string): Promise<readonly string[]>;
+  getFileContents(ownerRepo: string, path: string, ref?: string): Promise<string | null>;
 }
 
 // The fields mirror `gh pr view --json state,mergeable,statusCheckRollup,
@@ -946,6 +947,39 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     getPrComments,
     listMergedPrs,
     listRepoFiles,
+    async getFileContents(ownerRepo, path, ref) {
+      splitOwnerRepo(ownerRepo);
+      const segments = path.split("/");
+      if (segments.some((part) => !part || part === "." || part === "..")) {
+        throw new Error("Invalid GitHub contents path");
+      }
+      const query = ref ? `?ref=${encodeURIComponent(ref)}` : "";
+      const url = `${route}/repos/${ownerRepo}/contents/${segments.map(encodeURIComponent).join("/")}${query}`;
+      return await withTimeout(
+        async () => {
+          const response = await proxyFetch(url, {
+            method: "GET",
+            headers: { Accept: "application/vnd.github.raw+json" },
+            signal: AbortSignal.timeout(timeoutMs),
+          });
+          if (response.status === 404) return null;
+          if (!response.ok) {
+            throw new PreflightHttpError({
+              status: response.status,
+              method: "GET",
+              url,
+              route,
+              message: `GitHub contents request failed (HTTP ${response.status})`,
+            });
+          }
+          return await response.text();
+        },
+        timeoutMs,
+        route,
+        url,
+        "GET",
+      );
+    },
   };
 }
 

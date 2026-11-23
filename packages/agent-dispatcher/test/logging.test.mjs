@@ -398,7 +398,7 @@ test("writer errors never escape or get logged, including rejected async writers
 
 test("production wiring preserves decision, filters runner env, and drains signal-racing sessions with mocks only", { timeout: 30000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => new URL('https://services.example/'); export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0; export const readPreflightStateDir = () => undefined; export const readSlackWebhooks = () => undefined; export const readJenkinsInstances = () => undefined; export const readJenkinsIdpJobs = () => undefined;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-memory-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -620,7 +620,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
   const file = await open(path, "wx", 0o600);
   t.after(async () => { await file.close(); await rm(directory, { recursive: true, force: true }); });
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0; export const readPreflightStateDir = () => undefined; export const readSlackWebhooks = () => undefined; export const readJenkinsInstances = () => undefined; export const readJenkinsIdpJobs = () => undefined;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'secret-credential', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,
@@ -664,7 +664,7 @@ test("dispatcher writes lifecycle and default cycle events to a regular stdout f
 
 test("SIGTERM with unresolved session cleanup logs shutdown failure and keeps nonzero exit", { timeout: 30000 }, async () => {
   const modules = {
-    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0;`,
+    "config.js": `export const readAuthConfig = () => ({ memoryUrl: new URL('https://memory.example') }); export const readBotMemoryUrl = () => new URL('https://memory.example/mcp'); export const readServiceGatewayUrl = () => undefined; export const readModelProxyUrl = () => undefined; export const readPublicEgressEnabled = () => false; export const readSandboxRetentionMs = () => 0; export const readSessionLockTtlMs = () => 0; export const readPreflightStateDir = () => undefined; export const readSlackWebhooks = () => undefined; export const readJenkinsInstances = () => undefined; export const readJenkinsIdpJobs = () => undefined;`,
     "preflight.js": `export const createCredentialProvider = () => ({ get: async () => {}, mint: async () => ({ token: 'mock-token', expiresAt: 123 }) }); export const preflightFailureMessage = () => 'failed';`,
     "gateway-config.js": `export const readGatewayConfig = () => ({});`,
     "gateway.js": `export const connectGateway = async () => ({ raw: {} });`,

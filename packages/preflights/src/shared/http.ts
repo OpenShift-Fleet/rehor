@@ -49,6 +49,13 @@ export interface HttpClient {
   readonly route: string;
   getJson<T>(path: string, options?: JsonRequestOptions): Promise<T>;
   postJson<T>(path: string, body: unknown, options?: JsonRequestOptions): Promise<T>;
+  /** PUT with a JSON body; used by the Jira issue-update write path. */
+  putJson<T>(path: string, body: unknown, options?: JsonRequestOptions): Promise<T>;
+  /**
+   * DELETE; a non-empty JSON response body is parsed, an empty one resolves
+   * to `undefined`. Used by the memory-server archive/delete write paths.
+   */
+  delete<T>(path: string, options?: JsonRequestOptions): Promise<T>;
 }
 
 export interface HttpErrorInit {
@@ -100,7 +107,7 @@ export function createHttpClient(config: HttpClientConfig): HttpClient {
   const fetchImpl: FetchLike = config.fetch ?? fetch;
 
   async function request<T>(
-    method: "GET" | "POST",
+    method: "GET" | "POST" | "PUT" | "DELETE",
     path: string,
     body: unknown,
     options: JsonRequestOptions | undefined,
@@ -142,6 +149,7 @@ export function createHttpClient(config: HttpClientConfig): HttpClient {
       });
     }
     const text = await response.text();
+    if ((method === "PUT" || method === "DELETE") && text === "") return undefined as T;
     try {
       return JSON.parse(text) as T;
     } catch {
@@ -159,6 +167,8 @@ export function createHttpClient(config: HttpClientConfig): HttpClient {
     route,
     getJson: (path, options) => request("GET", path, undefined, options),
     postJson: (path, body, options) => request("POST", path, body, options),
+    putJson: (path, body, options) => request("PUT", path, body, options),
+    delete: (path, options) => request("DELETE", path, undefined, options),
   };
 }
 

@@ -16,6 +16,9 @@ export type DispatcherLoopOptions = {
   memoryCredential?: () => Promise<string>;
   /** Services-gateway base URL; the proxy route for external-system preflights. */
   serviceGatewayUrl?: URL;
+  preflightStateDir?: DispatcherCycleOptions["preflightStateDir"];
+  slackWebhooks?: DispatcherCycleOptions["slackWebhooks"];
+  jenkins?: DispatcherCycleOptions["jenkins"];
   /** Observes each completed cycle result; lifecycle records are emitted inside the cycle. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
@@ -46,7 +49,11 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
-      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl });
+      const result = await runDispatcherCycle({
+        repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions,
+        signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl,
+        preflightStateDir: options.preflightStateDir, slackWebhooks: options.slackWebhooks, jenkins: options.jenkins,
+      });
       if (!signal?.aborted) emit?.(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {

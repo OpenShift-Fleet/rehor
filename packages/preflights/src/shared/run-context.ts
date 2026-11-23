@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { PreflightRunContext as RunContextContract } from "../core/preflight.js";
 import type { FetchLike } from "./http.js";
+import type { JenkinsClient, JenkinsClientConfig } from "./jenkins.js";
+import { createJenkinsClient, isJenkinsClient } from "./jenkins.js";
 import type { JiraClient, JiraClientConfig } from "./jira.js";
 import { createJiraClient } from "./jira.js";
 import type { MemoryServerClient, MemoryServerClientConfig } from "./memory-server.js";
 import { createMemoryServerClient } from "./memory-server.js";
 import type { ProjectReposMap } from "./repos.js";
+import type { SlackClient, SlackClientConfig } from "./slack.js";
+import { createSlackClient, isSlackClient } from "./slack.js";
+import type { PersistentStateConfig, PersistentStateStore } from "./state.js";
+import { createPersistentStateStore, isPersistentStateStore } from "./state.js";
 
 /**
  * Per-run shared state — the in-memory replacement of the Python
@@ -84,6 +90,27 @@ export interface PreflightRunContext extends RunContextContract {
   readonly repos: ProjectReposMap;
   /** Per-run shared state (the state-file replacement). */
   readonly state: PreflightRunState;
+  /**
+   * Slack webhook client when wired. Webhook URLs are credentials supplied
+   * by dispatcher-side deployment configuration only — never preflight
+   * parameters or profiles. Preflights that notify treat an unwired client
+   * as a degraded report, not an error.
+   */
+  readonly slack?: SlackClient;
+  /**
+   * Jenkins client when wired. Instance endpoints arrive through rendered
+   * deployment configuration (secret rendering), never engine constants;
+   * the client reads those hosts without credentials. Watchduty
+   * preflights treat an unwired client as an execution error.
+   */
+  readonly jenkins?: JenkinsClient;
+  /**
+   * Persistent cross-run state (throttle timestamps, weekly markers) when
+   * wired; one store per agent instance. Preflights that self-throttle
+   * treat an unwired store as an execution error — an unpersisted
+   * throttle marker would re-run throttled work every cycle.
+   */
+  readonly persistentState?: PersistentStateStore;
 }
 
 /** Either an already-built client or the config to build one for this run. */
@@ -91,6 +118,15 @@ export type MemoryServerWiring = MemoryServerClient | MemoryServerClientConfig;
 
 /** Either an already-built Jira client or the config to build one for this run. */
 export type JiraWiring = JiraClient | JiraClientConfig;
+
+/** Either an already-built Jenkins client or the config to build one for this run. */
+export type JenkinsWiring = JenkinsClient | JenkinsClientConfig;
+
+/** Either an already-built Slack client or the config to build one for this run. */
+export type SlackWiring = SlackClient | SlackClientConfig;
+
+/** Either an already-built persistent state store or the config to build one for this run. */
+export type PersistentStateWiring = PersistentStateStore | PersistentStateConfig;
 
 export interface PreflightRunContextOptions {
   readonly instanceId: string;
@@ -101,6 +137,15 @@ export interface PreflightRunContextOptions {
   readonly proxy?: ProxyWiring;
   /** Jira REST client or its config; the jira preflights require one. */
   readonly jira?: JiraWiring;
+  /** Jenkins client or its config; the watchduty preflights require one. */
+  readonly jenkins?: JenkinsWiring;
+  /** Slack webhook client or its config; reporting preflights degrade without one. */
+  readonly slack?: SlackWiring;
+  /**
+   * Persistent per-instance state store or its config. A config-built
+   * store is namespaced to this context's instance id.
+   */
+  readonly persistentState?: PersistentStateWiring;
   /** Instance project-repos map; defaults to `{}` (no repo resolution). */
   readonly repos?: ProjectReposMap;
 }
@@ -134,11 +179,35 @@ export function createPreflightRunContext(
       : isJiraClient(options.jira)
         ? options.jira
         : createJiraClient(options.jira);
+  const jenkins =
+    options.jenkins === undefined
+      ? undefined
+      : isJenkinsClient(options.jenkins)
+        ? options.jenkins
+        : createJenkinsClient(options.jenkins);
+  const slack =
+    options.slack === undefined
+      ? undefined
+      : isSlackClient(options.slack)
+        ? options.slack
+        : createSlackClient(options.slack);
+  const persistentState =
+    options.persistentState === undefined
+      ? undefined
+      : isPersistentStateStore(options.persistentState)
+        ? options.persistentState
+        : createPersistentStateStore({
+            ...options.persistentState,
+            instanceId: options.persistentState.instanceId ?? options.instanceId,
+          });
   return {
     instanceId: options.instanceId,
     runId: options.runId ?? randomUUID(),
     memory,
     jira,
+    jenkins,
+    slack,
+    persistentState,
     proxy: options.proxy,
     repos: options.repos ?? {},
     state,

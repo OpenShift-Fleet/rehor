@@ -41,6 +41,7 @@ export { validateConfig } from "./core/validate.js";
 
 // --- run context (the one shared type re-exported; dispatcher-facing) ---
 
+export type { JenkinsInstance, JenkinsInstances } from "./shared/jenkins.js";
 export type {
   JiraWiring,
   MemoryServerWiring,
@@ -51,3 +52,4 @@ export type {
   ProxyWiring,
 } from "./shared/run-context.js";
 export { createPreflightRunContext } from "./shared/run-context.js";
+export type { SlackWebhookConfig } from "./shared/slack.js";

@@ -1,3 +1,4 @@
+import type { JenkinsInstance, JenkinsInstances, SlackWebhookConfig } from "@rehor/preflights";
 import { parseHttpsUrl } from "./url.js";
 
 export type AuthConfig = {
@@ -174,4 +175,116 @@ export function readSandboxRetentionMs(env: NodeJS.ProcessEnv): number {
     throw new Error(`${sandboxRetentionVariable}, when set, must be a whole number of seconds between 0 and 86400`);
   }
   return seconds * 1000;
+}
+
+const preflightStateDirVariable = "AGENT_DISPATCHER_PREFLIGHT_STATE_DIR";
+
+// Writable directory holding one JSON state file per agent instance — the
+// cross-run preflight bookkeeping (throttle timestamps, weekly markers).
+// Deployment-owned; absent wiring leaves the self-throttling preflights
+// unwired (they fail closed with an execution error). Fail-closed parsing:
+// only a non-empty string is accepted.
+export function readPreflightStateDir(env: NodeJS.ProcessEnv): string | undefined {
+  const value = env[preflightStateDirVariable];
+  if (value === undefined) return undefined;
+  if (value.trim() === "") {
+    throw new Error(`${preflightStateDirVariable}, when set, must be a non-empty directory path`);
+  }
+  return value;
+}
+
+const slackWebhooksVariable = "AGENT_DISPATCHER_SLACK_WEBHOOKS";
+
+// Slack webhook channels for preflights that report without an AI session.
+// Secret-rendered deployment configuration (values are credentials and are
+// never logged or exposed to preflight results): a flat JSON object mapping
+// channel names to webhook URLs, with the reserved key "default" backing
+// plain sends and every other key naming an override channel. Absent wiring
+// degrades those reports — the Python "Slack skipped (no webhook)" path.
+// Fail-closed parsing: only string values are accepted so a malformed
+// render cannot half-configure notifications.
+export function readSlackWebhooks(env: NodeJS.ProcessEnv): SlackWebhookConfig | undefined {
+  const value = env[slackWebhooksVariable];
+  if (value === undefined || value.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${slackWebhooksVariable}, when set, must be a JSON object of channel names to webhook URLs`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${slackWebhooksVariable}, when set, must be a JSON object of channel names to webhook URLs`);
+  }
+  const channels: Record<string, string> = {};
+  let defaults: string | undefined;
+  for (const [channel, webhook] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof webhook !== "string" || webhook.trim() === "") {
+      throw new Error(`${slackWebhooksVariable}: channel "${channel}" must be a non-empty webhook URL string`);
+    }
+    if (channel === "default") defaults = webhook;
+    else channels[channel] = webhook;
+  }
+  return {
+    ...(defaults === undefined ? {} : { default: defaults }),
+    channels,
+  };
+}
+
+const jenkinsInstancesVariable = "AGENT_DISPATCHER_JENKINS_INSTANCES";
+
+// Jenkins instance endpoints for the watchduty preflights, rendered from
+// deployment configuration (secret rendering): a JSON object with "qe" and
+// "idp" entries, each `{ "url": "...", "prefix": "..." }`. The corporate
+// Jenkins hosts serve self-signed certificates and need no credentials;
+// the endpoints themselves are deployment config, never engine constants.
+// Absent wiring leaves the watchduty preflights unwired (fail closed).
+export function readJenkinsInstances(env: NodeJS.ProcessEnv): JenkinsInstances | undefined {
+  const value = env[jenkinsInstancesVariable];
+  if (value === undefined || value.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${jenkinsInstancesVariable}, when set, must be a JSON object with "qe" and "idp" instances`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${jenkinsInstancesVariable}, when set, must be a JSON object with "qe" and "idp" instances`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const instances: Partial<Record<"qe" | "idp", JenkinsInstance>> = {};
+  for (const name of ["qe", "idp"] as const) {
+    const instance = record[name];
+    if (typeof instance !== "object" || instance === null) {
+      throw new Error(`${jenkinsInstancesVariable}: instance "${name}" must be an object with "url" and "prefix"`);
+    }
+    const { url, prefix } = instance as Record<string, unknown>;
+    if (typeof url !== "string" || !/^https:\/\//.test(url)) {
+      throw new Error(`${jenkinsInstancesVariable}: instance "${name}" url must be an https URL`);
+    }
+    if (typeof prefix !== "string") {
+      throw new Error(`${jenkinsInstancesVariable}: instance "${name}" prefix must be a string (may be empty)`);
+    }
+    instances[name] = { url: url.replace(/\/+$/, ""), prefix };
+  }
+  return { qe: instances.qe!, idp: instances.idp! };
+}
+
+const jenkinsIdpJobsVariable = "AGENT_DISPATCHER_JENKINS_IDP_JOBS";
+
+// Job names the "idp" Jenkins instance serves (every other job routes to
+// "qe"). Optional override of the ported Python default set; fail-closed
+// parsing accepts only an array of non-empty strings.
+export function readJenkinsIdpJobs(env: NodeJS.ProcessEnv): readonly string[] | undefined {
+  const value = env[jenkinsIdpJobsVariable];
+  if (value === undefined || value.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${jenkinsIdpJobsVariable}, when set, must be a JSON array of job names`);
+  }
+  if (!Array.isArray(parsed) || parsed.some((job) => typeof job !== "string" || job.trim() === "")) {
+    throw new Error(`${jenkinsIdpJobsVariable}, when set, must be a JSON array of job names`);
+  }
+  return parsed as readonly string[];
 }

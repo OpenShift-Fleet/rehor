@@ -9,6 +9,12 @@ import { hccWeeklyReport } from "./hcc-weekly-report/index.js";
 import { jiraKanban } from "./jira-kanban/index.js";
 import { jiraSprint } from "./jira-sprint/index.js";
 import { jiraTriage } from "./jira-triage/index.js";
+import { obsintBacklogScan } from "./obsint-backlog-scan/index.js";
+import { obsintCveCiReview } from "./obsint-cve-ci-review/index.js";
+import { obsintCveScan } from "./obsint-cve-scan/index.js";
+import { obsintJenkinsStatus } from "./obsint-jenkins-status/index.js";
+import { obsintMintmakerPrs } from "./obsint-mintmaker-prs/index.js";
+import { obsintWeeklyStatusUpdate } from "./obsint-weekly-status-update/index.js";
 import { onboarding } from "./onboarding/index.js";
 
 /**
@@ -30,6 +36,12 @@ export function createPopulatedRegistry(): PreflightRegistry {
     jiraKanban,
     jiraSprint,
     jiraTriage,
+    obsintBacklogScan,
+    obsintCveCiReview,
+    obsintCveScan,
+    obsintJenkinsStatus,
+    obsintMintmakerPrs,
+    obsintWeeklyStatusUpdate,
     onboarding,
   ]);
 }

@@ -16,6 +16,12 @@ test("populated registry registers every landed preflight", () => {
     "jira-kanban",
     "jira-sprint",
     "jira-triage",
+    "obsint-backlog-scan",
+    "obsint-cve-ci-review",
+    "obsint-cve-scan",
+    "obsint-jenkins-status",
+    "obsint-mintmaker-prs",
+    "obsint-weekly-status-update",
     "onboarding",
   ]);
 });
