@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverAgentProfiles } from "../dist/agent-profiles.js";
 import { PreflightConfigurationError } from "../dist/preflight-diagnostics.js";
+import { mergeProfileEnvironment, sandboxEnvironment } from "../dist/runtime-environment.js";
 
 // Existing onboarding profile, plus the required image field.
 const onboarding = `workflow: onboarding
@@ -71,6 +72,47 @@ test("reads non-secret per-agent preflight settings and rejects credential field
   assert.deepEqual((await discoverAgentProfiles(root))[0].preflightEnv, { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label" });
   await writeFile(config, "workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    BOT_TOKEN: forbidden\n");
   await assert.rejects(discoverAgentProfiles(root));
+});
+
+test("top-level env supplies preflight identity and sandbox runtime", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: {repository: registry.example/team/name}
+env:
+  BOT_INSTANCE_ID: test-agent
+  BOT_LABEL: test-label
+  BOT_EXECUTION_ENGINE: coordinator
+  BOT_MEMORY_URL: https://untrusted.example/mcp
+`);
+  const [profile] = await discoverAgentProfiles(root);
+  const host = { BOT_INSTANCE_ID: "host-agent", BOT_MEMORY_URL: "https://memory.example/mcp" };
+  const expected = { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label", BOT_EXECUTION_ENGINE: "coordinator", BOT_MEMORY_URL: host.BOT_MEMORY_URL };
+  assert.deepEqual(mergeProfileEnvironment(host, profile.preflightEnv), expected);
+  assert.deepEqual(sandboxEnvironment(host, profile.preflightEnv), expected);
+});
+
+test("top-level and legacy environment forms cannot be combined", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: {repository: registry.example/team/name}
+env: {BOT_INSTANCE_ID: test-agent}
+preflight: {env: {BOT_INSTANCE_ID: test-agent}}
+`);
+  await assert.rejects(discoverAgentProfiles(root), /either env or preflight\.env/);
+});
+
+test("top-level env fails closed for secrets, operational settings and malformed values", async (t) => {
+  const { root, config } = await fixture(t);
+  const base = "workflow: onboarding\nimage: {repository: registry.example/team/name}\n";
+  for (const entry of [
+    "env: null", "env: []", "env: string", "env: {BOT_LABEL: 5}",
+    'env: {BOT_LABEL: ""}', "env: {BOT_TOKEN: forbidden}",
+    "env: {HTTP_PROXY: attacker}", "env: {JIRA_MCP_URL: attacker}",
+    "env: {EXECUTOR_ADDR: attacker}", "env: {REHOR_INPUT_SOURCE: attacker}",
+  ]) {
+    await writeFile(config, `${base}${entry}\n`);
+    await assert.rejects(discoverAgentProfiles(root), undefined, entry);
+  }
 });
 
 test("instance preflight settings cannot override operational environment", async (t) => {

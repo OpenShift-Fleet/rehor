@@ -95,15 +95,22 @@ function workflowFrom(value: unknown): string {
   return value;
 }
 
-function preflightEnvironment(value: unknown): Record<string, string> {
-  if (value === undefined) return {};
-  if (!object(value) || Object.keys(value).some((key) => key !== "env") || !object(value.env)) {
-    throw new Error("Invalid preflight environment");
+function profileEnvironment(value: unknown, legacy: unknown): Record<string, string> {
+  if (value !== undefined && legacy !== undefined) {
+    throw new Error("Use either env or preflight.env, not both");
   }
-  const env: Record<string, string> = {};
-  for (const [name, setting] of Object.entries(value.env)) {
-    if (!isInstancePreflightVariable(name) || typeof setting !== "string" || !setting) {
+  if (legacy !== undefined) {
+    if (!object(legacy) || Object.keys(legacy).some((key) => key !== "env") || !object(legacy.env)) {
       throw new Error("Invalid preflight environment");
+    }
+    value = legacy.env;
+  }
+  if (value === undefined) return {};
+  if (!object(value)) throw new Error("Invalid profile environment");
+  const env: Record<string, string> = {};
+  for (const [name, setting] of Object.entries(value)) {
+    if (!isInstancePreflightVariable(name) || typeof setting !== "string" || !setting) {
+      throw new Error("Invalid profile environment");
     }
     env[name] = setting;
   }
@@ -160,7 +167,7 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     if (!object(config)) throw new Error(`Invalid profile in ${configPath}`);
     const workflow = workflowFrom(config.workflow);
     const image = imageFrom(config.image);
-    const preflightEnv = preflightEnvironment(config.preflight);
+    const preflightEnv = profileEnvironment(config.env, config.preflight);
     const preflights = preflightsFrom(config.preflights, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
     const workflowPath = workflow.startsWith("./")
