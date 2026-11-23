@@ -83,11 +83,11 @@ Chrome navigates `https://stage.foo.redhat.com:1337/` → resolves 127.0.0.1 via
 8. **Screenshots**: "before" + "after". Compare w/ mockups if ticket has them.
 
 9. **Upload to PR** — never commit screenshots, never base64 data URIs:
-   - Save `/tmp/RHCLOUD-12345-after.png`.
+   - Save `/tmp/TEAM-12345-after.png`.
    - Fork name from `project-repos.json` `url` field.
    - Ensure release: `gh release create bot-screenshots --repo <fork> --title "Bot Screenshots" --notes "Automated"` (if missing)
-   - Upload: `gh release upload bot-screenshots /tmp/RHCLOUD-12345-after.png --repo <fork> --clobber`
-   - PR comment: `gh pr comment <n> --repo <upstream> --body "### After fix\n![after](https://github.com/<fork>/releases/download/bot-screenshots/RHCLOUD-12345-after.png)"`
+   - Upload: `gh release upload bot-screenshots /tmp/TEAM-12345-after.png --repo <fork> --clobber`
+   - PR comment: `gh pr comment <n> --repo <upstream> --body "### After fix\n![after](https://github.com/<fork>/releases/download/bot-screenshots/TEAM-12345-after.png)"`
 
 10. **Stop everything** — mandatory: `lsof -ti :1337,:8003,:9912 | xargs kill`. Verify: should return nothing.
 

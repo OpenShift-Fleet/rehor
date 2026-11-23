@@ -2,12 +2,9 @@
 
 Operational guide and architecture for moving Rehor bot instances directly from Claude Code plus `claude-agent-sdk` to OpenCode V2. The sole OpenCode runtime ID is `opencode`, with `@opencode/client@2.1.2` and `@opencode/cli@2.1.2`. Versioned runtime IDs and legacy aliases are unsupported. Provider choice remains independent: retain Vertex or select an existing OpenAI gateway route.
 
-Status: REHOR-200 migration contract; final image and deployment acceptance remain rollout gates.
+This guide covers runtime migration, including legacy polling and rollback. Run preflights locally only on the polling path. In [dispatcher-managed deployments](../agent-dispatcher-deployment.md), the dispatcher runs TypeScript preflights before sandbox creation; the coordinator consumes the supplied prompt once.
 
-V1 history: OpenCode V1 was an experimental stopgap used only by onboarding for provider/runtime validation. It is not an intermediate stage for other agents. Migrate all remaining Claude SDK agents directly to V2. Merge the main runtime/docs PR first; only then create a separate onboarding PR updating its `dev-bot` gitlink to the merged commit and its instance/profile configuration. Consumer edits are outside the main PR.
-
-Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
-`REHOR-125`, `REHOR-126`, `REHOR-127`, `REHOR-128`, `REHOR-198`, `REHOR-199`, `REHOR-200`
+OpenCode V1 was an experimental stopgap used only by onboarding for provider/runtime validation. It is not an intermediate stage for other agents. Migrate remaining Claude SDK agents directly to V2. Update the shared runtime first, then pin that version and matching profile configuration in each consuming instance.
 
 ## Decision Summary
 
@@ -17,7 +14,7 @@ Related Jira: `REHOR-35`, `REHOR-60`, `REHOR-68`, `REHOR-91`, `REHOR-92`,
 - Keep model credentials in the proxy deployment, not bot pods or OpenCode auth files.
 - Add an OpenAI-compatible proxy endpoint backed by direct OpenAI API keys.
 - Keep existing Jira, Git, memory, and browser MCP services separate.
-- Keep deterministic Python preflights outside OpenCode; port only appropriate lifecycle hooks to V2 plugins.
+- Keep deterministic preflights outside OpenCode: the dispatcher runs TypeScript checks, and non-dispatched polling retains its Python checks. Port only appropriate lifecycle hooks to V2 plugins.
 - Deliberately migrate OpenCode profiles to native `AGENTS.md` and `.opencode` resources; retain Claude instruction assembly only for runtime `claude`.
 - Render native V2 configuration and enforce deployment directory boundaries through explicit global native policies, above project and agent grants.
 - Isolate each child server's authentication, config/data homes, database, and instruction discovery; restore original shell XDG homes through a runner-owned V2 plugin.
@@ -58,8 +55,7 @@ bot pod
           one workspace-scoped client and session per cycle
           SSE events: lifecycle, tool, usage, error
     core/shared/workflow AGENTS.md via native instructions
-    profile AGENTS.md + native project instruction discovery
-    .opencode/agents, plugins, skills
+ profile AGENTS.md + native project instruction discovery.opencode/agents, plugins, skills
     MCP: memory, Jira, browser
     HTTP: Rehor model gateway, Git proxy, Squid
 
@@ -107,7 +103,7 @@ The provider-neutral Rehor contract preserves current Python behavior; its schem
 See the [coordinator runtime contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md)
 for invariants, compatibility mapping, and development commands.
 
-### Cycle cost budget (REHOR-211)
+### Cycle cost budget
 
 The turn-based budget is replaced by a per-cycle-run USD cost budget, shared by both runtimes. Configure it in the runner's `config.json`:
 
@@ -357,12 +353,12 @@ title-generation requests. Rehor's deployment `smallModel` input renders to
 native `agents.title.model`; absent an explicit utility model, the renderer uses
 the active provider's validated default. It never emits `small_model`.
 
-### [REHOR-144](https://issues.redhat.com/browse/REHOR-144) renderer contract
+### Renderer contract
 
 The coordinator's `runtimes/opencode/render.ts` owns translation from
 provider-neutral cycle data to native OpenCode V2 configuration. The runtime factory
 receives the Python preparation through the `preparedConfig` option on
-`executeSelectedRun()` and calls `renderOpenCodeConfigForCycle()` with the
+`executeSelectedRun` and calls `renderOpenCodeConfigForCycle` with the
 prepared model, allowed tools, optional servers, and `openCodeMcpServers` data.
 Deployment-owned
 provider/plugin fields remain separate. `mcpServers` and `openCodeMcpServers` are mandatory,
@@ -429,7 +425,7 @@ The runner-owned V2 Effect plugin uses `ctx.tool` hooks to record uniquely ident
 
 It publishes progress snapshots and persists terminal evidence in `metadata.rehorCodeMode`, alongside OpenCode's native `metadata.toolCalls`. The normalizer merges those sources without counting the same operation twice, including repeated/parallel identical calls, progress updates, terminal projections, and recovery. The outer `execute` tool remains visible with `budgetUnit: "container"` and never consumes a tool-call budget unit. Each successful nested operation counts once, including successful native fetch metadata rows; errors do not count, and a finished wrapper does not imply that unfinished nested calls succeeded.
 
-Work-context extraction receives successful unfiltered nested results even when a script prints only a filtered summary. Native-only metadata without captured results can supply status/accounting evidence, but is marked result-unavailable and cannot borrow the wrapper's filtered output as a nested result. Code Mode `fetch` is raw HTTP, independent of the `webfetch` permission. Its authority follows network sandbox/egress controls and `execute` availability; there is no `fetch: false` restriction claimed here. See [runtime budgets](#runtime-specific-budgets-rehor-198) for non-atomic batch limits.
+Work-context extraction receives successful unfiltered nested results even when a script prints only a filtered summary. Native-only metadata without captured results can supply status/accounting evidence, but is marked result-unavailable and cannot borrow the wrapper's filtered output as a nested result. Code Mode `fetch` is raw HTTP, independent of the `webfetch` permission. Its authority follows network sandbox/egress controls and `execute` availability; there is no `fetch: false` restriction claimed here. See the [cycle cost budget](#cycle-cost-budget) for current enforcement.
 
 The final runner layer removes built-in `opencode.tools` (session/worktree/model-management tools) and `opencode.tools.mcp-resources` (generic MCP resource tools outside the explicit MCP grant list). Other V2 built-ins are intentionally retained. V2's [internal plugin registry](https://github.com/anomalyco/opencode/blob/v2.1.2/packages/core/src/plugin/internal.ts#L217-L276) includes essential runtime adapters, not just optional default integrations:
 
@@ -443,7 +439,7 @@ The final runner layer removes built-in `opencode.tools` (session/worktree/model
 
 Blanket `plugins: ["-*"]` would remove required provider/config/tool adapters, not reproduce V1's default-plugin behavior. Upstream also guards its policy and Console plugins against removal. The renderer uses named management removals plus explicit tool/provider/directory policies; package closure and egress remain deployment responsibilities.
 
-The supervisor isolates instruction discovery, config/data homes, and database. CLI `2.1.2` receives offline package resolution, disabled model-catalog fetching, and native `update: "disable"` configuration. Package installation is not a runtime responsibility: the image must pre-bake the declared closure. The offline npm flags scope to the server's own in-process package resolution only; the runner policy plugin strips them from shell tool environments so agent-driven dependency installs in checked-out repositories use the deployment's approved proxy egress (REHOR-220). Instance configuration carries independent `runtime` and `provider` through the Python bridge as `runtimeId` and `providerId`; the coordinator consumes `runtime: opencode`. See the [canary rollout runbook](../operations/rehor-146-opencode-canary.md).
+The supervisor isolates instruction discovery, config/data homes, and database. CLI `2.1.2` receives offline package resolution, disabled model-catalog fetching, and native `update: "disable"` configuration. Package installation is not a runtime responsibility: the image must pre-bake the declared closure. The offline npm flags scope to the server's own in-process package resolution only; the runner policy plugin strips them from shell tool environments so agent-driven dependency installs in checked-out repositories use the deployment's approved proxy egress. Instance configuration carries independent `runtime` and `provider` through the Python bridge as `runtimeId` and `providerId`; the coordinator consumes `runtime: opencode`. See the [canary rollout runbook](../operations/rehor-146-opencode-canary.md).
 
 `coordinator/test/opencode-production-allowlist-native.test.ts` is an exact **CLI 2.1.2 snapshot**, launching the native server directly rather than through the production supervisor. With prepared production grants and a loopback model fixture, six native operations read/edit/write `.ts` and `.py` files, required config/tool plugins activate, and management plugins and LSP tools are absent. **FFF/native indexing and all MCP loading are excluded**: the test sets `OPENCODE_DISABLE_FFF=1`, overrides every prepared MCP server with `alwaysLoad: false`, and points `JIRA_MCP_URL` at loopback port 1; npm resolution is offline. The production supervisor does not set `OPENCODE_DISABLE_FFF`. A test-only configured LSP canary and PATH language-server/package/download sentinels remain untouched, confirming no observed LSP or edit/write-triggered sentinel process attempts for the pinned release under this fixture. The proxy trap records zero requests under those exclusions; this is not deployed-supervisor egress/download proof or OS-level confinement evidence. These observations complement the tagged source evidence above that 2.1.2 has no LSP runtime. The strict version assertion deliberately excludes future binaries, so the canary makes no future-runtime tripwire claim. Run with `PYTHON=<project-python> REHOR_TEST_OPENCODE_BINARY=<2.1.2-binary> npm test -- test/opencode-production-allowlist.test.ts test/opencode-production-allowlist-native.test.ts` from `coordinator/`.
 
@@ -480,7 +476,7 @@ This is a provider and credential migration, not only a URL change.
 
 ### Add
 
-- Vault key `openai-api-key` or project-scoped equivalent.
+- A platform-approved provider credential, delivered only through the protected gateway boundary.
 - `OPENAI_API_KEY` proxy-only environment variable.
 - `OPENAI_ALLOWED_MODELS` or provider-neutral model allowlist.
 - `OPENAI_BASE_URL` with default `https://api.openai.com/v1`.
@@ -492,9 +488,7 @@ This is a provider and credential migration, not only a URL change.
 Do not remove Vertex configuration until canary validation and rollback expiry
 complete. During transition, proxy may expose separate provider routes:
 
-```text
-:8443  Vertex auth proxy, legacy
-:8450  OpenAI-compatible proxy, canary/new path
+```text:8443 Vertex auth proxy, legacy:8450 OpenAI-compatible proxy, canary/new path
 ```
 
 The bot selects provider through OpenCode config. This allows per-instance
@@ -644,7 +638,7 @@ Claude content or OpenCode's later project discovery.
 Coordinator rejects symlinks and paths escaping selected profile. Missing
 profile `AGENTS.md`, `opencode.json`, or `.opencode/` is normal. XDG config/data homes, database, and instruction discovery stay isolated per cycle. Shell `HOME`, caches, and state remain persistent. The runner-owned V2 shell plugin restores both original `XDG_CONFIG_HOME` and `XDG_DATA_HOME` for shell commands, preserving absent/empty values, while server homes stay private. The server uses fresh per-process authentication and must not import saved ambient credentials. Provider API keys still resolve from validated environment references.
 
-#### Operational child environment (REHOR-199)
+#### Operational child environment
 
 The OpenCode supervisor copies these 12 reviewed operational variables from its runner environment whenever present, without provider passthrough configuration. Most are non-secret coordinates or identities; `SLACK_WEBHOOK_URL` is an intentional configured-webhook credential exception preserving the existing helper contract. The table records current consumers; it is not an exhaustive inventory of future helper requirements. Source paths are relative to the repository root:
 
@@ -675,9 +669,9 @@ Default coordinator tests cover all 12 names in sanitization and spawned-server 
 REHOR_TEST_OPENCODE_BINARY=/absolute/path/to/opencode-2.1.2 npm test -- test/opencode-environment-native.test.ts
 ```
 
-See [fresh-image rollout requirements](../openshell-deployment.md#opencode-operational-environment-rollout-rehor-199) before validating a deployed instance.
+See [fresh-image rollout requirements](../legacy/openshell-deployment.md#opencode-operational-environment) before validating a deployed instance.
 
-#### Supplemental workspace access (REHOR-198)
+#### Supplemental workspace access
 
 Deployment-owned `opencode-deployment.json`, selected by `REHOR_OPENCODE_DEPLOYMENT_CONFIG`, may grant supplemental paths outside the cycle worktree:
 
@@ -697,7 +691,7 @@ Each entry must be a literal, canonical absolute POSIX path other than `/`. Wild
 
 The explicit global native policy ceiling outranks project policies and JSON/Markdown agent grants. Within approved roots, native `allow`, `ask`, and `deny` ordering and per-agent read denials remain effective. `ask` must not become automatic approval in the headless runner. Broad agent or project grants cannot open sibling paths, `/`, or the private instruction-discovery home. Preserve ordered permission arrays when staging and hashing profiles. Supplemental grants do not relax credential-shaped read restrictions or unrelated tool permissions. This replaces the historical V1 config-hook clamping design.
 
-This is OpenCode permission configuration, not a filesystem or Bash sandbox. It does not constrain arbitrary code from plugins, custom tools, or shell commands. OpenShell policy, mounts, Unix permissions, and network isolation are separate controls; these grants neither create mounts nor establish a controller upgrade requirement. See [OpenShell deployment and rollout](../openshell-deployment.md#opencode-budget-and-workspace-rollout-rehor-198).
+This is OpenCode permission configuration, not a filesystem or Bash sandbox. It does not constrain arbitrary code from plugins, custom tools, or shell commands. OpenShell policy, mounts, Unix permissions, and network isolation are separate controls; these grants neither create mounts nor establish a controller upgrade requirement. See [OpenShell deployment and rollout](../legacy/openshell-deployment.md#opencode-budget-and-workspace).
 
 The V2 native config suite covers approved/outside paths, global-policy precedence over project grants, JSON/Markdown agent read denials, native ordering/asks, and root/child shell XDG restoration. Native Code Mode configuration and bridge checks have validated root/child behavior: omitted/true/false server exposure, agent `execute` allow/deny, denied nested calls, distinct nested evidence, and unfiltered results despite filtered script output. The environment suite additionally covers credential isolation and MCP behavior. These offline mock-provider checks do not establish fresh final-image or live deployment acceptance.
 
@@ -730,7 +724,7 @@ Map current Jira decisions:
 | Formatter | subagent, cheap model |
 
 Implement after basic session parity. First prove model selection and usage
-accounting; then reproduce `REHOR-125` and `REHOR-126` routing.
+accounting; then reproduce `` and `` routing.
 
 ## Security Model
 
@@ -774,7 +768,7 @@ Do not assume OpenAI streaming always includes final usage. Store partial-cycle
 records and mark usage incomplete when stream terminates before final usage
 event.
 
-### OpenCode cost estimates (REHOR-197)
+### OpenCode cost estimates
 
 The coordinator bundles a minimal pricing registry in
 `coordinator/src/runtimes/opencode/pricing.json`. It is the fallback when native

@@ -119,7 +119,7 @@ OpenCode with `rehor-openai` has no tier map; a workflow `model_tier` is rejecte
 unless an explicit instance or `BOT_MODEL` override wins. `rehor-openai-chat`
 requires an explicit model declared under that provider. The resolver is in
 `bot/config.py`; see
-[Instance Configuration](presets/instance-config.md#model-resolution-order).
+[Instance Configuration](presets/instance-config.md#runtime-and-provider-selection).
 
 Instance selection example:
 

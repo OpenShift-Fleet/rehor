@@ -19,19 +19,9 @@ Screenshots in this guide use dashboard's light appearance with **Project Felt**
 
 Use **Tasks** to inspect current task state and metadata. Use **Archive** when task no longer appears among active work. Use **Costs** to check token and cost impact. Use **Search** and **Memories** to find prior learnings before changing workflow behavior.
 
-### Orphan cycles
+### No session started
 
-An **orphan cycle** is a normal polling cycle where preflight ran, every script returned `skip`, and no agent session started. It is called orphan because the cycle has no associated task execution or agent session. It is not an orphaned process, failed task, or interrupted implementation.
-
-Expected orphan-cycle profile:
-
-- zero tool calls
-- zero input and output tokens
-- `$0` model cost
-- transcript containing preflight `skip` explanations only
-- runner sleeps or applies configured backoff afterward
-
-Most orphan cycles should look this way. They record useful proof that the bot checked for work without spending AI tokens. Investigate an orphan row with nonzero tokens, tools, or model cost: it may indicate a session was launched, cost data was recorded incorrectly, or the dashboard classified the cycle incorrectly. Compare its transcript with preflight aggregation and the first `working` status.
+Start with the dispatcher's `preflight.cycle` and `preflight.error` events. A `skip` decision means no sandbox or model transcript is expected. An `error` means the decision could not be made normally. If actionable work was found but no session started, inspect `sandbox.lock` and `sandbox.session` for admission and startup outcomes.
 
 ## Find Cycle Transcript
 
@@ -156,7 +146,7 @@ Important invariants:
 - Routine bot confirmation must not count as new actionable feedback.
 - A handled CI failure needs new evidence before another session.
 - Candidate without resolvable repository must not become eligible work.
-- All `skip` results must prevent `run_cycle()`.
+- All `skip` results must prevent `run_cycle`.
 - One valid `start` must not be hidden by unrelated script output.
 
 ## Improve Agent Behavior
@@ -167,13 +157,11 @@ Change one layer at a time. Start with evidence from several cycles, not one unu
 
 If agent receives wrong, stale, or incomplete work, fix source classification. Do not add prompt text to compensate for bad eligibility decisions.
 
-For custom preflight scripts, stdout must contain exactly one JSON object:
-
-```json
-{ "status": "start", "content": "Actionable work details" }
-```
-
-Use `skip` when no work exists. Put diagnostics on stderr. The runner starts a session when any non-error script returns `start`; it sleeps when all scripts return `skip`.
+For dispatched cycles, inspect the dispatcher's `preflight.*` events before
+looking for a sandbox transcript. Fix classification in
+[`@rehor/preflights`](presets/custom-preflight.md); only `start` content
+becomes the runner prompt. A failed sibling check is diagnostic evidence,
+not prompt content.
 
 ### 2. Fix context quality
 
@@ -215,13 +203,7 @@ For a behavior change, record:
 - focused test command and result
 - broader verification command and result
 
-Typical focused checks:
-
-```bash
-uv run pytest -q bot/tests/test_preflight.py bot/tests/test_preflight_shared.py bot/tests/test_preflight_status.py
-uv run pytest -q bot/tests/test_jira_sprint_preflight.py bot/tests/test_jira_kanban_preflight.py
-uv run ruff check bot presets/shared/preflight
-```
+Install npm workspace dependencies with `npm ci`, then run `npm test --workspace=@rehor/preflights` with fixture-based tests.
 
 For agent changes, add a small scenario test when possible. Test both output and side effect:
 
@@ -239,5 +221,5 @@ Share concise evidence with cycle number, timestamp, instance, task or PR, obser
 Related docs:
 
 - [Bot Workflow Loop](bot-workflow-loop.md)
-- [Writing Custom Preflight Scripts](presets/custom-preflight.md)
+- [Dispatcher Preflights](presets/custom-preflight.md)
 - [Custom Workflows](presets/custom-workflows.md)

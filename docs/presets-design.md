@@ -2,6 +2,8 @@
 
 Composable configuration system replacing the monolithic CLAUDE.md with layered presets that instances mix and match.
 
+> **Legacy design reference.** Python preflight modules and workflow entry points described below apply only to non-dispatched polling. Dispatcher-managed agents use registered TypeScript checks from [`packages/preflights`](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/preflights/README.md); configure them with the [Dispatcher Preflights guide](presets/custom-preflight.md). This document preserves the earlier design rationale, not the current preflight implementation.
+
 ## Problem
 
 Historically, every instance ran the same monolithic `CLAUDE.md` — the full
@@ -567,14 +569,14 @@ Instance config repos are pulled at runtime via `BOT_CONFIG_REPO`. The workflow 
 ### New Flow
 
 ```
-1. sync_config_repo()                    # Pull BOT_CONFIG_REPO (unchanged)
-2. load_instance_config()                # NEW: Read instance.yaml
-3. resolve_presets()                      # NEW: Find workflow + env presets
-4. assemble_claude_md()                   # NEW: Concatenate core + workflow + instance
-5. merge_preset_assets()                  # NEW: Merge skills, MCP, settings, hooks
-6. apply_merged_config()                  # Existing: merge remote config (personas, repos, etc.)
-7. validate_startup()                     # NEW: Fail if no CLAUDE.md assembled
-8. run_cycle()                            # Existing: start agent loop
+1. sync_config_repo # Pull BOT_CONFIG_REPO (unchanged)
+2. load_instance_config # NEW: Read instance.yaml
+3. resolve_presets # NEW: Find workflow + env presets
+4. assemble_claude_md # NEW: Concatenate core + workflow + instance
+5. merge_preset_assets # NEW: Merge skills, MCP, settings, hooks
+6. apply_merged_config # Existing: merge remote config (personas, repos, etc.)
+7. validate_startup # NEW: Fail if no CLAUDE.md assembled
+8. run_cycle # Existing: start agent loop
 ```
 
 ### Validation Rules
@@ -598,7 +600,7 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
     """Load instance.yaml from remote config, or fall back to defaults."""
     if remote_agent_dir:
         yaml_path = remote_agent_dir / "instance.yaml"
-        if yaml_path.exists():
+ if yaml_path.exists:
             return InstanceConfig.from_yaml(yaml_path)
     
     # Fallback: env var override
@@ -637,9 +639,9 @@ The runner validates the JSON and rejects malformed output (treated as `error` w
 
 Pre-flight checks are split into **shared modules** (reusable across workflows) and **workflow entry points** (thin wrappers that import and call the shared modules). This mirrors how skills work — shared logic lives in one place, workflows compose what they need.
 
-#### Shared preflight modules
+#### Legacy shared Python preflight modules
 
-Reusable data-gathering modules live in `presets/shared/preflight/`. Each is a self-contained Python module with a `main()` function that prints the JSON protocol to stdout. They are not executed directly by the runner — workflow entry points import and call them.
+For legacy non-dispatched polling, reusable data-gathering modules lived in `presets/shared/preflight/`. Each was a self-contained Python module with a `main` function that printed the JSON protocol to stdout. The Python runner did not execute them directly — workflow entry points imported and called them. Dispatcher-managed instances do not use these modules; new dispatcher checks are implemented in `packages/preflights`.
 
 ```
 presets/shared/preflight/
@@ -662,15 +664,15 @@ PR status modules fetch the active task list from the memory server independentl
 
 #### Workflow entry points
 
-Each workflow's `preflight/` directory contains numbered entry points that the runner executes. These are thin wrappers — typically one-liners that import a shared module and call `main()`:
+Each workflow's `preflight/` directory contains numbered entry points that the runner executes. These are thin wrappers — typically one-liners that import a shared module and call `main`:
 
 ```
 presets/workflows/jira-sprint/
 ├── CLAUDE.md
 ├── preflight/                     # Entry points executed by runner
-│   ├── 01-gh-pr-status.py         # → imports shared gh_pr_status, calls main()
-│   ├── 02-gl-mr-status.py         # → imports shared gl_mr_status, calls main()
-│   └── 03-jira-sprint.py          # → imports shared jira_sprint_preflight, calls main()
+│ ├── 01-gh-pr-status.py # → imports shared gh_pr_status, calls main
+│ ├── 02-gl-mr-status.py # → imports shared gl_mr_status, calls main
+│ └── 03-jira-sprint.py # → imports shared jira_sprint_preflight, calls main
 ├── skills/
 │   ├── triage/
 │   └── new-work/
@@ -689,7 +691,7 @@ presets/workflows/kanban/
 └── manifest.yaml
 ```
 
-The runner adds `presets/shared/preflight/` to `sys.path` before executing workflow entry points, so `from gh_pr_status import main` resolves without path manipulation in each script.
+In the legacy polling path, the Python runner added `presets/shared/preflight/` to `sys.path` before executing workflow entry points, so `from gh_pr_status import main` resolved without path manipulation in each script.
 
 #### Instance-specific pre-flight
 
@@ -711,10 +713,10 @@ Execution order: workflow pre-flights first (01-*, 02-*, 03-*, 04-*), then insta
 
 ```
 run.py loop:
-  1. sync_config_repo()
-  2. load_instance_config()
-  3. resolve_presets()
-  4. run_preflight()                    # NEW
+ 1. sync_config_repo
+ 2. load_instance_config
+ 3. resolve_presets
+ 4. run_preflight # NEW
      ├── 01-gh-pr-status.py    (workflow, shared)  → GH PR health checks
      ├── 02-gl-mr-status.py    (workflow, shared)  → GL MR health checks
      ├── 03-jira-sprint.py     (workflow, shared)  → Jira triage + candidate search
@@ -722,7 +724,7 @@ run.py loop:
      Result: aggregated JSON → session prompt or orphan cycle
   5. IF all scripts skip → post orphan cycle ("nothing to do") → sleep
   6. IF any error → post error cycle → backoff sleep
-  7. ELSE → assemble_claude_md() → start session with preflight content as input
+ 7. ELSE → assemble_claude_md → start session with preflight content as input
 ```
 
 ### Runtime Environment
@@ -756,7 +758,7 @@ Each script writes a plain string to stdout. The runner doesn't parse it — it 
 ```json
 {
   "status": "start",
-  "content": "## Triage Report\n\n3 active tasks. 1 has unaddressed PR feedback.\n\n### RHCLOUD-123 (pr_open)\n- PR #42: CI passing, 1 unaddressed review comment from @reviewer\n- Comment: \"This breaks the existing API contract, please add backward compat\"\n\n### RHCLOUD-456 (pr_open)\n- PR #55: all clean, no new comments\n\n### New Candidates\n- RHCLOUD-789: \"Fix login redirect loop\" (High priority, frontend, in current sprint)\n\nBegin triage using the data above. Do NOT re-fetch task or PR statuses."
+ "content": "## Triage Report\n\n3 active tasks. 1 has unaddressed PR feedback.\n\n### TEAM-123 (pr_open)\n- PR #42: CI passing, 1 unaddressed review comment from @reviewer\n- Comment: \"This breaks the existing API contract, please add backward compat\"\n\n### TEAM-456 (pr_open)\n- PR #55: all clean, no new comments\n\n### New Candidates\n- TEAM-789: \"Fix login redirect loop\" (High priority, frontend, in current sprint)\n\nBegin triage using the data above. Do NOT re-fetch task or PR statuses."
 }
 ```
 
@@ -778,7 +780,7 @@ Each script writes a plain string to stdout. The runner doesn't parse it — it 
 }
 ```
 
-The runner wraps the `content` string into Claude SDK JSONL format before storing it as the cycle transcript, so the dashboard's `parseTranscript()` can render it like a real session.
+The runner wraps the `content` string into Claude SDK JSONL format before storing it as the cycle transcript, so the dashboard's `parseTranscript` can render it like a real session.
 
 ### Aggregation: Any `start` Wins
 
@@ -916,7 +918,7 @@ Split the monolithic CLAUDE.md and add validation infrastructure so the decompos
 
 1. Create `presets/core/CLAUDE.md` with security rules, memory system, output mode, cost budget, general rules
 2. Create `presets/workflows/jira-sprint/CLAUDE.md` with the workflow loop (triage, priorities, implement)
-3. Add `assemble_claude_md()` to `run.py` that concatenates core + workflow into the existing CLAUDE.md location
+3. Add `assemble_claude_md` to `run.py` that concatenates core + workflow into the existing CLAUDE.md location
 4. Add `manifest.yaml` for the jira-sprint workflow with `requires` validation (MCP servers, env vars)
 5. Add startup validation: fail on missing required MCP servers/env vars, warn on optional
 6. No `instance.yaml` needed yet — default behavior is `workflow: jira-sprint`

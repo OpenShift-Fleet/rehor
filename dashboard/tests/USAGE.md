@@ -7,13 +7,13 @@ from fixtures import TASKS, task, memory, cycle_run
 
 
 # Use default datasets
-def test_with_defaults():
+def test_with_defaults:
     assert len(TASKS) == 6
-    assert TASKS["RHCLOUD-001"]["status"] == "in_progress"
+ assert TASKS["TEAM-001"]["status"] == "in_progress"
 
 
 # Create custom payloads
-def test_with_custom():
+def test_with_custom:
     custom_task = task(99, "TEST-1", "My test task", "in_progress")
     assert custom_task["id"] == 99
     assert custom_task["external_key"] == "TEST-1"
@@ -67,7 +67,7 @@ m = memory(
     title="Login timeout issue",
     content="Users experiencing timeout after 5min idle",
     repo="frontend",
-    external_key="RHCLOUD-001",
+ external_key="TEAM-001",
     tags=["auth", "timeout"],
     day="10",
 )
@@ -141,10 +141,10 @@ Import and use directly:
 from fixtures import TASKS, MEMORIES, CYCLE_RUNS, COSTS, ANALYTICS
 
 
-def test_defaults():
+def test_defaults:
     # Tasks dict keyed by external_key
-    assert "RHCLOUD-001" in TASKS
-    assert TASKS["RHCLOUD-001"]["status"] == "in_progress"
+ assert "TEAM-001" in TASKS
+ assert TASKS["TEAM-001"]["status"] == "in_progress"
 
     # Memories list
     assert len(MEMORIES) == 4
@@ -164,9 +164,9 @@ from fixtures import TASKS
 @pytest.mark.parametrize(
     "key,expected_status",
     [
-        ("RHCLOUD-001", "in_progress"),
-        ("RHCLOUD-002", "pr_open"),
-        ("RHCLOUD-003", "paused"),
+ ("TEAM-001", "in_progress"),
+ ("TEAM-002", "pr_open"),
+ ("TEAM-003", "paused"),
     ],
 )
 def test_task_statuses(key, expected_status):
@@ -180,7 +180,7 @@ Use `conftest.py` fixture for tests that modify datasets:
 ```python
 def test_modify_task(clean_tasks):
     """clean_tasks fixture resets TASKS after test."""
-    clean_tasks["RHCLOUD-001"]["status"] = "done"
+    clean_tasks["TEAM-001"]["status"] = "done"
     # ... test logic
     # TASKS auto-restored to original state after test
 ```
@@ -260,7 +260,7 @@ git add dashboard/src/test/fixtures.json
 from fixtures import ISSUES, issue
 
 
-def test_issues():
+def test_issues:
     assert len(ISSUES) == 2
 ```
 
