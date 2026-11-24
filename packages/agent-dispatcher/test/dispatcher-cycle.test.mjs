@@ -100,6 +100,68 @@ test("per-agent preflight environment overrides shared instance identity", async
   assert.deepEqual(seen.map((wiring) => wiring.instanceId), ["one-例", "two-例"]);
 });
 
+test("deployment bot Jira identity defaults into preflight wiring", async () => {
+  const seen = [];
+  const lines = [];
+  const opts = options({
+    env: {
+      BOT_INSTANCE_ID: "fixture",
+      BOT_MEMORY_URL: "https://memory.example/mcp",
+      BOT_JIRA_EMAIL: "bot@example.invalid",
+    },
+    logger: createLifecycleLogger({ write: (line) => lines.push(line) }),
+    dependencies: {
+      syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+      discoverProfiles: async (root) => [profile("same", root)],
+      preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  assert.equal(result.repositories[0].profiles[0].status, "skip");
+  assert.deepEqual(seen.map((wiring) => wiring.jiraEmail), ["bot@example.invalid", "bot@example.invalid"]);
+  // The identity is wiring only: it never enters cycle results or logs.
+  assert.doesNotMatch(JSON.stringify([result, lines]), /bot@example\.invalid/);
+});
+
+test("absent bot Jira identity leaves the wiring without one; blank threads through verbatim", async () => {
+  // The cycle only transports the identity: normalization to absent
+  // happens once, at the run-context factory (covered by the engine and
+  // run-context tests), so blank wiring values are expected here.
+  for (const [value, expected] of [[undefined, undefined], ["", ""], [" \t", " \t"]]) {
+    const seen = [];
+    const opts = options({
+      env: { BOT_INSTANCE_ID: "fixture", BOT_MEMORY_URL: "https://memory.example/mcp", BOT_JIRA_EMAIL: value },
+      dependencies: {
+        syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+        discoverProfiles: async (root) => [profile("same", root)],
+        preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
+      },
+    });
+    await runDispatcherCycle(opts);
+    assert.ok(seen.length > 0);
+    for (const wiring of seen) {
+      if (expected === undefined) assert.ok(!("jiraEmail" in wiring));
+      else assert.equal(wiring.jiraEmail, expected);
+    }
+  }
+});
+
+test("per-profile preflight environment overrides the deployment bot Jira identity", async () => {
+  // Same layering as BOT_INSTANCE_ID: a profile may carry its own identity,
+  // and an explicit `with.email` declaration still wins above both.
+  const seen = [];
+  const opts = options({
+    env: { BOT_INSTANCE_ID: "shared", BOT_MEMORY_URL: "https://memory.example/mcp", BOT_JIRA_EMAIL: "deployed@example.invalid" },
+    dependencies: {
+      syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+      discoverProfiles: async (root) => [{ ...profile("same", root), preflightEnv: { BOT_JIRA_EMAIL: `${root}-bot@example.invalid` } }],
+      preflight: async ({ wiring }) => { seen.push(wiring.jiraEmail); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  await runDispatcherCycle(opts);
+  assert.deepEqual(seen, ["one-bot@example.invalid", "two-bot@example.invalid"]);
+});
+
 test("deployment memory URL cannot be replaced by profile in preflight wiring", async () => {
   for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
     const seen = [];

@@ -84,6 +84,7 @@ export function createTestContext({
   repos = {},
   instanceId = "test-instance",
   proxy,
+  jiraEmail,
 } = {}) {
   return createPreflightRunContext({
     instanceId,
@@ -97,6 +98,7 @@ export function createTestContext({
     },
     repos,
     proxy,
+    ...(jiraEmail !== undefined ? { jiraEmail } : {}),
   });
 }
 

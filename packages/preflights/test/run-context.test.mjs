@@ -184,3 +184,25 @@ test("run context carries the dispatcher-materialized repos map, defaulting to {
   });
   assert.deepEqual(bare.repos, {});
 });
+
+test("run context threads the bot Jira identity and treats blank as absent", () => {
+  const ctx = createPreflightRunContext({
+    instanceId: "bot-1",
+    memory: { baseUrl: "http://memory:8080" },
+    jiraEmail: "bot@example.invalid",
+  });
+  assert.equal(ctx.jiraEmail, "bot@example.invalid");
+  for (const blank of ["", " ", "\t"]) {
+    const ctxBlank = createPreflightRunContext({
+      instanceId: "bot-1",
+      memory: { baseUrl: "http://memory:8080" },
+      jiraEmail: blank,
+    });
+    assert.equal(ctxBlank.jiraEmail, undefined);
+  }
+  const bare = createPreflightRunContext({
+    instanceId: "bot-1",
+    memory: { baseUrl: "http://memory:8080" },
+  });
+  assert.equal(bare.jiraEmail, undefined);
+});
