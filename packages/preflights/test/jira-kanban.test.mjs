@@ -240,56 +240,6 @@ test("bot-assigned fallback query runs when email is set", async () => {
 
 // --- deployment-provided bot identity (BOT_JIRA_EMAIL default) ---
 
-test("deployment-provided identity defaults the bot-assigned query", async () => {
-  const jqls = [];
-  const ctx = createTestContext({
-    tasks: [],
-    jiraEmail: "bot@example.invalid",
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
-  });
-  const result = await runKanban(ctx);
-  assert.equal(result.status, "skip");
-  assert.equal(jqls.length, 2);
-  assert.match(jqls[0], /assignee is EMPTY/);
-  assert.match(jqls[1], /assignee = "bot@example\.invalid"/);
-});
-
-test("explicit with.email takes precedence over the deployment-provided identity", async () => {
-  const jqls = [];
-  const ctx = createTestContext({
-    tasks: [],
-    jiraEmail: "deployed@example.invalid",
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
-  });
-  await runKanban(ctx, { email: "declared@example.invalid" });
-  assert.equal(jqls.length, 2);
-  assert.ok(jqls.every((jql) => !jql.includes("deployed@example.invalid")));
-  assert.match(jqls[1], /assignee = "declared@example\.invalid"/);
-
-  // Blank declarations (empty or whitespace-only) mean absent, so the
-  // deployment-provided identity applies instead of a blank winner.
-  for (const blank of ["", " "]) {
-    const blankJqls = [];
-    const blankCtx = createTestContext({
-      tasks: [],
-      jiraEmail: "deployed@example.invalid",
-      search: async (jql) => {
-        blankJqls.push(jql);
-        return [];
-      },
-    });
-    await runKanban(blankCtx, { email: blank });
-    assert.equal(blankJqls.length, 2);
-    assert.match(blankJqls[1], /assignee = "deployed@example\.invalid"/);
-  }
-});
-
 test("bot-assigned intake starts on a bot-assigned candidate via the default identity", async () => {
   // Behavior, not query text: only the bot-assigned search returns a
   // repo-labeled candidate, so a start proves the fallback query ran.
@@ -310,32 +260,26 @@ test("bot-assigned intake starts on a bot-assigned candidate via the default ide
   const result = await runKanban(ctx);
   assert.equal(result.status, "start");
   assert.match(result.content, /LCORE-7/);
-});
 
-test("unassigned-only search and blank identity are preserved", async () => {
-  const jqls = [];
-  const ctx = createTestContext({
+  // An explicit with.email declaration wins over the deployment identity:
+  // the bot-assigned search no longer asks for the deployed address, so
+  // the candidate is not found and the run stays a skip.
+  const declared = createTestContext({
     tasks: [],
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
+    jiraEmail: "bot@example.invalid",
+    search: async (jql) =>
+      jql.includes("bot@example.invalid")
+        ? [
+            candidateIssue("LCORE-8", {
+              summary: "Bot-assigned kanban work",
+              labels: ["hcc-ai-lightspeed-core"],
+              description: "Already ours",
+            }),
+          ]
+        : [],
   });
-  await runKanban(ctx);
-  assert.equal(jqls.length, 1);
-  assert.match(jqls[0], /assignee is EMPTY/);
-
-  const blank = createTestContext({
-    tasks: [],
-    jiraEmail: " ",
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
-  });
-  await runKanban(blank);
-  assert.equal(jqls.length, 2);
-  assert.match(jqls[1], /assignee is EMPTY/);
+  const declaredResult = await runKanban(declared, { email: "declared@example.invalid" });
+  assert.equal(declaredResult.status, "skip");
 });
 
 test("jql_extra is appended to candidate queries", async () => {

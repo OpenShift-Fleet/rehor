@@ -123,27 +123,19 @@ test("deployment bot Jira identity defaults into preflight wiring", async () => 
   assert.doesNotMatch(JSON.stringify([result, lines]), /bot@example\.invalid/);
 });
 
-test("absent bot Jira identity leaves the wiring without one; blank threads through verbatim", async () => {
-  // The cycle only transports the identity: normalization to absent
-  // happens once, at the run-context factory (covered by the engine and
-  // run-context tests), so blank wiring values are expected here.
-  for (const [value, expected] of [[undefined, undefined], ["", ""], [" \t", " \t"]]) {
-    const seen = [];
-    const opts = options({
-      env: { BOT_INSTANCE_ID: "fixture", BOT_MEMORY_URL: "https://memory.example/mcp", BOT_JIRA_EMAIL: value },
-      dependencies: {
-        syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
-        discoverProfiles: async (root) => [profile("same", root)],
-        preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
-      },
-    });
-    await runDispatcherCycle(opts);
-    assert.ok(seen.length > 0);
-    for (const wiring of seen) {
-      if (expected === undefined) assert.ok(!("jiraEmail" in wiring));
-      else assert.equal(wiring.jiraEmail, expected);
-    }
-  }
+test("absent bot Jira identity leaves the wiring without one", async () => {
+  const seen = [];
+  const opts = options({
+    env: { BOT_INSTANCE_ID: "fixture", BOT_MEMORY_URL: "https://memory.example/mcp" },
+    dependencies: {
+      syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+      discoverProfiles: async (root) => [profile("same", root)],
+      preflight: async ({ wiring }) => { seen.push(wiring); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  await runDispatcherCycle(opts);
+  assert.ok(seen.length > 0);
+  for (const wiring of seen) assert.ok(!("jiraEmail" in wiring));
 });
 
 test("per-profile preflight environment overrides the deployment bot Jira identity", async () => {

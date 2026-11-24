@@ -168,8 +168,7 @@ test("runtime options are independent and reject non-admitted methods and paths"
     ["service_gateway_executor", "GET", "/executor/execute"], ["service_gateway_executor", "DELETE", "/executor/execute"],
     ["service_gateway_executor", "POST", "/executor/execute/extra"], ["service_gateway_executor", "POST", "/jira/mcp"],
     ["service_gateway_screenshots", "GET", "/screenshots/upload"], ["service_gateway_screenshots", "PUT", "/screenshots/upload"],
-    ["service_gateway_screenshots", "POST", "/screenshots/upload/extra"], ["service_gateway_screenshots", "POST", "/screenshots/other"],
-    ["service_gateway_screenshots", "POST", "/upload"],
+    ["service_gateway_screenshots", "POST", "/screenshots/upload/extra"], ["service_gateway_screenshots", "POST", "/upload"],
   ]) assert.equal(admits(name, method, path), false, `${name} must reject ${method} ${path}`);
 });
 

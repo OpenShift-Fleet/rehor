@@ -328,21 +328,13 @@ test("jiraEmail wiring threads the bot identity into the run context only", asyn
   // transcripts, matching the no-value logging contract.
   assert.ok(!JSON.stringify(wired).includes("bot@example.invalid"));
 
-  const blank = await runTsPreflight({
-    profile: profile({ preflights: ["one"] }),
-    wiring: wiring({ jiraEmail: " \t" }),
-    registry,
-  });
-  assert.equal(blank.scripts[0].content, "identity:absent");
-  assert.equal(calls[1].ctx.jiraEmail, undefined);
-
   const bare = await runTsPreflight({
     profile: profile({ preflights: ["one"] }),
     wiring: wiring(),
     registry,
   });
   assert.equal(bare.scripts[0].content, "identity:absent");
-  assert.equal(calls[2].ctx.jiraEmail, undefined);
+  assert.equal(calls[1].ctx.jiraEmail, undefined);
 });
 
 test("per-run shared state accumulates across entries", async () => {

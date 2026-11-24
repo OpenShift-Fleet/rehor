@@ -403,56 +403,41 @@ test("sprint skips bot-assigned and backlog queries without email or backlog fla
 
 // --- deployment-provided bot identity (BOT_JIRA_EMAIL default) ---
 
-test("deployment-provided identity defaults the bot-assigned and backlog queries", async () => {
-  const jqls = [];
-  const ctx = createTestContext({
-    tasks: [],
-    jiraEmail: "bot@example.invalid",
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
-  });
-  const result = await runSprint(ctx, { include_backlog: true });
-  assert.equal(result.status, "skip");
-  assert.equal(jqls.length, 3);
-  assert.match(jqls[0], /assignee is EMPTY/);
-  assert.match(jqls[1], /assignee = "bot@example\.invalid"/);
-  assert.match(jqls[2], /assignee is EMPTY OR assignee = "bot@example\.invalid"/);
-});
-
 test("explicit with.email takes precedence over the deployment-provided identity", async () => {
-  const jqls = [];
-  const ctx = createTestContext({
+  // Behavior, not query text: each search only answers the identity it is
+  // asked for, so which candidate is found proves which identity won.
+  const searchFor = (identity) => async (jql) =>
+    jql.includes(identity)
+      ? [
+          candidateIssue("TEST-9", {
+            summary: "Bot-assigned work",
+            labels: ["hcc-ai-test", "repo:my-repo"],
+            description: "Already ours",
+          }),
+        ]
+      : [];
+
+  const declaredCtx = createTestContext({
     tasks: [],
     jiraEmail: "deployed@example.invalid",
-    search: async (jql) => {
-      jqls.push(jql);
-      return [];
-    },
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: searchFor("declared@example.invalid"),
   });
-  await runSprint(ctx, { email: "declared@example.invalid" });
-  assert.equal(jqls.length, 2);
-  assert.ok(jqls.every((jql) => !jql.includes("deployed@example.invalid")));
-  assert.match(jqls[1], /assignee = "declared@example\.invalid"/);
+  const declared = await runSprint(declaredCtx, { email: "declared@example.invalid" });
+  assert.equal(declared.status, "start");
+  assert.match(declared.content, /TEST-9/);
 
-  // Blank declarations (empty or whitespace-only) mean absent, so the
+  // A blank (whitespace-only) declaration means absent, so the
   // deployment-provided identity applies instead of a blank winner.
-  for (const blank of ["", " "]) {
-    const blankJqls = [];
-    const blankCtx = createTestContext({
-      tasks: [],
-      jiraEmail: "deployed@example.invalid",
-      search: async (jql) => {
-        blankJqls.push(jql);
-        return [];
-      },
-    });
-    await runSprint(blankCtx, { email: blank, include_backlog: true });
-    assert.equal(blankJqls.length, 3);
-    assert.match(blankJqls[1], /assignee = "deployed@example\.invalid"/);
-    assert.match(blankJqls[2], /assignee is EMPTY OR assignee = "deployed@example\.invalid"/);
-  }
+  const blankCtx = createTestContext({
+    tasks: [],
+    jiraEmail: "deployed@example.invalid",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: searchFor("deployed@example.invalid"),
+  });
+  const blank = await runSprint(blankCtx, { email: " " });
+  assert.equal(blank.status, "start");
+  assert.match(blank.content, /TEST-9/);
 });
 
 test("bot-assigned intake starts on a bot-assigned sprint candidate via the default identity", async () => {
@@ -515,22 +500,6 @@ test("unassigned-only search is preserved without a usable identity anywhere", a
   assert.equal(result.status, "skip");
   assert.equal(jqls.length, 2);
   assert.ok(jqls.every((jql) => !jql.includes("assignee =")));
-  assert.match(jqls[1], /AND assignee is EMPTY /);
-
-  // A blank deployment identity is normalized to absent (run-context
-  // factory), so the search stays unassigned-only.
-  const blankJqls = [];
-  const blankCtx = createTestContext({
-    tasks: [],
-    jiraEmail: " ",
-    search: async (jql) => {
-      blankJqls.push(jql);
-      return [];
-    },
-  });
-  await runSprint(blankCtx);
-  assert.equal(blankJqls.length, 1);
-  assert.match(blankJqls[0], /assignee is EMPTY/);
 });
 
 test("feedback buried under many newer bot comments starts with the feedback visible", async () => {

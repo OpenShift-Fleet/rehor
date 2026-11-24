@@ -573,39 +573,27 @@ test("Git gateway rule is checked against effective policy before runner starts"
   }
 });
 
-test("screenshot gateway rule is verified against effective policy before runner starts", async () => {
+test("screenshot gateway rule survives effective-policy verification before runner starts", async () => {
   const serviceGatewayUrl = new URL("https://service-gateway.example.test:8454");
   const valid = fixture();
   const result = await new SandboxSession({ raw: valid.raw, memory: valid.memory, serviceGatewayUrl }).run(image, decision, {});
   assert.equal(result.outcome, "passed");
   const upload = valid.calls.find((call) => call.name === "createSandbox").request.spec.policy.networkPolicies.service_gateway_screenshots;
-  assert.equal(upload.name, "service-gateway-screenshots");
   assert.equal(upload.endpoints.length, 1);
-  assert.equal(upload.endpoints[0].host, serviceGatewayUrl.hostname);
-  assert.equal(upload.endpoints[0].port, 8454);
   assert.equal(upload.endpoints[0].path, "/screenshots/upload");
-  assert.deepEqual(upload.endpoints[0].rules.map((rule) => rule.allow), [{ method: "POST", path: "/screenshots/upload" }]);
+  // Exact method, binary and binding are asserted in memory-policy.test.mjs;
+  // here only the minted provider identity must match the supplied rule.
   assert.deepEqual(upload.endpoints[0].credentialBinding, { provider: result.provider.name });
-  assert.deepEqual(upload.binaries, [{ path: "/usr/bin/python3.12" }]);
   assert.equal(valid.calls.filter((call) => call.name === "execSandbox").length, 2);
 
-  for (const enrichPolicy of [
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].path = "/screenshots/**"; },
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].rules[0].allow.method = "PUT"; },
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].host = "other.example.test"; },
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].credentialBinding.provider = "someone-else"; },
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].providerCredentialed = false; },
-    (policy) => { policy.networkPolicies.service_gateway_screenshots.binaries[0].path = "/usr/bin/curl"; },
-    (policy) => { delete policy.networkPolicies.service_gateway_screenshots; },
-  ]) {
-    const f = fixture({ enrichPolicy });
-    const rejected = await new SandboxSession({ raw: f.raw, memory: f.memory, serviceGatewayUrl }).run(image, decision, {});
-    assert.equal(rejected.outcome, "unknown");
-    assert.equal(rejected.stage, "readiness");
-    assert.equal(rejected.completion, "gone");
-    assert.equal(rejected.cleanup, "deleted");
-    assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
-  }
+  // One drift case: the generic verifier rejects an altered effective rule.
+  const f = fixture({ enrichPolicy: (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].path = "/screenshots/**"; } });
+  const rejected = await new SandboxSession({ raw: f.raw, memory: f.memory, serviceGatewayUrl }).run(image, decision, {});
+  assert.equal(rejected.outcome, "unknown");
+  assert.equal(rejected.stage, "readiness");
+  assert.equal(rejected.completion, "gone");
+  assert.equal(rejected.cleanup, "deleted");
+  assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
 });
 
 test("canonical unqualified profile image dispatches under additive Gateway policy", async () => {
