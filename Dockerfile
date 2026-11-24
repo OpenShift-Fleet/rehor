@@ -11,7 +11,7 @@ COPY proxy/executor/ .
 RUN go mod download \
     && CGO_ENABLED=0 go build -o /tmp/executor-client ./cmd/client
 
-FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
+FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:6636b79fba9e5044360366f189333c30b5ce528efd92c40c68b074592b971fcd
 
 # Refresh installed RPMs too: the pinned base can contain vulnerable CA/system packages.
 RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
