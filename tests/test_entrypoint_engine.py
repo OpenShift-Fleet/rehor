@@ -1,5 +1,6 @@
 """Exercise engine selection without starting an agent or running preflights."""
 
+import json
 import socket
 import subprocess
 from pathlib import Path
@@ -21,9 +22,8 @@ def test_sandbox_rejects_non_coordinator_before_setup(tmp_path, engine):
     assert not result.stdout
 
 
-@pytest.mark.parametrize("source", [None, "", "legacy"])
-@pytest.mark.parametrize("engine", [None, "", "python"])
-def test_legacy_default_python_executes_uv_without_agent(tmp_path, source, engine):
+@pytest.fixture
+def legacy_runner(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in ("gh", "glab", "git", "gpg", "sed"):
@@ -53,20 +53,50 @@ def test_legacy_default_python_executes_uv_without_agent(tmp_path, source, engin
         "GH_USER_NAME": "test",
         "GL_USER_NAME": "test",
     }
-    if source is not None:
-        env["REHOR_INPUT_SOURCE"] = source
-    if engine is not None:
-        env["BOT_EXECUTION_ENGINE"] = engine
+    return script, env
+
+
+def run_legacy(script, env, tmp_path):
     with socket.socket(socket.AF_INET) as executor:
         executor.bind(("127.0.0.1", 0))
         executor.listen()
         env["EXECUTOR_ADDR"] = f"127.0.0.1:{executor.getsockname()[1]}"
-        result = subprocess.run(
+        return subprocess.run(
             ["/bin/bash", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=5
         )
+
+
+@pytest.mark.parametrize("source", [None, "", "legacy"])
+@pytest.mark.parametrize("engine", [None, "", "python"])
+def test_legacy_default_python_executes_uv_without_agent(tmp_path, legacy_runner, source, engine):
+    script, env = legacy_runner
+    if source is not None:
+        env["REHOR_INPUT_SOURCE"] = source
+    if engine is not None:
+        env["BOT_EXECUTION_ENGINE"] = engine
+    result = run_legacy(script, env, tmp_path)
     assert result.returncode == 0, result.stderr
     assert "FAKE_UV:run dev-bot --label test" in result.stdout
     assert "sandbox dispatch requires" not in result.stderr
+
+
+@pytest.mark.parametrize("instance", ["instance", "Řehoř Hrubý z Jelení", "agent 🦊", None, ""])
+def test_legacy_memory_header_encodes_utf8_as_latin1(tmp_path, legacy_runner, instance):
+    script, env = legacy_runner
+    config_path = tmp_path / ".mcp.json"
+    config = {"mcpServers": {"bot-memory": {"headers": {"Authorization": "existing"}}}}
+    config_path.write_text(json.dumps(config))
+    if instance is not None:
+        env["BOT_INSTANCE_ID"] = instance
+
+    for _ in range(2):
+        result = run_legacy(script, env, tmp_path)
+        assert result.returncode == 0, result.stderr
+        headers = json.loads(config_path.read_text())["mcpServers"]["bot-memory"]["headers"]
+        expected = {"Authorization": "existing"}
+        if instance:
+            expected["X-Bot-Instance-Id"] = instance.encode("utf-8").decode("latin-1")
+        assert headers == expected
 
 
 @pytest.mark.parametrize("profile_changes_engine", [False, True])
