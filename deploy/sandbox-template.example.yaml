@@ -22,6 +22,9 @@ parameters:
 - name: REHOR_OPENCODE_MAX_TOOL_CALLS
   description: Optional OpenCode tool-call budget override; empty preserves the image configuration.
   value: ""
+- name: REHOR_WORKSPACE_OWNER_UID
+  description: Numeric UID owning /home/botuser/app in the image; the coordinator compares the workspace owner against it instead of the pod's runtime UID.
+  value: "1000"
 - name: BOT_BOARD_NAME
   value: ""
 - name: BOT_SPRINT_PREFIX
@@ -89,6 +92,8 @@ objects:
         # OpenAI-compatible model gateway; used only by coordinator/OpenCode runners.
         - port: 8450
           protocol: TCP
+        - port: 8451
+          protocol: TCP
         - port: 9090
           protocol: TCP
       - to:
@@ -103,9 +108,9 @@ objects:
             matchLabels:
               kubernetes.io/metadata.name: openshift-dns
         ports:
-        - port: 53
+        - port: 5353
           protocol: UDP
-        - port: 53
+        - port: 5353
           protocol: TCP
     podTemplate:
       metadata:
@@ -178,6 +183,8 @@ objects:
             value: ${BOT_CONFIG_PATH}
           - name: REHOR_OPENCODE_MAX_TOOL_CALLS
             value: ${REHOR_OPENCODE_MAX_TOOL_CALLS}
+          - name: REHOR_WORKSPACE_OWNER_UID
+            value: ${REHOR_WORKSPACE_OWNER_UID}
           - name: BOT_DASHBOARD_URL
             value: http://devbot-memory-server:8080/api/bot-status
           - name: COSTS_API_URL
@@ -185,6 +192,9 @@ objects:
           - name: SLACK_WEBHOOK_URL
             value: ${SLACK_WEBHOOK_URL}
           - name: PROXY_HOST
+            value: devbot-proxy
+          # Route GitHub/GitLab Git transport through the authenticated proxy.
+          - name: GIT_AUTH_PROXY_HOST
             value: devbot-proxy
           - name: HTTP_PROXY
             value: http://devbot-proxy:3128

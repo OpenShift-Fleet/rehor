@@ -67,12 +67,16 @@ export interface NormalizationContext {
   seenMessages: Set<string>;
   seenParts: Set<string>;
   sessionIds: Set<string>;
+  /** Sessions that already emitted a child_session_started lifecycle marker. */
+  announcedSessions: Set<string>;
   toolPhases: Map<string, "started" | "completed">;
   modelEventIds: Map<string, string>;
   usageSnapshots: Map<string, UsageSnapshot>;
   retiredBuckets: Map<string, UsageSnapshot>;
   messages: Map<string, JsonRecord>;
   sessionParents: Map<string, string>;
+  /** Active model (providerID/id) per session, so streamed parts attribute to the model that generated them. */
+  sessionModels: Map<string, string>;
   seenEvents: Set<string>;
   partSnapshots: Map<string, string>;
   tools: Map<string, JsonRecord>;
@@ -102,12 +106,14 @@ export function createNormalizationContext(
     seenMessages: new Set(),
     seenParts: new Set(),
     sessionIds: new Set([rootSessionId]),
+    announcedSessions: new Set(),
     toolPhases: new Map(),
     modelEventIds: new Map(),
     usageSnapshots: new Map(),
     retiredBuckets: new Map(),
     messages: new Map(),
     sessionParents: new Map(),
+    sessionModels: new Map(),
     seenEvents: new Set(),
     partSnapshots: new Map(),
     tools: new Map(),
@@ -134,6 +140,19 @@ function trackSession(data: JsonRecord, context: NormalizationContext): void {
       }
     }
   }
+}
+
+/**
+ * Track the active model per session. Streamed text/reasoning events do not
+ * carry a model, so without this the event factory stamps every child session
+ * (subagent) part with the root run's requested model.
+ */
+function trackSessionModel(sessionID: string, value: unknown, context: NormalizationContext): void {
+  const model = record(value);
+  const id = typeof model.id === "string" ? model.id : undefined;
+  if (!id) return;
+  const providerID = typeof model.providerID === "string" ? model.providerID : undefined;
+  context.sessionModels.set(sessionID, providerID ? `${providerID}/${id}` : id);
 }
 
 export function foldOpenCodeEvent(event: OpenCodeEvent, context: NormalizationContext): void {
@@ -192,9 +211,12 @@ export function normalizeOpenCodeEvent(
   const messageKey = `${sessionID}:${messageID}`;
   switch (event.type) {
     case "session.created":
-      return root
-        ? empty
-        : { events: [factory("run", { state: "child_session_started" }, withSession)], turns: 0 };
+      if (root) return empty;
+      context.announcedSessions.add(sessionID);
+      return {
+        events: [factory("run", { state: "child_session_started" }, withSession)],
+        turns: 0,
+      };
     case "session.execution.started":
       if (root) {
         context.rootExecutionOutcome = undefined;
@@ -242,6 +264,7 @@ export function normalizeOpenCodeEvent(
     }
     case "session.step.started": {
       const model = record(data.model);
+      trackSessionModel(sessionID, model, context);
       const modelEvent = factory(
         "model",
         { phase: "updated", messageId: messageID },
@@ -465,6 +488,7 @@ export function normalizeOpenCodeMessage(
     typeof model.providerID === "string" && returnedModel
       ? `${model.providerID}/${returnedModel}`
       : "unknown/unknown";
+  trackSessionModel(sessionID, model, context);
   const overrides = {
     runtimeSessionRef: sessionID,
     ...(returnedModel ? { model: returnedModel } : {}),
@@ -600,12 +624,13 @@ function normalizeText(
   if (phase === "text" && sessionID === context.rootSessionId)
     context.resultTextParts.set(partId, text);
   const result = resultText(context);
+  const activeModel = context.sessionModels.get(sessionID);
   return {
     events: [
       factory(
         "model",
         { phase, partId, text, ...(typeof delta === "string" ? { delta } : {}) },
-        { runtimeSessionRef: sessionID },
+        { runtimeSessionRef: sessionID, ...(activeModel ? { model: activeModel } : {}) },
       ),
     ],
     turns: 0,

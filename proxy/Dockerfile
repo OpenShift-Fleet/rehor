@@ -1,5 +1,5 @@
 # Build executor binaries
-FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:15c3098dc4639e8a0e6a1bc77b50964513a1d76dccae4b07b9808101c5addd04 AS executor-builder
+FROM registry.access.redhat.com/ubi9/go-toolset:latest@sha256:23c7cb17e9c53a65f9ab01f2edf1a4e07c9a9dc2258ed63d69e06925e7cea381 AS executor-builder
 WORKDIR /build
 COPY executor/ .
 RUN go mod download \
@@ -8,10 +8,16 @@ RUN go mod download \
 
 FROM registry.access.redhat.com/ubi9/ubi:latest@sha256:9295c5c688f487fa5cf27a734fa55ecd57aeb7dc0904ba537da4f42dfa1d0acb
 
+# Keep OS fixes (notably ca-certificates) even when the base digest is unchanged.
+RUN dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' upgrade -y \
+    && dnf clean all
+
+COPY constraints.txt /tmp/mcp-constraints.txt
+
 # Squid + GPG + Python 3.11 (gnupg2 for commit signing, python3.11 for mcp-atlassian which requires >=3.10)
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
     && dnf install -y --nodocs squid gnupg2 python3.11 python3.11-pip \
-    && pip3.11 install --no-cache-dir mcp-atlassian \
+    && pip3.11 install --no-cache-dir -c /tmp/mcp-constraints.txt mcp-atlassian==0.23.1 \
     && dnf clean all
 
 COPY squid.conf /etc/squid/squid.conf
@@ -49,6 +55,7 @@ EXPOSE 8444
 EXPOSE 8447
 EXPOSE 8448
 EXPOSE 8450
+EXPOSE 8451
 USER squid
 
 CMD ["/usr/local/bin/start.sh"]

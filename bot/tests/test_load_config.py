@@ -70,6 +70,20 @@ def test_config_positional_constructor_preserves_defaults():
     assert cfg.max_turns == 50
     assert cfg.model_tiers == {"light": "test"}
     assert cfg.opencode_max_tool_calls == 200
+    assert cfg.budget_usd == 5.0
+
+
+def test_load_config_budget_usd_default(tmp_path):
+    _write_config(tmp_path)
+    cfg = load_config(tmp_path)
+    assert cfg.budget_usd == 5.0
+
+
+@pytest.mark.parametrize("budget", [1, 2.5, 20])
+def test_load_config_budget_usd_json(tmp_path, budget):
+    _write_config(tmp_path, claude_extra={"budgetUsd": budget})
+    cfg = load_config(tmp_path)
+    assert cfg.budget_usd == budget
 
 
 def test_load_config_open_code_budget_without_section(tmp_path):

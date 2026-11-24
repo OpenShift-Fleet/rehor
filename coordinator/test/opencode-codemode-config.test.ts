@@ -126,7 +126,7 @@ it("propagates optional central MCP settings through the actual bridge decoder i
       model: "m",
       runtimeId: "opencode",
       providerId: "p",
-      maxTurns: 10,
+      budgetUsd: 5,
       intervalSeconds: 60,
       idleIntervalSeconds: 60,
       cycleTimeoutSeconds: 1800,

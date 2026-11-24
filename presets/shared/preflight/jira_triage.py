@@ -12,6 +12,8 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    interrupted_retry_due,
+    is_newer,
     load_state,
     output_result,
     save_state,
@@ -34,8 +36,7 @@ def jira_issue(key):
 def has_new_jira_feedback(jira_comments, last_addressed):
     """Check if there's new human feedback in Jira comments since last_addressed."""
     for c in jira_comments:
-        ct = c.get("created", "")[:16]
-        if last_addressed and ct > last_addressed[:16]:
+        if last_addressed and is_newer(c.get("created", ""), last_addressed):
             body = c.get("body", "")
             if not ("### " in body or "| " in body or "PR:" in body):
                 return True
@@ -61,7 +62,7 @@ def fmt_jira(task, jira_data, jira_comments):
         jc = [
             {
                 "author": c.get("author", {}).get("displayName", "?"),
-                "t": c.get("created", "")[:16],
+                "t": c.get("created", ""),
                 "b": c.get("body", ""),
             }
             for c in jira_comments
@@ -114,7 +115,15 @@ def main():
             ]
 
         last_addr = t.get("last_addressed", "")
-        is_interrupted = t.get("status") == "in_progress" and not t.get("pr_number") and not meta.get("prs") and not prs
+        is_interrupted = (
+            t.get("status") == "in_progress"
+            and not t.get("pr_number")
+            and not meta.get("prs")
+            and not prs
+            # Blocked tasks waiting on external input only re-trigger after
+            # the retry cooldown; unblocked mid-work resumes immediately.
+            and (not meta.get("blockers") or interrupted_retry_due(t))
+        )
 
         if has_new_jira_feedback(jira_comments, last_addr):
             feedback_tasks.append((t, jira, jira_comments))

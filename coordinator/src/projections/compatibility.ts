@@ -1,7 +1,8 @@
 import { assertTerminalEvent, type RehorEvent, type RehorTerminalEvent } from "../domain/event";
 import type { RehorRun } from "../domain/run";
 import type { TerminalWorkContext } from "../domain/terminal-state";
-import type { Usage } from "../domain/usage";
+import { type Usage, UsageLedger } from "../domain/usage";
+import { type Logger, safeText } from "../log";
 import type {
   CompatibilityWriters,
   CostRecord,
@@ -18,7 +19,8 @@ interface ProjectionState {
   runtimeSessionRef: string | null;
   runtimeReadyObserved: boolean;
   runtimeSessionObserved: boolean;
-  usages: Map<string, Usage>;
+  childSessionRefs: Set<string>;
+  ledger: UsageLedger;
 }
 
 interface UsageTotals {
@@ -38,7 +40,10 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
   private readonly state = new Map<string, ProjectionState>();
   private readonly completedAttempts = new Set<string>();
 
-  constructor(private readonly writers: CompatibilityWriters) {}
+  constructor(
+    private readonly writers: CompatibilityWriters,
+    private readonly logger?: Pick<Logger, "log">,
+  ) {}
 
   async onEvent(event: RehorEvent, run: RehorRun): Promise<void> {
     const key = attemptKey(event, run);
@@ -51,7 +56,14 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
         await observeRuntimeSessionMetric(this.writers.metrics, run);
       }
     }
-    if (event.kind === "usage") this.recordUsage(state, event);
+    if (event.kind === "usage") state.ledger.record(event.payload as Usage);
+    if (
+      event.kind === "run" &&
+      event.payload.state === "child_session_started" &&
+      event.runtimeSessionRef
+    ) {
+      state.childSessionRefs.add(event.runtimeSessionRef);
+    }
 
     await this.writers.transcripts?.append({
       runId: run.runId,
@@ -67,8 +79,8 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       await observeRuntimeHealthMetric(this.writers.metrics, run, "ready");
     }
     await observePolicyMetric(this.writers.metrics, event, run);
-    const status = statusForEvent(event, run);
-    if (status) await this.writers.status?.write(status);
+    const status = statusForEvent(event, run, state.childSessionRefs);
+    if (status) await this.writeStatusSafely(status);
   }
 
   async onTerminal(event: RehorEvent & { kind: "terminal" }, run: RehorRun): Promise<void> {
@@ -79,7 +91,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     this.completedAttempts.add(key);
     const payload = event.payload;
     const context = payload.context;
-    const totals = aggregateUsage(state.usages, run);
+    const totals = aggregateUsage(state.ledger, run);
     const noWork = payload.noWork === true;
     const isError = payload.state !== "completed";
     const durationMs = payload.durationMs ?? elapsedMs(state.startedAt, event.occurredAt);
@@ -87,7 +99,7 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
     const status = statusForTerminal(run, payload.state, payload.reason, noWork, context);
 
     try {
-      await this.writers.status?.write(status);
+      await this.writeStatusSafely(status);
       await this.writers.costs?.write(
         buildCostRecord(run, event, state, context, totals, noWork, isError, durationMs),
       );
@@ -119,7 +131,8 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       runtimeSessionRef: null,
       runtimeReadyObserved: false,
       runtimeSessionObserved: false,
-      usages: new Map(),
+      childSessionRefs: new Set(),
+      ledger: new UsageLedger(),
     };
     this.state.set(key, state);
     return state;
@@ -132,19 +145,22 @@ export class LegacyCompatibilityProjection implements CoordinatorProjection {
       this.completedAttempts.delete(oldest);
     }
   }
-
-  private recordUsage(state: ProjectionState, event: RehorEvent): void {
-    const usage = event.payload as Usage;
-    const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
-    const previous = state.usages.get(model);
-    // Legacy snapshots prefer final over partial. OpenCode modelKey snapshots
-    // already include all root/child messages, so a later partial snapshot can
-    // legitimately add a new step/message after an earlier final snapshot.
-    if (usage.modelKey || !previous || usage.final || !previous.final) {
-      state.usages.set(model, usage);
+  private async writeStatusSafely(update: StatusUpdate): Promise<void> {
+    try {
+      await this.writers.status?.write(update);
+    } catch {
+      try {
+        this.logger?.log("WARNING", "Compatibility status update failed", {
+          instance_id: update.instanceId,
+        });
+      } catch {
+        // Status and its optional diagnostic logger are best-effort; neither can fail a run.
+      }
     }
   }
 }
+
+const COST_BUDGET_STATES = new Set(["info", "warning", "critical", "exhausted"]);
 
 async function observePolicyMetric(
   writer: CompatibilityWriters["metrics"],
@@ -153,10 +169,10 @@ async function observePolicyMetric(
 ): Promise<void> {
   if (!writer || event.kind !== "policy") return;
   const level = stringPayload(event.payload, "state");
-  if (level !== "warning" && level !== "critical") return;
+  if (level === null || !COST_BUDGET_STATES.has(level)) return;
   await writer.observe({
     type: "counter",
-    name: "devbot_turn_budget_event_total",
+    name: "devbot_cost_budget_event_total",
     value: 1,
     labels: { label: run.label, level },
   });
@@ -193,23 +209,65 @@ function runtimeMetricLabels(run: RehorRun): { runtime: string; provider: string
   return { runtime: run.runtimeId ?? "unknown", provider: run.provider.id };
 }
 
-function statusForEvent(event: RehorEvent, run: RehorRun): StatusUpdate | null {
+function statusForEvent(
+  event: RehorEvent,
+  run: RehorRun,
+  childSessionRefs: ReadonlySet<string>,
+): StatusUpdate | null {
+  const isSubagent =
+    event.runtimeSessionRef !== undefined && childSessionRefs.has(event.runtimeSessionRef);
+  const scope = (message: string) => (isSubagent ? `Subagent: ${message}` : message);
+
   if (event.kind === "run") {
-    return {
-      state: "working",
-      message: "Starting cycle...",
-      instanceId: run.instanceId,
-    };
+    const state = stringPayload(event.payload, "state");
+    const message =
+      state === "started"
+        ? "Starting cycle..."
+        : state === "running" || state === "turn_started"
+          ? scope("Working...")
+          : state === "child_session_started"
+            ? "Subagent: session started"
+            : null;
+    return message ? workingStatus(run, message) : null;
   }
 
-  const text = stringPayload(event.payload, "text") ?? stringPayload(event.payload, "message");
-  const tool = stringPayload(event.payload, "name");
-  if (event.kind !== "agent" && event.kind !== "model" && event.kind !== "tool") return null;
-  const message = text || (tool ? `Tool: ${tool}` : null);
-  if (!message) return null;
+  if (event.kind === "model") {
+    if (event.payload.phase === "reasoning") return null;
+    const assistantText =
+      event.payload.phase === "text" || event.payload.role === "assistant"
+        ? stringPayload(event.payload, "text")
+        : null;
+    return assistantText ? workingStatus(run, scope(assistantText)) : null;
+  }
+
+  if (event.kind === "agent") {
+    const assistantText =
+      event.payload.role === "assistant" ? stringPayload(event.payload, "text") : null;
+    return assistantText ? workingStatus(run, scope(assistantText)) : null;
+  }
+
+  if (event.kind === "tool") {
+    const name = stringPayload(event.payload, "name") ?? stringPayload(event.payload, "toolName");
+    if (!name) return null;
+    const state = stringPayload(event.payload, "state");
+    const lifecycle =
+      state === "started"
+        ? "started"
+        : state === "failed" || state === "error" || event.payload.isError === true
+          ? "failed"
+          : state === "completed"
+            ? "completed"
+            : null;
+    return lifecycle ? workingStatus(run, scope(`Tool ${lifecycle}: ${name}`)) : null;
+  }
+
+  return null;
+}
+
+function workingStatus(run: RehorRun, message: string): StatusUpdate {
   return {
     state: "working",
-    message: message.slice(0, 500),
+    message: safeText(message).slice(0, 500),
     instanceId: run.instanceId,
   };
 }
@@ -418,7 +476,7 @@ async function observeTerminalMetrics(
   for (const point of points) await writer.observe(point);
 }
 
-function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals {
+function aggregateUsage(ledger: UsageLedger, run: RehorRun): UsageTotals {
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
@@ -429,7 +487,7 @@ function aggregateUsage(usages: Map<string, Usage>, run: RehorRun): UsageTotals 
   let costIncomplete = false;
   const modelUsage: Record<string, Record<string, number>> = {};
 
-  for (const usage of usages.values()) {
+  for (const usage of ledger.usages()) {
     const model = usage.modelKey ?? usage.returnedModel ?? usage.requestedModel;
     const {
       input = 0,

@@ -206,6 +206,26 @@ it("snapshots profile files, removes stale staged files and rejects symlinks", a
   await expect(loadOpenCodeProjectConfig(profile)).rejects.toThrow("must not be a symlink");
 });
 
+it("skips generated Python bytecode artifacts in staged skill directories", async () => {
+  const root = await temp();
+  await mkdir(join(root, ".opencode/skills/triage-jenkins/__pycache__"), {
+    recursive: true,
+  });
+  await writeFile(join(root, ".opencode/skills/triage-jenkins/SKILL.md"), "# Triage\n");
+  await writeFile(join(root, ".opencode/skills/triage-jenkins/triage_jenkins.py"), "print()\n");
+  await writeFile(
+    join(root, ".opencode/skills/triage-jenkins/__pycache__/triage_jenkins.cpython-312.pyc"),
+    Buffer.from([0x0a, 0x0d, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe3]),
+  );
+  await writeFile(join(root, ".opencode/skills/legacy.pyc"), Buffer.from([0x00, 0x01, 0x02]));
+  await writeFile(join(root, ".opencode/skills/legacy.pyo"), Buffer.from([0x00, 0x01, 0x02]));
+  const captured = await loadOpenCodeProjectConfig(root);
+  expect(captured.files.map((file) => file.path)).toEqual([
+    "skills/triage-jenkins/SKILL.md",
+    "skills/triage-jenkins/triage_jenkins.py",
+  ]);
+});
+
 it.each([
   "../escape",
   "/agents/escape",

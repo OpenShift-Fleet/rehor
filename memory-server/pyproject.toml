@@ -8,10 +8,10 @@ version = "0.1.0"
 description = "MCP memory server for the dev bot — task tracking + RAG"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=2.0",
+    "fastmcp>=3.4.10,<4",
     "asyncpg>=0.30",
     "pgvector>=0.3",
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=5.6.0,<6",
     "pydantic>=2.0",
     "uvicorn>=0.30",
     "starlette>=0.40",

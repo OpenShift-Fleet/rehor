@@ -4,6 +4,8 @@ export interface ParsedEntry {
   label: string;
   content: string;
   isLarge: boolean;
+  /** Model that produced this block, resolved from model/updated events or the event's own model. */
+  model?: string;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -42,6 +44,43 @@ export function parseTranscript(raw: string): ParsedEntry[] {
   const prose = new Map<string, ParsedEntry[]>();
   const terminals: { scope: string; session: string; payload: Record<string, unknown> }[] = [];
 
+  // Pre-pass: model/updated events carry the authoritative per-message model.
+  // Text/reasoning events embed their messageID in partId
+  // (<sessionID>:<messageID>:<phase>:<ordinal>), which resolves the model even
+  // for transcripts whose streamed parts were stamped with the root model.
+  const parsedLines = raw.split("\n").map((line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return undefined;
+    }
+  });
+  const messageModels = new Map<string, string>();
+  for (const value of parsedLines) {
+    const data = record(value);
+    if (data?.schemaVersion !== "1" || data.kind !== "model") continue;
+    const payload = record(data.payload);
+    if (payload?.phase !== "updated") continue;
+    const messageId = text(payload.messageId);
+    const model = text(data.model);
+    if (!messageId || !model) continue;
+    messageModels.set(
+      JSON.stringify([
+        text(data.runId),
+        text(data.attemptId),
+        text(data.runtimeSessionRef),
+        messageId,
+      ]),
+      model,
+    );
+  }
+  const partMessageId = (partId: string): string | undefined => {
+    const segments = partId.split(":");
+    return segments.length === 4 && (segments[2] === "text" || segments[2] === "reasoning")
+      ? segments[1]
+      : undefined;
+  };
+
   const add = (
     role: string,
     blockType: ParsedEntry["blockType"],
@@ -54,13 +93,7 @@ export function parseTranscript(raw: string): ParsedEntry[] {
     return entry;
   };
 
-  for (const line of raw.split("\n")) {
-    let value: unknown;
-    try {
-      value = JSON.parse(line);
-    } catch {
-      continue;
-    }
+  for (const value of parsedLines) {
     const data = record(value);
     if (!data) continue;
 
@@ -97,6 +130,14 @@ export function parseTranscript(raw: string): ParsedEntry[] {
           entry,
           typeof payload.text === "string" ? payload.text : entry.content + text(payload.delta),
         );
+        const messageId = partId ? partMessageId(partId) : undefined;
+        const resolved =
+          (messageId
+            ? messageModels.get(
+                JSON.stringify([text(data.runId), text(data.attemptId), session, messageId]),
+              )
+            : undefined) || text(data.model);
+        if (resolved) entry.model = resolved;
       } else if (data.kind === "tool") {
         if (payload.state !== "started" && payload.state !== "completed") continue;
         const aliases = [

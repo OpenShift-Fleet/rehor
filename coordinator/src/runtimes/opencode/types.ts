@@ -76,6 +76,8 @@ export type OpenCodeDeploymentConfig = Omit<
 > & {
   model?: string;
   providerId?: string;
+  /** Trusted allowed ports for the OpenAI model gateway, independent of its URL. */
+  modelGatewayPorts?: { http?: number; https?: number };
 };
 
 export interface OpenCodePermissionRule {

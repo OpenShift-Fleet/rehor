@@ -4,6 +4,7 @@
   },
   "claude": {
     "maxTurns": 100,
+    "budgetUsd": 5,
     "model": "claude-opus-4-6"
   },
   "opencode": {

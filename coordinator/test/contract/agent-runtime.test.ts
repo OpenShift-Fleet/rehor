@@ -28,7 +28,7 @@ const run: RehorRun = {
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
-  limits: { timeoutMs: 60_000, maxTurns: 20 },
+  limits: { timeoutMs: 60_000, budgetUsd: 5 },
   preflightPayloadRef: "memory://preflight/run-01",
 };
 

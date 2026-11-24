@@ -9,6 +9,7 @@ import yaml
 from bot.config import (
     Config,
     InstanceConfig,
+    apply_cycle_timeout_override,
     load_instance_config,
     resolve_active_envs,
     resolve_cycle_model,
@@ -81,6 +82,7 @@ class TestInstanceConfigFromYaml:
         assert ic.envs is None
         assert ic.claude_md_strategy == "ignore"
         assert ic.idle_cycle_limit == 0
+        assert ic.cycle_timeout_seconds is None
         assert ic.model is None
         assert ic.runtime == "claude"
         assert ic.provider == "vertex"
@@ -112,6 +114,16 @@ class TestInstanceConfigFromYaml:
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "idle_cycle_limit": 10}))
         ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
         assert ic.idle_cycle_limit == 10
+
+    def test_cycle_timeout_seconds(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "cycle_timeout_seconds": 7200}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.cycle_timeout_seconds == 7200
+
+    def test_cycle_timeout_seconds_absent(self, agent_dir):
+        (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint"}))
+        ic = InstanceConfig.from_yaml(agent_dir / "instance.yaml")
+        assert ic.cycle_timeout_seconds is None
 
     def test_empty_envs(self, agent_dir):
         (agent_dir / "instance.yaml").write_text(yaml.dump({"workflow": "jira-sprint", "envs": []}))
@@ -301,6 +313,16 @@ class TestValidateInstanceConfig:
     def test_opencode_runtime_accepts_chat_completions_provider(self, preset_tree):
         ic = InstanceConfig(runtime="opencode", provider="rehor-openai-chat")
         validate_instance_config(preset_tree, ic)
+
+    def test_cycle_timeout_seconds_valid(self, preset_tree):
+        validate_instance_config(preset_tree, InstanceConfig(cycle_timeout_seconds=7200))
+
+    @pytest.mark.parametrize("value", [0, -60, "7200", 1.5, True])
+    def test_invalid_cycle_timeout_seconds_exits(self, preset_tree, value):
+        ic = InstanceConfig(cycle_timeout_seconds=value)
+        with pytest.raises(SystemExit) as exc_info:
+            validate_instance_config(preset_tree, ic)
+        assert exc_info.value.code == 1
 
     def test_missing_workflow_exits(self, preset_tree):
         ic = InstanceConfig(workflow="nonexistent")
@@ -493,3 +515,18 @@ class TestResolveCycleModel:
 
         resolved = resolve_cycle_model(preset_tree, ic, global_config)
         assert resolved == "claude-global-default"
+
+
+class TestApplyCycleTimeoutOverride:
+    def test_instance_value_overrides_global(self, global_config):
+        apply_cycle_timeout_override(global_config, InstanceConfig(cycle_timeout_seconds=7200))
+        assert global_config.cycle_timeout == 7200
+
+    def test_unset_keeps_global(self, global_config):
+        apply_cycle_timeout_override(global_config, InstanceConfig())
+        assert global_config.cycle_timeout == 600
+
+    @pytest.mark.parametrize("value", [0, -60, "7200", 1.5, True])
+    def test_invalid_value_keeps_global(self, global_config, value):
+        apply_cycle_timeout_override(global_config, InstanceConfig(cycle_timeout_seconds=value))
+        assert global_config.cycle_timeout == 600

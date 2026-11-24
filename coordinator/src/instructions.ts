@@ -118,7 +118,7 @@ export interface CyclePromptOptions {
 /** Build the current Python runner prompt without changing workflow wording. */
 export function buildCyclePrompt(options: CyclePromptOptions): string {
   const instanceLine = options.instanceId
-    ? ` Your instance ID is: ${options.instanceId}. Pass instance_id="${options.instanceId}" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update).`
+    ? ` Your instance ID is: ${options.instanceId}. Pass instance_id="${options.instanceId}" to task tool calls that accept it (task_list, task_add, task_check_capacity). Do NOT pass instance_id to bot_status_update — it is bound to the MCP connection.`
     : "";
   const guidance = isOpenCodeRuntime(options.runtimeId)
     ? "Follow native OpenCode instructions and AGENTS.md."

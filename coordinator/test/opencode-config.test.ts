@@ -300,6 +300,63 @@ describe("native OpenCode V2 config", () => {
     ).toThrow("cannot reference");
   });
 
+  it("allows only OpenShell bearer markers in MCP authorization headers", () => {
+    const marker = "Bearer openshell:resolve:env:v1_BOT_MEMORY_TOKEN";
+    const generated = (authorization: string) =>
+      renderOpenCodeConfig({
+        model: "p/m",
+        mcpServers: {
+          memory: {
+            type: "http",
+            url: "https://example.test/mcp",
+            headers: { Authorization: authorization },
+          },
+        },
+      });
+    const native = (authorization: string) =>
+      renderOpenCodeConfigForCycle(
+        { model: "m" },
+        "p",
+        {},
+        {
+          settings: {
+            mcp: {
+              servers: {
+                memory: {
+                  type: "remote",
+                  url: "https://example.test/mcp",
+                  headers: { authorization },
+                },
+              },
+            },
+          },
+          files: [],
+        },
+      );
+    expect(generated(marker).config).toMatchObject({
+      mcp: { servers: { memory: { headers: { Authorization: marker } } } },
+    });
+    expect(native(marker).profileConfig).toMatchObject({
+      mcp: { servers: { memory: { headers: { authorization: marker } } } },
+    });
+    for (const invalid of [
+      "Bearer actual-secret",
+      "{env:JIRA_MCP_URL}",
+      "Bearer openshell:resolve:env:",
+      `${marker}\n`,
+      `${marker}!`,
+    ]) {
+      expect(() => generated(invalid)).toThrow();
+      expect(() => native(invalid)).toThrow();
+    }
+    expect(() =>
+      renderOpenCodeConfig({
+        model: "p/m",
+        providers: [{ id: "p", settings: { authorization: marker } }],
+      }),
+    ).toThrow();
+  });
+
   it("rejects normalized MCP collisions and missing non-optional grants", () => {
     expect(() =>
       renderOpenCodeConfig({

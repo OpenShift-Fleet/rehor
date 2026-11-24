@@ -1,8 +1,7 @@
-# Container E2E Runtime Validation (REHOR-62)
+# Container E2E Runtime Validation
 
-This document tracks the REHOR-62 runtime validation harness that closes the
-multi-container startup and `entrypoint.sh` gap intentionally deferred by
-REHOR-107.
+This document describes container validation for the bot runtime, including
+multi-container startup and execution through `entrypoint.sh`.
 
 ## Scope
 

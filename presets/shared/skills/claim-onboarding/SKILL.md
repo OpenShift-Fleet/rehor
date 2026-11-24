@@ -20,7 +20,7 @@ python3 .claude/skills/claim-onboarding/claim_onboarding.py '<json_config>' 2>&1
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "project_key": "RHCLOUD",
   "team_name": "My Team",
   "summary": "Onboard My Team to Rehor"
@@ -39,8 +39,8 @@ python3 .claude/skills/claim-onboarding/claim_onboarding.py '<json_config>' 2>&1
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
-  "phase_tickets": {"phase1": "RHCLOUD-12346", "phase2": "RHCLOUD-12347", "phase3": "RHCLOUD-12348"},
+ "epic_key": "TEAM-12345",
+ "phase_tickets": {"phase1": "TEAM-12346", "phase2": "TEAM-12347", "phase3": "TEAM-12348"},
   "task_created": true
 }
 ```

@@ -14,7 +14,7 @@ import {
   type SessionInfo,
 } from "@opencode/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeRun, LegacyCompatibilityProjection } from "../src";
+import { type AgentRuntimeRunContext, executeRun, LegacyCompatibilityProjection } from "../src";
 import { runtimeErrorDetails } from "../src/diagnostics";
 import { parseRehorEvent, type RehorEvent, type RehorRun } from "../src/domain";
 import { createStructuredLogger, type Logger } from "../src/log";
@@ -71,7 +71,7 @@ const runtimeRun: RehorRun = {
   configHash: { algorithm: "sha256", value: "2".repeat(64) },
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   provider: { id: "rehor-openai", requestedModel: "rehor-openai/gpt-5.6-luna" },
-  limits: { timeoutMs: 5000, maxTurns: 10 },
+  limits: { timeoutMs: 5000, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 
@@ -503,6 +503,8 @@ const operational = {
   BOT_JIRA_EMAIL: "bot@example.invalid",
   BOT_MEMORY_URL: "http://memory-server:8080",
   EXECUTOR_ADDR: "127.0.0.1:50551",
+  EXECUTOR_HTTP_URL: "https://executor.example.invalid/executor/execute",
+  EXECUTOR_TRANSPORT: "http",
   GH_RELEASE_UPLOAD_URL: "http://proxy:8446/upload",
   GH_USER_NAME: "synthetic-github-bot",
   GL_USER_NAME: "synthetic-gitlab-bot",
@@ -518,9 +520,28 @@ const blocked = [
   "SLACK_OTHER_CREDENTIAL",
   "BOT_SECRET_TOKEN",
   "EXECUTOR_TOKEN",
+  "EXECUTOR_TOKEN_FILE",
+  "EXECUTOR_CA_FILE",
   "UNKNOWN_AMBIENT",
 ];
 describe("OpenCode environment", () => {
+  it("preserves OpenShell CA settings only for sandbox runs", () => {
+    const ca = {
+      NODE_EXTRA_CA_CERTS: "/run/openshell-supervisor-ca/material/ca.crt",
+      SSL_CERT_FILE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      CURL_CA_BUNDLE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      REQUESTS_CA_BUNDLE: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+      GIT_SSL_CAINFO: "/run/openshell-supervisor-ca/material/ca-bundle.crt",
+    };
+    const base = { ...ca, NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_OPTIONS: "--require=evil" };
+    const sandbox = buildOpenCodeEnvironment({ base: { ...base, REHOR_INPUT_SOURCE: "sandbox" } });
+    expect(sandbox).toMatchObject(ca);
+    expect(sandbox.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
+    expect(sandbox.NODE_OPTIONS).toBeUndefined();
+    const legacy = buildOpenCodeEnvironment({ base });
+    for (const name of Object.keys(ca)) expect(legacy[name]).toBeUndefined();
+  });
+
   it("copies only explicit runtime variables and preserves deterministic proxy routing", () => {
     const base = Object.freeze({
       PATH: "/bin",
@@ -602,6 +623,257 @@ describe("OpenCode environment", () => {
     expect(base).toEqual(snapshot);
     for (const name of blocked) expect(environment[name]).toBeUndefined();
   });
+  it("forwards the sandbox EXECUTOR_TOKEN placeholder only in sandbox mode and only as the exact marker", () => {
+    const placeholder = "openshell:resolve:env:executor";
+    const rawJwt = "eyJhbGciOiJSUzI1NiJ9.raw.jwt-value";
+    const httpsCoordinate = {
+      EXECUTOR_HTTP_URL: "https://executor.example.invalid/executor/execute",
+    };
+
+    // Valid placeholder + HTTPS coordinate survive only in sandbox mode.
+    const sandbox = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: placeholder, ...httpsCoordinate },
+    });
+    expect(sandbox.EXECUTOR_TOKEN).toBe(placeholder);
+    expect(sandbox.EXECUTOR_HTTP_URL).toBe(httpsCoordinate.EXECUTOR_HTTP_URL);
+
+    // Legacy runs never receive EXECUTOR_TOKEN, even as a valid marker.
+    const legacy = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "legacy", EXECUTOR_TOKEN: placeholder, ...httpsCoordinate },
+    });
+    expect(legacy.EXECUTOR_TOKEN).toBeUndefined();
+    expect(legacy.EXECUTOR_HTTP_URL).toBe(httpsCoordinate.EXECUTOR_HTTP_URL);
+    expect(legacy.EXECUTOR_TRANSPORT).toBeUndefined();
+
+    // Raw credentials never leak, in either mode.
+    for (const source of [
+      { REHOR_INPUT_SOURCE: "sandbox" as const },
+      { REHOR_INPUT_SOURCE: "legacy" as const },
+    ]) {
+      const environment = buildOpenCodeEnvironment({
+        base: {
+          ...source,
+          EXECUTOR_TOKEN: rawJwt,
+          EXECUTOR_TOKEN_FILE: "/run/secret/executor-token",
+          EXECUTOR_CA_FILE: "/run/secret/ca.pem",
+          BOT_MEMORY_TOKEN: rawJwt,
+        },
+      });
+      expect(environment.EXECUTOR_TOKEN).toBeUndefined();
+      expect(environment.EXECUTOR_TOKEN_FILE).toBeUndefined();
+      expect(environment.EXECUTOR_CA_FILE).toBeUndefined();
+      expect(environment.BOT_MEMORY_TOKEN).toBeUndefined();
+    }
+
+    // A malformed marker is dropped rather than forwarded.
+    for (const malformed of [
+      "openshell:resolve:env:",
+      "openshell:resolve:env:has-dash",
+      "bearer openshell:resolve:env:executor",
+      "openshell:resolve:env:executor\n",
+    ]) {
+      const environment = buildOpenCodeEnvironment({
+        base: { REHOR_INPUT_SOURCE: "sandbox", EXECUTOR_TOKEN: malformed, ...httpsCoordinate },
+      });
+      expect(environment.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("derives the sandbox EXECUTOR_TOKEN placeholder from BOT_MEMORY_TOKEN", () => {
+    const placeholder = "openshell:resolve:env:memory_token";
+    const environment = buildOpenCodeEnvironment({
+      base: {
+        REHOR_INPUT_SOURCE: "sandbox",
+        BOT_MEMORY_TOKEN: placeholder,
+        EXECUTOR_HTTP_URL: "https://executor.example/executor/execute",
+      },
+    });
+    expect(environment.EXECUTOR_TOKEN).toBe(placeholder);
+    expect(environment.BOT_MEMORY_TOKEN).toBeUndefined();
+    expect(environment.REHOR_INPUT_SOURCE).toBe("sandbox");
+
+    // An explicit (valid) EXECUTOR_TOKEN wins over BOT_MEMORY_TOKEN.
+    const explicit = "openshell:resolve:env:executor";
+    const overridden = buildOpenCodeEnvironment({
+      base: {
+        REHOR_INPUT_SOURCE: "sandbox",
+        EXECUTOR_TOKEN: explicit,
+        BOT_MEMORY_TOKEN: placeholder,
+        EXECUTOR_HTTP_URL: "https://executor.example/executor/execute",
+      },
+    });
+    expect(overridden.EXECUTOR_TOKEN).toBe(explicit);
+  });
+  it("never forwards executor markers without a valid HTTPS endpoint", () => {
+    for (const url of [
+      undefined,
+      "http://executor.example/executor/execute",
+      "https://user@executor.example/executor/execute",
+      "https://executor.example:invalid/executor/execute",
+      "https://executor.example/\n",
+      "https://executor.example/other",
+      "https://executor.example/executor/execute?",
+    ]) {
+      const env = buildOpenCodeEnvironment({
+        base: {
+          REHOR_INPUT_SOURCE: "sandbox",
+          BOT_MEMORY_TOKEN: "openshell:resolve:env:token",
+          EXECUTOR_HTTP_URL: url,
+        },
+      });
+      expect(env.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("rejects all ASCII controls and Unicode whitespace in executor URLs", () => {
+    for (const character of [
+      ...Array.from({ length: 32 }, (_, index) => String.fromCharCode(index)),
+      String.fromCharCode(127),
+      "\u00a0",
+    ]) {
+      const env = buildOpenCodeEnvironment({
+        base: {
+          REHOR_INPUT_SOURCE: "sandbox",
+          BOT_MEMORY_TOKEN: "openshell:resolve:env:token",
+          EXECUTOR_HTTP_URL: `https://executor.example${character}/executor/execute`,
+        },
+      });
+      expect(env.EXECUTOR_TOKEN).toBeUndefined();
+    }
+  });
+  it("does not forward the memory placeholder to helpers", () => {
+    for (const mode of ["legacy", "sandbox"]) {
+      for (const token of [
+        "raw-secret",
+        "openshell:resolve:env:token",
+        "openshell:resolve:env:token\n",
+        "openshell:resolve:env:has-dash",
+      ]) {
+        const env = buildOpenCodeEnvironment({
+          base: { REHOR_INPUT_SOURCE: mode, BOT_MEMORY_TOKEN: token },
+          passthrough: ["BOT_MEMORY_TOKEN"],
+        });
+        expect(env.BOT_MEMORY_TOKEN).toBeUndefined();
+      }
+    }
+    const legacy = buildOpenCodeEnvironment({
+      base: { REHOR_INPUT_SOURCE: "legacy", BOT_MEMORY_TOKEN: "openshell:resolve:env:token" },
+    });
+    expect(legacy.BOT_MEMORY_TOKEN).toBeUndefined();
+    expect(legacy.REHOR_INPUT_SOURCE).toBeUndefined();
+  });
+  it("uses private MCP config in Python helpers through the sanitized OpenCode child", async () => {
+    const marker = "openshell:resolve:env:MEMORY";
+    const home = await mkdtemp(join(tmpdir(), "opencode-helper-config-"));
+    const app = join(home, "app");
+    await mkdir(join(app, "bot"), { recursive: true });
+    for (const file of ["__init__.py", "sandbox_transport.py"]) {
+      await writeFile(
+        join(app, "bot", file),
+        await readFile(join(TEST_WORKSPACE, "..", "bot", file)),
+      );
+    }
+    await writeFile(
+      join(app, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "bot-memory": {
+            url: "https://memory.example/mcp",
+            headers: { Authorization: `Bearer ${marker}` },
+          },
+        },
+      }),
+    );
+    await writeFile(
+      join(app, "bot", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          "mcp-atlassian": {
+            url: "https://gateway.example/jira/mcp",
+            headers: { Authorization: `Bearer ${marker}` },
+          },
+        },
+      }),
+    );
+    const python = [
+      "import asyncio, importlib.util, os, sys, types",
+      "class Guard(dict):",
+      "    def get(self, key, default=None):",
+      "        if key == 'BOT_MEMORY_TOKEN': raise AssertionError('helper read token environment')",
+      "        return super().get(key, default)",
+      "    def __getitem__(self, key):",
+      "        if key == 'BOT_MEMORY_TOKEN': raise AssertionError('helper read token environment')",
+      "        return super().__getitem__(key)",
+      "os.environ = Guard(os.environ)",
+      "captured = {}",
+      "class Transport:",
+      "    async def __aenter__(self): return (None, None, None)",
+      "    async def __aexit__(self, *args): pass",
+      "class Session:",
+      "    def __init__(self, *args): pass",
+      "    async def __aenter__(self): return self",
+      "    async def __aexit__(self, *args): pass",
+      "    async def initialize(self): pass",
+      "def transport(url, **options):",
+      "    captured.update(url=url, **options)",
+      "    return Transport()",
+      "mcp = types.ModuleType('mcp'); mcp.ClientSession = Session",
+      "client = types.ModuleType('mcp.client'); stream = types.ModuleType('mcp.client.streamable_http')",
+      "stream.streamablehttp_client = transport",
+      "sys.modules.update({'mcp': mcp, 'mcp.client': client, 'mcp.client.streamable_http': stream})",
+      "for path in sys.argv[1:]:",
+      "    spec = importlib.util.spec_from_file_location('helper', path)",
+      "    helper = importlib.util.module_from_spec(spec)",
+      "    spec.loader.exec_module(helper)",
+      "    async def run():",
+      "        await helper._ensure_session()",
+      "        await helper._cleanup()",
+      "    asyncio.run(run())",
+      "    headers = captured['headers']",
+      "    print('authorized' if headers.get('Authorization') == 'Bearer openshell:resolve:env:MEMORY' else 'unauthorized')",
+      "    if 'memory_mcp.py' in path: assert headers['X-Bot-Instance-Id'] == 'identity-例'.encode()",
+      "    captured.clear()",
+    ].join("\n");
+    const child = [
+      "const { spawnSync } = require('node:child_process');",
+      "const result = spawnSync('python3', ['-c', process.argv[1], ...process.argv.slice(2)], { encoding: 'utf8', env: process.env });",
+      "if (result.error || result.status !== 0) { process.stderr.write(result.stderr || String(result.error)); process.exit(1); }",
+      "process.stdout.write(result.stdout);",
+    ].join("\n");
+    const paths = [
+      ".claude/skills/jira_mcp.py",
+      ".claude/skills/memory_mcp.py",
+      "bot/memory_mcp.py",
+    ].map((path) => join(TEST_WORKSPACE, "..", path));
+    try {
+      for (const [mode, token, expected] of [
+        ["sandbox", marker, "authorized"],
+        ["sandbox", "raw-secret", "authorized"],
+        ["legacy", marker, "unauthorized"],
+      ]) {
+        const env = buildOpenCodeEnvironment({
+          base: {
+            PATH: process.env.PATH,
+            HOME: home,
+            REHOR_INPUT_SOURCE: mode,
+            BOT_MEMORY_TOKEN: token,
+            BOT_INSTANCE_ID: "identity-例",
+            BOT_MEMORY_URL: "https://memory.example/mcp",
+            JIRA_MCP_URL: "https://gateway.example/jira/mcp",
+          },
+        });
+        if (token === "raw-secret") expect(env.BOT_MEMORY_TOKEN).toBeUndefined();
+        expect(env.PYTHONPATH).toBeUndefined();
+        const result = spawnSync(process.execPath, ["-e", child, python, ...paths], {
+          env,
+          encoding: "utf8",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout.trim().split("\n")).toEqual([expected, expected, expected]);
+        expect(result.stdout + result.stderr).not.toContain("raw-secret");
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 15_000);
   it("keeps absent operational values absent and does not mutate the base", () => {
     const base = Object.freeze({ PATH: "/bin", HOME: "/home/bot" });
     const environment = buildOpenCodeEnvironment({ base });
@@ -1044,25 +1316,25 @@ describe("OpenCode V2 runtime lifecycle", () => {
     expect(result.error).toBeUndefined();
     expect(calls.prompt[0]?.signal?.aborted).toBe(true);
     expect(calls.remove[0]?.signal?.aborted).toBe(false);
-    expect(calls.stop).toBe(2);
+    expect(calls.stop).toBe(1);
   });
-  it("leaves direct-run timeout and maxTurns enforcement to coordinator", async () => {
+  it("leaves direct-run timeout enforcement to the coordinator", async () => {
     const events: OpenCodeEvent[] = [];
     for (let i = 0; i < 3; i++) events.push(started(`a-${i}`), ended(`a-${i}`));
     events.push(succeeded());
     const result = await run(
       { promptGate: new Promise((resolve) => setTimeout(resolve, 20)), events },
-      { ...runtimeRun, limits: { timeoutMs: 1, maxTurns: 1 } },
+      { ...runtimeRun, limits: { timeoutMs: 1, budgetUsd: 5 } },
     );
     expect(result.events.at(-1)?.payload).toMatchObject({ state: "completed", turns: 3 });
   });
-  it("allows maxTurns-th finished step to reach terminal success", async () => {
+  it("allows a finished step under budget to reach terminal success", async () => {
     const { runtime } = fakeRuntime({
       events: [started(), text("last answer"), ended(), succeeded()],
     });
     const result = await executeRun(runtime, {
       ...runtimeRun,
-      limits: { ...runtimeRun.limits, maxTurns: 1 },
+      limits: { ...runtimeRun.limits, budgetUsd: 5 },
     });
     expect(result.terminal.payload).toMatchObject({
       state: "completed",
@@ -1070,7 +1342,7 @@ describe("OpenCode V2 runtime lifecycle", () => {
       turns: 1,
     });
   });
-  it("records pending usage before next-turn budget abort without allowing another tool", async () => {
+  it("aborts at the usage event crossing the hard limit without consuming further steps", async () => {
     const costs: unknown[] = [];
     const tool = (type: "called" | "success", messageId: string, id: string) =>
       event(`session.tool.${type}`, {
@@ -1107,41 +1379,30 @@ describe("OpenCode V2 runtime lifecycle", () => {
     });
     const result = await executeRun(
       runtime,
-      { ...runtimeRun, limits: { ...runtimeRun.limits, maxTurns: 1 } },
+      { ...runtimeRun, limits: { ...runtimeRun.limits, budgetUsd: 0.6 } },
       { projection },
     );
     expect(result.terminal.payload).toMatchObject({
       state: "failed",
-      reason: "max_turns",
+      reason: "budget_exceeded",
       turns: 2,
     });
     expect(result.error).toBeUndefined();
     expect(costs).toHaveLength(1);
-    expect(costs[0]).toMatchObject({ costUsd: 0.75, inputTokens: 20, costIncomplete: true });
+    expect(costs[0]).toMatchObject({ costUsd: 0.75, inputTokens: 20 });
     const usages = result.events.filter((value) => value.kind === "usage");
-    expect(usages.at(-2)?.payload).toMatchObject({
+    expect(usages.at(-1)?.payload).toMatchObject({
       final: true,
       incomplete: false,
       cost: { amount: 0.75 },
     });
-    const pending = usages.at(-1);
-    expect(pending?.payload).toMatchObject({
-      final: false,
-      partial: true,
-      incomplete: true,
-      tokenCounts: { input: 20, output: 4, reasoning: 2 },
-      cost: { amount: 0.75 },
-    });
-    const pendingModel = result.events.find(
-      (value) => value.kind === "model" && value.payload.messageId === "budget-blocked",
-    );
-    expect(pendingModel).toBeDefined();
-    expect(pending?.parentEventId).toBe(pendingModel?.eventId);
+    const policies = result.events.filter((value) => value.kind === "policy");
+    expect(policies.map((value) => value.payload.state)).toEqual(["exhausted"]);
+    expect(policies[0]?.parentEventId).toBe(usages.at(-1)?.eventId);
     const turns = result.events.filter(
       (value) => value.kind === "run" && value.payload.state === "turn_started",
     );
-    expect(turns).toHaveLength(3);
-    expect(pending?.sequence).toBeLessThan(turns.at(-1)?.sequence ?? 0);
+    expect(turns).toHaveLength(2);
     expect(result.events.map((value) => value.sequence)).toEqual(
       result.events.map((_, index) => index + 1),
     );
@@ -1155,6 +1416,122 @@ describe("OpenCode V2 runtime lifecycle", () => {
     );
     expect(calls.messages).toHaveLength(0);
     expect(calls.interrupt).toHaveLength(1);
+  });
+  it("keeps the grace window working after exhaustion until the hard limit", async () => {
+    const tool = (type: "called" | "success", messageId: string, id: string) =>
+      event(`session.tool.${type}`, {
+        sessionID: ROOT,
+        assistantMessageID: messageId,
+        id,
+        executed: true,
+        ...(type === "called"
+          ? { name: "read", input: { path: "README.md" } }
+          : { content: [{ type: "text", text: "file contents" }] }),
+      });
+    const { runtime } = fakeRuntime({
+      events: [
+        started("priced"),
+        ended("priced", ROOT, 0.25),
+        started("tool-step"),
+        tool("called", "tool-step", "budget-filling-tool"),
+        tool("success", "tool-step", "budget-filling-tool"),
+        ended("tool-step", ROOT, 0.5),
+        started("unrelated", "unrelated-session"),
+        started("budget-blocked"),
+        tool("called", "budget-blocked", "wrap-up-tool"),
+        tool("success", "budget-blocked", "wrap-up-tool"),
+        ended("budget-blocked", ROOT, 999),
+        succeeded(),
+      ],
+    });
+    const result = await executeRun(runtime, {
+      ...runtimeRun,
+      limits: { ...runtimeRun.limits, budgetUsd: 0.7 },
+    });
+
+    // 0.75 of 0.7 crosses 100% (exhausted notice) but not the 115% hard limit,
+    // so the wrap-up step still runs and records its pending usage.
+    const policies = result.events.filter((value) => value.kind === "policy");
+    expect(policies.map((value) => value.payload.state)).toEqual(["exhausted"]);
+    const usages = result.events.filter((value) => value.kind === "usage");
+    const amount = (value: RehorEvent) =>
+      (value.payload as { cost?: { amount?: number } }).cost?.amount;
+    expect(usages.some((value) => amount(value) === 0.75 && value.payload.final === true)).toBe(
+      true,
+    );
+    expect(usages.some((value) => amount(value) === 0.75 && value.payload.final === false)).toBe(
+      true,
+    );
+    expect(
+      result.events
+        .filter((value) => value.kind === "tool")
+        .map((value) => value.payload.toolUseId),
+    ).toEqual(["budget-filling-tool", "budget-filling-tool", "wrap-up-tool", "wrap-up-tool"]);
+    expect(result.terminal.payload).toMatchObject({
+      state: "failed",
+      reason: "budget_exceeded",
+      turns: 3,
+    });
+    expect(result.error).toBeUndefined();
+  });
+  it("delivers policy notices to the root session and never fails the run", async () => {
+    const logs: Array<{ level: string; message: string }> = [];
+    const logger: Logger = {
+      child: () => logger,
+      scope: (_fields, action) => action(),
+      log: (level, message) => {
+        logs.push({ level, message });
+      },
+    };
+    const fake = fakeRuntime({
+      events: [started(), text("hello"), ended(), succeeded()],
+      logger,
+    });
+    const originalPrompt = fake.client.session.prompt.bind(
+      fake.client.session.prompt,
+    ) as unknown as (input: unknown, request?: { signal?: AbortSignal }) => Promise<unknown>;
+    let promptCalls = 0;
+    let noticeInput: unknown;
+    fake.client.session.prompt = (async (input: unknown, request?: { signal?: AbortSignal }) => {
+      promptCalls += 1;
+      // The second prompt is the coordinator policy notice; make it fail.
+      if (promptCalls === 2) {
+        noticeInput = input;
+        throw new Error("notice delivery failed");
+      }
+      return originalPrompt(input, request);
+    }) as typeof fake.client.session.prompt;
+    const context: AgentRuntimeRunContext = {};
+    await fake.runtime.start(new AbortController().signal);
+    const iterator = fake.runtime
+      .run(runtimeRun, new AbortController().signal, context)
+      [Symbol.asyncIterator]();
+    const events: RehorEvent[] = [];
+    await iterator.next(); // run started
+    for (let index = 0; index < 5 && context.onPolicyNotice === undefined; index += 1) {
+      const next = await iterator.next();
+      if (next.done) throw new Error("runtime ended before policy notices were wired");
+      events.push(next.value);
+    }
+    expect(context.onPolicyNotice).toBeDefined();
+
+    context.onPolicyNotice?.("COST BUDGET WARNING: $3.75/5 used.");
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      events.push(next.value);
+    }
+    await waitForCondition(() => promptCalls >= 2);
+
+    expect(promptCalls).toBe(2);
+    expect(noticeInput).toEqual({
+      sessionID: ROOT,
+      text: "COST BUDGET WARNING: $3.75/5 used.",
+    });
+    expect(events.at(-1)?.payload).toMatchObject({ state: "completed", resultText: "hello" });
+    expect(logs.some((entry) => entry.message === "OpenCode policy notice delivery failed")).toBe(
+      true,
+    );
   });
   it("reconciles lost prompt response using authoritative V2 messages and outcome", async () => {
     const { calls, events } = await run({
@@ -1170,6 +1547,61 @@ describe("OpenCode V2 runtime lifecycle", () => {
     const usage = events.find((value) => value.kind === "usage");
     expect(model).toBeDefined();
     expect(usage?.parentEventId).toBe(model?.eventId);
+  });
+  it("scopes sessions recovered by child reconciliation as subagents in logs and status", async () => {
+    const records: Record<string, unknown>[] = [];
+    const statuses: Array<{ message: string }> = [];
+    const projection = new LegacyCompatibilityProjection({
+      status: {
+        write: (record) => {
+          statuses.push(record as { message: string });
+        },
+      },
+    });
+    const child = "session-child";
+    const { runtime } = fakeRuntime({
+      promptError: new Error("prompt response lost"),
+      active: {},
+      info: sessionInfo({ outcome: "succeeded", time: { created: 1, updated: 3, idle: 3 } }),
+      messagesBySession: {
+        [ROOT]: [assistant(), idle()],
+        [child]: [assistant("child-assistant-1", "Recovered child progress")],
+      },
+      children: [{ ...sessionInfo(), id: child, parentID: ROOT }],
+    });
+    const result = await executeRun(runtime, runtimeRun, {
+      projection,
+      logger: createStructuredLogger({ write: (line) => records.push(JSON.parse(line)) }),
+    });
+
+    expect(result.terminal.payload.state).toBe("completed");
+    const marker = result.events.find(
+      (value) =>
+        value.payload.state === "child_session_started" && value.runtimeSessionRef === child,
+    );
+    const childText = result.events.find(
+      (value) => value.kind === "model" && value.payload.text === "Recovered child progress",
+    );
+    expect(marker).toBeDefined();
+    expect(childText).toBeDefined();
+    // The discovery marker must precede the child's recovered messages so both
+    // the coordinator log scope and the compatibility projection stay subagent.
+    expect(result.events.indexOf(marker as RehorEvent)).toBeLessThan(
+      result.events.indexOf(childText as RehorEvent),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({ message: "Subagent session started", activity_scope: "subagent" }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        message: "Assistant text",
+        activity_scope: "subagent",
+        text_preview: "Recovered child progress",
+      }),
+    );
+    expect(statuses.map((value) => value.message)).toEqual(
+      expect.arrayContaining(["Subagent: session started", "Subagent: Recovered child progress"]),
+    );
   });
   it("preserves partial text and replaces it from authoritative recovery without double counting", async () => {
     const { events } = await run({
@@ -1429,7 +1861,10 @@ describe("OpenCode V2 runtime lifecycle", () => {
       },
     });
     expect(statuses).toContainEqual(
-      expect.objectContaining({ message: "Tool: mcp__bot-memory__task_add" }),
+      expect.objectContaining({ message: "Tool started: mcp__bot-memory__task_add" }),
+    );
+    expect(statuses).toContainEqual(
+      expect.objectContaining({ message: "Tool completed: mcp__bot-memory__task_add" }),
     );
     expect(costs[0]).toMatchObject({ repository: "rehor", externalKey: "REHOR-143" });
     expect(cycleRuns[0]).toMatchObject({ taskId: 143, cycleType: "task_work" });

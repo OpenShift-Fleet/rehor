@@ -28,7 +28,7 @@ import CycleRunCard from "../components/CycleRunCard";
 import { useWS } from "../hooks/useWebSocket";
 import { parseTranscript } from "../transcript";
 import type { CycleRun, TaskCycleGroup } from "../types";
-import { displayKey, formatDuration, formatTokens, sourceUrl, timeAgo } from "../utils";
+import { displayKey, formatDuration, formatTokens, sourceUrl, stringList, timeAgo } from "../utils";
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -251,6 +251,11 @@ function TranscriptViewer({
                   onClick={() => entry.isLarge && toggleCollapse(index)}
                 >
                   <span className="transcript-role">{entry.role}</span>
+                  {entry.model && (
+                    <span className="transcript-model" title="Model that produced this block">
+                      {entry.model}
+                    </span>
+                  )}
                   {entry.label && (
                     <span className="transcript-tool-name">
                       <Highlight text={entry.label} search={search} />
@@ -299,6 +304,11 @@ function CycleRunDetail({
   onToggleFullscreen: () => void;
 }) {
   const progress = run.progress || {};
+  const filesChanged = stringList(progress.files_changed);
+  const filesChangedCount =
+    filesChanged.length === 0 && typeof progress.files_changed === "number"
+      ? progress.files_changed
+      : 0;
   const duration =
     run.started_at && run.finished_at
       ? new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
@@ -401,15 +411,23 @@ function CycleRunDetail({
                   <DescriptionListDescription>{progress.summary}</DescriptionListDescription>
                 </DescriptionListGroup>
               )}
-              {progress.files_changed && (
+              {filesChanged.length > 0 && (
                 <DescriptionListGroup>
                   <DescriptionListTerm>Files</DescriptionListTerm>
                   <DescriptionListDescription>
-                    {(progress.files_changed as string[]).map((f: string, i: number) => (
+                    {filesChanged.map((f, i) => (
                       <div key={i}>
                         <code>{f}</code>
                       </div>
                     ))}
+                  </DescriptionListDescription>
+                </DescriptionListGroup>
+              )}
+              {filesChangedCount > 0 && (
+                <DescriptionListGroup>
+                  <DescriptionListTerm>Files</DescriptionListTerm>
+                  <DescriptionListDescription>
+                    {filesChangedCount} files changed
                   </DescriptionListDescription>
                 </DescriptionListGroup>
               )}

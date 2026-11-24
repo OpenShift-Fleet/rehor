@@ -1,6 +1,6 @@
-# Container Build Verification (REHOR-107)
+# Container Build Verification
 
-This documents what `.github/workflows/container-verify.yml` actually checks, why the bot job differs from the proxy and memory-server jobs, and what's explicitly deferred to REHOR-62.
+This documents what `.github/workflows/container-verify.yml` checks and why the bot job differs from the proxy and memory-server jobs.
 
 ## What each job verifies
 
@@ -33,13 +33,13 @@ So `verify-bot` bypasses `entrypoint.sh` entirely (`--entrypoint bash`) and inst
 Unlike the bot image, both of these can genuinely start standalone:
 
 - **proxy**: `start.sh` treats `GITLAB_TOKEN`, `GPG_PRIVATE_KEY_B64`, `GOOGLE_SA_KEY_B64`, and the Jira variables as optional — each is wrapped in `if [ -n "${VAR:-}" ]`. Only `GH_TOKEN` is written unconditionally (an empty/dummy value is fine), and Squid + `executor-server` always start. The smoke check reuses the exact command `docker-compose.yml` already uses as its own healthcheck (`squidclient -h 127.0.0.1 -p 3128 mgr:info`) plus a socket existence check.
-- **memory-server**: exposes `GET /health` returning `{"status": "ok"}`, but its `lifespan()` hook calls `init_pool()` first, so it needs a real Postgres with the `vector` extension available. The smoke check reuses the same `pgvector/pgvector:pg17` service pattern already established in `.github/workflows/memory-server-ci.yml`.
+- **memory-server**: exposes `GET /health` returning `{"status": "ok"}`, but its `lifespan` hook calls `init_pool` first, so it needs a real Postgres with the `vector` extension available. The smoke check reuses the same `pgvector/pgvector:pg17` service pattern already established in `.github/workflows/memory-server-ci.yml`.
 
-## What's deferred to REHOR-62
+## Full runtime verification
 
-REHOR-62 ("Add container e2e test suite for env presets and entrypoint validation") owns full multi-container runtime verification: launching the bot image with a live executor sidecar, proxy, and memory-server, and running the real `entrypoint.sh` end to end. A prototype already exists in the separate `test-preset-instance` repo (`sync-devbot.sh` + `test-container.sh`, ~40 validation checks covering env presets, entrypoint stages, tool availability, and skill loading).
+Full multi-container runtime verification requires a live executor sidecar, proxy, and memory server, then running the real `entrypoint.sh` end to end. A standalone image build check cannot validate those interactions.
 
-This ticket deliberately does not replicate that. Once REHOR-62 lands and is wired into this repo's CI, it can replace or extend `verify-bot` with a real entrypoint-driven smoke test instead of the tooling-presence check documented above.
+The current `verify-bot` job checks tooling presence. Add a separate integration environment before treating it as proof of a full runtime cycle.
 
 ## Non-blocking behavior for unrelated PRs
 

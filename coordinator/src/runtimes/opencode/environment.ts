@@ -3,6 +3,8 @@ export const OPENCODE_VERTEX_PROXY_URL_ENVIRONMENT = "REHOR_VERTEX_PROXY_URL" as
 
 export const OPENCODE_BLOCKED_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
+  "EXECUTOR_CA_FILE",
+  "EXECUTOR_TOKEN_FILE",
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GITLAB_TOKEN",
@@ -59,6 +61,13 @@ export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
  * agent -> helper -> MCP webhook payload contract. They never require passthrough
  * opt-in, and absent values stay absent. This is an exact-name allowlist;
  * it does not widen the provider allowlist or admit prefix matches.
+ *
+ * EXECUTOR_HTTP_URL and EXECUTOR_TRANSPORT are nonsecret thin-client HTTP
+ * coordinates (explicit gateway endpoint and transport selection). The
+ * EXECUTOR_TOKEN sandbox placeholder is handled separately below: it is
+ * copied only in sandbox mode and only when it is the exact nonsecret
+ * openshell:resolve:env marker, never a real credential. EXECUTOR_TOKEN_FILE
+ * and EXECUTOR_CA_FILE are never forwarded.
  */
 export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
   "BOT_BOARD_ID",
@@ -68,6 +77,8 @@ export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
   "BOT_JIRA_EMAIL",
   "BOT_MEMORY_URL",
   "EXECUTOR_ADDR",
+  "EXECUTOR_HTTP_URL",
+  "EXECUTOR_TRANSPORT",
   "GH_RELEASE_UPLOAD_URL",
   "GH_USER_NAME",
   "GL_USER_NAME",
@@ -82,6 +93,21 @@ const OPERATIONAL_ENVIRONMENT_ALLOWLIST = OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOW
 const PROVIDER_ENVIRONMENT_ALLOWLIST: ReadonlySet<string> = new Set(
   OPENCODE_PROVIDER_ENVIRONMENT_ALLOWLIST,
 );
+/** OpenShell supplies public interception CA paths for sandbox HTTPS traffic. */
+const OPENSHELL_CA_ENVIRONMENT = [
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+] as const;
+
+/**
+ * Exact nonsecret placeholder accepted for the thin client's EXECUTOR_TOKEN,
+ * mirroring the coordinator's MCP render marker. Anything else — notably a
+ * raw bearer or JWT — is dropped, never forwarded.
+ */
+const EXECUTOR_TOKEN_PLACEHOLDER_PATTERN = /^openshell:resolve:env:[A-Za-z0-9_]+(?![\s\S])/;
 
 export const DEFAULT_NO_PROXY_HOSTS = [
   "127.0.0.1",
@@ -142,6 +168,22 @@ export function buildOpenCodeEnvironment(
 
   for (const name of ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
   for (const name of OPERATIONAL_ENVIRONMENT_ALLOWLIST) copyIfPresent(environment, base, name);
+  if (base.REHOR_INPUT_SOURCE === "sandbox") {
+    environment.REHOR_INPUT_SOURCE = "sandbox";
+    for (const name of OPENSHELL_CA_ENVIRONMENT) copyIfPresent(environment, base, name);
+    // The sandbox thin client may carry only the nonsecret EXECUTOR_TOKEN
+    // placeholder, either set explicitly or derived from the existing
+    // BOT_MEMORY_TOKEN placeholder. Real tokens never reach the agent; the
+    // public-route TLS root is already trusted, so no custom CA is needed.
+    const executorToken = base.EXECUTOR_TOKEN ?? base.BOT_MEMORY_TOKEN;
+    if (
+      executorToken !== undefined &&
+      EXECUTOR_TOKEN_PLACEHOLDER_PATTERN.test(executorToken) &&
+      isValidHttpsRoute(base.EXECUTOR_HTTP_URL)
+    ) {
+      environment.EXECUTOR_TOKEN = executorToken;
+    }
+  }
   for (const name of options.passthrough ?? []) {
     if (
       PROVIDER_ENVIRONMENT_ALLOWLIST.has(name) &&
@@ -185,6 +227,31 @@ export function buildOpenCodeEnvironment(
   if (options.databasePath !== undefined) environment.OPENCODE_DB = options.databasePath;
 
   return environment;
+}
+
+function isValidHttpsRoute(value: string | undefined): boolean {
+  if (
+    !value ||
+    /[\s\\?#]/.test(value) ||
+    Array.from(value).some(
+      (character) => character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127,
+    ) ||
+    !/^https:\/\/[^/@]+\/executor\/execute$/i.test(value)
+  )
+    return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      !!url.hostname &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
 }
 
 function copyIfPresent(

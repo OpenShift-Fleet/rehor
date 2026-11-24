@@ -56,6 +56,63 @@ const cycle: CycleRunRecord = {
 };
 
 describe("compatibility adapters", () => {
+  it("uses a sandbox placeholder only for the authenticated memory origin", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "rehor-memory-route-"));
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}", { status: 201 }));
+    const sink = createCompatibilitySink({
+      dataDirectory,
+      statusUrl: "https://memory.example.test/api/bot-status",
+      costsUrl: "https://other.example.test/api/costs",
+      cycleRunsUrl: "https://memory.example.test/api/cycle-runs",
+      memoryRoute: {
+        url: "https://memory.example.test/mcp",
+        placeholder: "openshell:resolve:env:BOT_MEMORY_TOKEN",
+      },
+      fetch,
+      compressTranscript: async () => Buffer.from("compressed"),
+    });
+    await sink.writers.status?.write({
+      state: "working",
+      message: "working",
+      instanceId: "instance-1",
+    });
+    await sink.writers.costs?.write(cost);
+    await sink.writers.cycleRuns?.write(cycle);
+    expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get("authorization")).toBe(
+      "Bearer openshell:resolve:env:BOT_MEMORY_TOKEN",
+    );
+    expect(fetch.mock.calls[0]?.[1]?.redirect).toBe("error");
+    expect(new Headers(fetch.mock.calls[1]?.[1]?.headers).has("authorization")).toBe(false);
+    expect(new Headers(fetch.mock.calls[2]?.[1]?.headers).get("authorization")).toBe(
+      "Bearer openshell:resolve:env:BOT_MEMORY_TOKEN",
+    );
+  });
+
+  it("does not forward literal tokens or placeholders to insecure memory URLs", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "rehor-memory-route-"));
+    for (const memoryRoute of [
+      { url: "https://memory.example.test/mcp", placeholder: "real-secret" },
+      {
+        url: "http://memory.example.test/mcp",
+        placeholder: "openshell:resolve:env:BOT_MEMORY_TOKEN",
+      },
+    ]) {
+      const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response("{}", { status: 201 }));
+      const sink = createCompatibilitySink({
+        dataDirectory,
+        statusUrl: `${memoryRoute.url.replace("/mcp", "")}/api/bot-status`,
+        memoryRoute,
+        fetch,
+      });
+      await sink.writers.status?.write({
+        state: "working",
+        message: "working",
+        instanceId: "instance-1",
+      });
+      expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).has("authorization")).toBe(false);
+    }
+  });
+
   it.each(["estimated", "unknown"] as const)(
     "preserves %s cost status identically in JSONL and HTTP",
     async (costStatus) => {

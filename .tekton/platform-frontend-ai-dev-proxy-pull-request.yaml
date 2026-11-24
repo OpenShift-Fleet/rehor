@@ -181,6 +181,11 @@ spec:
         value: $(params.enable-package-registry-proxy)
       runAfter:
       - clone-repository
+      when:
+      - input: $(params.prefetch-input)
+        operator: notin
+        values:
+        - ""
       taskRef:
         params:
         - name: name

@@ -29,8 +29,8 @@ theme:
       toggle:
         icon: material/brightness-7
         name: Light theme
-repo_url: https://github.com/RedHatInsights/platform-frontend-ai-dev
-repo_name: RedHatInsights/platform-frontend-ai-dev
+repo_url: https://github.com/OpenShift-Fleet/rehor
+repo_name: OpenShift-Fleet/rehor
 
 extra_css:
   - stylesheets/extra.css
@@ -58,27 +58,34 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
+    - Agent Dispatcher Deployment: agent-dispatcher-deployment.md
+    - Instance Configuration: presets/instance-config.md
     - Onboarding a New Instance: onboarding-new-instance.md
     - OpenShell Deployment: openshell-deployment.md
-    - Instance Configuration: presets/instance-config.md
-    - Scheduling: scheduling.md
   - Architecture:
     - Bot Workflow Loop: bot-workflow-loop.md
+    - Scheduling: scheduling.md
+    - Model Configuration: models.md
     - Debugging Cycles and Improving Agents: debugging-cycles-and-agents.md
     - Git Auth Proxy: git-auth-proxy.md
-    - Preset System Design: presets-design.md
+    - Agent Proxy Gateway: agent-proxy-gateways.md
+    - Dispatcher Credentials and Secrets: dispatcher-secrets.md
   - Presets:
     - Overview: presets/README.md
     - Workflow Presets: presets/workflows.md
     - Env Presets: presets/envs.md
     - Custom Workflows: presets/custom-workflows.md
-    - Custom Preflight Scripts: presets/custom-preflight.md
+    - Dispatcher Preflights: presets/custom-preflight.md
+    - Preflight Reference: presets/preflight-reference.md
   - Operations Runbooks:
     - Operations Overview: operations/index.md
     - Branch Protection Rollout: operations/rehor-77-branch-protection-rollout.md
     - Container Verification: operations/rehor-107-container-verification.md
     - Container E2E: operations/rehor-62-container-e2e.md
-  - Migrations:
-    - Preset Migration Guide: migrations/preset-migration-guide.md
-    - OpenCode Migration Design: migrations/opencode-migration.md
   - Roadmap: roadmap.md
+
+not_in_nav: |
+  /legacy/
+  /migrations/
+  /presets-design.md
+  /scheduling.md

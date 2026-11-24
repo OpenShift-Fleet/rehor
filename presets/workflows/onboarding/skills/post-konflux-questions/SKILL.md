@@ -20,7 +20,7 @@ python3 .claude/skills/post-konflux-questions/post_konflux_questions.py '<json_c
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "team_name": "My Team",
   "instance_name": "my-team-agent-dev"
 }

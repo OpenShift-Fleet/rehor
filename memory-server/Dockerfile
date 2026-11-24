@@ -12,7 +12,9 @@ RUN npm run build
 FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:1826b5dfde1430f458f864cf04b17130e316d0b7246cc6d5b1ed85c7d968e3eb
 USER 0
 
-RUN pip3 install uv
+# Updating Python dependencies does not update vulnerable RPMs in the pinned base.
+RUN microdnf upgrade -y && microdnf clean all
+RUN pip3 install 'uv>=0.13.4'
 
 WORKDIR /app
 

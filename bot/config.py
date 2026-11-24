@@ -34,6 +34,8 @@ def default_provider_for_runtime(runtime: str) -> str:
 @dataclass
 class Config:
     model: str
+    # max_turns is only used by the legacy bot/agent.py direct-agent path; the
+    # coordinator enforces a per-cycle USD cost budget instead (budget_usd).
     max_turns: int
     interval: int
     idle_interval: int
@@ -43,6 +45,7 @@ class Config:
     opencode_model: str = DEFAULT_OPENCODE_MODEL
     model_tiers: dict[str, str] = field(default_factory=dict)
     opencode_max_tool_calls: int = 200
+    budget_usd: float = 5.0
 
 
 def _nonempty_model(value: object) -> str | None:
@@ -80,6 +83,7 @@ class InstanceConfig:
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
+    cycle_timeout_seconds: int | None = None  # None = config.json claude.cycleTimeoutSeconds
     model: str | None = None
     runtime: str = DEFAULT_RUNTIME_ID
     provider: str = DEFAULT_PROVIDER_ID
@@ -104,6 +108,7 @@ class InstanceConfig:
             envs=data.get("envs"),
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
+            cycle_timeout_seconds=data.get("cycle_timeout_seconds"),
             model=_nonempty_model(data.get("model")),
             runtime=runtime,
             provider=provider,
@@ -132,13 +137,15 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
             if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
                 ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s, "
+                "cycle_timeout=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
                 ic.runtime,
                 ic.provider,
                 ic.model,
+                ic.cycle_timeout_seconds,
             )
             return ic
 
@@ -152,6 +159,31 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
         ic.model,
     )
     return ic
+
+
+def _valid_cycle_timeout(value: object) -> bool:
+    """cycle_timeout_seconds must be a positive int; YAML bools, strings, and floats are invalid."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def apply_cycle_timeout_override(config: Config, instance_config: InstanceConfig) -> None:
+    """Override the global cycle timeout with instance.yaml ``cycle_timeout_seconds``.
+
+    Effective timeout precedence: instance.yaml ``cycle_timeout_seconds``,
+    then config.json ``claude.cycleTimeoutSeconds`` (loaded into
+    ``config.cycle_timeout``). ``validate_instance_config`` rejects invalid
+    values at startup; the guard here also protects the per-cycle reload in
+    run.py, which does not re-run full instance validation.
+    """
+    logger = logging.getLogger(__name__)
+    value = instance_config.cycle_timeout_seconds
+    if value is None:
+        return
+    if not _valid_cycle_timeout(value):
+        logger.error("Ignoring invalid cycle_timeout_seconds=%r — must be a positive integer", value)
+        return
+    logger.info("Cycle timeout: %ds (source=instance)", value)
+    config.cycle_timeout = value
 
 
 def resolve_workflow_dir(
@@ -216,6 +248,11 @@ def validate_instance_config(
         logger.error("Runtime/provider selection validation failed. Check instance.yaml or deployment env.")
         sys.exit(1)
 
+    cycle_timeout = instance_config.cycle_timeout_seconds
+    if cycle_timeout is not None and not _valid_cycle_timeout(cycle_timeout):
+        logger.error("FATAL: cycle_timeout_seconds must be a positive integer, got %r", cycle_timeout)
+        sys.exit(1)
+
     wf_dir = resolve_workflow_dir(script_dir, instance_config.workflow, remote_agent_dir)
     if not wf_dir.is_dir():
         logger.error("FATAL: Workflow preset '%s' not found at %s", instance_config.workflow, wf_dir)
@@ -264,10 +301,11 @@ def load_config(script_dir: Path) -> Config:
         max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
-        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 1800),
+        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 3600),
         board_key=raw["jira"]["boardKey"],
         idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
         model_tiers=_load_model_tiers(claude_cfg.get("modelTiers")),
+        budget_usd=float(claude_cfg.get("budgetUsd", 5.0)),
     )
 
 

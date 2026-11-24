@@ -1,10 +1,10 @@
 # OpenCode V2 Canary and Rollout
 
-This runbook carries the original [REHOR-146](https://issues.redhat.com/browse/REHOR-146) canary forward to the REHOR-200 V2 contract.
+This runbook describes the OpenCode V2 canary and its acceptance gates.
 The canary changes runtime and provider selection per instance while keeping the
 legacy Claude/Vertex path available for rollback.
 
-Use client/CLI `2.1.2` and the single runtime ID `opencode`; versioned IDs and legacy aliases are unsupported. Migrate Claude SDK instances directly to V2. Historical V1 was onboarding-only validation, not a rollout prerequisite. Follow the [migration procedure](../migrations/opencode-migration.md#runtime-migration): main PR merges first, then a separate onboarding PR updates the merged gitlink, runtime, and native profile settings.
+Use client/CLI `2.1.2` and the single runtime ID `opencode`; versioned IDs and legacy aliases are unsupported. Migrate Claude SDK instances directly to V2. Historical V1 was onboarding-only validation, not a rollout prerequisite. Follow the [migration procedure](../migrations/opencode-migration.md): main PR merges first, then a separate onboarding PR updates the merged gitlink, runtime, and native profile settings.
 
 ## Scope
 
@@ -57,7 +57,7 @@ without changing the other.
 
 1. Confirm the target image includes `coordinator/dist/cli.js`, its locked Node
    dependencies including `@opencode/client@2.1.2`, `/usr/local/bin/opencode` from `@opencode/cli@2.1.2`,
-   the native Responses/compatible provider runtimes, `@ai-sdk/google-vertex@4.0.219` for the coordinator-owned Vertex shim, `zstd`, and configured provider proxies. Native OpenAI runtimes require no `packages` entries or separate `@ai-sdk` metadata. Preserve frozen pricing-catalog provenance `1.18.35` separately.
+   the native Responses/compatible provider runtimes, `@ai-sdk/google-vertex@4.0.219` for the coordinator-owned Vertex shim, `zstd`, and configured provider proxies. Native OpenAI runtimes require no `packages` entries or separate `@ai-sdk` metadata.
 2. Confirm the instance has a known-good Claude/Vertex deployment or revision
    available for rollback.
 3. Confirm the instance config contains no API keys. Credentials remain in

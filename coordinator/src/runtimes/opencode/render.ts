@@ -295,7 +295,7 @@ function applyProfile(
       fail(
         `instance opencode.json field '${key}' is unsupported or coordinator-controlled; use native V2 fields`,
       );
-    validateReferences(value, `opencode.json.${key}`);
+    if (key !== "mcp") validateReferences(value, `opencode.json.${key}`);
   }
   const files = validateFiles(profile.files);
   if (settings.compaction !== undefined)
@@ -410,8 +410,52 @@ function validateExperimental(value: JsonValue | undefined): JsonObject | undefi
   return settings;
 }
 
+function isOpenShellAuthorization(key: string, value: string): boolean {
+  return (
+    key.toLowerCase() === "authorization" &&
+    /^Bearer openshell:resolve:env:[A-Za-z0-9_]+(?![\s\S])/.test(value)
+  );
+}
+
+function normalizeMcpHeaders(headers: Readonly<Record<string, string>>, path: string): JsonObject {
+  const result: JsonObject = {};
+  for (const [key, value] of sortedEntries(headers)) {
+    // OpenShell resolves this non-secret marker at its network boundary.
+    if (isOpenShellAuthorization(key, value)) {
+      result[key] = value;
+    } else {
+      Object.assign(
+        result,
+        normalizeJsonObject({ [key]: value }, path, undefined, rejectMcpEnvironmentReference),
+      );
+    }
+  }
+  return result;
+}
+
+function validateNativeMcpHeaderReferences(item: JsonValue, referencePath: string): void {
+  const headers = stringMap(item, `${referencePath}.headers`);
+  for (const [header, headerValue] of Object.entries(headers)) {
+    // Only a direct remote MCP Authorization header can contain this marker.
+    if (!isOpenShellAuthorization(header, headerValue))
+      validateReferences(headerValue, `${referencePath}.headers.${header}`);
+  }
+}
+
+function validateNativeMcpReferences(server: JsonObject, referencePath: string): void {
+  for (const [key, item] of Object.entries(server)) {
+    if (server.type === "remote" && key === "headers") {
+      validateNativeMcpHeaderReferences(item, referencePath);
+      continue;
+    }
+    validateReferences(item, `${referencePath}.${key}`, server.type === "remote" && key === "url");
+  }
+}
+
 function validateNativeMcp(name: string, value: JsonValue): JsonObject {
   const server = record(value, `mcp.servers.${name}`);
+  const referencePath = `opencode.json.mcp.servers.${name}`;
+  validateNativeMcpReferences(server, referencePath);
   rejectKeys(server, ["enabled"], `mcp.servers.${name}`);
   if (server.disabled !== undefined && typeof server.disabled !== "boolean")
     fail(`mcp.servers.${name}.disabled must be boolean`);
@@ -441,12 +485,7 @@ function validateNativeMcp(name: string, value: JsonValue): JsonObject {
     if (typeof server.url !== "string") fail(`mcp.servers.${name}.url must be a string`);
     assertHttpUrlTemplate(server.url as string, `mcp.servers.${name}.url`);
     if (server.headers !== undefined)
-      normalizeJsonObject(
-        stringMap(server.headers, "headers"),
-        `mcp.servers.${name}.headers`,
-        undefined,
-        rejectMcpEnvironmentReference,
-      );
+      normalizeMcpHeaders(stringMap(server.headers, "headers"), `mcp.servers.${name}.headers`);
   } else fail(`mcp.servers.${name}.type must be local or remote`);
   if (server.timeout !== undefined) {
     const timeout = record(server.timeout, `mcp.servers.${name}.timeout`);
@@ -510,12 +549,7 @@ function renderMcpServers(servers: Readonly<Record<string, McpServerConfig>>): J
         ...(server.headers === undefined
           ? {}
           : {
-              headers: normalizeJsonObject(
-                server.headers,
-                `mcp.${name}.headers`,
-                undefined,
-                rejectMcpEnvironmentReference,
-              ),
+              headers: normalizeMcpHeaders(server.headers, `mcp.${name}.headers`),
             }),
       };
     }
@@ -623,10 +657,9 @@ export function validateAdditionalDirectories(value: unknown): string[] {
   return [...new Set(value as string[])].sort();
 }
 
-function validateReferences(value: unknown, path: string): void {
+function validateReferences(value: unknown, path: string, mcpUrl = false): void {
   if (typeof value === "string") {
     const refs = parseEnvironmentReferences(normalizeEnvString(value, path), path);
-    const mcpUrl = /^opencode\.json\.mcp\.servers\.[^.]+\.url$/.test(path);
     if (SECRET_KEY.test(path.split(".").at(-1) ?? "") && !refs.length)
       fail(`${path} cannot contain literal credentials`);
     if (/\{(?:env|file):|\$\{[A-Za-z_]/.test(value) && (!mcpUrl || /\{file:/.test(value)))

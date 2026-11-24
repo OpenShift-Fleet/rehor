@@ -1,4 +1,5 @@
 export * from "./environment";
+export { OpenCodeProcessLeakError } from "./process-leak-error";
 export * from "./process-supervisor";
 export * from "./project-config";
 export type { OpenCodeHealth } from "./readiness";

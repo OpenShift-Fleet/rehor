@@ -282,9 +282,10 @@
       "tool_calls": 12,
       "tokens_used": 15000,
       "progress": {
-        "phase": "implementation",
-        "completed_steps": 3,
-        "total_steps": 5
+        "last_step": "pr_opened",
+        "next_step": "await_review",
+        "files_changed": ["eslint.config.mjs", "package.json"],
+        "commits": ["fb55339"]
       },
       "input_prompt": "Implement the login bug fix for RHCLOUD-001",
       "created_at": "2026-07-01T10:00:00Z",
@@ -300,9 +301,10 @@
       "tool_calls": 12,
       "tokens_used": 15000,
       "progress": {
-        "phase": "implementation",
-        "completed_steps": 3,
-        "total_steps": 5
+        "last_step": "review_addressed",
+        "next_step": "await_review",
+        "files_changed": 20,
+        "commits": ["0263f26"]
       },
       "input_prompt": "Implement the login bug fix for RHCLOUD-001",
       "created_at": "2026-07-01T10:00:00Z",

@@ -35,7 +35,7 @@ const run: RehorRun = {
   policyHash: { algorithm: "sha256", value: "3".repeat(64) },
   runtimeId: "claude",
   provider: { id: "vertex", requestedModel: "claude-opus-4-6" },
-  limits: { timeoutMs: 100, maxTurns: 20 },
+  limits: { timeoutMs: 100, budgetUsd: 5 },
   preflightPayloadRef: null,
 };
 
@@ -43,7 +43,7 @@ const preparedConfig: ConfigPreparationResult = {
   model: "prepared-model",
   runtimeId: "opencode",
   providerId: "rehor-openai",
-  maxTurns: 10,
+  budgetUsd: 5,
   intervalSeconds: 60,
   idleIntervalSeconds: 60,
   cycleTimeoutSeconds: 1_800,

@@ -88,12 +88,19 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_instance_get,
         api_instance_idle_update,
         api_instances,
+        api_locks_acquire,
+        api_locks_list,
+        api_locks_release,
+        api_locks_renew,
         api_memories,
         api_memory_delete,
         api_memory_embeddings,
         api_memory_get,
         api_memory_search,
         api_memory_upload,
+        api_session_registry_list,
+        api_session_registry_register,
+        api_session_registry_update,
         api_stats,
         api_tags,
         api_task_delete,
@@ -135,6 +142,13 @@ def build_app() -> tuple[Starlette, Starlette]:
     mcp.custom_route("/api/cycle-runs", methods=["GET", "POST"])(api_cycle_runs)
     mcp.custom_route("/api/cycle-runs/by-task", methods=["GET"])(api_cycle_runs_by_task)
     mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(api_cycle_run_transcript)
+    mcp.custom_route("/api/locks/acquire", methods=["POST"])(api_locks_acquire)
+    mcp.custom_route("/api/locks/renew", methods=["POST"])(api_locks_renew)
+    mcp.custom_route("/api/locks/release", methods=["POST"])(api_locks_release)
+    mcp.custom_route("/api/locks", methods=["GET"])(api_locks_list)
+    mcp.custom_route("/api/session-registry/register", methods=["POST"])(api_session_registry_register)
+    mcp.custom_route("/api/session-registry/update", methods=["POST"])(api_session_registry_update)
+    mcp.custom_route("/api/session-registry", methods=["GET"])(api_session_registry_list)
 
     mcp_app = mcp.http_app(transport="streamable-http")
 
@@ -177,7 +191,7 @@ if __name__ == "__main__":
     setup_logging()
 
     try:
-        from .readonly_server import readonly_mcp
+        from .readonly_server import ApiKeyMiddleware, get_readonly_api_key, readonly_mcp
 
         app, metrics_app = build_app()
 
@@ -193,6 +207,14 @@ if __name__ == "__main__":
             lifespan=readonly_lifespan,
             routes=[Mount("/", app=readonly_mcp_app)],
         )
+
+        # always wrap — middleware is fail-closed (401 when key is unset)
+        api_key = get_readonly_api_key()
+        readonly_app = ApiKeyMiddleware(readonly_app, api_key=api_key)
+        if api_key:
+            logger.info("Readonly server: API key authentication enabled")
+        else:
+            logger.warning("Readonly server: READONLY_API_KEY not set, task-outcome endpoints will return 401")
 
         async def serve():
             # Start main first so model/DB init completes before readonly accepts traffic.

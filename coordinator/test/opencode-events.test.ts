@@ -202,6 +202,57 @@ describe("V2 event normalization", () => {
     ).toBe("hello");
   });
 
+  it("attributes streamed text/reasoning to the session's active model, not the run default", () => {
+    const h = harness();
+    h.context.sessionIds.add("child");
+    h.context.sessionIds.add("late");
+    h.send("session.step.started", {
+      sessionID: "root",
+      assistantMessageID: "msg-root",
+      model: { providerID: "rehor-openai", id: "gpt-6-luna" },
+      started: 1,
+    });
+    h.send("session.step.started", {
+      sessionID: "child",
+      assistantMessageID: "msg-child",
+      model: { providerID: "rehor-openai", id: "gpt-6.1-terra" },
+      started: 2,
+    });
+    const rootDelta = h.send("session.text.delta", {
+      sessionID: "root",
+      assistantMessageID: "msg-root",
+      ordinal: 0,
+      delta: "root text",
+    });
+    const childReasoning = h.send("session.reasoning.delta", {
+      sessionID: "child",
+      assistantMessageID: "msg-child",
+      ordinal: 0,
+      delta: "child think",
+    });
+    const partEvents = [...rootDelta.events, ...childReasoning.events].filter(
+      (e) => e.kind === "model",
+    );
+    expect(partEvents[0]).toMatchObject({
+      model: "rehor-openai/gpt-6-luna",
+      runtimeSessionRef: "root",
+    });
+    expect(partEvents[1]).toMatchObject({
+      model: "rehor-openai/gpt-6.1-terra",
+      runtimeSessionRef: "child",
+    });
+    // Parts streamed before any step for that session fall back to the run default.
+    const late = h.send("session.text.delta", {
+      sessionID: "late",
+      assistantMessageID: "msg-late",
+      ordinal: 0,
+      delta: "late text",
+    });
+    expect(late.events.find((e) => e.kind === "model")).toMatchObject({
+      model: "claude-opus-4-6",
+    });
+  });
+
   it("preserves V2 tool input, structured results, error, duration, and completed phase during reconciliation", () => {
     const h = harness();
     const data = { sessionID: "root", assistantMessageID: "msg", id: "call" };

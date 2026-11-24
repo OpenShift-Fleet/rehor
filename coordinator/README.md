@@ -91,14 +91,14 @@ model drift and parent/session references.
 `RehorRun` is the complete command for one independently attributable model
 attempt. A task is nullable because current triage cycles begin before the
 agent selects or creates a task. `prompt` contains the same fully assembled,
-dynamic prompt currently passed to `claude_agent_sdk.query()`, including
+dynamic prompt currently passed to `claude_agent_sdk.query`, including
 preflight content when present.
 
 `AgentRuntime` has three operations:
 
 1. `start(signal)` starts the runtime and reports capabilities.
 2. `run(run, signal)` streams Rehor-owned events for one attempt.
-3. `stop()` releases runtime resources and is idempotent.
+3. `stop` releases runtime resources and is idempotent.
 
 A valid event stream has these invariants:
 
@@ -119,16 +119,26 @@ payload shapes cannot drift from TypeScript validation.
 
 ## Attempt orchestration
 
-`executeRun()` owns one runtime attempt. It validates the run, starts the
+`executeRun` owns one runtime attempt. It validates the run, starts the
 selected `AgentRuntime`, ingests accepted events into an in-memory ledger, and
 stops the runtime exactly once. Runtime failures produce a normalized failed
 terminal event after preserving all accepted partial events. The coordinator
-owns run timeouts, successful tool-call budgets, and terminal mapping. It emits
-turn-budget warnings at 75%, critical events at 90%, then aborts at `maxTurns`
-with `failed/max_turns`. Typed abort causes map to terminal states: shutdown to
-`interrupted`, caller cancellation to `cancelled`, timeout to `timed_out`, and
-failed policy aborts to `failed`. Runtime adapters report only `completed` or
-`failed` terminals and do not enforce turn budgets. `WorkContextTracker` derives
+owns run timeouts and the per-cycle-run USD cost budget. It observes usage
+events and emits cost-budget policy notices at 50% (`info`), 75% (`warning`),
+90% (`critical`), and 100% (`exhausted`) of `limits.budgetUsd`, each once. The
+exhausted notice opens a grace window — the run may continue so the agent can
+save state via `task_update` — until spend reaches 115% of the budget, where
+the coordinator aborts with `failed/budget_exceeded`. When usage reports
+affirmatively unknown pricing (`cost.source === "unknown"`) and no known cost
+has been seen, the budget fails open with a one-time warning policy event and
+the cycle timeout remains the only backstop. Policy notices reach the agent
+through the runtime: the Claude adapter flushes them as `PostToolUse` hook
+system messages, and the OpenCode adapter prompts the root session (the
+OpenCode server queues prompts sent while the session is busy). Typed abort
+causes map to terminal states: shutdown to `interrupted`, caller cancellation
+to `cancelled`, timeout to `timed_out`, and failed policy aborts to `failed`.
+Runtime adapters report only `completed` or `failed` terminals and do not
+enforce any turn or tool-call budget. `WorkContextTracker` derives
 terminal task context and no-work state from normalized tool and result events
 before projection.
 Projection hooks receive normalized events for the existing status, transcript,
@@ -163,12 +173,12 @@ selection can change without changing lifecycle orchestration.
 
 Factories receive only a normalized `RehorRun` and return an `AgentRuntime`.
 Provider SDK clients, server processes, and sessions remain private to the
-adapter. `executeSelectedRun()` feeds an explicitly selected adapter into the existing
-`executeRun()` lifecycle. `executeConfiguredRun()` resolves the adapter from
+adapter. `executeSelectedRun` feeds an explicitly selected adapter into the existing
+`executeRun` lifecycle. `executeConfiguredRun` resolves the adapter from
 `RehorRun.runtimeId`, which is the normalized per-instance selection. Both
 paths preserve event validation, projection, timeout, and cleanup behavior.
 
-`createDefaultRuntimeRegistry()` registers the Claude Agent SDK adapter under
+`createDefaultRuntimeRegistry` registers the Claude Agent SDK adapter under
 runtime ID `claude` and remains the production default. Its options are
 Claude-specific; the reference-preserving `ConfigPreparationResult` is not
 passed directly to it because the legacy Python runner still owns resolved
@@ -200,7 +210,7 @@ const result = await executeSelectedRun(
 );
 ```
 
-`renderOpenCodeConfigForCycle()` is the lower-level equivalent for callers
+`renderOpenCodeConfigForCycle` is the lower-level equivalent for callers
 that need the deterministic artifact before constructing a runtime. It consumes
 the reference-only `openCodeMcpServers` view from preparation. The bridge's
 `optionalMcpServers` list is explicit: missing grants for those persona-specific
@@ -215,7 +225,7 @@ Provider and model names reject blocked/coordinator-controlled variables but
 otherwise remain literal and are not added to the agent passthrough list.
 The factory requires the prepared `nativeConfig` snapshot, then renders it for the selected run. `OpenCodeRuntime`
 uses that snapshot for attribution, while `OpenCodeServerSupervisor` receives the
-same snapshot in its constructor and writes it through `writeOpenCodeConfig()`;
+same snapshot in its constructor and writes it through `writeOpenCodeConfig`;
 OpenCode then applies native project configuration and agent precedence. `OpenCodeRuntime` validates
 the rendered snapshot before its supervisor starts a child. External provider and
 plugin packages require exact pins; the native OpenAI runtimes need no package
@@ -243,6 +253,8 @@ GitOps profiles are trusted user configuration: plugins, tools, and formatters c
 Deployment `providers` entries use `id`, `package`, `name`, `settings`, and `models`.
 Supported model fields are `name`, `modelID`, `limit`, `settings`, and `capabilities`;
 reasoning is `capabilities.reasoning: { supported: true }`, not a top-level boolean.
+See [Model Configuration](../docs/models.md) for available models, pricing,
+gateway allowlists, and selection precedence.
 The renderer emits a native `providers` map, `agents.title.model` for the utility
 model, `mcp.servers` with structured startup/catalog/execution timeouts, and ordered
 `permissions` rules. Prepared `Bash`, `Task`, and `Edit`/`Write` grants become native
@@ -296,10 +308,10 @@ independent of these V2 accounting semantics.
 
 ## Cycle input preparation
 
-`prepareCycleInput()` prepares one cycle without starting an agent runtime. It
-asks the Python bridge to sync and merge the existing config, assembles the
-instruction layers deterministically, and runs the existing Python preflight
-protocol:
+`prepareCycleInput` prepares one cycle without starting an agent runtime.
+Both paths use the Python bridge for config preparation. A dispatched sandbox
+consumes the validated one-shot input envelope and never calls the Python
+preflight runner. For non-dispatched polling, the input flow is:
 
 ```text
 Python config bridge → workflow/instance config + config sync
@@ -315,7 +327,7 @@ Python config bridge → workflow/instance config + config sync
 ```
 
 `PythonCoordinatorBridge` communicates through one JSON request/response over a
-child process. It reuses `bot.preflight.run_preflight()` and the config
+child process. It reuses `bot.preflight.run_preflight` and the config
 preparation functions from `bot.run`, so migration does not fork preflight
 classification or config merge behavior. Python logs remain on stderr; stdout
 is reserved for the versioned bridge response.
@@ -333,8 +345,11 @@ becomes `RehorRun.provider.id`.
 
 Preflight `skip` and `error` actions remain coordinator-owned no-session
 paths. Existing aggregation is preserved: a mixed error/start result is still
-`start`, while an all-error result is `error`. Only a `start` result, or the
-no-preflight pass-through case, produces an agent prompt.
+`start`, while an all-error result is `error`. A local-preflight cycle produces
+an agent prompt for a `start` result or the no-preflight pass-through case. A
+dispatcher-delivered sandbox prompt is a separate one-shot input: it replaces
+local preflight and runs once. See the [Agent Dispatcher README](../packages/agent-dispatcher/README.md#reviewed-head-e2e-evidence-pr-620)
+for reviewed-head E2E evidence and its test-only limitations.
 
 ## Local coordinator launch
 
@@ -373,8 +388,15 @@ never `small_model`.
 Both OpenAI routes use `REHOR_MODEL_PROXY_URL` and
 `REHOR_MODEL_PROXY_TOKEN`. The Vertex route uses `REHOR_VERTEX_PROXY_URL`,
 resolved from existing `ANTHROPIC_VERTEX_BASE_URL` or the shared
-`devbot-proxy:8443` service. The gateway must be
-`http://<proxy-host>:8450/v1`; missing or invalid gateway/token settings fail
+`devbot-proxy:8443` service. By default, the OpenAI gateway must be
+`http://<proxy-host>:8450/v1`; sandbox input also permits
+`https://<proxy-host>:443/v1`. Trusted deployment configuration may set
+`modelGatewayPorts` to `{ "http": 8450, "https": 443 }` with different integer
+ports (1–65535). Each supplied port replaces that protocol's allowed port;
+omitted fields retain defaults. This allowlist is independent of the gateway URL,
+and HTTPS remains sandbox-only. URLs must use `/v1` without credentials, query,
+or fragment; sandbox HTTPS also rejects empty `?` and `#` delimiters. Vertex's
+separate port 8443 is unaffected. Missing or invalid gateway/token settings fail
 before OpenCode starts. The token is only the bot-side API-key value that the
 proxy overwrites; the real OpenAI key remains proxy-only. Compose sets both
 values directly. OpenShift defaults the gateway host from `PROXY_HOST` and uses
@@ -419,9 +441,9 @@ Vertex is coordinator-managed as `aisdk:file://.../vertex-provider.js`; profiles
 cannot replace its provider package. No singular deployment `provider`, deployment
 `packageLock`, provider `npm`/`options`, or other legacy aliases are accepted.
 
-Execution and pricing pins are independent: the frozen pricing fallback retains
-OpenCode **1.18.35** catalog provenance; it does not select or downgrade CLI
-**2.1.2**. See [pricing provenance](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
+Pricing estimates come from the hand-maintained catalog in
+`coordinator/src/runtimes/opencode/pricing.json`; see
+[cost estimates](../docs/migrations/opencode-migration.md#opencode-cost-estimates-rehor-197).
 
 ## Cycle scheduling and idle state
 
@@ -434,12 +456,12 @@ OpenCode **1.18.35** catalog provenance; it does not select or downgrade CLI
 - completed attempt → normal interval unless a valid `data/cycle-sleep.json`
   signal supplies a delay and reason.
 
-`consumeSleepSignal()` reads and removes the Python-compatible sleep signal,
+`consumeSleepSignal` reads and removes the Python-compatible sleep signal,
 including malformed signals, so stale recommendations cannot affect a later
-cycle. `sleep()` accepts an `AbortSignal`, allowing shutdown to interrupt the
+cycle. `sleep` accepts an `AbortSignal`, allowing shutdown to interrupt the
 wait rather than delaying process termination.
 
-`recordIdleCycle()` and `recordActiveCycle()` contain the threshold/cooldown
+`recordIdleCycle` and `recordActiveCycle` contain the threshold/cooldown
 state machine used by the existing idle reminder behavior. They deliberately
 stay transport-neutral: a future memory-server adapter persists the state and
 a future reminder adapter sends the notification only after
@@ -447,11 +469,11 @@ a future reminder adapter sends the notification only after
 
 ## Signal, admission, and shutdown loop
 
-`runCoordinatorLoop()` owns the outer cycle boundary. It acquires an admission
-lease before preparation, never invokes `run()` for preflight `skip`/`error`,
+`runCoordinatorLoop` owns the outer cycle boundary. It acquires an admission
+lease before preparation, never invokes `run` for preflight `skip`/`error`,
 releases the lease in `finally`, and waits through the scheduler between
-cycles. `createLoopSignals()` combines normal cancellation with shutdown, while
-`installProcessSignalHandlers()` keeps SIGINT/SIGTERM registration outside the
+cycles. `createLoopSignals` combines normal cancellation with shutdown, while
+`installProcessSignalHandlers` keeps SIGINT/SIGTERM registration outside the
 loop for testability.
 
 Admission remains a port because deployment can keep using the Python file lock
@@ -463,7 +485,7 @@ sleep through one `AbortSignal`.
 
 | Current Python behavior | Coordinator representation |
 |---|---|
-| `label`, workflow, model, `max_turns`, cycle timeout | `RehorRun.label`, `workflowId`, `provider`, and `limits` |
+| `label`, workflow, model, cost budget (`budgetUsd`), cycle timeout | `RehorRun.label`, `workflowId`, `provider`, and `limits` |
 | Instance runtime/provider selection | `RehorRun.runtimeId` and `RehorRun.provider.id` |
 | Dynamic prompt plus optional preflight content | `RehorRun.prompt` plus optional `preflightPayloadRef` for audit linkage |
 | Cycle starts before a task is selected | `RehorRun.task` may be `null` |
