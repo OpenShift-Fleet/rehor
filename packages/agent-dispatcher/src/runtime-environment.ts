@@ -16,6 +16,10 @@ export function sandboxEnvironment(base: NodeJS.ProcessEnv, profile: NodeJS.Proc
   if (serviceGatewayUrl) {
     environment.JIRA_MCP_URL = `${serviceGatewayUrl.origin}/jira/mcp`;
     environment.EXECUTOR_HTTP_URL = `${serviceGatewayUrl.origin}/executor/execute`;
+    // Screenshot uploads go through the authenticated gateway too (REHOR-278).
+    // The legacy proxy host is not reachable from a sandbox; the helper pairs
+    // this URL with the supervisor-issued credential placeholder.
+    environment.GH_RELEASE_UPLOAD_URL = `${serviceGatewayUrl.origin}/screenshots/upload`;
   }
   return environment;
 }

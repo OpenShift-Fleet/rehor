@@ -4,12 +4,35 @@
 import json
 import mimetypes
 import os
+import re
 import sys
 import urllib.request
 
-UPLOAD_URL = os.environ.get("GH_RELEASE_UPLOAD_URL", "http://proxy:8446/upload")
+LEGACY_UPLOAD_URL = "http://proxy:8446/upload"
+# The supervisor substitutes this placeholder for the real minted credential.
+PLACEHOLDER = re.compile(r"openshell:resolve:env:[A-Za-z0-9_]+")
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"}
+
+
+def upload_target():
+    """Return (url, authorization) for the current execution mode.
+
+    Legacy deployments keep the unauthenticated in-cluster default. Inside a
+    dispatcher sandbox the dispatcher sets the authenticated gateway URL, and
+    the only credential is the supervisor-issued placeholder.
+    """
+    url = os.environ.get("GH_RELEASE_UPLOAD_URL", "").strip()
+    if os.environ.get("REHOR_INPUT_SOURCE") != "sandbox":
+        return url or LEGACY_UPLOAD_URL, None
+    if not url:
+        # Never fall back to the legacy proxy host from a sandbox.
+        raise RuntimeError("GH_RELEASE_UPLOAD_URL is required in the sandbox")
+    for name in ("EXECUTOR_TOKEN", "BOT_MEMORY_TOKEN"):
+        token = os.environ.get(name, "")
+        if PLACEHOLDER.fullmatch(token):
+            return url, f"Bearer {token}"
+    raise RuntimeError("sandbox upload credential placeholder unavailable")
 
 
 def main():
@@ -21,6 +44,12 @@ def main():
     repo = sys.argv[2]
     filename = sys.argv[3] if len(sys.argv) > 3 else os.path.basename(file_path)
 
+    try:
+        upload_url, authorization = upload_target()
+    except RuntimeError as error:
+        print(f"ERR: {error}", file=sys.stderr)
+        sys.exit(1)
+
     content_type, _ = mimetypes.guess_type(filename)
     if not content_type:
         content_type = "application/octet-stream"
@@ -28,14 +57,18 @@ def main():
     with open(file_path, "rb") as f:
         data = f.read()
 
+    headers = {
+        "Content-Type": content_type,
+        "X-Repo": repo,
+        "X-Filename": filename,
+    }
+    if authorization:
+        headers["Authorization"] = authorization
+
     req = urllib.request.Request(
-        UPLOAD_URL,
+        upload_url,
         data=data,
-        headers={
-            "Content-Type": content_type,
-            "X-Repo": repo,
-            "X-Filename": filename,
-        },
+        headers=headers,
         method="POST",
     )
 
