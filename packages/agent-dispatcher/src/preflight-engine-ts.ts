@@ -93,6 +93,12 @@ export type TsPreflightWiring = {
    */
   jiraEmail?: string;
   /**
+   * The profile's approved non-secret settings (`preflightEnv`), passed
+   * through as one unit — never the merged environment, never process.env.
+   * Absent wiring means the profile declares no settings.
+   */
+  instanceEnv?: Readonly<Record<string, string>>;
+  /**
    * Jenkins instance endpoints (and optional idp job-name overrides),
    * rendered deployment configuration. The corporate Jenkins hosts need
    * no credentials; absent wiring leaves the watchduty preflights
@@ -211,6 +217,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
       ...(options.wiring.stateDir ? { persistentState: { dir: options.wiring.stateDir } } : {}),
       ...(options.wiring.slackWebhooks ? { slack: { webhooks: options.wiring.slackWebhooks } } : {}),
       ...(options.wiring.jiraEmail !== undefined ? { jiraEmail: options.wiring.jiraEmail } : {}),
+      ...(options.wiring.instanceEnv ? { instanceEnv: options.wiring.instanceEnv } : {}),
       ...(options.wiring.jenkins
         ? {
             jenkins: {

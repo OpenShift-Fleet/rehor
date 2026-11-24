@@ -337,6 +337,35 @@ test("jiraEmail wiring threads the bot identity into the run context only", asyn
   assert.equal(calls[1].ctx.jiraEmail, undefined);
 });
 
+test("instanceEnv wiring threads the profile's approved unit into the run context", async () => {
+  const { registry, calls } = fakeRegistry({
+    one: (ctx) => ({ status: "skip", content: JSON.stringify(ctx.instanceEnv) }),
+  });
+  const settings = { BOT_LABEL: "team-label", BOT_MAX_PRS: "5" };
+  const result = await runTsPreflight({
+    profile: profile({ preflights: ["one"] }),
+    wiring: wiring({ instanceEnv: settings }),
+    registry,
+  });
+  assert.deepEqual(JSON.parse(result.scripts[0].content), settings);
+  assert.deepEqual(calls[0].ctx.instanceEnv, settings);
+  // The unit arrives frozen and detached from the caller's reference.
+  assert.equal(Object.isFrozen(calls[0].ctx.instanceEnv), true);
+  assert.notEqual(calls[0].ctx.instanceEnv, settings);
+  // Deployment-only wiring never merges in: the minted credential stays
+  // in the memory client, not in the instance settings.
+  assert.ok(!("BOT_MEMORY_URL" in calls[0].ctx.instanceEnv));
+
+  const bare = await runTsPreflight({
+    profile: profile({ preflights: ["one"] }),
+    wiring: wiring(),
+    registry,
+  });
+  assert.deepEqual(bare.scripts[0].content, "{}");
+  assert.deepEqual(calls[1].ctx.instanceEnv, {});
+  assert.equal(Object.isFrozen(calls[1].ctx.instanceEnv), true);
+});
+
 test("per-run shared state accumulates across entries", async () => {
   const { registry } = fakeRegistry({
     first: (ctx) => { ctx.state.set("bookkeeping", 41); return { status: "skip", content: "" }; },

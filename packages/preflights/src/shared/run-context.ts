@@ -121,6 +121,15 @@ export interface PreflightRunContext extends RunContextContract {
    * those preflights on unassigned-only search.
    */
   readonly jiraEmail?: string;
+  /**
+   * The instance's approved non-secret settings from its `env:` (or legacy
+   * `preflight.env:`) block, delivered as one unit: the dispatcher
+   * validated eligibility before wiring, so preflights read any permitted
+   * `BOT_*` setting without a dedicated wiring field. Not process.env,
+   * sandbox.env, secret references, or resolved credentials — those never
+   * merge in. Absent or empty means the instance declares no settings.
+   */
+  readonly instanceEnv: Readonly<Record<string, string>>;
 }
 
 /** Either an already-built client or the config to build one for this run. */
@@ -162,6 +171,8 @@ export interface PreflightRunContextOptions {
    * absent, like the Python env read.
    */
   readonly jiraEmail?: string;
+  /** Instance's approved non-secret settings; see {@link PreflightRunContext.instanceEnv}. */
+  readonly instanceEnv?: Readonly<Record<string, string>>;
   /** Instance project-repos map; defaults to `{}` (no repo resolution). */
   readonly repos?: ProjectReposMap;
 }
@@ -227,10 +238,25 @@ export function createPreflightRunContext(
     slack,
     persistentState,
     ...(jiraEmail !== undefined ? { jiraEmail } : {}),
+    instanceEnv: freezeInstanceEnv(options.instanceEnv),
     proxy: options.proxy,
     repos: options.repos ?? {},
     state,
   };
+}
+
+/** Copy and freeze the instance env unit so neither the caller nor a
+ * preflight can mutate what the run shares. Eligibility (non-secret
+ * `BOT_*` names) was validated by the dispatcher before wiring; this is
+ * shape defense only, never a second allowlist. */
+function freezeInstanceEnv(
+  value: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
+  if (value === undefined) return Object.freeze({});
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("run context requires instanceEnv to be an object");
+  }
+  return Object.freeze({ ...value });
 }
 
 function isMemoryServerClient(value: unknown): value is MemoryServerClient {

@@ -154,6 +154,28 @@ test("per-profile preflight environment overrides the deployment bot Jira identi
   assert.deepEqual(seen, ["one-bot@example.invalid", "two-bot@example.invalid"]);
 });
 
+test("each profile's approved settings reach the wiring as their own instance env unit", async () => {
+  // The wiring carries the profile's preflightEnv verbatim — never the
+  // merged environment, so deployment-only settings (the shared identity,
+  // the Jira identity, the memory route) stay out of the unit.
+  const seen = [];
+  const opts = options({
+    env: { BOT_INSTANCE_ID: "shared", BOT_MEMORY_URL: "https://memory.example/mcp", BOT_JIRA_EMAIL: "deployed@example.invalid" },
+    dependencies: {
+      syncRepositories: async (_root, [repo]) => [{ name: repo.name, path: repo.name, revision: "abc" }],
+      discoverProfiles: async (root) => [
+        { ...profile("same", root), preflightEnv: { BOT_INSTANCE_ID: `${root}-例`, BOT_LABEL: `${root}-label`, BOT_MAX_PRS: "5" } },
+      ],
+      preflight: async ({ wiring }) => { seen.push(wiring.instanceEnv); return { action: "skip", transcript: "", scripts: [] }; },
+    },
+  });
+  await runDispatcherCycle(opts);
+  assert.deepEqual(seen, [
+    { BOT_INSTANCE_ID: "one-例", BOT_LABEL: "one-label", BOT_MAX_PRS: "5" },
+    { BOT_INSTANCE_ID: "two-例", BOT_LABEL: "two-label", BOT_MAX_PRS: "5" },
+  ]);
+});
+
 test("deployment memory URL cannot be replaced by profile in preflight wiring", async () => {
   for (const deploymentUrl of [undefined, "", "https://memory.example/mcp"]) {
     const seen = [];
@@ -332,7 +354,7 @@ test("cycle wiring threads the minted credential, services gateway, and instance
     serviceGatewayUrl: new URL("https://services.example/"),
     dependencies: {
       syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
-      discoverProfiles: async () => [{ ...profile("agent", "one"), instanceDir }],
+      discoverProfiles: async () => [{ ...profile("agent", "one"), instanceDir, preflightEnv: {} }],
       preflight: async (invocation) => { seen.push(invocation); return { action: "skip", transcript: "", scripts: [] }; },
     },
     ...extra,
@@ -346,6 +368,7 @@ test("cycle wiring threads the minted credential, services gateway, and instance
     memory: { baseUrl: "https://memory.example/mcp", token: "fixture-token" },
     proxyBaseUrl: "https://services.example/",
     repos: { "my-repo": { upstream: "https://github.com/org/my-repo.git" } },
+    instanceEnv: {},
   });
   // No services gateway: no proxy route is invented and repos are omitted
   // when the instance directory has no project-repos.json.
@@ -354,7 +377,7 @@ test("cycle wiring threads the minted credential, services gateway, and instance
   await mkdir(bare, { recursive: true });
   const second = opts({ serviceGatewayUrl: undefined, dependencies: {
     syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
-    discoverProfiles: async () => [{ ...profile("bare", "one"), instanceDir: bare }],
+    discoverProfiles: async () => [{ ...profile("bare", "one"), instanceDir: bare, preflightEnv: {} }],
     preflight: async (invocation) => { seen.push(invocation); return { action: "skip", transcript: "", scripts: [] }; },
   }, dispatcher: new SessionDispatcher() });
   await runDispatcherCycle(second);
@@ -363,6 +386,7 @@ test("cycle wiring threads the minted credential, services gateway, and instance
   assert.deepEqual(seen[0].wiring, {
     instanceId: "fixture-instance",
     memory: { baseUrl: "https://memory.example/mcp", token: "fixture-token" },
+    instanceEnv: {},
   });
 });
 

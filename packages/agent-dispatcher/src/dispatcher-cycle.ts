@@ -299,6 +299,10 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             ...(options.slackWebhooks ? { slackWebhooks: options.slackWebhooks } : {}),
             ...(options.jenkins ? { jenkins: options.jenkins } : {}),
             ...(botJiraEmail !== undefined ? { jiraEmail: botJiraEmail } : {}),
+            // The profile's approved unit only — never the merged
+            // environment, never process.env. Discovery validated every
+            // name before this point.
+            instanceEnv: profile.preflightEnv,
           };
           const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
           if (decision.action === "error") errorReason = decision.reason ?? "execution";
