@@ -12,6 +12,7 @@ import type { SlackClient, SlackClientConfig } from "./slack.js";
 import { createSlackClient, isSlackClient } from "./slack.js";
 import type { PersistentStateConfig, PersistentStateStore } from "./state.js";
 import { createPersistentStateStore, isPersistentStateStore } from "./state.js";
+import { nonBlank } from "./strings.js";
 
 /**
  * Per-run shared state — the in-memory replacement of the Python
@@ -111,6 +112,15 @@ export interface PreflightRunContext extends RunContextContract {
    * throttle marker would re-run throttled work every cycle.
    */
   readonly persistentState?: PersistentStateStore;
+  /**
+   * The deployment-provided bot Jira identity (BOT_JIRA_EMAIL): the
+   * default for the `email` input of jira preflights whose entries do not
+   * declare one. A non-secret identity, never a credential — the Jira
+   * gateway injects authentication on the upstream leg, unchanged. An
+   * explicit `with.email` declaration always wins; absent wiring leaves
+   * those preflights on unassigned-only search.
+   */
+  readonly jiraEmail?: string;
 }
 
 /** Either an already-built client or the config to build one for this run. */
@@ -146,6 +156,12 @@ export interface PreflightRunContextOptions {
    * store is namespaced to this context's instance id.
    */
   readonly persistentState?: PersistentStateWiring;
+  /**
+   * Deployment-provided bot Jira identity (BOT_JIRA_EMAIL); see
+   * {@link PreflightRunContext.jiraEmail}. Blank values are treated as
+   * absent, like the Python env read.
+   */
+  readonly jiraEmail?: string;
   /** Instance project-repos map; defaults to `{}` (no repo resolution). */
   readonly repos?: ProjectReposMap;
 }
@@ -200,6 +216,8 @@ export function createPreflightRunContext(
             ...options.persistentState,
             instanceId: options.persistentState.instanceId ?? options.instanceId,
           });
+  const jiraEmail =
+    options.jiraEmail !== undefined && nonBlank(options.jiraEmail) ? options.jiraEmail : undefined;
   return {
     instanceId: options.instanceId,
     runId: options.runId ?? randomUUID(),
@@ -208,6 +226,7 @@ export function createPreflightRunContext(
     jenkins,
     slack,
     persistentState,
+    ...(jiraEmail !== undefined ? { jiraEmail } : {}),
     proxy: options.proxy,
     repos: options.repos ?? {},
     state,

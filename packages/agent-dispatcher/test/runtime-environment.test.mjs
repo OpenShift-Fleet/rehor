@@ -8,7 +8,7 @@ test("sandbox gateway routing is isolated from host preflight and profile memory
   const preflight = mergeProfileEnvironment(host, profile);
   assert.deepEqual(preflight, { ...host, BOT_LABEL: "profile" });
   const sandbox = sandboxEnvironment(host, profile, new URL("https://gateway.example:8443/"));
-  assert.deepEqual(sandbox, { BOT_MEMORY_URL: host.BOT_MEMORY_URL, JIRA_MCP_URL: "https://gateway.example:8443/jira/mcp", EXECUTOR_ADDR: host.EXECUTOR_ADDR, EXECUTOR_HTTP_URL: "https://gateway.example:8443/executor/execute", BOT_LABEL: "profile" });
+  assert.deepEqual(sandbox, { BOT_MEMORY_URL: host.BOT_MEMORY_URL, JIRA_MCP_URL: "https://gateway.example:8443/jira/mcp", EXECUTOR_ADDR: host.EXECUTOR_ADDR, EXECUTOR_HTTP_URL: "https://gateway.example:8443/executor/execute", GH_RELEASE_UPLOAD_URL: "https://gateway.example:8443/screenshots/upload", BOT_LABEL: "profile" });
   assert.equal(sandbox.BOT_MEMORY_TOKEN, undefined);
   assert.equal(sandbox.EXECUTOR_TOKEN, undefined);
   assert.equal(host.JIRA_MCP_URL, "http://jira.internal/mcp");

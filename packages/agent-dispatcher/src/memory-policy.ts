@@ -101,6 +101,19 @@ export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: Ru
           }],
           binaries: ["executor-client", "gh", "glab", "gpg"].map((name) => ({ path: `/usr/local/bin/${name}` })),
         },
+        // Screenshot uploads (REHOR-278) reuse the same authenticated gateway
+        // and provider placeholder as the other runtime services. The helper
+        // is the only admitted client, and only for one POST endpoint.
+        service_gateway_screenshots: {
+          name: "service-gateway-screenshots",
+          endpoints: [{
+            host: serviceGatewayUrl.hostname, port: serviceGatewayUrl.port ? Number(serviceGatewayUrl.port) : 443,
+            protocol: "rest", tls: NetworkTlsMode.UNSPECIFIED, enforcement: NetworkEnforcementMode.ENFORCE,
+            path: "/screenshots/upload", rules: [{ allow: { method: "POST", path: "/screenshots/upload" } }],
+            credentialBinding: { provider },
+          }],
+          binaries: [{ path: "/usr/bin/python3.12" }],
+        },
         service_gateway_git: {
           name: "service-gateway-git",
           endpoints: [{

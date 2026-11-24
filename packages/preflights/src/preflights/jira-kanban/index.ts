@@ -5,6 +5,7 @@ import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { nonBlank } from "../../shared/strings.js";
+import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -51,7 +52,11 @@ const jiraKanbanInput = z.strictObject({
     .default(["New", "Backlog", "To Do"]),
   /** Extra JQL appended to every candidate query (`BOT_KANBAN_JQL_EXTRA`). */
   jql_extra: z.string().optional(),
-  /** Bot's Jira identity — the bot-assigned candidate fallback (`BOT_JIRA_EMAIL`). */
+  /**
+   * Bot's Jira identity — the bot-assigned candidate fallback (`BOT_JIRA_EMAIL`).
+   * Defaults to the deployment-provided identity when not declared; see
+   * `resolveBotJiraEmail`.
+   */
   email: z.string().optional(),
   /**
    * Interrupted-retry cooldown in minutes (`BOT_INTERRUPTED_RETRY_MINUTES`;
@@ -164,7 +169,12 @@ export async function runJiraKanbanPreflight(
     return { status: "start", content: lines.join("\n") };
   }
 
-  const candidates = await getKanbanCandidates(jira, params, repoLookup);
+  const candidates = await getKanbanCandidates(
+    jira,
+    params,
+    repoLookup,
+    resolveBotJiraEmail(params.email, ctx),
+  );
   if (candidates.length === 0) {
     lines.push("No eligible work candidates in kanban backlog");
     ctx.state.set("jira", { feedback: 0, interrupted: 0 });
@@ -209,6 +219,7 @@ async function getKanbanCandidates(
   jira: JiraClient,
   params: JiraKanbanParams,
   repoLookup: Record<string, string>,
+  email: string | undefined,
 ): Promise<JiraCandidate[]> {
   const statusList = quotedStatusList(params.statuses);
   const extra = jqlExtraClause(params.jql_extra);
@@ -219,10 +230,10 @@ async function getKanbanCandidates(
       `${labelFilter}AND assignee is EMPTY${extra} ` +
       `ORDER BY priority DESC, created ASC`,
   );
-  if (accumulator.count < 10 && params.email !== undefined && params.email !== "") {
+  if (accumulator.count < 10 && email !== undefined) {
     await accumulator.collect(
       `project = ${params.project} AND status IN (${statusList}) ` +
-        `${labelFilter}AND assignee = "${params.email}"${extra} ` +
+        `${labelFilter}AND assignee = "${email}"${extra} ` +
         `ORDER BY priority DESC, created ASC`,
     );
   }

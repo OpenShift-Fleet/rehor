@@ -462,7 +462,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
     assert.equal(messages[1].token, "mock-memory-credential");
     assert.equal(messages[2].image, "registry.example/agent:runner");
     assert.deepEqual(messages[2].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
-    assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute" });
+    assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute", GH_RELEASE_UPLOAD_URL: "https://services.example/screenshots/upload" });
     assert.equal(messages[2].aborted, false);
     assert.equal(messages[3].aborted, true);
     assert.equal(messages[4].completion, "gone");

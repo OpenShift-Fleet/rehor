@@ -100,7 +100,7 @@ test("runtime services use exact paths, methods, binaries, origins and provider 
   const policy = createMemoryPolicy(new URL("https://memory.example.test:8443/health"), "provider-name-1", { kind: "legacy" }, modelProxyUrl(), {
     memoryRuntime: true, serviceGatewayUrl: serviceGatewayUrl(),
   });
-  assert.deepEqual(Object.keys(policy.networkPolicies), ["memory_health", "memory_runtime", "service_gateway_jira", "service_gateway_executor", "service_gateway_git", "model_proxy"]);
+  assert.deepEqual(Object.keys(policy.networkPolicies), ["memory_health", "memory_runtime", "service_gateway_jira", "service_gateway_executor", "service_gateway_screenshots", "service_gateway_git", "model_proxy"]);
   const expected = {
     memory_runtime: {
       host: "memory.example.test", port: 8443,
@@ -116,6 +116,11 @@ test("runtime services use exact paths, methods, binaries, origins and provider 
       host: "service-gateway.example.test", port: 8454,
       binaries: ["/usr/local/bin/executor-client", "/usr/local/bin/gh", "/usr/local/bin/glab", "/usr/local/bin/gpg"],
       routes: { "/executor/execute": ["POST"] },
+    },
+    service_gateway_screenshots: {
+      host: "service-gateway.example.test", port: 8454,
+      binaries: ["/usr/bin/python3.12"],
+      routes: { "/screenshots/upload": ["POST"] },
     },
     service_gateway_git: {
       host: "service-gateway.example.test", port: 8454,
@@ -149,6 +154,7 @@ test("runtime options are independent and reject non-admitted methods and paths"
     assert.equal(keys.includes("memory_runtime"), option.memoryRuntime === true);
     assert.equal(keys.includes("service_gateway_jira"), option.serviceGatewayUrl !== undefined);
     assert.equal(keys.includes("service_gateway_executor"), option.serviceGatewayUrl !== undefined);
+    assert.equal(keys.includes("service_gateway_screenshots"), option.serviceGatewayUrl !== undefined);
     assert.equal(keys.includes("service_gateway_git"), option.serviceGatewayUrl !== undefined);
   }
   const policy = createMemoryPolicy(memoryUrl(), "provider-name-1", undefined, undefined, { memoryRuntime: true, serviceGatewayUrl: serviceGatewayUrl() });
@@ -161,13 +167,15 @@ test("runtime options are independent and reject non-admitted methods and paths"
     ["service_gateway_jira", "PUT", "/jira/mcp"], ["service_gateway_jira", "POST", "/jira/mcp/extra"],
     ["service_gateway_executor", "GET", "/executor/execute"], ["service_gateway_executor", "DELETE", "/executor/execute"],
     ["service_gateway_executor", "POST", "/executor/execute/extra"], ["service_gateway_executor", "POST", "/jira/mcp"],
+    ["service_gateway_screenshots", "GET", "/screenshots/upload"], ["service_gateway_screenshots", "PUT", "/screenshots/upload"],
+    ["service_gateway_screenshots", "POST", "/screenshots/upload/extra"], ["service_gateway_screenshots", "POST", "/upload"],
   ]) assert.equal(admits(name, method, path), false, `${name} must reject ${method} ${path}`);
 });
 
 test("effective-policy comparison retains every opted-in credential-bound endpoint", () => {
   const policy = createMemoryPolicy(memoryUrl(), "provider-name-1", undefined, undefined, { memoryRuntime: true, serviceGatewayUrl: serviceGatewayUrl() });
   const expected = create(SandboxPolicySchema, policy);
-  for (const [name, count] of [["memory_health", 1], ["memory_runtime", 5], ["service_gateway_jira", 1], ["service_gateway_executor", 1], ["service_gateway_git", 1]]) {
+  for (const [name, count] of [["memory_health", 1], ["memory_runtime", 5], ["service_gateway_jira", 1], ["service_gateway_executor", 1], ["service_gateway_screenshots", 1], ["service_gateway_git", 1]]) {
     assert.equal(expected.networkPolicies[name].endpoints.length, count);
     for (const endpoint of expected.networkPolicies[name].endpoints) {
       assert.equal(endpoint.credentialBinding?.provider, "provider-name-1");

@@ -263,6 +263,14 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             });
             return "error" as const;
           }
+          // Deployment-provided bot Jira identity: the default for the
+          // `email` input of jira preflights. A non-secret identity read
+          // from the merged environment (a profile may carry its own, like
+          // BOT_INSTANCE_ID); it flows only into the preflight wiring —
+          // never logs or cycle results. Wiring transports it verbatim;
+          // blank is normalized once, at the run-context factory.
+          const botJiraEmail =
+            typeof env.BOT_JIRA_EMAIL === "string" ? env.BOT_JIRA_EMAIL : undefined;
           if (options.dispatcher.isInFlight(id)) return "busy" as const;
           if (options.signal?.aborted) return "shutdown" as const;
           // Schedule windows gate new dispatches only: in-flight sessions
@@ -290,6 +298,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             ...(options.preflightStateDir ? { stateDir: options.preflightStateDir } : {}),
             ...(options.slackWebhooks ? { slackWebhooks: options.slackWebhooks } : {}),
             ...(options.jenkins ? { jenkins: options.jenkins } : {}),
+            ...(botJiraEmail !== undefined ? { jiraEmail: botJiraEmail } : {}),
           };
           const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
           if (decision.action === "error") errorReason = decision.reason ?? "execution";

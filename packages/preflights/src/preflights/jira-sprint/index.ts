@@ -5,6 +5,7 @@ import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { nonBlank } from "../../shared/strings.js";
+import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -44,7 +45,11 @@ const jiraSprintInput = z.strictObject({
   label: z.string().refine(nonBlank, { message: "label must not be blank" }),
   /** Search the backlog when the open sprint yields fewer candidates (`BOT_INCLUDE_BACKLOG`). */
   include_backlog: z.boolean().default(false),
-  /** Bot's Jira identity — the bot-assigned candidate fallback (`BOT_JIRA_EMAIL`). */
+  /**
+   * Bot's Jira identity — the bot-assigned candidate fallback (`BOT_JIRA_EMAIL`).
+   * Defaults to the deployment-provided identity when not declared; see
+   * `resolveBotJiraEmail`.
+   */
   email: z.string().optional(),
   /**
    * Interrupted-retry cooldown in minutes (`BOT_INTERRUPTED_RETRY_MINUTES`;
@@ -157,7 +162,12 @@ export async function runJiraSprintPreflight(
     return { status: "start", content: lines.join("\n") };
   }
 
-  const candidates = await getSprintCandidates(jira, params, repoLookup);
+  const candidates = await getSprintCandidates(
+    jira,
+    params,
+    repoLookup,
+    resolveBotJiraEmail(params.email, ctx),
+  );
   const withRepos = candidates.filter((candidate) => candidate.repos.length > 0);
   const withoutRepos = candidates.filter((candidate) => candidate.repos.length === 0);
 
@@ -196,6 +206,7 @@ async function getSprintCandidates(
   jira: JiraClient,
   params: JiraSprintParams,
   repoLookup: Record<string, string>,
+  email: string | undefined,
 ): Promise<JiraCandidate[]> {
   const statusList = quotedStatusList(NOT_STARTED_STATUSES);
   const accumulator = createCandidateAccumulator(jira, repoLookup);
@@ -203,16 +214,16 @@ async function getSprintCandidates(
     `labels = ${params.label} AND sprint in openSprints() AND assignee is EMPTY ` +
       `AND status IN (${statusList}) ORDER BY priority DESC, created ASC`,
   );
-  if (accumulator.count < 10 && params.email !== undefined && params.email !== "") {
+  if (accumulator.count < 10 && email !== undefined) {
     await accumulator.collect(
-      `labels = ${params.label} AND sprint in openSprints() AND assignee = "${params.email}" ` +
+      `labels = ${params.label} AND sprint in openSprints() AND assignee = "${email}" ` +
         `AND status IN (${statusList}) ORDER BY priority DESC, created ASC`,
     );
   }
   if (accumulator.count < 10 && params.include_backlog) {
     const assigneeFilter =
-      params.email !== undefined && params.email !== ""
-        ? `AND (assignee is EMPTY OR assignee = "${params.email}") `
+      email !== undefined
+        ? `AND (assignee is EMPTY OR assignee = "${email}") `
         : "AND assignee is EMPTY ";
     await accumulator.collect(
       `labels = ${params.label} ${assigneeFilter}` +

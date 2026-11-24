@@ -84,6 +84,15 @@ export type TsPreflightWiring = {
    */
   slackWebhooks?: SlackWebhookConfig;
   /**
+   * Deployment-provided bot Jira identity (BOT_JIRA_EMAIL): the default
+   * for the `email` input of jira preflights whose entries declare none.
+   * A non-secret identity — the Jira gateway injects authentication on
+   * the upstream leg, unchanged by this wiring. It flows only into the
+   * run context, never into logs or results; absent wiring leaves those
+   * preflights on unassigned-only candidate search.
+   */
+  jiraEmail?: string;
+  /**
    * Jenkins instance endpoints (and optional idp job-name overrides),
    * rendered deployment configuration. The corporate Jenkins hosts need
    * no credentials; absent wiring leaves the watchduty preflights
@@ -201,6 +210,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
       ...(options.wiring.repos ? { repos: options.wiring.repos } : {}),
       ...(options.wiring.stateDir ? { persistentState: { dir: options.wiring.stateDir } } : {}),
       ...(options.wiring.slackWebhooks ? { slack: { webhooks: options.wiring.slackWebhooks } } : {}),
+      ...(options.wiring.jiraEmail !== undefined ? { jiraEmail: options.wiring.jiraEmail } : {}),
       ...(options.wiring.jenkins
         ? {
             jenkins: {

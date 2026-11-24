@@ -573,6 +573,29 @@ test("Git gateway rule is checked against effective policy before runner starts"
   }
 });
 
+test("screenshot gateway rule survives effective-policy verification before runner starts", async () => {
+  const serviceGatewayUrl = new URL("https://service-gateway.example.test:8454");
+  const valid = fixture();
+  const result = await new SandboxSession({ raw: valid.raw, memory: valid.memory, serviceGatewayUrl }).run(image, decision, {});
+  assert.equal(result.outcome, "passed");
+  const upload = valid.calls.find((call) => call.name === "createSandbox").request.spec.policy.networkPolicies.service_gateway_screenshots;
+  assert.equal(upload.endpoints.length, 1);
+  assert.equal(upload.endpoints[0].path, "/screenshots/upload");
+  // Exact method, binary and binding are asserted in memory-policy.test.mjs;
+  // here only the minted provider identity must match the supplied rule.
+  assert.deepEqual(upload.endpoints[0].credentialBinding, { provider: result.provider.name });
+  assert.equal(valid.calls.filter((call) => call.name === "execSandbox").length, 2);
+
+  // One drift case: the generic verifier rejects an altered effective rule.
+  const f = fixture({ enrichPolicy: (policy) => { policy.networkPolicies.service_gateway_screenshots.endpoints[0].path = "/screenshots/**"; } });
+  const rejected = await new SandboxSession({ raw: f.raw, memory: f.memory, serviceGatewayUrl }).run(image, decision, {});
+  assert.equal(rejected.outcome, "unknown");
+  assert.equal(rejected.stage, "readiness");
+  assert.equal(rejected.completion, "gone");
+  assert.equal(rejected.cleanup, "deleted");
+  assert.equal(f.calls.some((call) => call.name === "execSandbox"), false);
+});
+
 test("canonical unqualified profile image dispatches under additive Gateway policy", async () => {
   const f = fixture({ enrichPolicy: (policy) => policy.filesystem.readWrite.push("/home/botuser/app-cache") });
   const result = await f.session.run("onboarding:latest", decision, {});

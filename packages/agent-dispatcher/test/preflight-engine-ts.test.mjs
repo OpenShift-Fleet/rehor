@@ -313,6 +313,30 @@ test("repos wiring passes the instance map into the run context", async () => {
   assert.deepEqual(calls[0].ctx.repos, repos);
 });
 
+test("jiraEmail wiring threads the bot identity into the run context only", async () => {
+  const { registry, calls } = fakeRegistry({
+    one: (ctx) => ({ status: "skip", content: `identity:${ctx.jiraEmail === undefined ? "absent" : "present"}` }),
+  });
+  const wired = await runTsPreflight({
+    profile: profile({ preflights: ["one"] }),
+    wiring: wiring({ jiraEmail: "bot@example.invalid" }),
+    registry,
+  });
+  assert.equal(wired.scripts[0].content, "identity:present");
+  assert.equal(calls[0].ctx.jiraEmail, "bot@example.invalid");
+  // The identity reaches the context only — it never enters results or
+  // transcripts, matching the no-value logging contract.
+  assert.ok(!JSON.stringify(wired).includes("bot@example.invalid"));
+
+  const bare = await runTsPreflight({
+    profile: profile({ preflights: ["one"] }),
+    wiring: wiring(),
+    registry,
+  });
+  assert.equal(bare.scripts[0].content, "identity:absent");
+  assert.equal(calls[1].ctx.jiraEmail, undefined);
+});
+
 test("per-run shared state accumulates across entries", async () => {
   const { registry } = fakeRegistry({
     first: (ctx) => { ctx.state.set("bookkeeping", 41); return { status: "skip", content: "" }; },

@@ -401,6 +401,107 @@ test("sprint skips bot-assigned and backlog queries without email or backlog fla
   assert.match(jqls[0], /sprint in openSprints\(\) AND assignee is EMPTY/);
 });
 
+// --- deployment-provided bot identity (BOT_JIRA_EMAIL default) ---
+
+test("explicit with.email takes precedence over the deployment-provided identity", async () => {
+  // Behavior, not query text: each search only answers the identity it is
+  // asked for, so which candidate is found proves which identity won.
+  const searchFor = (identity) => async (jql) =>
+    jql.includes(identity)
+      ? [
+          candidateIssue("TEST-9", {
+            summary: "Bot-assigned work",
+            labels: ["hcc-ai-test", "repo:my-repo"],
+            description: "Already ours",
+          }),
+        ]
+      : [];
+
+  const declaredCtx = createTestContext({
+    tasks: [],
+    jiraEmail: "deployed@example.invalid",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: searchFor("declared@example.invalid"),
+  });
+  const declared = await runSprint(declaredCtx, { email: "declared@example.invalid" });
+  assert.equal(declared.status, "start");
+  assert.match(declared.content, /TEST-9/);
+
+  // A blank (whitespace-only) declaration means absent, so the
+  // deployment-provided identity applies instead of a blank winner.
+  const blankCtx = createTestContext({
+    tasks: [],
+    jiraEmail: "deployed@example.invalid",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: searchFor("deployed@example.invalid"),
+  });
+  const blank = await runSprint(blankCtx, { email: " " });
+  assert.equal(blank.status, "start");
+  assert.match(blank.content, /TEST-9/);
+});
+
+test("bot-assigned intake starts on a bot-assigned sprint candidate via the default identity", async () => {
+  // Behavior, not query text: only the bot-assigned sprint search returns
+  // a repo-labeled candidate, so a start proves the fallback query ran.
+  const ctx = createTestContext({
+    tasks: [],
+    jiraEmail: "bot@example.invalid",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: async (jql) =>
+      jql.includes("bot@example.invalid")
+        ? [
+            candidateIssue("TEST-7", {
+              summary: "Bot-assigned work",
+              labels: ["hcc-ai-test", "repo:my-repo"],
+              description: "Already ours",
+            }),
+          ]
+        : [],
+  });
+  const result = await runSprint(ctx);
+  assert.equal(result.status, "start");
+  assert.match(result.content, /### New Work Candidates \(1\)/);
+  assert.match(result.content, /TEST-7/);
+});
+
+test("backlog intake includes bot-assigned tickets via the default identity", async () => {
+  // Only the backlog query (sprint is EMPTY / not in openSprints) returns
+  // a candidate; the bot-assigned disjunction must let it through.
+  const ctx = createTestContext({
+    tasks: [],
+    jiraEmail: "bot@example.invalid",
+    repos: { "my-repo": { upstream: "https://github.com/org/my-repo" } },
+    search: async (jql) =>
+      jql.includes("sprint is EMPTY") && jql.includes("bot@example.invalid")
+        ? [
+            candidateIssue("TEST-8", {
+              summary: "Backlog work",
+              labels: ["hcc-ai-test", "repo:my-repo"],
+              description: "From the backlog",
+            }),
+          ]
+        : [],
+  });
+  const result = await runSprint(ctx, { include_backlog: true });
+  assert.equal(result.status, "start");
+  assert.match(result.content, /TEST-8/);
+});
+
+test("unassigned-only search is preserved without a usable identity anywhere", async () => {
+  const jqls = [];
+  const ctx = createTestContext({
+    tasks: [],
+    search: async (jql) => {
+      jqls.push(jql);
+      return [];
+    },
+  });
+  const result = await runSprint(ctx, { include_backlog: true });
+  assert.equal(result.status, "skip");
+  assert.equal(jqls.length, 2);
+  assert.ok(jqls.every((jql) => !jql.includes("assignee =")));
+});
+
 test("feedback buried under many newer bot comments starts with the feedback visible", async () => {
   // Classification reads the full paginated comment history, so a human
   // comment followed by 35 structured bot comments (more than the 30-newest

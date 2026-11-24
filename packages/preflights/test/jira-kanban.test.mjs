@@ -238,6 +238,50 @@ test("bot-assigned fallback query runs when email is set", async () => {
   assert.match(jqls[1], /assignee = "bot@test\.com"/);
 });
 
+// --- deployment-provided bot identity (BOT_JIRA_EMAIL default) ---
+
+test("bot-assigned intake starts on a bot-assigned candidate via the default identity", async () => {
+  // Behavior, not query text: only the bot-assigned search returns a
+  // repo-labeled candidate, so a start proves the fallback query ran.
+  const ctx = createTestContext({
+    tasks: [],
+    jiraEmail: "bot@example.invalid",
+    search: async (jql) =>
+      jql.includes("bot@example.invalid")
+        ? [
+            candidateIssue("LCORE-7", {
+              summary: "Bot-assigned kanban work",
+              labels: ["hcc-ai-lightspeed-core"],
+              description: "Already ours",
+            }),
+          ]
+        : [],
+  });
+  const result = await runKanban(ctx);
+  assert.equal(result.status, "start");
+  assert.match(result.content, /LCORE-7/);
+
+  // An explicit with.email declaration wins over the deployment identity:
+  // the bot-assigned search no longer asks for the deployed address, so
+  // the candidate is not found and the run stays a skip.
+  const declared = createTestContext({
+    tasks: [],
+    jiraEmail: "bot@example.invalid",
+    search: async (jql) =>
+      jql.includes("bot@example.invalid")
+        ? [
+            candidateIssue("LCORE-8", {
+              summary: "Bot-assigned kanban work",
+              labels: ["hcc-ai-lightspeed-core"],
+              description: "Already ours",
+            }),
+          ]
+        : [],
+  });
+  const declaredResult = await runKanban(declared, { email: "declared@example.invalid" });
+  assert.equal(declaredResult.status, "skip");
+});
+
 test("jql_extra is appended to candidate queries", async () => {
   const jqls = [];
   const ctx = createTestContext({

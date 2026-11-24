@@ -26,3 +26,8 @@ Arguments:
 - `filename` (optional): Override the asset filename. Defaults to the file's basename.
 
 Returns a markdown link: `![filename](url)` for images, `[filename](url)` for other files.
+
+In a dispatcher sandbox the helper uses `GH_RELEASE_UPLOAD_URL`, which points at
+`/screenshots/upload` on the authenticated service gateway. It sends only the
+supervisor-issued credential placeholder; never pass tokens, and the legacy proxy
+host is not reachable there.
