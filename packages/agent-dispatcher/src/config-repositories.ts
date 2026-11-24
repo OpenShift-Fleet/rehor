@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -85,6 +85,29 @@ export function parseConfigRepositories(json: string): ConfigRepository[] {
     throw new Error("Duplicate configuration repository name");
   }
   return repositories;
+}
+
+/**
+ * Fail fast at startup if Git is unavailable, rather than failing every
+ * configuration repository sync cycle.
+ */
+export async function verifyConfigRepositoryTools(): Promise<void> {
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const child = spawn("git", ["--version"], { stdio: "ignore" });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error("git check timed out"));
+    }, 30_000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      rejectPromise(new Error("git is not available"));
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolvePromise();
+      else rejectPromise(new Error("git is not functional"));
+    });
+  });
 }
 
 async function intact(path: string, revision: string, signal?: AbortSignal): Promise<boolean> {

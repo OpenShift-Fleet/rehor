@@ -206,6 +206,6 @@ The skill is implemented in Python 3.12+ with:
 
 ## Related
 
-- JIRA: RHCLOUD-47264
+- JIRA: TEAM-47264
 - See also: `/post-pr` skill for post-PR-creation bookkeeping
 - See also: `/claim-ticket` skill for ticket claiming

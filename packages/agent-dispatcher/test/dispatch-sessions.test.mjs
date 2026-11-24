@@ -1,10 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { z } from "zod";
+import { createPreflightRegistry, definePreflight } from "@rehor/preflights";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
-import { runWorkPreflight } from "../dist/work-preflight.js";
+import { runTsPreflight } from "../dist/preflight-engine-ts.js";
 import { MAX_INPUT_BYTES } from "../dist/input-envelope.js";
 
 const start = (prompt = "work") => ({ action: "start", prompt, scripts: [] });
@@ -89,25 +88,28 @@ test("caller can run preflights sequentially while different agent sessions over
   assert.equal(dispatcher.size, 0);
 });
 
-test("real sequential work preflights dispatch only start results", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "dispatch-preflight-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const dir = join(root, "presets", "workflows", "test", "preflight");
-  await mkdir(dir, { recursive: true });
-  const script = join(dir, "decision.py");
-  const options = { botRoot: root, workflow: "test", env: { PATH: process.env.PATH } };
+test("real sequential work preflights dispatch only start results", async () => {
+  // One mutable fake preflight: the run outcome changes between dispatches.
+  let outcome = { status: "start", content: "work" };
+  const registry = createPreflightRegistry([
+    definePreflight({ id: "decision", input: z.strictObject({}), run: async () => outcome }),
+  ]);
+  const options = {
+    profile: { name: "agent", workflow: "custom", preflights: ["decision"] },
+    wiring: { instanceId: "fixture-instance", memory: { baseUrl: "https://memory.example", token: "fixture-token" } },
+    registry,
+  };
   const dispatcher = new SessionDispatcher();
   const session = deferred();
   let launches = 0;
   const run = () => { launches++; return session.promise; };
 
-  await writeFile(script, `print('{"status":"start","content":"work"}')`);
-  const first = dispatcher.dispatch("a", await runWorkPreflight(options), run);
+  const first = dispatcher.dispatch("a", await runTsPreflight(options), run);
   assert.equal(first.status, "started");
-  await writeFile(script, `print('{"status":"skip","content":"nothing"}')`);
-  assert.equal(dispatcher.dispatch("b", await runWorkPreflight(options), run).status, "skip");
-  await writeFile(script, `print('{"status":"error","content":"failure"}')`);
-  assert.equal(dispatcher.dispatch("c", await runWorkPreflight(options), run).status, "error");
+  outcome = { status: "skip", content: "nothing" };
+  assert.equal(dispatcher.dispatch("b", await runTsPreflight(options), run).status, "skip");
+  outcome = { status: "error", content: "failure" };
+  assert.equal(dispatcher.dispatch("c", await runTsPreflight(options), run).status, "error");
   assert.equal(launches, 1);
   session.resolve("gone");
   assert.equal(await first.completion, "gone");

@@ -1,4 +1,4 @@
-import type { WorkPreflightResult } from "./work-preflight.js";
+import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 import { buildInputEnvelope } from "./input-envelope.js";
 
 export type SessionCompletion = "gone" | "not-created" | "unknown";

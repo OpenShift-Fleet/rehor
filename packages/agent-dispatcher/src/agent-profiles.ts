@@ -1,12 +1,21 @@
 import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { objectEntrySchema, type PreflightEntry } from "@rehor/preflights";
 import { isInstancePreflightVariable } from "./preflight-env.js";
+import {
+  formatPreflightDiagnostics,
+  preflightEntryDiagnostics,
+  PreflightConfigurationError,
+  type PreflightDiagnostic,
+} from "./preflight-diagnostics.js";
+import { scheduleDiagnostics, type ScheduleConfig, type ScheduleTrigger } from "./schedule.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
 
-/** Paths are absolute and resolved within the checkout. Pass botRoot, workflow and
- * instanceDir to the work-preflight runner; preflight directories may be absent. */
+/** Paths are absolute and resolved within the checkout. Pass botRoot and
+ * instanceDir for instance data (project-repos.json); the preflight engine
+ * consumes the declarative `preflights:` field, never workflow scripts. */
 export type AgentProfile = {
   name: string;
   configPath: string;
@@ -14,10 +23,22 @@ export type AgentProfile = {
   instanceDir: string;
   workflow: string;
   workflowDir: string;
-  workflowPreflightDir?: string;
-  instancePreflightDir?: string;
   image: AgentImage;
   preflightEnv: Record<string, string>;
+  /**
+   * Parsed `preflights:` entries for the preflight engine:
+   * shorthand strings or `{ id, with }` objects, already shape-validated
+   * against the package's entry schema. Registry-level validation (ids,
+   * parameters) happens per run in the engine.
+   */
+  preflights?: PreflightEntry[];
+  /**
+   * Parsed `schedule:` declaration: KEDA-style cron windows, shape- and
+   * expression-validated here. The dispatcher evaluates it per cycle
+   * against the wall clock; while no window is active the profile is
+   * skipped before any preflight runs. Absent means always eligible.
+   */
+  schedule?: ScheduleConfig;
 };
 
 function contained(root: string, path: string): boolean {
@@ -44,17 +65,6 @@ async function optionalDirectory(path: string, root: string): Promise<string | u
     throw error;
   }
   return checkedPath(path, root, "directory");
-}
-
-async function preflightDirectory(path: string, root: string): Promise<string | undefined> {
-  const dir = await optionalDirectory(path, root);
-  if (dir) {
-    // The runner follows symlinks when selecting scripts; verify their targets too.
-    for (const name of await readdir(dir)) {
-      if (name.endsWith(".py")) await checkedPath(join(dir, name), root, "file");
-    }
-  }
-  return dir;
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -93,19 +103,63 @@ function workflowFrom(value: unknown): string {
   return value;
 }
 
-function preflightEnvironment(value: unknown): Record<string, string> {
-  if (value === undefined) return {};
-  if (!object(value) || Object.keys(value).some((key) => key !== "env") || !object(value.env)) {
-    throw new Error("Invalid preflight environment");
+function profileEnvironment(value: unknown, legacy: unknown): Record<string, string> {
+  if (value !== undefined && legacy !== undefined) {
+    throw new Error("Use either env or preflight.env, not both");
   }
-  const env: Record<string, string> = {};
-  for (const [name, setting] of Object.entries(value.env)) {
-    if (!isInstancePreflightVariable(name) || typeof setting !== "string" || !setting) {
+  if (legacy !== undefined) {
+    if (!object(legacy) || Object.keys(legacy).some((key) => key !== "env") || !object(legacy.env)) {
       throw new Error("Invalid preflight environment");
+    }
+    value = legacy.env;
+  }
+  if (value === undefined) return {};
+  if (!object(value)) throw new Error("Invalid profile environment");
+  const env: Record<string, string> = {};
+  for (const [name, setting] of Object.entries(value)) {
+    if (!isInstancePreflightVariable(name) || typeof setting !== "string" || !setting) {
+      throw new Error("Invalid profile environment");
     }
     env[name] = setting;
   }
   return env;
+}
+
+/** Strict `preflights:` parsing: undefined passes through (the
+ * field is omitted and the workflow's default set applies later), but any
+ * malformed entry fails profile discovery — entries are never silently
+ * dropped, and every failure names the instance and the exact entry,
+ * parameter, and reason. Only the entry shape is checked here; id and
+ * parameter validation against a registry happens per run in the preflight
+ * engine. The failure is typed: it carries the profile name and the full
+ * structured diagnostics, so the cycle can log the issues while the
+ * discovery result stays fail-closed.
+ */
+function preflightsFrom(value: unknown, name: string): PreflightEntry[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw configurationError(name, preflightEntryDiagnostics(value));
+  }
+  const diagnostics = preflightEntryDiagnostics(value);
+  if (diagnostics.length > 0) throw configurationError(name, diagnostics);
+  // Every entry parsed cleanly; re-run the object branch for typed values.
+  return value.map((raw) => (typeof raw === "string" ? raw : objectEntrySchema.parse(raw)));
+}
+
+function configurationError(name: string, diagnostics: readonly PreflightDiagnostic[]): PreflightConfigurationError {
+  return new PreflightConfigurationError(name, diagnostics, formatPreflightDiagnostics(name, diagnostics));
+}
+
+/** Strict `schedule:` parsing: undefined passes through (the field is
+ * omitted and the profile is always eligible), but any malformed
+ * declaration fails profile discovery with the full structured
+ * diagnostics, exactly like `preflights:`. */
+function scheduleFrom(value: unknown, name: string): ScheduleConfig | undefined {
+  if (value === undefined) return undefined;
+  const diagnostics = scheduleDiagnostics(value);
+  if (diagnostics.length > 0) throw configurationError(name, diagnostics);
+  const { triggers } = value as { triggers: ScheduleTrigger[] };
+  return { triggers: triggers.map((trigger) => ({ timezone: trigger.timezone, start: trigger.start, end: trigger.end })) };
 }
 
 /** Discover every agent profile in one fixed checkout. Any invalid profile or
@@ -115,8 +169,6 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
   const root = await realpath(resolve(checkout));
   const instances = await checkedPath(join(root, "instance"), root, "directory");
   const botRoot = await checkedPath(join(root, "dev-bot"), root, "directory");
-  await checkedPath(join(botRoot, "presets", "shared", "preflight"), botRoot, "directory");
-  await checkedPath(join(botRoot, ".claude", "skills"), botRoot, "directory");
   const profiles: AgentProfile[] = [];
   for (const name of (await readdir(instances)).sort()) {
     const instancePath = join(instances, name);
@@ -135,15 +187,15 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     if (!object(config)) throw new Error(`Invalid profile in ${configPath}`);
     const workflow = workflowFrom(config.workflow);
     const image = imageFrom(config.image);
-    const preflightEnv = preflightEnvironment(config.preflight);
+    const preflightEnv = profileEnvironment(config.env, config.preflight);
+    const preflights = preflightsFrom(config.preflights, name);
+    const schedule = scheduleFrom(config.schedule, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
     const workflowPath = workflow.startsWith("./")
       ? join(instanceDir, workflow.slice(2))
       : join(botRoot, "presets", "workflows", workflow);
     const workflowDir = await checkedPath(workflowPath, workflowBoundary, "directory");
-    const workflowPreflightDir = await preflightDirectory(join(workflowDir, "preflight"), workflowBoundary);
-    const instancePreflightDir = await preflightDirectory(join(instanceDir, "preflight"), instanceDir);
-    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, workflowPreflightDir, instancePreflightDir, image, preflightEnv });
+    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
   }
   if (!profiles.length) throw new Error("No agent profiles found in checkout");
   return profiles;

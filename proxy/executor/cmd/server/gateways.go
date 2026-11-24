@@ -20,6 +20,15 @@ package main
 //     boundary as before), no new Service/NetworkPolicy port. The HTTP
 //     gateway routes /executor/execute to this listener as a fixed
 //     loopback upstream.
+//   - Pathname-routed direct destinations (REHOR-263): the /jira, /github,
+//     and /gitlab prefixes on the same HTTP gateway select an external
+//     upstream (Jira REST, GitHub API, GitLab API) and the gateway core
+//     injects the destination credential on the upstream leg, so preflight
+//     and dispatcher clients compose proxy base URL + path prefix and
+//     never see credentials. Purely additive: the port-per-service
+//     listeners stay active and untouched (removal is REHOR-232, after
+//     fleet migration); the /jira/mcp and /jira/rest fixed routes keep
+//     their existing claims.
 //
 // The gateway defaults to disabled. Disabled, it requires no new
 // configuration and legacy startup is unchanged. Enabled with malformed or
@@ -196,9 +205,41 @@ func httpGatewayConfig(avail backendAvailability, executorUpstream string) execu
 // httpGatewayHandler builds the consolidated HTTP gateway handler. The Go
 // mux consumes the outer authorization (the oauth-services sidecar on :8453
 // authenticates); the core strips the ingress bearer and session headers
-// before forwarding to the loopback backends.
+// before forwarding to the loopback backends. The REHOR-263 pathname-routed
+// direct destinations (/jira, /github, /gitlab) ride the same handler and
+// the same outer authentication, with their credentials injected on the
+// upstream leg by the core.
 func httpGatewayHandler(avail backendAvailability, executorUpstream string) (http.Handler, error) {
-	return executor.NewHTTPGateway(httpGatewayConfig(avail, executorUpstream))
+	cfg := httpGatewayConfig(avail, executorUpstream)
+	applyPathnameDestinations(&cfg)
+	return executor.NewHTTPGateway(cfg)
+}
+
+// applyPathnameDestinations fills the REHOR-263 pathname-routed destination
+// fields of the gateway config from the environment. The Jira destination
+// reuses the same JIRA_* credential as the :8445 Jira REST listener, and
+// GitHub/GitLab reuse the tokens the proxy already consumes (GH_TOKEN,
+// GITLAB_TOKEN); only the GitHub and GitLab API upstream URLs are new
+// (GITHUB_API_URL, GITLAB_API_URL — no in-code defaults, so nothing is
+// hardcoded). Like the other gateway availability conditions, values are
+// read from the environment (the deployment contract); CLI-flag-only
+// overrides are not inferred. An absent credential is not an error here:
+// the core fails that destination closed per request with a clear error,
+// never a silent skip.
+func applyPathnameDestinations(cfg *executor.GatewayConfig) {
+	cfg.JiraAPI = executor.PathnameDestination{
+		Upstream: strings.TrimSpace(os.Getenv("JIRA_URL")),
+		Username: os.Getenv("JIRA_USERNAME"),
+		Token:    os.Getenv("JIRA_API_TOKEN"),
+	}
+	cfg.GitHubAPI = executor.PathnameDestination{
+		Upstream: strings.TrimSpace(os.Getenv("GITHUB_API_URL")),
+		Token:    os.Getenv("GH_TOKEN"),
+	}
+	cfg.GitLabAPI = executor.PathnameDestination{
+		Upstream: strings.TrimSpace(os.Getenv("GITLAB_API_URL")),
+		Token:    os.Getenv("GITLAB_TOKEN"),
+	}
 }
 
 // executorGatewayHandler builds the shared executor HTTP wrapper

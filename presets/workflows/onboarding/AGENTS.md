@@ -183,8 +183,7 @@ Parse Konflux responses, then generate and submit the Konflux MR:
 
 3. **Build auto-generated output**: Run `build-single.sh` to regenerate the `auto-generated/` directory:
    ```bash
-   cd /tmp/konflux-release-data/tenants-config
-   ./build-single.sh <tenant>
+ cd /tmp/konflux-release-data/tenants-config./build-single.sh <tenant>
    ```
    The script accepts the tenant name with or without the `-tenant` suffix. This runs `kustomize build` on the tenant directory and produces the `auto-generated/` files that CI requires.
 
@@ -448,7 +447,7 @@ All skills MUST use these field names. No aliases.
 | `target_branch` | generate-konflux, generate-app-interface, detect-tech-stack | Default branch of instance repo (`main` or `master`) |
 | `envs` | detect-tech-stack, generate-instance, post-plan | Runtime environments needed (`node`, `browser`, etc.) |
 | `personas` | detect-tech-stack, generate-instance, post-plan | Detected personas from repo analysis |
-| `epic_key` | all Jira-posting skills | Jira epic key (e.g., `RHCLOUD-12345`) |
+| `epic_key` | all Jira-posting skills | Jira epic key (e.g., `TEAM-12345`) |
 | `quay_org` | generate-konflux, generate-app-interface, post-konflux-instructions | Quay org for image push |
 | `tenant` | generate-konflux | Konflux tenant namespace name |
 | `config_name` | generate-instance, generate-app-interface | Config directory name under `instance/` |
@@ -491,8 +490,8 @@ Things the onboarding workflow cannot yet handle for dedicated-infra teams (outs
 
 ### Dedicated proxy deployment
 
-`deploy-template.yaml.j2` hardcodes ~15 service references to shared infrastructure: `devbot-proxy` (ports 3128, 8443, 8444, 8446, 9090), `devbot-memory-server` (port 8080), and `devbot-secrets`. These are string literals in the Jinja2 template, not OpenShift template parameters. A team needing separate credentials (different Jira/GitHub/GitLab accounts) requires a dedicated proxy, which means either:
-- Parameterizing the deploy template to accept proxy/memory-server/secret names
+`deploy-template.yaml.j2` hardcodes service references to shared infrastructure: `devbot-proxy` and `devbot-memory-server`. These are string literals in the Jinja2 template, not OpenShift template parameters. A team needing a separate service identity requires a dedicated proxy, which means either:
+- Parameterizing the deploy template to accept proxy and memory-service names
 - Creating a separate deploy template variant for dedicated-proxy deployments
 
 The NetworkPolicy also hardcodes pod label selectors for `devbot-proxy` and `memory-server`.

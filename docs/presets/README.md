@@ -83,7 +83,7 @@ Unused presets waste Docker build time and image size. The `node` and `go` prese
 
 | Workflow | Description |
 |----------|-------------|
-| [`jira-sprint`](workflows.md#jira-sprint) | Full autonomous loop: Jira triage → implement → PR → maintain |
+| [`jira-sprint`](workflows.md) | Full autonomous loop: Jira triage → implement → PR → maintain |
 | [Custom workflows](custom-workflows.md) | Build your own workflow for monitoring, review-only, or specialized automation |
 
 ## Real-World Examples

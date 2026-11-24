@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
 import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
 import { isForwardedPreflightVariable } from "./preflight-env.js";
-import { writePreflightCycle } from "./logging.js";
 
 export type DispatcherLoopOptions = {
   repositoriesJson: string;
@@ -13,15 +12,20 @@ export type DispatcherLoopOptions = {
   env?: NodeJS.ProcessEnv;
   /** Sandbox launch for a start decision. Defaults to completing without creating a sandbox. */
   launch?: DispatcherCycleOptions["launch"];
-  /** Mints the per-cycle memory credential forwarded to preflight scripts. */
+  /** Mints the per-cycle memory credential used by the preflight engine. */
   memoryCredential?: () => Promise<string>;
-  /** Observes each completed cycle; defaults to a structured stdout event. */
+  /** Services-gateway base URL; the proxy route for external-system preflights. */
+  serviceGatewayUrl?: URL;
+  preflightStateDir?: DispatcherCycleOptions["preflightStateDir"];
+  slackWebhooks?: DispatcherCycleOptions["slackWebhooks"];
+  jenkins?: DispatcherCycleOptions["jenkins"];
+  /** Observes each completed cycle result; lifecycle records are emitted inside the cycle. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
   intervalMs?: number;
 };
 
-/** Forward only non-secret settings needed by legacy preflights. */
+/** Forward only non-secret settings the sandbox runtime environment needs. */
 export function preflightEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
@@ -40,13 +44,17 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
   const signal = options.signal;
   const intervalMs = options.intervalMs ?? 5 * 60_000;
   const cacheRoot = process.env.AGENT_DISPATCHER_CONFIG_DIR || join(tmpdir(), "rehor-agent-dispatcher");
-  const emit = options.onCycle ?? writePreflightCycle;
+  const emit = options.onCycle;
   const env = options.env ?? preflightEnvironment();
   const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
   while (!signal?.aborted) {
     try {
-      const result = await runDispatcherCycle({ repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions, signal, launch, memoryCredential: options.memoryCredential });
-      if (!signal?.aborted) emit(result);
+      const result = await runDispatcherCycle({
+        repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions,
+        signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl,
+        preflightStateDir: options.preflightStateDir, slackWebhooks: options.slackWebhooks, jenkins: options.jenkins,
+      });
+      if (!signal?.aborted) emit?.(result);
       await sleep(intervalMs, undefined, { signal });
     } catch {
       if (!signal?.aborted) {

@@ -7,6 +7,18 @@ export interface MemoryPolicyOptions {
   serviceGatewayUrl?: URL;
 }
 
+/** Node executables allowed to open credential-bound runtime-service
+ * connections. Mirrors REVIEWED_EGRESS_BINARIES in egress-policy.ts: the
+ * base image installs /usr/local/bin/node while the node preset installs
+ * versioned binaries under NVM_DIR; the supervisor matches the
+ * kernel-resolved executable path, so the version segment is a glob over
+ * the fixed image-build root (REHOR-245: the coordinator and OpenCode run
+ * under the NVM node and were denied memory/model connections). */
+const NODE_BINARIES: readonly { path: string }[] = [
+  { path: "/usr/local/bin/node" },
+  { path: "/usr/local/nvm/versions/node/*/bin/node" },
+];
+
 /** Constrained bootstrap policy with explicitly opted-in runtime services.
  * No HTTP credential transport or broad egress is inferred from runner env. */
 export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: RuntimeLayout = { kind: "legacy" }, modelProxyUrl?: URL, options: MemoryPolicyOptions = {}): NonNullable<SandboxSpec["policy"]> {
@@ -49,7 +61,7 @@ export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: Ru
           protocol: "rest", tls: NetworkTlsMode.UNSPECIFIED, enforcement: NetworkEnforcementMode.ENFORCE,
           path: "/health", rules: [{ allow: { method: "GET", path: "/health" } }], credentialBinding: { provider },
         }],
-        binaries: [{ path: "/usr/bin/python3.12" }],
+        binaries: [{ path: "/usr/bin/python3.12" }, ...NODE_BINARIES],
       },
       ...(options.memoryRuntime ? {
         memory_runtime: {
@@ -65,7 +77,7 @@ export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: Ru
             protocol: "rest", tls: NetworkTlsMode.UNSPECIFIED, enforcement: NetworkEnforcementMode.ENFORCE,
             path, rules: methods.map((method) => ({ allow: { method, path } })), credentialBinding: { provider },
           })),
-          binaries: [{ path: "/usr/bin/python3.12" }, { path: "/usr/local/bin/node" }, { path: "/opt/opencode/bin/opencode" }],
+          binaries: [{ path: "/usr/bin/python3.12" }, ...NODE_BINARIES, { path: "/opt/opencode/bin/opencode" }],
         },
       } : {}),
       ...(serviceGatewayUrl === undefined ? {} : {
@@ -77,7 +89,7 @@ export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: Ru
             path: "/jira/mcp", rules: ["GET", "POST", "DELETE"].map((method) => ({ allow: { method, path: "/jira/mcp" } })),
             credentialBinding: { provider },
           }],
-          binaries: [{ path: "/usr/bin/python3.12" }, { path: "/usr/local/bin/node" }, { path: "/opt/opencode/bin/opencode" }],
+          binaries: [{ path: "/usr/bin/python3.12" }, ...NODE_BINARIES, { path: "/opt/opencode/bin/opencode" }],
         },
         service_gateway_executor: {
           name: "service-gateway-executor",
@@ -118,7 +130,7 @@ export function createMemoryPolicy(memoryUrl: URL, provider: string, runtime: Ru
               { allow: { method: "POST", path: "/v1/responses" } },
             ], credentialBinding: { provider },
           }],
-          binaries: [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }],
+          binaries: [{ path: "/opt/opencode/bin/opencode" }, ...NODE_BINARIES],
         },
       }),
     },

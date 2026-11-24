@@ -276,6 +276,14 @@ def main():
                 has_work = True
             else:
                 task_lines.append(f"  waiting for PR/MR merge (current: {step_from_label})")
+        elif onboarding_label == "onboarding:intake":
+            # Intake advances when the ticket is read (bot action, no external
+            # trigger): a task sitting at onboarding:intake always needs the
+            # bot to run /post-intake. Blocked tasks were filtered above.
+            # Requires the label (not metadata step) so a stale metadata step
+            # or unavailable Jira cannot trigger a start.
+            task_lines.append("  *** INTAKE PENDING — run /post-intake ***")
+            has_work = True
 
         lines.append("\n".join(task_lines))
 

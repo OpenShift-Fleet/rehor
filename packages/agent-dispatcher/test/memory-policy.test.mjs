@@ -34,12 +34,12 @@ test("policy with a model proxy URL adds the exact model-proxy rule", () => {
       ],
       credentialBinding: { provider: "provider-name-1" },
     }],
-    binaries: [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }],
+    binaries: [{ path: "/opt/opencode/bin/opencode" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }],
   });
   const memory = policy.networkPolicies.memory_health;
   assert.equal(memory.name, "memory-health");
   assert.deepEqual(memory.endpoints[0].rules, [{ allow: { method: "GET", path: "/health" } }]);
-  assert.deepEqual(memory.binaries, [{ path: "/usr/bin/python3.12" }]);
+  assert.deepEqual(memory.binaries, [{ path: "/usr/bin/python3.12" }, { path: "/usr/local/bin/node" }, { path: "/usr/local/nvm/versions/node/*/bin/node" }]);
 });
 
 test("model proxy endpoint keeps an explicit port and the same provider binding", () => {
@@ -104,12 +104,12 @@ test("runtime services use exact paths, methods, binaries, origins and provider 
   const expected = {
     memory_runtime: {
       host: "memory.example.test", port: 8443,
-      binaries: ["/usr/bin/python3.12", "/usr/local/bin/node", "/opt/opencode/bin/opencode"],
+      binaries: ["/usr/bin/python3.12", "/usr/local/bin/node", "/usr/local/nvm/versions/node/*/bin/node", "/opt/opencode/bin/opencode"],
       routes: { "/mcp": ["GET", "POST", "DELETE"], "/api/tasks": ["GET"], "/api/bot-status": ["POST"], "/api/costs": ["POST"], "/api/cycle-runs": ["POST"] },
     },
     service_gateway_jira: {
       host: "service-gateway.example.test", port: 8454,
-      binaries: ["/usr/bin/python3.12", "/usr/local/bin/node", "/opt/opencode/bin/opencode"],
+      binaries: ["/usr/bin/python3.12", "/usr/local/bin/node", "/usr/local/nvm/versions/node/*/bin/node", "/opt/opencode/bin/opencode"],
       routes: { "/jira/mcp": ["GET", "POST", "DELETE"] },
     },
     service_gateway_executor: {

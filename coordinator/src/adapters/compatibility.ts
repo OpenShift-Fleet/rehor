@@ -22,6 +22,23 @@ export interface CompatibilitySinkOptions {
   logger?: Pick<Console, "warn">;
   zstdCommand?: string;
   compressTranscript?: (text: string) => Promise<Uint8Array> | Uint8Array;
+  /**
+   * Minimum spacing between remote working-status POSTs per instance. Working
+   * updates arriving faster are coalesced into one trailing POST carrying the
+   * latest payload; non-working states always POST immediately. The local
+   * status.jsonl record keeps every update regardless.
+   */
+  statusThrottleMs?: number;
+}
+
+/** Default remote working-status POST interval; see CompatibilitySinkOptions.statusThrottleMs. */
+export const DEFAULT_STATUS_THROTTLE_MS = 2000;
+
+/** Per-instance remote status POST throttle bookkeeping. */
+interface StatusThrottleEntry {
+  lastPostAt: number;
+  pending?: Record<string, unknown>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export interface CompatibilitySink {
@@ -54,6 +71,8 @@ export function createCompatibilitySink(options: CompatibilitySinkOptions): Comp
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const logger = options.logger ?? console;
   const transcripts = new Map<string, StoredTranscript>();
+  const statusThrottleMs = options.statusThrottleMs ?? DEFAULT_STATUS_THROTTLE_MS;
+  const statusThrottles = new Map<string, StatusThrottleEntry>();
   const compress =
     options.compressTranscript ??
     ((text: string) => zstdCompress(options.zstdCommand ?? "zstd", text));
@@ -66,7 +85,45 @@ export function createCompatibilitySink(options: CompatibilitySinkOptions): Comp
   const writeStatus = async (update: StatusUpdate): Promise<void> => {
     const payload = toStatusPayload(update);
     await writeLocal("status.jsonl", payload);
-    await postJson(options.statusUrl, payload, fetchImpl, logger, options.memoryRoute);
+    const throttle = statusThrottles.get(update.instanceId);
+    if (update.state !== "working") {
+      // Non-working states bypass the throttle and drop any pending working POST.
+      if (throttle) {
+        if (throttle.timer !== undefined) clearTimeout(throttle.timer);
+        throttle.timer = undefined;
+        throttle.pending = undefined;
+        throttle.lastPostAt = Date.now();
+      }
+      await postJson(options.statusUrl, payload, fetchImpl, logger, options.memoryRoute);
+      return;
+    }
+    const now = Date.now();
+    if (!throttle) {
+      statusThrottles.set(update.instanceId, { lastPostAt: now });
+      await postJson(options.statusUrl, payload, fetchImpl, logger, options.memoryRoute);
+      return;
+    }
+    if (now - throttle.lastPostAt >= statusThrottleMs) {
+      throttle.lastPostAt = now;
+      await postJson(options.statusUrl, payload, fetchImpl, logger, options.memoryRoute);
+      return;
+    }
+    // Inside the window: keep only the latest payload and at most one trailing
+    // timer, which fires once the interval since the last POST has elapsed.
+    throttle.pending = payload;
+    if (throttle.timer === undefined) {
+      throttle.timer = setTimeout(
+        () => {
+          throttle.timer = undefined;
+          const trailing = throttle.pending;
+          throttle.pending = undefined;
+          if (!trailing) return;
+          throttle.lastPostAt = Date.now();
+          void postJson(options.statusUrl, trailing, fetchImpl, logger, options.memoryRoute);
+        },
+        statusThrottleMs - (now - throttle.lastPostAt),
+      );
+    }
   };
 
   const appendTranscript = async (record: TranscriptEventRecord): Promise<void> => {

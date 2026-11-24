@@ -36,10 +36,34 @@ import (
 //	/executor/execute -> Executor  /executor/execute (POST only; executor
 //	                                             HTTP API, same existing
 //	                                             policy/execution path)
+//	/jira/<rest>    -> JiraAPI    <rest>     (REHOR-263 direct destination:
+//	                                             Jira REST upstream, Basic
+//	                                             auth injected; the /jira/mcp
+//	                                             and /jira/rest subtrees keep
+//	                                             the fixed routes above)
+//	/github/<rest>  -> GitHubAPI  <rest>     (REHOR-263 direct destination:
+//	                                             GitHub API upstream, bearer
+//	                                             token injected)
+//	/gitlab/<rest>  -> GitLabAPI  <rest>     (REHOR-263 direct destination:
+//	                                             GitLab API upstream, private
+//	                                             token injected)
 //
 // An empty field disables that route: requests to its prefixes fail closed
 // with 503 rather than being routed anywhere else. Unknown paths are
 // rejected with 404; there is no catch-all.
+//
+// The three PathnameDestination fields differ from the loopback fields:
+// their upstreams are external systems and the gateway itself injects the
+// destination credential on the upstream leg (the loopback backends do
+// their own injection). The destination prefix is stripped and the
+// remainder forwarded unchanged — the same alias semantics as /models and
+// /registry — so clients compose <base>/<destination>/<upstream API path>
+// and never see a credential. An empty Upstream disables the destination
+// (503, like a disabled backend); an absent credential fails closed with a
+// 503 naming the missing environment variable instead of forwarding
+// unauthenticated. The /jira destination never claims /jira/mcp or
+// /jira/rest: those keep their fixed routes (and their 404s) exactly as
+// before. See pathname_route.go.
 //
 // Backends are chosen only at construction time from this fixed set. No
 // request path, header, query, or body can select or modify an upstream.
@@ -55,9 +79,19 @@ import (
 // rewritten back into the route's gateway prefix, so a backend redirect
 // stays on the route that produced it and never becomes an external or
 // cross-route redirect. Absolute redirect URLs (the Git smart HTTP case)
-// pass through untouched. Location values without a leading slash need no
-// rewrite: clients resolve them against the gateway request path, which
-// already carries the prefix.
+// pass through untouched on the loopback routes. Location values without a
+// leading slash need no rewrite: clients resolve them against the gateway
+// request path, which already carries the prefix.
+//
+// The direct pathname destinations (/jira, /github, /gitlab) additionally
+// rewrite same-upstream ABSOLUTE Location and Link pagination URLs into
+// their gateway prefix — SDK clients follow those verbatim, which would
+// bypass the proxy and drop the injected credential — and fail the
+// response closed (502) when a URL names any other origin. The gitlab
+// destination also rejects destination authentication parameters in the
+// query string and supported form/JSON bodies before proxying (GitLab
+// reads those before headers). See pathname_response.go and
+// pathname_guard.go.
 type GatewayConfig struct {
 	Models      string // OpenAI-compatible gateway listener, e.g. http://127.0.0.1:8450
 	JiraMCP     string // mcp-atlassian streamable HTTP listener, e.g. http://127.0.0.1:8444
@@ -71,6 +105,16 @@ type GatewayConfig struct {
 	// HTTP/1.1 /executor/execute wrapper share the port), e.g.
 	// http://127.0.0.1:9090. No extra loopback listener is needed.
 	Executor string
+
+	// REHOR-263 pathname-routed direct destinations: external upstreams
+	// selected by gateway path prefix (/jira, /github, /gitlab) with the
+	// credential injected by the gateway itself on the upstream leg. The
+	// Jira destination shares the JIRA_* credential of the :8445 listener.
+	// See pathname_route.go for the routing, injection, and fail-closed
+	// rules.
+	JiraAPI   PathnameDestination
+	GitHubAPI PathnameDestination
+	GitLabAPI PathnameDestination
 }
 
 // DefaultGatewayConfig returns the loopback URLs for the default listener
@@ -102,6 +146,38 @@ type gatewayRoute struct {
 	match    func(u *url.URL) (path, rawPath string, ok bool)
 	reverse  func(location string) string
 	postOnly bool
+
+	// guard, when set, inspects a request before it is proxied and may
+	// reject it with a fixed, credential-free error (routeRejection). It is
+	// used by the direct pathname destinations to enforce their
+	// credential-source contract request-side (the gitlab destination
+	// rejects authentication parameters Rack would read before headers).
+	guard func(r *http.Request) *routeRejection
+
+	// responseRewrite, when set, rewrites response URLs for direct
+	// pathname destinations: same-upstream absolute Link and Location URLs
+	// become gateway-prefixed paths, and any other origin fails the
+	// response closed (see pathname_response.go). It subsumes reverse for
+	// these routes — relative Locations keep the same one-prefix behavior —
+	// so the two are never set together.
+	responseRewrite *upstreamRewrite
+
+	// Direct pathname-routed destinations (REHOR-263). inject authorizes
+	// the upstream leg after the ingress credential headers are stripped;
+	// it is set only when the destination credential is configured.
+	// credMissing is the fixed, credential-free error a missing
+	// credential fails closed with (503); no proxy is built for such a
+	// route, so it can never forward unauthenticated. transport overrides
+	// the shared gateway transport (the GitLab destination needs the git
+	// auth proxy's TLS knobs); nil means the shared transport.
+	// stripResponseSensitivity drops credential-bearing response headers
+	// (service-session cookies, auth challenges) before the client sees
+	// them — the direct upstreams answer with the proxy's credential, not
+	// the client's, so their session material must not pass through.
+	inject                   func(http.Header)
+	credMissing              string
+	transport                http.RoundTripper
+	stripResponseSensitivity bool
 }
 
 // NewHTTPGateway builds the fixed-path multiplexer. It returns an error for
@@ -131,7 +207,16 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 		}
 		targets[f.name] = u
 	}
-	if len(targets) == 0 {
+	// REHOR-263: build and validate the pathname-routed direct
+	// destinations (/jira, /github, /gitlab) before the minimum-backend
+	// check, so a malformed upstream URL fails here (before any listener
+	// opens) and a configuration with only direct destinations is still a
+	// valid gateway.
+	pathnameRoutes, err := pathnameDestinationRoutes(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 && !hasConfiguredTarget(pathnameRoutes) {
 		return nil, fmt.Errorf("http gateway requires at least one backend URL")
 	}
 
@@ -179,6 +264,13 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 		}), nil, true),
 	}
 
+	// The pathname destinations (REHOR-263) are appended AFTER the fixed
+	// routes above: the pre-existing /jira/mcp and /jira/rest entries keep
+	// claiming their paths (and their 404s) exactly as before — nothing
+	// existing is re-pointed — and the /jira destination additionally
+	// excludes those subtrees in its own matcher (jiraPathnameMatch).
+	routes = append(routes, pathnameRoutes...)
+
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// The upstreams are fixed loopback listeners chosen at construction
 	// time; ambient proxy configuration (HTTP_PROXY, HTTPS_PROXY, NO_PROXY)
@@ -187,14 +279,30 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 
 	for i := range routes {
 		rt := routes[i]
-		if rt.target == nil {
+		// A destination with a missing credential gets no proxy at all:
+		// the dispatch loop fails it closed with its clear error, and no
+		// code path can forward an unauthenticated request upstream.
+		if rt.target == nil || rt.credMissing != "" {
 			continue
 		}
 		target := rt.target
 		modifyResponse := func(*http.Response) error { return nil }
+		if rt.stripResponseSensitivity {
+			base := modifyResponse
+			modifyResponse = func(resp *http.Response) error {
+				if err := stripSensitiveResponseHeaders(resp); err != nil {
+					return err
+				}
+				return base(resp)
+			}
+		}
 		if rt.reverse != nil {
 			reverse := rt.reverse
+			base := modifyResponse
 			modifyResponse = func(resp *http.Response) error {
+				if err := base(resp); err != nil {
+					return err
+				}
 				locs := resp.Header.Values("Location")
 				if len(locs) == 0 {
 					return nil
@@ -205,6 +313,24 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 				}
 				return nil
 			}
+		}
+		// Direct pathname destinations rewrite same-upstream absolute Link
+		// and Location URLs back into the gateway prefix and reject any
+		// other origin (pathname_response.go). This subsumes reverse for
+		// those routes, so the chains never overlap.
+		if rt.responseRewrite != nil {
+			rw := rt.responseRewrite
+			base := modifyResponse
+			modifyResponse = func(resp *http.Response) error {
+				if err := base(resp); err != nil {
+					return err
+				}
+				return rw.rewriteResponse(resp)
+			}
+		}
+		roundTrip := http.RoundTripper(transport)
+		if rt.transport != nil {
+			roundTrip = rt.transport
 		}
 		routes[i].proxy = &httputil.ReverseProxy{
 			Rewrite: func(r *httputil.ProxyRequest) {
@@ -240,13 +366,29 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 						h.Del(k)
 					}
 				}
+				// Direct pathname destinations (REHOR-263) authorize the
+				// upstream leg themselves, after every client-supplied
+				// credential and identity header is stripped.
+				if rt.inject != nil {
+					rt.inject(h)
+				}
 			},
 			// Flush immediately: MCP SSE streams, model completions, and git
 			// pack negotiation must not be buffered.
 			FlushInterval:  -1,
-			Transport:      transport,
+			Transport:      roundTrip,
 			ModifyResponse: modifyResponse,
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				// A response URL (Location or Link) on a foreign origin is
+				// rejected with its own clear, fixed message: passing it
+				// through would hand the client a proxy-authenticated
+				// arbitrary target. The offending URL is never echoed.
+				if errors.Is(err, errUnapprovedOrigin) {
+					log.Printf("http-gateway: route=%s method=%s response_rejected class=unapproved_origin",
+						rt.name, r.Method)
+					http.Error(w, "gateway rejected an upstream link or redirect to an unapproved origin", http.StatusBadGateway)
+					return
+				}
 				// Never log or return the raw error: transport errors can
 				// carry upstream URLs, header contents, or injected request
 				// data. Log a fixed route ID and a coarse error class only.
@@ -294,10 +436,30 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
+			// A destination whose credential is not configured fails
+			// closed with a clear, fixed error (never a silent skip, and
+			// never an unauthenticated forward — no proxy exists for it).
+			if rt.credMissing != "" {
+				log.Printf("http-gateway: route=%s method=%s credential_missing", rt.name, r.Method)
+				http.Error(w, rt.credMissing, http.StatusServiceUnavailable)
+				return
+			}
 			if rt.proxy == nil {
 				log.Printf("http-gateway: route=%s method=%s disabled", rt.name, r.Method)
 				http.Error(w, "upstream not configured", http.StatusServiceUnavailable)
 				return
+			}
+			// Destination credential-source guards run after the route
+			// fail-closed checks and before any upstream hop: a request the
+			// destination refuses (GitLab authentication parameters) fails
+			// with a clear, fixed error and never reaches the upstream.
+			if rt.guard != nil {
+				if rej := rt.guard(r); rej != nil {
+					log.Printf("http-gateway: route=%s method=%s request_rejected class=%s",
+						rt.name, r.Method, rej.class)
+					http.Error(w, rej.message, rej.status)
+					return
+				}
 			}
 			rec := &statusRecorder{ResponseWriter: w}
 			rt.proxy.ServeHTTP(rec, r)
@@ -311,6 +473,28 @@ func NewHTTPGateway(cfg GatewayConfig) (http.Handler, error) {
 		}
 		http.NotFound(w, r)
 	}), nil
+}
+
+// routeRejection is one request guard's fail-closed verdict: a fixed HTTP
+// status, a fixed log class, and a fixed client message. The message must
+// never echo request data — the rejected request may itself carry the
+// credential the guard is refusing.
+type routeRejection struct {
+	status  int
+	class   string
+	message string
+}
+
+// hasConfiguredTarget reports whether any of the routes has a configured
+// upstream, counting the direct pathname destinations toward the gateway's
+// minimum-backend rule.
+func hasConfiguredTarget(routes []gatewayRoute) bool {
+	for _, rt := range routes {
+		if rt.target != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // gatewayErrorClass reduces a transport error to a fixed label. The

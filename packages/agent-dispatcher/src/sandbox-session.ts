@@ -4,7 +4,7 @@ import type { OpenShellClient } from "@nvidia/openshell-sdk";
 import { DeletionOutcome, NetworkPolicyRuleSchema, ProviderProfileCategory, ProviderReadinessState, SandboxPhase, SandboxPolicySchema, SandboxRestartPolicy } from "@nvidia/openshell-sdk/raw";
 import { create, equals } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
-import type { WorkPreflightResult } from "./work-preflight.js";
+import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 import { buildInputEnvelope, INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "./input-envelope.js";
 import { createMemoryPolicy } from "./memory-policy.js";
 import { withPublicEgress } from "./egress-policy.js";
@@ -22,6 +22,28 @@ export type SandboxSessionOptions = {
   serviceGatewayUrl?: URL;
   /** Central public-egress rollout flag (REHOR-253); default false. */
   publicEgress?: boolean;
+  /** Debug retention (REHOR-245): ms to hold gateway resources after a session
+   * before cleanup so failed sandboxes stay inspectable; default 0. */
+  sandboxRetentionMs?: number;
+  /** Best-effort notification when retention holds a session's resources. */
+  onRetention?: (info: SandboxRetentionInfo) => void;
+};
+export type SandboxRetentionInfo = { runId: string; workspaceName: string; sandboxName: string; retentionMs: number };
+/** Durable registry hooks (REHOR-218): the run ID is minted by the caller so
+ * a registry record can exist before the session starts, and provisioning is
+ * reported once the sandbox exists. Both are best effort. */
+export type SandboxProvisionedInfo = {
+  runId: string;
+  workspaceName: string;
+  sandboxName: string;
+  providerName: string;
+  profileName: string;
+};
+export type SandboxRunOptions = {
+  /** Reuse a caller-minted run ID for resource names and labels. */
+  runId?: ReturnType<typeof randomUUID>;
+  /** Awaited after the sandbox is created and verified; errors never fail the session. */
+  onProvisioned?: (info: SandboxProvisionedInfo) => Promise<void>;
 };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
@@ -143,6 +165,8 @@ export class SandboxSession {
   private readonly memoryRuntime: boolean;
   private readonly serviceGatewayUrl: URL | undefined;
   private readonly publicEgress: boolean;
+  private readonly sandboxRetentionMs: number;
+  private readonly onRetention: ((info: SandboxRetentionInfo) => void) | undefined;
 
   constructor({
     raw,
@@ -153,6 +177,8 @@ export class SandboxSession {
     memoryRuntime = false,
     serviceGatewayUrl,
     publicEgress = false,
+    sandboxRetentionMs = 0,
+    onRetention,
   }: SandboxSessionOptions) {
     this.raw = raw;
     this.memory = memory;
@@ -162,11 +188,19 @@ export class SandboxSession {
     this.memoryRuntime = memoryRuntime;
     this.serviceGatewayUrl = serviceGatewayUrl;
     this.publicEgress = publicEgress;
+    this.sandboxRetentionMs = sandboxRetentionMs;
+    this.onRetention = onRetention;
   }
 
   /** image comes from the canonical profile image validator; never shell-expanded. */
-  async run(image: string, decision: Extract<WorkPreflightResult, { action: "start" }>, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
-    const runId = randomUUID();
+  async run(
+    image: string,
+    decision: Extract<WorkPreflightResult, { action: "start" }>,
+    environment: Record<string, string>,
+    signal?: AbortSignal,
+    options?: SandboxRunOptions,
+  ): Promise<SandboxSessionResult> {
+    const runId = options?.runId ?? randomUUID();
     const built = buildInputEnvelope(decision, runId);
     // Gateway resource names allow at most 19 characters, including prefix.
     const suffix = (BigInt(`0x${runId.replaceAll("-", "")}`) % (36n ** 18n)).toString(36).padStart(18, "0");
@@ -182,10 +216,17 @@ export class SandboxSession {
       return record;
     }
     if (signal?.aborted) { record.errorCode = "cancelled"; return record; }
-    return this.execute(record, image, built.serialized, environment, signal);
+    return this.execute(record, image, built.serialized, environment, signal, options);
   }
 
-  private async execute(record: SandboxSessionResult, image: string, content: Buffer, environment: Record<string, string>, signal?: AbortSignal): Promise<SandboxSessionResult> {
+  private async execute(
+    record: SandboxSessionResult,
+    image: string,
+    content: Buffer,
+    environment: Record<string, string>,
+    signal?: AbortSignal,
+    options?: SandboxRunOptions,
+  ): Promise<SandboxSessionResult> {
     const { workspace, sandbox, runId } = record;
     const scope = { selection: { case: "workspace" as const, value: workspace.name } };
     const labels = { "rehor-session": "agent", "rehor-run-id": runId };
@@ -256,6 +297,23 @@ export class SandboxSession {
       sandbox.id = createdSandbox!.metadata!.id;
       sandbox.state = "created";
 
+      // Durable registry notification (REHOR-218): reported once the sandbox
+      // exists and its identity is verified. Best effort by contract; a
+      // registry hiccup must never fail an otherwise healthy session.
+      if (options?.onProvisioned) {
+        try {
+          await options.onProvisioned({
+            runId,
+            workspaceName: workspace.name,
+            sandboxName: sandbox.name,
+            providerName: record.provider.name,
+            profileName: record.profile.name,
+          });
+        } catch {
+          /* Notification is best effort. */
+        }
+      }
+
       record.stage = "readiness";
       let ready = false;
       // Status polling only; never retry a create or execute request.
@@ -310,9 +368,14 @@ export class SandboxSession {
               // Central public egress (REHOR-253): while enabled, the
               // effective network rule key set must match the requested
               // set exactly. Legacy flag-off behavior keeps accepting
-              // additive Gateway baselines.
+              // additive Gateway baselines. The Gateway attaches one
+              // reserved `_provider_<name>` rule on provider attachment
+              // (credential placeholder resolution); it is gateway-owned,
+              // deterministic, and credential-free, so strict mode ignores
+              // exactly that rule and nothing else.
+              const reservedProviderRule = `_provider_${record.provider.name}`;
               const expectedKeys = Object.keys(expected.networkPolicies).sort();
-              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).sort();
+              const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).filter((key) => key !== reservedProviderRule).sort();
               if (expectedKeys.length !== actualKeys.length || expectedKeys.some((key, index) => key !== actualKeys[index])) throw new Error();
             }
             for (const [name, rule] of Object.entries(expected.networkPolicies)) {
@@ -363,9 +426,17 @@ export class SandboxSession {
       else {
         record.stage = "runner";
         signal?.throwIfAborted();
-        const command = this.runtime.kind === "private"
-          ? ["/usr/bin/python3.12", "/opt/rehor/sandbox-bootstrap.py"]
-          : ["/usr/bin/bash", "/home/botuser/app/entrypoint.sh"];
+        // Wrap the runner in a keepalive loop: long silent phases (a hung
+        // model turn, quiet builds) starve the exec stream of traffic and
+        // idle timeouts between the client and the gateway reset it
+        // (REHOR-245: a stalled session was cancelled ~8 minutes into
+        // silence, orphaning its cycle record and transcript). The periodic
+        // stdout byte is drained and never logged; the runner's exit status
+        // propagates through wait.
+        const runnerCommand = this.runtime.kind === "private"
+          ? "/usr/bin/python3.12 /opt/rehor/sandbox-bootstrap.py"
+          : "/usr/bin/bash /home/botuser/app/entrypoint.sh";
+        const command = ["/usr/bin/sh", "-c", `${runnerCommand} & runner=$!; while kill -0 $runner 2>/dev/null; do sleep 30; echo .; done; wait $runner; exit $?`];
         const exit = await execute(command, Buffer.alloc(0), record.runnerRequestId, true);
         record.outcome = exit === 0 ? "passed" : "failed";
       }
@@ -381,6 +452,19 @@ export class SandboxSession {
     } else {
       record.completion = "unknown";
       record.cleanup = "unknown";
+      // Debug retention (REHOR-245): hold the session's gateway resources so
+      // failed sandboxes stay inspectable (logs, exec) before cleanup. An
+      // abort during the wait falls through to immediate cleanup, and the
+      // cleanup budget starts only after the wait. The record keeps its
+      // unresolved values until the deferred reconciliation completes.
+      if (this.sandboxRetentionMs > 0 && !signal?.aborted) {
+        try {
+          this.onRetention?.({ runId, workspaceName: workspace.name, sandboxName: sandbox.name, retentionMs: this.sandboxRetentionMs });
+        } catch { /* Notification is best effort. */ }
+        try {
+          await sleep(this.sandboxRetentionMs, undefined, signal ? { signal } : undefined);
+        } catch { /* Aborted: clean up now. */ }
+      }
       // Bound the entire reconciliation once, not the sum of per-RPC retries.
       const cleanupSignal = AbortSignal.timeout(this.cleanupBudgetMs);
       try {
