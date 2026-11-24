@@ -1,5 +1,5 @@
 # Stage 1: Build the React dashboard
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:130884e8be8170676be0c660fb63333ad68b496455cc075e1cb7b3fa596681a6 AS dashboard
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:9939252c87bdca536a0e908841464484b9db7f9ec37a90cc3e951f98a8a83bc8 AS dashboard
 USER 0
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
@@ -9,7 +9,7 @@ COPY shared/ /app/shared/
 RUN npm run build
 
 # Stage 2: Python memory server
-FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:1826b5dfde1430f458f864cf04b17130e316d0b7246cc6d5b1ed85c7d968e3eb
+FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:3c3413652c3cf6aab00587926949ca8884f06b7d28dbbe69508e29aade34e2fe
 USER 0
 
 # Updating Python dependencies does not update vulnerable RPMs in the pinned base.
