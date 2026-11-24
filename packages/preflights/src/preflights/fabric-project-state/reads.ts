@@ -1,7 +1,7 @@
 import { createHttpClient, isPreflightHttpError } from "../../shared/http.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import type { ProxyWiring } from "../../shared/run-context.js";
-import { keyOf, labels, record, sorted, text, type RecordData } from "./snapshot.js";
+import { keyOf, labels, type RecordData, record, sorted, text } from "./snapshot.js";
 
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const API = "/rest/api/2";
@@ -33,9 +33,15 @@ export function createProjectReads(proxy: ProxyWiring) {
     const tokens = new Set<string>();
     let nextPageToken: string | undefined;
     for (let page = 0; page < MAX_JIRA_PAGES; page++) {
-      const result = requireRecord(await jira.postJson(`${API}/search/jql`, {
-        jql, fields, maxResults: PAGE_SIZE, nextPageToken,
-      }), "Invalid Jira search response");
+      const result = requireRecord(
+        await jira.postJson(`${API}/search/jql`, {
+          jql,
+          fields,
+          maxResults: PAGE_SIZE,
+          nextPageToken,
+        }),
+        "Invalid Jira search response",
+      );
       if (!Array.isArray(result.issues)) throw new Error("Jira search returned no issue list");
       for (const item of result.issues) {
         const issue = requireRecord(item, "Invalid Jira search issue");
@@ -55,10 +61,14 @@ export function createProjectReads(proxy: ProxyWiring) {
   }
 
   async function issue(key: string, fields: readonly string[]) {
-    const result = requireRecord(await jira.getJson(`${API}/issue/${encodeURIComponent(key)}`, {
-      query: { fields: fields.join(",") },
-    }), `Invalid Jira issue response for ${key}`);
-    if (issueKey(result) !== key || !record(result.fields)) throw new Error(`Invalid Jira issue response for ${key}`);
+    const result = requireRecord(
+      await jira.getJson(`${API}/issue/${encodeURIComponent(key)}`, {
+        query: { fields: fields.join(",") },
+      }),
+      `Invalid Jira issue response for ${key}`,
+    );
+    if (issueKey(result) !== key || !record(result.fields))
+      throw new Error(`Invalid Jira issue response for ${key}`);
     return result;
   }
 
@@ -66,18 +76,26 @@ export function createProjectReads(proxy: ProxyWiring) {
     const items: RecordData[] = [];
     const ids = new Set<string>();
     for (let page = 0; page < MAX_JIRA_PAGES; page++) {
-      const result = requireRecord(await jira.getJson(`${API}/issue/${encodeURIComponent(key)}/comment`, {
-        query: { startAt: items.length, maxResults: PAGE_SIZE, orderBy: "created" },
-      }), `Invalid Jira comment response for ${key}`);
-      if (!Array.isArray(result.comments) || typeof result.total !== "number" ||
-          !Number.isSafeInteger(result.total) || result.total < items.length + result.comments.length ||
-          (result.startAt !== undefined && result.startAt !== items.length)) {
+      const result = requireRecord(
+        await jira.getJson(`${API}/issue/${encodeURIComponent(key)}/comment`, {
+          query: { startAt: items.length, maxResults: PAGE_SIZE, orderBy: "created" },
+        }),
+        `Invalid Jira comment response for ${key}`,
+      );
+      if (
+        !Array.isArray(result.comments) ||
+        typeof result.total !== "number" ||
+        !Number.isSafeInteger(result.total) ||
+        result.total < items.length + result.comments.length ||
+        (result.startAt !== undefined && result.startAt !== items.length)
+      ) {
         throw new Error(`Invalid Jira comment pagination for ${key}`);
       }
       for (const item of result.comments) {
         const comment = requireRecord(item, `Invalid Jira comment on ${key}`);
         const id = typeof comment.id === "number" ? String(comment.id) : text(comment.id);
-        if (!id || ids.has(id) || !Object.hasOwn(comment, "body")) throw new Error(`Invalid Jira comment on ${key}`);
+        if (!id || ids.has(id) || !Object.hasOwn(comment, "body"))
+          throw new Error(`Invalid Jira comment on ${key}`);
         ids.add(id);
         items.push(comment);
       }
@@ -97,18 +115,31 @@ export function createProjectReads(proxy: ProxyWiring) {
         query: { state: "open", sort: "created", direction: "desc", per_page: 100, page },
       });
       if (!Array.isArray(result)) throw new Error(`Invalid GitHub PR list for ${repo}`);
-      if (prs.length + result.length > 1000) throw new Error(`GitHub PR list exceeded scan limit for ${repo}`);
+      if (prs.length + result.length > 1000)
+        throw new Error(`GitHub PR list exceeded scan limit for ${repo}`);
       for (const item of result) {
         const pr = record(item);
-        if (!pr || typeof pr.number !== "number" || !Number.isSafeInteger(pr.number) || pr.number <= 0 ||
-            numbers.has(pr.number) || typeof pr.title !== "string" || !Array.isArray(pr.labels)) {
+        if (
+          !pr ||
+          typeof pr.number !== "number" ||
+          !Number.isSafeInteger(pr.number) ||
+          pr.number <= 0 ||
+          numbers.has(pr.number) ||
+          typeof pr.title !== "string" ||
+          !Array.isArray(pr.labels)
+        ) {
           throw new Error(`Invalid GitHub PR for ${repo}`);
         }
         const names = pr.labels.map((label) => text(record(label)?.name));
         if (names.some((name) => !name)) throw new Error(`Invalid GitHub PR labels for ${repo}`);
         numbers.add(pr.number);
-        prs.push({ repo, number: pr.number, title: pr.title, labels: sorted(names),
-          url: text(pr.html_url) || `https://github.com/${repo}/pull/${pr.number}` });
+        prs.push({
+          repo,
+          number: pr.number,
+          title: pr.title,
+          labels: sorted(names),
+          url: text(pr.html_url) || `https://github.com/${repo}/pull/${pr.number}`,
+        });
       }
       if (result.length < 100) return prs;
     }
@@ -116,7 +147,11 @@ export function createProjectReads(proxy: ProxyWiring) {
   }
 
   const prCache = new Map<string, PullRequest[]>();
-  async function prSnapshot(children: readonly RecordData[], implementationLabel: string, repos: ProjectReposMap) {
+  async function prSnapshot(
+    children: readonly RecordData[],
+    implementationLabel: string,
+    repos: ProjectReposMap,
+  ) {
     const byRepo = new Map<string, Set<string>>();
     for (const child of children) {
       const childLabels = labels(child);
@@ -130,16 +165,21 @@ export function createProjectReads(proxy: ProxyWiring) {
     }
     const tickets: Record<string, PullRequest[]> = {};
     for (const name of sorted(byRepo.keys())) {
-      const keys = byRepo.get(name)!;
+      const keys = byRepo.get(name) ?? new Set<string>();
       for (const key of keys) tickets[key] ??= [];
       const entry = Object.hasOwn(repos, name) ? repos[name] : undefined;
       const upstream = text(entry?.upstream) || text(entry?.url);
-      const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(upstream);
+      const match = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(
+        upstream,
+      );
       if (!match) {
         if (/^https:\/\/(gitlab\.com|gitlab\.cee\.redhat\.com)\//.test(upstream)) continue;
-        throw new Error(`Missing or unsupported upstream for handed-off repo ${name || "(empty label)"}`);
+        throw new Error(
+          `Missing or unsupported upstream for handed-off repo ${name || "(empty label)"}`,
+        );
       }
-      if (match.slice(1).some((part) => part === "." || part === "..")) throw new Error("Invalid GitHub upstream path");
+      if (match.slice(1).some((part) => part === "." || part === ".."))
+        throw new Error("Invalid GitHub upstream path");
       const repo = `${match[1]}/${match[2]}`;
       let prs = prCache.get(repo);
       if (!prs) {
@@ -152,7 +192,7 @@ export function createProjectReads(proxy: ProxyWiring) {
       }
     }
     for (const prs of Object.values(tickets)) {
-      prs.sort((a, b) => a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.number - b.number);
+      prs.sort((a, b) => (a.repo < b.repo ? -1 : a.repo > b.repo ? 1 : a.number - b.number));
     }
     return tickets;
   }

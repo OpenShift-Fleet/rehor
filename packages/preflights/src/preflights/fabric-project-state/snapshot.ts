@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 export type RecordData = Record<string, unknown>;
 export const record = (value: unknown): RecordData | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as RecordData : undefined;
-export const text = (value: unknown): string => typeof value === "string" ? value : "";
+    ? (value as RecordData)
+    : undefined;
+export const text = (value: unknown): string => (typeof value === "string" ? value : "");
 export const field = (issue: RecordData, name: string): unknown => {
   const fields = record(issue.fields);
   return fields && Object.hasOwn(fields, name) ? fields[name] : issue[name];
@@ -25,12 +26,17 @@ export const labels = (issue: RecordData): string[] => {
   return value;
 };
 
-export const COORD_STATES = new Set(["needs-plan", "active", "blocked", "complete"]
-  .map((state) => `dev-bot-coordinator:${state}`));
+export const COORD_STATES = new Set(
+  ["needs-plan", "active", "blocked", "complete"].map((state) => `dev-bot-coordinator:${state}`),
+);
 
 function decodedContainer(value: string): unknown {
-  if (!/^[{\[]/.test(value.trimStart())) return undefined;
-  try { return JSON.parse(value); } catch { return undefined; }
+  if (!/^[{[]/.test(value.trimStart())) return undefined;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function extractTeam(raw: unknown, allowScalar = true): string {
@@ -49,8 +55,12 @@ function extractTeam(raw: unknown, allowScalar = true): string {
     }
     for (const name of ["team", "option", "value", "data"]) {
       const item = obj[name];
-      const id = record(item) || Array.isArray(item) ? extractTeam(item, false)
-        : typeof item === "number" || /^[A-Za-z0-9_-]+$/.test(text(item).trim()) ? String(item).trim() : "";
+      const id =
+        record(item) || Array.isArray(item)
+          ? extractTeam(item, false)
+          : typeof item === "number" || /^[A-Za-z0-9_-]+$/.test(text(item).trim())
+            ? String(item).trim()
+            : "";
       if (id) return id;
     }
     return "";
@@ -62,12 +72,14 @@ function extractTeam(raw: unknown, allowScalar = true): string {
   return allowScalar ? raw.trim() : "";
 }
 
-export const teamId = (issue: RecordData, fieldId: string): string => extractTeam(field(issue, fieldId));
+export const teamId = (issue: RecordData, fieldId: string): string =>
+  extractTeam(field(issue, fieldId));
 
 function codePointCompare(a: string, b: string): number {
-  const left = [...a], right = [...b];
+  const left = [...a],
+    right = [...b];
   for (let i = 0; i < Math.min(left.length, right.length); i++) {
-    const diff = left[i].codePointAt(0)! - right[i].codePointAt(0)!;
+    const diff = (left[i].codePointAt(0) ?? 0) - (right[i].codePointAt(0) ?? 0);
     if (diff) return diff;
   }
   return left.length - right.length;
@@ -81,13 +93,17 @@ function pythonJson(value: unknown, spaced = false): string {
   const comma = spaced ? ", " : ",";
   const colon = spaced ? ": " : ":";
   if (typeof value === "string") {
-    return JSON.stringify(value).replace(/[\u007f-\uffff]/g,
-      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    return JSON.stringify(value).replace(
+      /[\u007f-\uffff]/g,
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+    );
   }
   if (Array.isArray(value)) return `[${value.map((item) => pythonJson(item, spaced)).join(comma)}]`;
   const obj = record(value);
-  if (obj) return `{${sorted(Object.keys(obj)).map((key) =>
-    `${pythonJson(key)}${colon}${pythonJson(obj[key], spaced)}`).join(comma)}}`;
+  if (obj)
+    return `{${sorted(Object.keys(obj))
+      .map((key) => `${pythonJson(key)}${colon}${pythonJson(obj[key], spaced)}`)
+      .join(comma)}}`;
   return JSON.stringify(value ?? null);
 }
 
@@ -97,12 +113,21 @@ function commentBody(raw: unknown): string {
   const body = decoded ?? raw ?? "";
   const parts: string[] = [];
   function collect(node: unknown): void {
-    if (Array.isArray(node)) { node.forEach(collect); return; }
+    if (Array.isArray(node)) {
+      node.forEach(collect);
+      return;
+    }
     const item = record(node);
     if (!item) return;
-    if (item.type === "text") { parts.push(text(item.text)); return; }
+    if (item.type === "text") {
+      parts.push(text(item.text));
+      return;
+    }
     const attrs = record(item.attrs);
-    if (item.type === "mention") { parts.push(text(attrs?.text)); return; }
+    if (item.type === "mention") {
+      parts.push(text(attrs?.text));
+      return;
+    }
     if (item.type === "codeBlock") {
       const language = text(attrs?.language);
       parts.push(`\`\`\`${/^[A-Za-z0-9_-]+$/.test(language) ? language : ""}\n`);
@@ -112,7 +137,8 @@ function commentBody(raw: unknown): string {
     }
     if (Array.isArray(item.content)) collect(item.content);
     else parts.push(text(item.text));
-    if (["paragraph", "heading", "listItem", "blockquote"].includes(text(item.type))) parts.push("\n");
+    if (["paragraph", "heading", "listItem", "blockquote"].includes(text(item.type)))
+      parts.push("\n");
   }
   collect(body);
   return parts.join("").trim() || pythonJson(body, true);
@@ -121,28 +147,57 @@ function commentBody(raw: unknown): string {
 export function humanComments(comments: readonly RecordData[]) {
   return comments.flatMap((comment) => {
     const body = commentBody(comment.body);
-    const lines = body.split(/[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/).map((line) => line.trim()).filter(Boolean);
-    if (lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() === "Coordinator update" ||
-        lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))) return [];
+    const lines = body
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: Python str.splitlines() boundaries, kept for fingerprint parity.
+      .split(/[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (
+      lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() === "Coordinator update" ||
+      lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
+    )
+      return [];
     return [{ id: String(comment.id || ""), body, created: comment.created ?? null }];
   });
 }
 
-export function fingerprint(parent: RecordData, control: RecordData, children: readonly RecordData[],
-  teamFieldId: string, comments: ReturnType<typeof humanComments>, pullRequests: unknown = {}) {
+export function fingerprint(
+  parent: RecordData,
+  control: RecordData,
+  children: readonly RecordData[],
+  teamFieldId: string,
+  comments: ReturnType<typeof humanComments>,
+  pullRequests: unknown = {},
+) {
   const payload = {
-    parent: { key: keyOf(parent), summary: field(parent, "summary"), description: field(parent, "description"), status: statusName(parent) },
+    parent: {
+      key: keyOf(parent),
+      summary: field(parent, "summary"),
+      description: field(parent, "description"),
+      status: statusName(parent),
+    },
     control: {
-      key: keyOf(control), summary: field(control, "summary"), description: field(control, "description"),
-      parent: parentKey(control), team: teamId(control, teamFieldId),
+      key: keyOf(control),
+      summary: field(control, "summary"),
+      description: field(control, "description"),
+      parent: parentKey(control),
+      team: teamId(control, teamFieldId),
       labels: sorted(labels(control).filter((label) => !COORD_STATES.has(label))),
       comments: comments.map(({ id, body }) => ({ id, body })),
     },
-    children: [...children].sort((a, b) => codePointCompare(keyOf(a), keyOf(b))).map((child) => ({
-      key: keyOf(child), summary: field(child, "summary"), description: field(child, "description"),
-      status: statusName(child), team: teamId(child, teamFieldId), labels: sorted(labels(child)),
-      links: field(child, "issuelinks") ?? [], assignee: field(child, "assignee"), sprint: field(child, "customfield_10020"),
-    })),
+    children: [...children]
+      .sort((a, b) => codePointCompare(keyOf(a), keyOf(b)))
+      .map((child) => ({
+        key: keyOf(child),
+        summary: field(child, "summary"),
+        description: field(child, "description"),
+        status: statusName(child),
+        team: teamId(child, teamFieldId),
+        labels: sorted(labels(child)),
+        links: field(child, "issuelinks") ?? [],
+        assignee: field(child, "assignee"),
+        sprint: field(child, "customfield_10020"),
+      })),
     open_pull_requests: pullRequests,
   };
   return createHash("sha256").update(pythonJson(payload)).digest("hex");

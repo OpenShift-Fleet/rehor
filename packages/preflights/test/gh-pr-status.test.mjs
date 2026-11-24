@@ -419,53 +419,58 @@ test("terminal states can be suppressed when already addressed (onboarding mode)
  * Fixture fetch: answers the GraphQL PR query from a gh-view-shaped `pr`
  * fixture and the two comment endpoints from a mapped `comments` list.
  */
-const prFixtureFetch = (pr, comments = []) => async (url, init) => {
-  if (url.endsWith("/graphql")) {
-    const body = JSON.parse(init.body);
-    assert.equal(body.variables.number !== undefined, true);
-    return jsonResponse({
-      data: {
-        repository: {
-          pullRequest:
-            pr === null
-              ? null
-              : {
-                  state: pr.state,
-                  mergeable: pr.mergeable,
-                  reviewDecision: pr.reviewDecision ?? null,
-                  url: pr.url ?? null,
-                  title: pr.title ?? null,
-                  isDraft: pr.isDraft ?? false,
-                  reviews: { nodes: pr.reviews ?? [] },
-                  statusCheckRollup: {
-                    contexts: {
-                      nodes: (pr.statusCheckRollup ?? []).map((entry) => ({
-                        __typename: "CheckRun",
-                        name: entry.name,
-                        conclusion: entry.conclusion,
-                        detailsUrl: entry.detailsUrl ?? null,
-                      })),
+const prFixtureFetch =
+  (pr, comments = []) =>
+  async (url, init) => {
+    if (url.endsWith("/graphql")) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.variables.number !== undefined, true);
+      return jsonResponse({
+        data: {
+          repository: {
+            pullRequest:
+              pr === null
+                ? null
+                : {
+                    state: pr.state,
+                    mergeable: pr.mergeable,
+                    reviewDecision: pr.reviewDecision ?? null,
+                    url: pr.url ?? null,
+                    title: pr.title ?? null,
+                    isDraft: pr.isDraft ?? false,
+                    reviews: { nodes: pr.reviews ?? [] },
+                    statusCheckRollup: {
+                      contexts: {
+                        nodes: (pr.statusCheckRollup ?? []).map((entry) => ({
+                          __typename: "CheckRun",
+                          name: entry.name,
+                          conclusion: entry.conclusion,
+                          detailsUrl: entry.detailsUrl ?? null,
+                        })),
+                      },
                     },
                   },
-                },
+          },
         },
-      },
-    });
-  }
-  // REST comment endpoints (fixture comments are already {a, t, b}).
-  if (url.includes("/pulls/") && url.endsWith("/comments")) {
+      });
+    }
+    // REST comment endpoints (fixture comments are already {a, t, b}).
+    if (url.includes("/pulls/") && url.endsWith("/comments")) {
+      return jsonResponse(
+        comments.slice(0, 1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
+      );
+    }
     return jsonResponse(
-      comments.slice(0, 1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
+      comments.slice(1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
     );
-  }
-  return jsonResponse(
-    comments.slice(1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
-  );
-};
+  };
 
 /** The same fixture behind the shared GitHub client. */
 const fixtureGitHubClient = (pr, comments = []) =>
-  createGitHubClient({ baseUrl: "https://proxy.example/devbot-proxy", fetch: prFixtureFetch(pr, comments) });
+  createGitHubClient({
+    baseUrl: "https://proxy.example/devbot-proxy",
+    fetch: prFixtureFetch(pr, comments),
+  });
 
 const fixtureMemoryClient = (tasks) =>
   createMemoryServerClient({
