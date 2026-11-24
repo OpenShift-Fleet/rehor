@@ -7,6 +7,10 @@ const registry = createPopulatedRegistry();
 
 test("populated registry registers every landed preflight", () => {
   assert.deepEqual(registry.ids(), [
+    "fabric-konflux-bot-prs",
+    "fabric-pr-label",
+    "fabric-project-state",
+    "fabric-review-queue",
     "gh-pr-status",
     "gl-mr-status",
     "hcc-merged-pr-violations",
@@ -33,6 +37,21 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("onboarding").input), ["label"]);
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
+});
+
+test("fabric-project-state validates the flattened coordinator inputs", () => {
+  const id = "fabric-project-state";
+  const params = {
+    controlLabel: "dev-bot-coordinator",
+    teamFieldId: "customfield_10001",
+    implementationLabel: "hcc-ai-platform-accessmanagement",
+    project: "RHCLOUD",
+    includeBacklog: true,
+  };
+  const result = validateConfig([{ id, with: params }], registry);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.entries, [{ id, params }]);
+  assert.equal(validateConfig([id], registry).ok, false);
 });
 
 test("HCC registry validates shorthand only for preflights without required inputs", () => {

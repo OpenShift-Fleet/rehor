@@ -3,26 +3,8 @@ import test from "node:test";
 import { validateWorkflowDefaults } from "../dist/index.js";
 import { createPopulatedRegistry } from "../dist/preflights/index.js";
 
-test("populated registry registers the ported preflights", () => {
+test("populated registry resolves the ported preflights by id", () => {
   const registry = createPopulatedRegistry();
-  assert.deepEqual(registry.ids(), [
-    "gh-pr-status",
-    "gl-mr-status",
-    "hcc-merged-pr-violations",
-    "hcc-quality-jira-feedback",
-    "hcc-test-anti-pattern-scan",
-    "hcc-weekly-report",
-    "jira-kanban",
-    "jira-sprint",
-    "jira-triage",
-    "obsint-backlog-scan",
-    "obsint-cve-ci-review",
-    "obsint-cve-scan",
-    "obsint-jenkins-status",
-    "obsint-mintmaker-prs",
-    "obsint-weekly-status-update",
-    "onboarding",
-  ]);
   assert.equal(registry.has("gh-pr-status"), true);
   assert.equal(registry.get("gh-pr-status")?.id, "gh-pr-status");
   assert.equal(registry.has("gl-mr-status"), true);

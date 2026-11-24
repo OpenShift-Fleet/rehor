@@ -1,5 +1,9 @@
 import type { PreflightRegistry } from "../core/registry.js";
 import { createPreflightRegistry } from "../core/registry.js";
+import { fabricKonfluxBotPrs } from "./fabric-konflux-bot-prs/index.js";
+import { fabricPrLabel } from "./fabric-pr-label/index.js";
+import { fabricProjectState } from "./fabric-project-state/index.js";
+import { fabricReviewQueue } from "./fabric-review-queue/index.js";
 import { ghPrStatus } from "./gh-pr-status/index.js";
 import { glMrStatus } from "./gl-mr-status/index.js";
 import { hccMergedPrViolations } from "./hcc-merged-pr-violations/index.js";
@@ -27,6 +31,10 @@ import { onboarding } from "./onboarding/index.js";
  */
 export function createPopulatedRegistry(): PreflightRegistry {
   return createPreflightRegistry([
+    fabricKonfluxBotPrs,
+    fabricPrLabel,
+    fabricProjectState,
+    fabricReviewQueue,
     ghPrStatus,
     glMrStatus,
     hccMergedPrViolations,
