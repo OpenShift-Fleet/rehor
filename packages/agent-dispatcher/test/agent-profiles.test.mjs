@@ -72,6 +72,8 @@ test("reads non-secret per-agent preflight settings and rejects credential field
   assert.deepEqual((await discoverAgentProfiles(root))[0].preflightEnv, { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label" });
   await writeFile(config, "workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    BOT_TOKEN: forbidden\n");
   await assert.rejects(discoverAgentProfiles(root));
+  await writeFile(config, "workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    BOT_PASSWORD: forbidden\n");
+  await assert.rejects(discoverAgentProfiles(root));
 });
 
 test("top-level env supplies preflight identity and sandbox runtime", async (t) => {
@@ -101,12 +103,22 @@ preflight: {env: {BOT_INSTANCE_ID: test-agent}}
   await assert.rejects(discoverAgentProfiles(root), /either env or preflight\.env/);
 });
 
+test("legacy preflight.env and top-level env produce the same settings unit", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, "workflow: onboarding\nimage: {repository: registry.example/team/name}\npreflight:\n  env:\n    BOT_LABEL: team-label\n    BOT_MAX_PRS: '5'\n");
+  const legacy = (await discoverAgentProfiles(root))[0].preflightEnv;
+  await writeFile(config, "workflow: onboarding\nimage: {repository: registry.example/team/name}\nenv:\n  BOT_LABEL: team-label\n  BOT_MAX_PRS: '5'\n");
+  const topLevel = (await discoverAgentProfiles(root))[0].preflightEnv;
+  assert.deepEqual(legacy, topLevel);
+  assert.deepEqual(legacy, { BOT_LABEL: "team-label", BOT_MAX_PRS: "5" });
+});
+
 test("top-level env fails closed for secrets, operational settings and malformed values", async (t) => {
   const { root, config } = await fixture(t);
   const base = "workflow: onboarding\nimage: {repository: registry.example/team/name}\n";
   for (const entry of [
     "env: null", "env: []", "env: string", "env: {BOT_LABEL: 5}",
-    'env: {BOT_LABEL: ""}', "env: {BOT_TOKEN: forbidden}",
+    'env: {BOT_LABEL: ""}', "env: {BOT_TOKEN: forbidden}", "env: {BOT_API_KEY: forbidden}",
     "env: {HTTP_PROXY: attacker}", "env: {JIRA_MCP_URL: attacker}",
     "env: {EXECUTOR_ADDR: attacker}", "env: {REHOR_INPUT_SOURCE: attacker}",
   ]) {

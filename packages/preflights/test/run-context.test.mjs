@@ -206,3 +206,33 @@ test("run context threads the bot Jira identity and treats blank as absent", () 
   });
   assert.equal(bare.jiraEmail, undefined);
 });
+
+test("run context exposes the instance env unit frozen, defaulting to {}", () => {
+  const memory = createMemoryServerClient({ baseUrl: "http://memory:8080" });
+  const bare = createPreflightRunContext({ instanceId: "bot-1", memory });
+  assert.deepEqual(bare.instanceEnv, {});
+  assert.equal(Object.isFrozen(bare.instanceEnv), true);
+
+  const settings = { BOT_LABEL: "team-label", BOT_MAX_PRS: "5" };
+  const wired = createPreflightRunContext({ instanceId: "bot-1", memory, instanceEnv: settings });
+  assert.deepEqual(wired.instanceEnv, settings);
+  assert.equal(Object.isFrozen(wired.instanceEnv), true);
+  // Defensive copy: the caller keeps a mutable reference, the context does not.
+  assert.notEqual(wired.instanceEnv, settings);
+  settings.BOT_LABEL = "mutated";
+  settings.BOT_EXTRA = "late";
+  assert.deepEqual(wired.instanceEnv, { BOT_LABEL: "team-label", BOT_MAX_PRS: "5" });
+  assert.throws(() => {
+    wired.instanceEnv.BOT_LABEL = "mutated";
+  }, TypeError);
+});
+
+test("run context rejects a non-object instance env unit", () => {
+  const memory = createMemoryServerClient({ baseUrl: "http://memory:8080" });
+  for (const value of ["label", 7, ["BOT_LABEL"]]) {
+    assert.throws(
+      () => createPreflightRunContext({ instanceId: "bot-1", memory, instanceEnv: value }),
+      /instanceEnv/,
+    );
+  }
+});
