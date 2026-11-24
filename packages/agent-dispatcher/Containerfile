@@ -8,7 +8,7 @@
 #
 # Preflights run in-process using the @rehor/preflights workspace package.
 
-FROM --platform=${BUILDPLATFORM} registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS builder
+FROM --platform=${BUILDPLATFORM} registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:9939252c87bdca536a0e908841464484b9db7f9ec37a90cc3e951f98a8a83bc8 AS builder
 USER 0
 WORKDIR /app
 
@@ -27,7 +27,7 @@ RUN npm exec --offline -- nx run @rehor/agent-dispatcher:build --skip-nx-cache
 # node_modules/@rehor/preflights to /app/packages/preflights. Keep those paths
 # in the production dependency stage and final image so the workspace links
 # remain valid at runtime.
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd AS dependencies
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:9939252c87bdca536a0e908841464484b9db7f9ec37a90cc3e951f98a8a83bc8 AS dependencies
 USER 0
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -38,7 +38,7 @@ RUN npm ci --workspace=@rehor/agent-dispatcher --omit=dev --offline --no-audit -
 
 # Runtime dependencies come from the Node.js base image, which ships the Git
 # the config-repository synchronization needs. Nothing else is installed.
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:a8322d320e7409c42cc730e0a1a489fb185bc9f688c8d27613d83ffd658f16bd
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:9939252c87bdca536a0e908841464484b9db7f9ec37a90cc3e951f98a8a83bc8
 USER 0
 WORKDIR /app
 COPY --from=dependencies --chown=1001:0 /app/node_modules ./node_modules
