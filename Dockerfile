@@ -120,7 +120,7 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
 
 # grype (container image vulnerability scanner)
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/') \
-    && curl -fsSL "https://github.com/anchore/grype/releases/download/v0.118.0/grype_0.118.0_linux_${ARCH}.tar.gz" \
+    && curl -fsSL "https://github.com/anchore/grype/releases/download/v0.122.1/grype_0.122.1_linux_${ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin grype
 
 # Dev proxy (custom Caddy for local UI verification against stage)
