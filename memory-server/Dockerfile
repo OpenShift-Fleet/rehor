@@ -12,7 +12,9 @@ RUN npm run build
 FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:1826b5dfde1430f458f864cf04b17130e316d0b7246cc6d5b1ed85c7d968e3eb
 USER 0
 
-RUN pip3 install uv
+# Updating Python dependencies does not update vulnerable RPMs in the pinned base.
+RUN microdnf upgrade -y && microdnf clean all
+RUN pip3 install 'uv>=0.13.4'
 
 WORKDIR /app
 
@@ -35,7 +37,7 @@ RUN uv run python -c "from sentence_transformers import SentenceTransformer; Sen
 # Offline mode — model is baked in, no network/cache writes needed at runtime
 ENV HF_HUB_OFFLINE=1
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 # Run python directly from the pre-built venv — avoids uv cache init permission
 # issues with OpenShift arbitrary UIDs (astral-sh/uv#10023)

@@ -16,6 +16,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: export-requirements
+        name: export requirements.txt from uv.lock
+        entry: bash -c 'uv export --frozen --no-dev --no-emit-project -o requirements.txt'
+        language: system
+        files: ^(uv\.lock|pyproject\.toml|requirements\.txt)$
+        pass_filenames: false
       - id: mypy
         name: mypy
         entry: uv run mypy

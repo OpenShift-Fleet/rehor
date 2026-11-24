@@ -7,6 +7,8 @@ export type McpServerConfig =
       env?: Readonly<Record<string, string>>;
       timeout?: number;
       alwaysLoad?: boolean;
+      /** OpenCode-native exposure option. Other adapters omit it. */
+      codemode?: boolean;
     }
   | {
       type: "http" | "sse";
@@ -14,4 +16,6 @@ export type McpServerConfig =
       headers?: Readonly<Record<string, string>>;
       timeout?: number;
       alwaysLoad?: boolean;
+      /** OpenCode-native exposure option. Other adapters omit it. */
+      codemode?: boolean;
     };

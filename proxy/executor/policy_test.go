@@ -10,7 +10,6 @@ func TestPolicyAllowed(t *testing.T) {
 		args []string
 	}{
 		{"gh", []string{"pr", "view", "42", "--repo", "org/repo", "--json", "state"}},
-		{"gh", []string{"pr", "create", "--title", "fix: thing", "--body", "desc"}},
 		{"gh", []string{"pr", "close", "42"}},
 		{"gh", []string{"pr", "checks", "42"}},
 		{"gh", []string{"pr", "comment", "42", "--body", "done"}},
@@ -23,7 +22,6 @@ func TestPolicyAllowed(t *testing.T) {
 		{"gh", []string{"auth", "git-credential", "get"}},
 		{"gh", []string{"issue", "view", "123"}},
 		{"glab", []string{"api", "projects/foo%2Fbar/merge_requests/1"}},
-		{"glab", []string{"mr", "create", "--title", "fix"}},
 		{"glab", []string{"mr", "close", "1"}},
 		{"glab", []string{"mr", "view", "1", "--comments"}},
 		{"glab", []string{"auth", "status", "--hostname", "gitlab.cee.redhat.com"}},
@@ -48,6 +46,9 @@ func TestPolicyBlocked(t *testing.T) {
 		{"gh", []string{"auth", "refresh"}, "token refresh"},
 		{"gh", []string{"auth", "token"}, "token exposure"},
 		{"gh", []string{"repo", "delete", "org/repo"}, "destructive"},
+		{"gh", []string{"pr", "checkout", "3539", "--repo", "project-kessel/insights-rbac"}, "use git"},
+		{"gh", []string{"pr", "create", "--title", "fix", "--head", "bot/RHCLOUD-1"}, "gh api"},
+		{"glab", []string{"mr", "create", "--title", "fix"}, "glab api"},
 		{"glab", []string{"auth", "login"}, "interactive"},
 	}
 

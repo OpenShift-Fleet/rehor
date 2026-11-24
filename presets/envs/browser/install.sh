@@ -8,7 +8,7 @@ if ! command -v npx &>/dev/null; then
 fi
 
 # Chromium runtime libraries
-dnf install -y --nodocs \
+dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs \
     alsa-lib atk at-spi2-atk at-spi2-core cairo cups-libs dbus-libs \
     libdrm mesa-libgbm glib2 nspr nss pango \
     libX11 libxcb libXcomposite libXdamage libXext libXfixes \

@@ -9,7 +9,13 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, ToolResultBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    SystemMessage,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 from bot.agent import CycleContext, _extract_context, _extract_task_id_from_result, run_cycle
 from bot.config import Config
@@ -53,7 +59,7 @@ def _result(
     )
 
 
-async def _run(messages):
+async def _run(messages, ctx: CycleContext | None = None):
     async def fake_query(*, prompt, options):
         for message in messages:
             yield message
@@ -61,8 +67,9 @@ async def _run(messages):
     with (
         patch("bot.agent.query", fake_query),
         patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._make_sdk_transport", return_value=None),
     ):
-        return await run_cycle("test-label", _config(), {}, [], cwd=".")
+        return await run_cycle("test-label", _config(), {}, [], cwd=".", ctx=ctx)
 
 
 def test_summarize_result_ratio():
@@ -95,15 +102,25 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     caplog.set_level(logging.INFO)
     tool = ToolUseBlock(id="tool_1", name="Bash", input={"command": "gh pr checks 123"})
     tool_result = ToolResultBlock(tool_use_id="tool_1", content="ok")
-    asyncio.run(
+    ctx = CycleContext()
+    result, out_ctx = asyncio.run(
         _run(
             [
+                SystemMessage(
+                    subtype="init",
+                    data={"session_id": "sess-from-init", "mcp_servers": []},
+                ),
                 AssistantMessage(content=[tool], model="claude-opus-4"),
                 AssistantMessage(content=[tool_result], model="claude-opus-4"),
                 _result(),
-            ]
+            ],
+            ctx=ctx,
         )
     )
+    assert result is not None
+    assert out_ctx is ctx
+    assert ctx.session_id == "sess-from-init"
+    assert ctx.started_at is not None
     assert "[tool] Bash: gh pr checks 123" in caplog.text
     assert "[tool] Bash: gh pr checks 123 completed in" in caplog.text
     assert "ms" in caplog.text
@@ -113,6 +130,29 @@ def test_cycle_logs_tool_duration_and_model_cache(caplog):
     assert "cache_write=100" in caplog.text
     assert "ratio=2.00" in caplog.text
     assert "tokens in=1000 out=500" in caplog.text
+
+
+def test_stream_hang_after_result_still_returns_result(caplog):
+    """A stream that never closes after ResultMessage must not stall the cycle."""
+    caplog.set_level(logging.WARNING)
+    result_msg = _result()
+
+    async def hanging_after_result(*, prompt, options):
+        yield SystemMessage(subtype="init", data={"session_id": "sess-hang", "mcp_servers": []})
+        yield result_msg
+        await asyncio.sleep(30)
+
+    with (
+        patch("bot.agent.query", hanging_after_result),
+        patch("bot.agent._push_status", AsyncMock()),
+        patch("bot.agent._make_sdk_transport", return_value=None),
+        patch("bot.agent._POST_RESULT_GRACE_SECONDS", 0.2),
+    ):
+        result, ctx = asyncio.run(run_cycle("test-label", _config(), {}, [], cwd="."))
+
+    assert result is result_msg
+    assert ctx.timed_out is False
+    assert "did not close" in caplog.text
 
 
 def test_cycle_logs_ratio_na_when_no_cache_write(caplog):

@@ -4,6 +4,7 @@
     "includes": [
       "dashboard/**",
       "coordinator/**",
+      "packages/preflights/**",
       "!**/node_modules",
       "!**/dist",
       "!dashboard/public"

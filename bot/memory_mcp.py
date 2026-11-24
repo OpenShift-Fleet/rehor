@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import sys
+from pathlib import Path
 
 MEMORY_MCP_URL = os.environ.get("BOT_MEMORY_URL", "").rstrip("/")
 
@@ -21,6 +22,26 @@ _read = None
 _write = None
 _cm_transport = None
 _cm_session = None
+
+
+def _headers(url):
+    headers = {}
+    instance = os.environ.get("BOT_INSTANCE_ID", "")
+    if instance:
+        # HTTPX accepts bytes; the server decodes these header bytes as UTF-8.
+        headers["X-Bot-Instance-Id"] = instance.encode("utf-8")
+    if os.environ.get("REHOR_INPUT_SOURCE") == "sandbox":
+        sys.path.insert(0, str(Path(os.environ["HOME"]) / "app"))
+        from bot.sandbox_transport import mcp_headers
+
+        headers.update(mcp_headers("memory", url))
+    return headers
+
+
+def _no_redirect_client(headers=None, timeout=None, auth=None):
+    from bot.sandbox_transport import no_redirect_client
+
+    return no_redirect_client(headers=headers, timeout=timeout, auth=auth)
 
 
 async def _ensure_session():
@@ -34,7 +55,9 @@ async def _ensure_session():
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    _cm_transport = streamablehttp_client(MEMORY_MCP_URL)
+    headers = _headers(MEMORY_MCP_URL)
+    options = {"httpx_client_factory": _no_redirect_client} if "Authorization" in headers else {}
+    _cm_transport = streamablehttp_client(MEMORY_MCP_URL, headers=headers, **options)
     _read, _write, _ = await _cm_transport.__aenter__()
     _cm_session = ClientSession(_read, _write)
     _session = await _cm_session.__aenter__()

@@ -1,78 +1,55 @@
 # Instance Configuration
 
-`instance.yaml` controls workflow and env-preset selection for a bot instance.
-It lives at `<BOT_CONFIG_PATH>/agent/instance.yaml` in the remote config repo.
+## Dispatcher-managed profiles
 
-## Resolution Order
-
-`run.py` resolves configuration in this order:
-
-1. `instance.yaml`, when present in the remote config repo.
-2. `BOT_WORKFLOW_PRESET` and `BOT_ENV_PRESETS` environment variables.
-3. Defaults: workflow `jira-sprint`, source `jira`, all available env presets.
-
-The file is optional for default behavior. Use it when configuration must be
-explicit, reviewable, or different between profiles.
-
-## Reference
+In a configured repository, the dispatcher reads `instance/<name>/agent/instance.yaml`. Each profile chooses a workflow, runner image, and registered preflights. The runner image must launch with `BOT_EXECUTION_ENGINE=coordinator`; set `runtime: opencode` in the profile.
 
 ```yaml
 workflow: jira-sprint
-source: jira
+runtime: opencode
+provider: rehor-openai
+image:
+  repository: quay.io/example/rehor-runner
+  tag: reviewed-build
 envs:
-  - browser
-  - slack
-  - container-scan
-claude_md:
-  strategy: ignore
-idle_cycle_limit: 0
-model: claude-sonnet-4-6
+  - node
+env:
+  BOT_INSTANCE_ID: example-agent
+  BOT_EXECUTION_ENGINE: coordinator
+preflights:
+  - gh-pr-status
+  - gl-mr-status
+  - id: jira-sprint
+    with:
+      label: example-agent
+schedule:
+  triggers:
+    - timezone: Europe/Prague
+      start: "0 8 * * 1-5"
+      end: "0 18 * * 1-5"
 ```
 
-| Field | Default | Meaning |
-|---|---|---|
-| `workflow` | `jira-sprint` | Built-in workflow name or `./workflows/<name>` for an instance workflow |
-| `source` | `jira` | Work source passed to workflow skills |
-| `envs` | `null` | `null` enables all env presets; `[]` disables them |
-| `claude_md.strategy` | `ignore` | `ignore`, `append`, or `replace` for instance `CLAUDE.md` |
-| `idle_cycle_limit` | `0` | Optional idle-cycle reminder threshold; `0` disables it |
-| `model` | `null` | Explicit model override for this instance (e.g. `claude-sonnet-4-6`) |
+| Field | Meaning |
+|---|---|
+| `workflow` | Built-in workflow name or `./workflows/<name>` within the agent directory. |
+| `image.repository`, `image.tag` | Runner image. Set an explicit reviewed build tag; omission uses `latest`. |
+| `envs` | Environment presets for the runner build; `null` enables all, `[]` disables all. |
+| `env` | Allowed non-secret `BOT_*` profile settings, shared by dispatcher wiring and the sandbox runner. Set a stable, unique `BOT_INSTANCE_ID`; the deployment owns the memory route. |
+| `sandbox.env` | **Planned; not currently supported by deployed dispatchers.** Intended for static sandbox environment values and approved workload-scoped secret references. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for the user setup guide and proposed syntax. |
+| `preflights` | Registered check IDs and literal parameters. See [Dispatcher Preflights](custom-preflight.md) for defaults and contribution rules, and the [Preflight Reference](preflight-reference.md) for each check's inputs. |
+| `schedule` | Optional KEDA-style cron windows (`triggers` with `timezone`, `start`, `end` five-field crons). Gates only new dispatches; in-flight sessions drain. Malformed declarations fail discovery. See [Agent Scheduling](../scheduling.md). |
+| `cycle_timeout_seconds` | Optional per-instance timeout override. |
 
-## Model Resolution Order
+## Runtime and provider selection
 
-When a cycle starts, the model used by the Claude Agent SDK is resolved using 4-tier precedence:
+Dispatched sandboxes use `runtime: opencode`. The `provider` and optional `model` must match the configured model route and allowlist. OpenCode defaults to `rehor-openai` when no provider is selected; select a different provider only when its route is available to the sandbox. See [Model Configuration](../models.md) for provider and model resolution.
 
-1. **Instance pin (highest)**: `model` in `instance.yaml` (concrete model ID chosen by the instance repository owner).
-2. **Deploy overlay**: `BOT_MODEL` environment variable. Applied when `instance.yaml` omits `model` (or when `instance.yaml` is absent), allowing deployment operators to set a model default across instances without modifying the config repo.
-3. **Workflow tier**: `model_tier` in the workflow's `manifest.yaml` (e.g. `light`), mapped through `config.json` `claude.modelTiers`. Shared workflows stay provider-neutral by naming a tier rather than a concrete model ID.
-4. **Global default (lowest)**: `claude.model` in `config.json`.
+Keep credential values and backend paths out of `instance.yaml`. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for Tier 2 sandbox environment references and the platform authentication boundary.
 
-```json
-"claude": {
-  "model": "claude-opus-4-6",
-  "modelTiers": {
-    "light": "claude-sonnet-4-6",
-    "heavy": "claude-opus-4-6"
-  }
-}
-```
-
-> **Note**: Concrete model IDs configured in `instance.yaml`, `BOT_MODEL`, or `config.json` must be listed in the proxy's `VERTEX_ALLOWED_MODELS` allowlist; otherwise, model calls will be rejected with HTTP 403. Unknown model tiers in workflow manifests fail fast at bot startup validation.
-
-## Environment Fallback
-
-Use environment variables when no `instance.yaml` exists:
-
-```bash
-BOT_WORKFLOW_PRESET=jira-sprint
-BOT_ENV_PRESETS=browser,slack,container-scan
-```
-
-An empty `BOT_ENV_PRESETS` value selects no env presets. Unknown workflow names
-are fatal at startup. Unknown env presets are logged and skipped.
-
-## Related Configuration
-
-- [Preset Overview](README.md) — available workflow and env presets
-- [Onboarding a New Instance](../onboarding-new-instance.md) — complete instance setup
-- [Preset Migration Guide](../migrations/preset-migration-guide.md) — compatibility and migration context
+Existing profiles may continue using `preflight.env` during migration; it has
+the same behavior as `env`. Do not declare both in one profile: discovery rejects
+ambiguous configuration. Deploy a dispatcher supporting `env` before migrating
+an existing profile. Only nonempty string `BOT_*` entries without secret-bearing
+names are accepted; `BOT_MEMORY_URL` remains deployment-owned. Preflight `with`
+values are explicit literals, not interpolated from `env`. `envs` selects build
+presets and is unrelated to `env`.

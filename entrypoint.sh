@@ -2,6 +2,25 @@
 # Bot container entrypoint — decode secrets, run env presets, launch bot.
 set -e
 
+# OpenCode talks to the shared proxy with a placeholder token; the proxy injects
+# the real provider credential. PROXY_HOST is set by OpenShift; Compose uses its
+# proxy service name.
+export REHOR_MODEL_PROXY_URL="${REHOR_MODEL_PROXY_URL:-http://${PROXY_HOST:-proxy}:8450/v1}"
+export REHOR_MODEL_PROXY_TOKEN="${REHOR_MODEL_PROXY_TOKEN:-rehor-runtime}"
+
+# Dispatcher sandbox dispatch (REHOR-233): the runner executes one delivered
+# input and exits. The sandbox uses the HTTP executor gateway rather than a
+# local sidecar and keeps private keys in the proxy.
+SANDBOX_DISPATCH=0
+if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
+    if [ "${BOT_EXECUTION_ENGINE:-}" != "coordinator" ]; then
+        echo "FATAL: sandbox dispatch requires BOT_EXECUTION_ENGINE=coordinator" >&2
+        exit 64
+    fi
+    SANDBOX_DISPATCH=1
+    echo "Sandbox dispatch mode: using gateway services"
+fi
+
 # --- Verify required CLI tools ---
 MISSING=""
 for tool in gh glab git gpg; do
@@ -27,9 +46,12 @@ decode_or_raw() {
     esac
 }
 
-# Git credential helpers — thin clients forward to executor sidecar in proxy container
-git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
-git config --global credential.https://gitlab.cee.redhat.com.helper '!/usr/local/bin/glab credential-helper'
+# Legacy credential helpers. Sandbox Git authentication is configured by the
+# private bootstrap; do not modify or bypass its gateway configuration.
+if [ "$SANDBOX_DISPATCH" -ne 1 ]; then
+    git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
+    git config --global credential.https://gitlab.cee.redhat.com.helper '!/usr/local/bin/glab credential-helper'
+fi
 
 # Optional: internal GitLab CA bundle for strict TLS in bot-side git/curl flows.
 # Supports either raw PEM (GITLAB_CA_CERT_PEM) or base64 PEM (GITLAB_CA_CERT_B64).
@@ -40,6 +62,7 @@ fi
 
 if [ -n "${GITLAB_CA_CERT_PEM:-}" ] && [ -z "${GITLAB_CA_CERT_FILE:-}" ]; then
     GITLAB_CA_CERT_FILE="/home/botuser/.config/gitlab-ca-cert.pem"
+    [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && GITLAB_CA_CERT_FILE="${HOME}/.config/gitlab-ca-cert.pem"
     mkdir -p "$(dirname "$GITLAB_CA_CERT_FILE")"
     printf '%s\n' "$GITLAB_CA_CERT_PEM" > "$GITLAB_CA_CERT_FILE"
     chmod 600 "$GITLAB_CA_CERT_FILE"
@@ -53,10 +76,12 @@ fi
 
 # Write SSO credentials file for stage auth (chrome-devtools)
 if [ -n "${SSO_USERNAME:-}" ] && [ -n "${SSO_PASSWORD:-}" ]; then
-    cat > /home/botuser/app/.credentials <<EOF
+    credential_path="/home/botuser/app/.credentials"
+    [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && credential_path="${PWD}/.credentials"
+    cat > "$credential_path" <<EOF
 {"sso": {"username": "${SSO_USERNAME}", "password": "${SSO_PASSWORD}"}}
 EOF
-    chmod 600 /home/botuser/app/.credentials
+    chmod 600 "$credential_path"
     unset SSO_USERNAME SSO_PASSWORD
 fi
 
@@ -74,96 +99,155 @@ _log_json() {
 }
 
 EXECUTOR_ADDR="${EXECUTOR_ADDR:-unix:///var/run/devbot/executor.sock}"
-_log_json "INFO" "Waiting for executor at ${EXECUTOR_ADDR}..."
-elapsed=0
-if [[ "$EXECUTOR_ADDR" == unix://* ]]; then
-    SOCK_PATH="${EXECUTOR_ADDR#unix://}"
-    until [ -S "$SOCK_PATH" ]; do
-        elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor socket not ready after 30s"; exit 1; }
-        sleep 1
-    done
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: no executor sidecar, skipping executor wait"
 else
-    EXEC_HOST="${EXECUTOR_ADDR%%:*}"
-    EXEC_PORT="${EXECUTOR_ADDR##*:}"
-    until bash -c "echo > /dev/tcp/${EXEC_HOST}/${EXEC_PORT}" 2>/dev/null; do
-        elapsed=$((elapsed + 1))
-        [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s"; exit 1; }
-        sleep 1
-    done
+    _log_json "INFO" "Waiting for executor at ${EXECUTOR_ADDR}..."
+    elapsed=0
+    if [[ "$EXECUTOR_ADDR" == unix://* ]]; then
+        SOCK_PATH="${EXECUTOR_ADDR#unix://}"
+        until [ -S "$SOCK_PATH" ]; do
+            elapsed=$((elapsed + 1))
+            [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor socket not ready after 30s"; exit 1; }
+            sleep 1
+        done
+    else
+        EXEC_HOST="${EXECUTOR_ADDR%%:*}"
+        EXEC_PORT="${EXECUTOR_ADDR##*:}"
+        until bash -c "echo > /dev/tcp/${EXEC_HOST}/${EXEC_PORT}" 2>/dev/null; do
+            elapsed=$((elapsed + 1))
+            [ "$elapsed" -ge 30 ] && { _log_json "ERROR" "FATAL: executor at ${EXECUTOR_ADDR} not ready after 30s"; exit 1; }
+            sleep 1
+        done
+    fi
+    _log_json "INFO" "Executor ready."
 fi
-_log_json "INFO" "Executor ready."
 
 # Per-platform git identity via includeIf (git 2.36+)
 # Each platform gets its own name, email, and GPG signing key.
-GH_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GH_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
-GL_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GL_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    # Never let the shim fall back to its in-cluster default in a sandbox.
+    if [ -n "${EXECUTOR_HTTP_URL:-}${GH_USER_NAME:-}${GH_USER_EMAIL:-}${GL_USER_NAME:-}${GL_USER_EMAIL:-}" ]; then
+        if [ "${REHOR_PRIVATE_RUNTIME:-}" != "1" ]; then
+            echo "FATAL: sandbox Git signing requires the private runtime" >&2
+            exit 1
+        fi
+        if [[ "${EXECUTOR_HTTP_URL:-}" != https://* ]]; then
+            echo "FATAL: sandbox Git signing requires the HTTPS executor gateway" >&2
+            exit 1
+        fi
+        for platform in GH GL; do
+            name_var="${platform}_USER_NAME"
+            email_var="${platform}_USER_EMAIL"
+            if [ -z "${!name_var:-}" ] || [ -z "${!email_var:-}" ]; then
+                echo "FATAL: sandbox Git identity is incomplete for ${platform}" >&2
+                exit 1
+            fi
+        done
+    fi
+else
+    GH_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GH_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
+    GL_GPG_KEY="$(gpg --list-secret-keys --keyid-format long "${GL_USER_EMAIL}" 2>/dev/null | grep -oP '(?<=/)[A-F0-9]{16}' | head -1)"
 
-# Export so run.py's setup_git() writes them into GIT_CONFIG_GLOBAL gitconfig
-export GH_GPG_SIGNING_KEY="$GH_GPG_KEY"
-export GL_GPG_SIGNING_KEY="$GL_GPG_KEY"
+    # Export so run.py's setup_git() writes them into GIT_CONFIG_GLOBAL gitconfig
+    export GH_GPG_SIGNING_KEY="$GH_GPG_KEY"
+    export GL_GPG_SIGNING_KEY="$GL_GPG_KEY"
 
-cat > /home/botuser/.gitconfig-gh <<EOF
+    cat > /home/botuser/.gitconfig-gh <<EOF
 [user]
 	name = ${GH_USER_NAME}
 	email = ${GH_USER_EMAIL}
 	signingkey = ${GH_GPG_KEY}
 EOF
 
-cat > /home/botuser/.gitconfig-gl <<EOF
+    cat > /home/botuser/.gitconfig-gl <<EOF
 [user]
 	name = ${GL_USER_NAME}
 	email = ${GL_USER_EMAIL}
 	signingkey = ${GL_GPG_KEY}
 EOF
 
-git config --global 'includeIf.hasconfig:remote.*.url:https://github.com/**.path' /home/botuser/.gitconfig-gh
-git config --global 'includeIf.hasconfig:remote.*.url:https://gitlab.cee.redhat.com/**.path' /home/botuser/.gitconfig-gl
+    git config --global 'includeIf.hasconfig:remote.*.url:https://github.com/**.path' /home/botuser/.gitconfig-gh
+    git config --global 'includeIf.hasconfig:remote.*.url:https://gitlab.cee.redhat.com/**.path' /home/botuser/.gitconfig-gl
 
-# Verify per-platform identity + GPG signing (warn-only, never fatal)
-verify_platform_signing() {
-    local platform="$1" url="$2" expected_email="$3"
-    local tmpdir
-    tmpdir=$(mktemp -d)
-    git init -q "$tmpdir"
-    git -C "$tmpdir" remote add origin "$url"
-    local resolved_email resolved_key
-    resolved_email=$(git -C "$tmpdir" config user.email)
-    resolved_key=$(git -C "$tmpdir" config user.signingkey)
-    rm -rf "$tmpdir"
+    # Verify per-platform identity + GPG signing (warn-only, never fatal)
+    verify_platform_signing() {
+        local platform="$1" url="$2" expected_email="$3"
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        git init -q "$tmpdir"
+        git -C "$tmpdir" remote add origin "$url"
+        local resolved_email resolved_key
+        resolved_email=$(git -C "$tmpdir" config user.email)
+        resolved_key=$(git -C "$tmpdir" config user.signingkey)
+        rm -rf "$tmpdir"
 
-    if [ -z "$resolved_email" ]; then
-        echo "WARNING: ${platform} — includeIf did not resolve identity"
-        return
-    fi
-    if [ "$resolved_email" != "$expected_email" ]; then
-        echo "WARNING: ${platform} — email mismatch: got ${resolved_email}, expected ${expected_email}"
-        return
-    fi
-    if [ -z "$resolved_key" ]; then
-        echo "WARNING: ${platform} — no GPG signing key resolved"
-        return
-    fi
-    if echo "test" | gpg --local-user "$resolved_key" --sign > /dev/null 2>&1; then
-        echo "${platform} identity + GPG signing OK (${resolved_email})"
-    else
-        echo "WARNING: ${platform} — GPG key cannot sign (missing or expired)"
-    fi
-}
-verify_platform_signing "GitHub" "https://github.com/test/repo.git" "${GH_USER_EMAIL}"
-verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "${GL_USER_EMAIL}"
+        if [ -z "$resolved_email" ]; then
+            echo "WARNING: ${platform} — includeIf did not resolve identity"
+            return
+        fi
+        if [ "$resolved_email" != "$expected_email" ]; then
+            echo "WARNING: ${platform} — email mismatch: got ${resolved_email}, expected ${expected_email}"
+            return
+        fi
+        if [ -z "$resolved_key" ]; then
+            echo "WARNING: ${platform} — no GPG signing key resolved"
+            return
+        fi
+        if echo "test" | gpg --local-user "$resolved_key" --sign > /dev/null 2>&1; then
+            echo "${platform} identity + GPG signing OK (${resolved_email})"
+        else
+            echo "WARNING: ${platform} — GPG key cannot sign (missing or expired)"
+        fi
+    }
+    verify_platform_signing "GitHub" "https://github.com/test/repo.git" "${GH_USER_EMAIL}"
+    verify_platform_signing "GitLab" "https://gitlab.cee.redhat.com/test/repo.git" "${GL_USER_EMAIL}"
+fi
 
 # Jira credentials are in the proxy container (mcp-atlassian on port 8444).
 # Python skills use JIRA_MCP_URL env var to connect via MCP protocol.
 
 # Point MCP config to the memory server
-sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
+# Skipped for sandbox dispatch: the bootstrap sandbox policy keeps the app
+# directory read-only, so .mcp.json cannot be rewritten in place.
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: keeping baked .mcp.json"
+else
+    sed -i "s|http://localhost:8080/mcp|${BOT_MEMORY_URL}|" .mcp.json
 
-# --- Verify auth (via thin client → proxy) ---
-echo "Verifying GitHub auth..."
-gh auth status 2>&1 | head -3 || { echo "WARNING: gh auth failed"; }
-echo "Verifying GitLab auth..."
-glab auth status --hostname gitlab.cee.redhat.com 2>&1 | head -3 || { echo "WARNING: glab auth failed"; }
+    # Bind bot instance identity to the MCP connection (REHOR-235): the memory
+    # server reads X-Bot-Instance-Id from the connection instead of trusting an
+    # LLM-echoed instance_id tool parameter. Runs alongside the .mcp.json
+    # rewrite above: sandbox dispatch keeps the app directory read-only.
+    if [ -n "${BOT_INSTANCE_ID:-}" ]; then
+        python3 - <<'PYEOF' || echo "WARNING: failed to inject X-Bot-Instance-Id into .mcp.json"
+import json
+import os
+
+path = ".mcp.json"
+with open(path, encoding="utf-8") as f:
+    config = json.load(f)
+
+server = config.get("mcpServers", {}).get("bot-memory")
+if server is not None:
+    server.setdefault("headers", {})["X-Bot-Instance-Id"] = os.environ["BOT_INSTANCE_ID"]
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(config, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PYEOF
+    fi
+fi
+
+if [ "$SANDBOX_DISPATCH" -eq 1 ]; then
+    _log_json "INFO" "Sandbox dispatch: skipping gh/glab auth verification"
+else
+    # --- Verify auth (via thin client → proxy) ---
+    echo "Verifying GitHub auth..."
+    gh auth status 2>&1 | head -3 || { echo "WARNING: gh auth failed"; }
+    echo "Verifying GitLab auth..."
+    glab auth status --hostname gitlab.cee.redhat.com 2>&1 | head -3 || { echo "WARNING: glab auth failed"; }
+fi
 
 # --- Wait for dependent services (OpenShift deploys all pods concurrently) ---
 wait_for_http() {
@@ -231,5 +315,38 @@ else
 fi
 shopt -u nullglob
 
+if [ "$SANDBOX_DISPATCH" -eq 1 ] && [ "${BOT_EXECUTION_ENGINE:-}" != "coordinator" ]; then
+    echo "FATAL: sandbox dispatch requires BOT_EXECUTION_ENGINE=coordinator" >&2
+    exit 64
+fi
+
 echo "Credentials configured. Starting bot with label: ${BOT_LABEL}"
-exec uv run dev-bot --label "$BOT_LABEL"
+case "${BOT_EXECUTION_ENGINE:-python}" in
+    python)
+        if [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ]; then
+            exec .venv/bin/python -c 'from bot.run import main; main()' --label "$BOT_LABEL"
+        else
+            exec uv run dev-bot --label "$BOT_LABEL"
+        fi
+        ;;
+    coordinator)
+        COORDINATOR_CLI="/home/botuser/app/coordinator/dist/cli.js"
+        [ "${REHOR_PRIVATE_RUNTIME:-}" = "1" ] && COORDINATOR_CLI="${PWD}/coordinator/dist/cli.js"
+        if [ ! -f "$COORDINATOR_CLI" ]; then
+            echo "FATAL: coordinator bundle is not installed" >&2
+            exit 1
+        fi
+        # Dispatcher sandbox dispatches (REHOR_INPUT_SOURCE=sandbox) run
+        # exactly one cycle and exit; the CLI loads the delivered envelope.
+        COORDINATOR_ARGS=(--label "$BOT_LABEL")
+        if [ "${REHOR_INPUT_SOURCE:-}" = "sandbox" ]; then
+            COORDINATOR_ARGS+=(--once)
+        fi
+        exec node "$COORDINATOR_CLI" "${COORDINATOR_ARGS[@]}"
+        ;;
+    *)
+        echo "FATAL: unsupported BOT_EXECUTION_ENGINE=${BOT_EXECUTION_ENGINE}" >&2
+        echo "Supported engines: python, coordinator" >&2
+        exit 64
+        ;;
+esac

@@ -4,7 +4,8 @@ set -e
 echo "<< instance_name >>" > /home/botuser/app/.instance-id
 
 # Instance-specific packages and tools go here:
-# dnf install -y --nodocs <package>
+# Custom DNF installs must use UBI-only repos:
+# dnf --disableplugin=subscription-manager --disablerepo='*' --enablerepo='ubi-*' install -y --nodocs <package>
 # pip3.12 install <package>
 # npm install -g <package>
 

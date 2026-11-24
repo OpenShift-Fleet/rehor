@@ -15,6 +15,7 @@ from common import (
     get_task_prs,
     get_tasks,
     is_bot_author,
+    is_newer,
     load_state,
     output_result,
     save_state,
@@ -58,7 +59,7 @@ def gl_mr_notes(project_path, num):
             return [
                 {
                     "a": n.get("author", {}).get("username", "?"),
-                    "t": n.get("created_at", "")[:16],
+                    "t": n.get("created_at", ""),
                     "b": n.get("body", ""),
                 }
                 for n in json.loads(r.stdout)
@@ -141,8 +142,7 @@ def has_new_feedback(enriched):
     for c in enriched["mr_notes"]:
         if is_bot_author(c.get("a", "?")):
             continue
-        ct = c.get("t", "")[:16]
-        if not last_addr or ct > last_addr[:16]:
+        if not last_addr or is_newer(c.get("t", ""), last_addr):
             return True
     return False
 

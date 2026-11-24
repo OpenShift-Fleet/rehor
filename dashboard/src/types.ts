@@ -71,6 +71,8 @@ export interface CycleEntry {
   num_turns: number;
   duration_ms: number;
   cost_usd: number;
+  cost_status?: "provider" | "estimated" | "unknown" | null;
+  cost_incomplete?: boolean;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -97,6 +99,8 @@ export interface DailyAggregate {
   total_turns: number;
   idle_cycles: number;
   error_cycles: number;
+  estimated_cycles?: number;
+  incomplete_cycles?: number;
 }
 
 export interface EmbeddingPoint {

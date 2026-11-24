@@ -20,7 +20,7 @@ python3 .claude/skills/create-phase-tickets/create_phase_tickets.py '<json_confi
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "project_key": "RHCLOUD",
   "team_name": "My Team"
 }
@@ -39,11 +39,11 @@ python3 .claude/skills/create-phase-tickets/create_phase_tickets.py '<json_confi
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "phase_tickets": {
-    "phase1": "RHCLOUD-12346",
-    "phase2": "RHCLOUD-12347",
-    "phase3": "RHCLOUD-12348"
+ "phase1": "TEAM-12346",
+ "phase2": "TEAM-12347",
+ "phase3": "TEAM-12348"
   },
   "label_applied": "onboarding:intake"
 }

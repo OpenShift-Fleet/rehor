@@ -29,8 +29,10 @@ import {
 } from "react-router-dom";
 import { fetchInstances, fetchStats } from "./api";
 import BotBanner from "./components/BotBanner";
+import ErrorBoundary from "./components/ErrorBoundary";
 import ThemeSelector from "./components/ThemeSelector";
 import Toasts from "./components/Toasts";
+import { useDebouncedCallback } from "./hooks/useDebouncedCallback";
 import { useWS, WSProvider } from "./hooks/useWebSocket";
 import type { BotInstance } from "./types";
 import { effectiveState } from "./utils";
@@ -184,6 +186,12 @@ function AppInner() {
     }
   }, []);
 
+  // Bursts of task/memory events coalesce into one trailing stats+instances refetch.
+  const refreshOverview = useDebouncedCallback(() => {
+    loadStats();
+    loadInstances();
+  }, 1000);
+
   useEffect(() => {
     loadStats();
     loadInstances();
@@ -192,7 +200,20 @@ function AppInner() {
   useEffect(() => {
     const unsub = onEvent((event) => {
       if (event.type === "bot_status") {
-        loadInstances();
+        // Merge locally instead of refetching: status events can arrive at a
+        // very high rate while a bot is working.
+        const id = event.data.instance_id;
+        setInstances((prev) => {
+          if (!id) return prev;
+          const idx = prev.findIndex((i) => i.instance_id === id);
+          if (idx >= 0) {
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], ...event.data };
+            return updated;
+          }
+          return [...prev, { ...event.data, active_tasks: 0, max_tasks: 10 }];
+        });
+        return;
       }
       if (
         event.type === "task_added" ||
@@ -201,12 +222,11 @@ function AppInner() {
         event.type === "memory_stored" ||
         event.type === "memory_deleted"
       ) {
-        loadStats();
-        loadInstances();
+        refreshOverview();
       }
     });
     return unsub;
-  }, [onEvent, loadStats, loadInstances]);
+  }, [onEvent, refreshOverview]);
 
   return (
     <>
@@ -300,20 +320,22 @@ function AppInner() {
               </NavList>
             </Nav>
           )}
-          <Suspense fallback={null}>
-            <Routes>
-              <Route path="/instances/:id/*" element={<InstanceScoped />} />
-              <Route path="/instances" element={<Instances />} />
-              <Route path="/tasks" element={<Tasks />} />
-              <Route path="/archived" element={<ArchivedTasks />} />
-              <Route path="/cycles" element={<CycleRuns />} />
-              <Route path="/memories" element={<Memories />} />
-              <Route path="/search" element={<Search />} />
-              <Route path="/costs" element={<Costs />} />
-              <Route path="/viz" element={<EmbeddingMap />} />
-              <Route path="/" element={<Navigate to="/instances" replace />} />
-            </Routes>
-          </Suspense>
+          <ErrorBoundary key={location.pathname}>
+            <Suspense fallback={null}>
+              <Routes>
+                <Route path="/instances/:id/*" element={<InstanceScoped />} />
+                <Route path="/instances" element={<Instances />} />
+                <Route path="/tasks" element={<Tasks />} />
+                <Route path="/archived" element={<ArchivedTasks />} />
+                <Route path="/cycles" element={<CycleRuns />} />
+                <Route path="/memories" element={<Memories />} />
+                <Route path="/search" element={<Search />} />
+                <Route path="/costs" element={<Costs />} />
+                <Route path="/viz" element={<EmbeddingMap />} />
+                <Route path="/" element={<Navigate to="/instances" replace />} />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </main>
       </div>
     </>

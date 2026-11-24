@@ -74,13 +74,14 @@ def record_transcript(
     cwd: str = "",
     instance_id: str | None = None,
     input_prompt: str | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     """Compress and store the cycle transcript + metadata to the dashboard API.
 
     Only called after an agent session ran. Missing transcripts are alertable —
     preflight skip/error use post_orphan_cycle and must not hit this path.
     """
-    session_id = getattr(result, "session_id", "")
+    session_id = getattr(result, "session_id", "") or (ctx.session_id if ctx else None) or ""
     if not session_id:
         logger.warning("No session_id in result — session cycle missing transcript")
         TRANSCRIPT_UPLOAD_TOTAL.labels(label, "missing").inc()
@@ -92,25 +93,37 @@ def record_transcript(
 
     duration_ms = getattr(result, "duration_ms", None) or 0
     now = datetime.now(UTC)
-    started_at = now
-    if duration_ms:
-        started_at = now - timedelta(milliseconds=duration_ms)
+    if started_at is None and ctx is not None:
+        started_at = ctx.started_at
+    if started_at is None:
+        started_at = now
+        if duration_ms:
+            started_at = now - timedelta(milliseconds=duration_ms)
 
+    progress = {
+        k: v
+        for k, v in {
+            "jira_key": ctx.jira_key if ctx else None,
+            "repo": ctx.repo if ctx else None,
+            "work_type": ctx.work_type if ctx else None,
+            "summary": ctx.summary if ctx else None,
+            "notes": ctx.notes if ctx else None,
+        }.items()
+        if v is not None
+    }
+
+    tool_calls = getattr(result, "num_turns", None)
+    tokens_used = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
     body: dict = {
         "task_id": ctx.task_id if ctx else None,
         "cycle_type": cycle_type,
         "instance_id": instance_id or label,
         "started_at": started_at.isoformat(),
         "finished_at": now.isoformat(),
-        "tool_calls": getattr(result, "num_turns", 0),
-        "tokens_used": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        "tool_calls": tool_calls if tool_calls else None,
+        "tokens_used": tokens_used if tokens_used else None,
         "input_prompt": input_prompt,
-        "progress": {
-            "jira_key": ctx.jira_key if ctx else None,
-            "repo": ctx.repo if ctx else None,
-            "work_type": ctx.work_type if ctx else None,
-            "summary": ctx.summary if ctx else None,
-        },
+        "progress": progress,
     }
 
     has_transcript = False

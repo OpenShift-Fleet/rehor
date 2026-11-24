@@ -9,6 +9,7 @@ import uvicorn
 from fastmcp import FastMCP
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -41,9 +42,7 @@ async def lifespan(app):
 
 def build_app() -> tuple[Starlette, Starlette]:
     """Construct FastMCP, register tools and routes, and return (app, metrics_app)."""
-    mcp = FastMCP(
-        name="Bot Memory",
-    )
+    mcp = FastMCP(name="Bot Memory")
 
     # Register MCP tools
     from .tools.cycles import register_cycle_tools
@@ -60,30 +59,25 @@ def build_app() -> tuple[Starlette, Starlette]:
     register_cycle_tools(mcp)
     register_konflux_tools(mcp)
 
-    # Health check
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
 
-    # Dashboard UI
     @mcp.custom_route("/", methods=["GET"])
     async def dashboard(request: Request) -> HTMLResponse:
         html = (STATIC_DIR / "index.html").read_text()
         return HTMLResponse(html)
 
-    # Static files
     @mcp.custom_route("/static/{path:path}", methods=["GET"])
     async def static_files(request: Request) -> FileResponse:
         file_path = STATIC_DIR / request.path_params["path"]
         return FileResponse(file_path)
 
-    # Static assets (Vite build output)
     @mcp.custom_route("/assets/{path:path}", methods=["GET"])
     async def asset_files(request: Request) -> FileResponse:
         file_path = STATIC_DIR / "assets" / request.path_params["path"]
         return FileResponse(file_path)
 
-    # REST API for the dashboard
     from .api import (
         api_analytics,
         api_bot_status,
@@ -94,12 +88,19 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_instance_get,
         api_instance_idle_update,
         api_instances,
+        api_locks_acquire,
+        api_locks_list,
+        api_locks_release,
+        api_locks_renew,
         api_memories,
         api_memory_delete,
         api_memory_embeddings,
         api_memory_get,
         api_memory_search,
         api_memory_upload,
+        api_session_registry_list,
+        api_session_registry_register,
+        api_session_registry_update,
         api_stats,
         api_tags,
         api_task_delete,
@@ -108,10 +109,16 @@ def build_app() -> tuple[Starlette, Starlette]:
         api_task_unpause,
         api_tasks,
     )
-    from .task_outcomes import api_task_outcome_detail, api_task_outcomes, api_task_outcomes_summary
+    from .task_outcomes import (
+        api_task_outcome_detail,
+        api_task_outcomes,
+        api_task_outcomes_summary,
+        api_task_outcomes_trends,
+    )
 
     mcp.custom_route("/api/tasks", methods=["GET"])(api_tasks)
     mcp.custom_route("/api/task-outcomes/summary", methods=["GET"])(api_task_outcomes_summary)
+    mcp.custom_route("/api/task-outcomes/trends", methods=["GET"])(api_task_outcomes_trends)
     mcp.custom_route("/api/task-outcomes/tasks", methods=["GET"])(api_task_outcomes)
     mcp.custom_route("/api/task-outcomes/tasks/{task_id}", methods=["GET"])(api_task_outcome_detail)
     mcp.custom_route("/api/tasks/{key:path}", methods=["DELETE"])(api_task_delete)
@@ -135,8 +142,14 @@ def build_app() -> tuple[Starlette, Starlette]:
     mcp.custom_route("/api/cycle-runs", methods=["GET", "POST"])(api_cycle_runs)
     mcp.custom_route("/api/cycle-runs/by-task", methods=["GET"])(api_cycle_runs_by_task)
     mcp.custom_route("/api/cycle-runs/{id}/transcript", methods=["GET"])(api_cycle_run_transcript)
+    mcp.custom_route("/api/locks/acquire", methods=["POST"])(api_locks_acquire)
+    mcp.custom_route("/api/locks/renew", methods=["POST"])(api_locks_renew)
+    mcp.custom_route("/api/locks/release", methods=["POST"])(api_locks_release)
+    mcp.custom_route("/api/locks", methods=["GET"])(api_locks_list)
+    mcp.custom_route("/api/session-registry/register", methods=["POST"])(api_session_registry_register)
+    mcp.custom_route("/api/session-registry/update", methods=["POST"])(api_session_registry_update)
+    mcp.custom_route("/api/session-registry", methods=["GET"])(api_session_registry_list)
 
-    # Build the MCP app (handles /mcp endpoint + custom routes)
     mcp_app = mcp.http_app(transport="streamable-http")
 
     @asynccontextmanager
@@ -149,8 +162,17 @@ def build_app() -> tuple[Starlette, Starlette]:
 
     metrics_app = Starlette(routes=[Route("/metrics", metrics_endpoint)])
 
-    # Wrap in an outer Starlette app so we can add WebSocket + lifespan
-    from starlette.middleware import Middleware
+    async def ws_events(websocket: WebSocket):
+        await websocket.accept()
+        queue = bus.subscribe()
+        try:
+            while True:
+                event = await queue.get()
+                await websocket.send_text(event.to_sse_json())
+        except Exception:
+            pass
+        finally:
+            bus.unsubscribe(queue)
 
     app = Starlette(
         lifespan=combined_lifespan,
@@ -163,32 +185,55 @@ def build_app() -> tuple[Starlette, Starlette]:
     return app, metrics_app
 
 
-# WebSocket for live updates
-async def ws_events(websocket: WebSocket):
-    await websocket.accept()
-    queue = bus.subscribe()
-    try:
-        while True:
-            event = await queue.get()
-            await websocket.send_text(event.to_sse_json())
-    except Exception:
-        pass
-    finally:
-        bus.unsubscribe(queue)
-
-
 if __name__ == "__main__":
     from .log import setup_logging
 
     setup_logging()
 
     try:
+        from .readonly_server import ApiKeyMiddleware, get_readonly_api_key, readonly_mcp
+
         app, metrics_app = build_app()
 
+        readonly_mcp_app = readonly_mcp.http_app(transport="streamable-http")
+
+        @asynccontextmanager
+        async def readonly_lifespan(app):
+            # Session manager only — model/DB already loaded by combined_lifespan.
+            async with readonly_mcp_app.lifespan(app):
+                yield
+
+        readonly_app = Starlette(
+            lifespan=readonly_lifespan,
+            routes=[Mount("/", app=readonly_mcp_app)],
+        )
+
+        # always wrap — middleware is fail-closed (401 when key is unset)
+        api_key = get_readonly_api_key()
+        readonly_app = ApiKeyMiddleware(readonly_app, api_key=api_key)
+        if api_key:
+            logger.info("Readonly server: API key authentication enabled")
+        else:
+            logger.warning("Readonly server: READONLY_API_KEY not set, task-outcome endpoints will return 401")
+
         async def serve():
+            # Start main first so model/DB init completes before readonly accepts traffic.
             main_server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=8080, log_config=None))
+            readonly_config = uvicorn.Config(readonly_app, host="0.0.0.0", port=8081, log_config=None)
             metrics_server = uvicorn.Server(uvicorn.Config(metrics_app, host="0.0.0.0", port=9091, log_config=None))
-            await asyncio.gather(main_server.serve(), metrics_server.serve())
+
+            main_task = asyncio.create_task(main_server.serve())
+            metrics_task = asyncio.create_task(metrics_server.serve())
+
+            # Wait until main has finished startup (model + DB ready).
+            while not main_server.started:
+                if main_task.done():
+                    await main_task  # re-raise startup failure
+                    return
+                await asyncio.sleep(0.05)
+
+            readonly_server = uvicorn.Server(readonly_config)
+            await asyncio.gather(main_task, readonly_server.serve(), metrics_task)
 
         asyncio.run(serve())
     except Exception:

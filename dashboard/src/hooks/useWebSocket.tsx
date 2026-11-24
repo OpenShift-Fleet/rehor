@@ -11,19 +11,16 @@ import type { WSEvent } from "../types";
 
 interface WSContextValue {
   connected: boolean;
-  lastEvent: WSEvent | null;
   onEvent: (callback: (event: WSEvent) => void) => () => void;
 }
 
 const WSContext = createContext<WSContextValue>({
   connected: false,
-  lastEvent: null,
   onEvent: () => () => {},
 });
 
 export function WSProvider({ children }: { children: ReactNode }) {
   const [connected, setConnected] = useState(false);
-  const [lastEvent, setLastEvent] = useState<WSEvent | null>(null);
   const listenersRef = useRef<Set<(event: WSEvent) => void>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -47,7 +44,6 @@ export function WSProvider({ children }: { children: ReactNode }) {
     ws.onmessage = (e) => {
       try {
         const event: WSEvent = JSON.parse(e.data);
-        setLastEvent(event);
         listenersRef.current.forEach((cb) => cb(event));
       } catch {
         // ignore non-JSON messages
@@ -70,9 +66,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  return (
-    <WSContext.Provider value={{ connected, lastEvent, onEvent }}>{children}</WSContext.Provider>
-  );
+  return <WSContext.Provider value={{ connected, onEvent }}>{children}</WSContext.Provider>;
 }
 
 export function useWS() {

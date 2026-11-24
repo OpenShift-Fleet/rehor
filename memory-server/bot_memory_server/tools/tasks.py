@@ -1,9 +1,13 @@
 import json
+import logging
+import time
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
 
 from ..artifacts import JIRA_BASE_URL, build_artifacts
 from ..db import get_pool
@@ -13,6 +17,47 @@ from ..task_outcomes import ARCHIVE_EVIDENCE_GUIDANCE, ARCHIVE_RECOVERY, archive
 
 ACTIVE_STATUSES = ("in_progress", "pr_open", "pr_changes")
 MAX_ACTIVE = 10
+
+logger = logging.getLogger(__name__)
+
+# Instance identity travels on the MCP HTTP connection (injected from
+# BOT_INSTANCE_ID by entrypoint.sh), never through LLM-supplied parameters.
+INSTANCE_ID_HEADER = "x-bot-instance-id"
+_MISSING_HEADER_WARN_INTERVAL = 3600.0
+_last_missing_header_warn = 0.0
+
+
+def resolve_instance_id() -> str | None:
+    """Resolve the bot instance identity bound to the current MCP connection.
+
+    Reads the X-Bot-Instance-Id request header so instance_id never round-trips
+    through the LLM (homoglyph typos previously created phantom bot_instances
+    rows). Header bytes arrive latin-1-decoded from the ASGI transport; the
+    UTF-8 payload is re-decoded so non-ASCII instance names survive. Returns
+    None outside an HTTP context (in-memory tests, other MCP clients) or when
+    the header is missing/empty.
+    """
+    global _last_missing_header_warn
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        request = None
+    value = request.headers.get(INSTANCE_ID_HEADER) if request is not None else None
+    if value:
+        with suppress(UnicodeDecodeError):
+            value = value.encode("latin-1").decode("utf-8")
+        return value
+    now = time.monotonic()
+    if now - _last_missing_header_warn >= _MISSING_HEADER_WARN_INTERVAL:
+        _last_missing_header_warn = now
+        logger.warning(
+            "No %s header on the MCP connection; bot instance rows are not updated. "
+            "Set BOT_INSTANCE_ID so entrypoint.sh can bind instance identity to the connection.",
+            INSTANCE_ID_HEADER,
+        )
+    return None
+
+
 _OUTCOME_ARCHIVE_GUIDANCE = f"{ARCHIVE_RECOVERY} {ARCHIVE_EVIDENCE_GUIDANCE}"
 # Only these metadata keys describe scheduling/progress bookkeeping, not evidence.
 # Every other key is conservatively evidence-relevant, including prs, related_items,
@@ -55,6 +100,7 @@ def _row_to_task(row) -> dict:
         source_url=row.get("source_url"),
         artifacts=artifacts,
         status=row["status"],
+        category=row.get("category", "delivery"),
         repo=row["repo"],
         branch=row["branch"],
         title=row.get("title"),
@@ -198,6 +244,7 @@ def register_task_tools(mcp: FastMCP):
         repo: str,
         branch: str,
         status: str = "in_progress",
+        category: Literal["delivery", "monitoring", "grooming"] = "delivery",
         source_type: str = "jira",
         title: str | None = None,
         summary: str | None = None,
@@ -207,6 +254,8 @@ def register_task_tools(mcp: FastMCP):
         """Add a new task. Fails if >= 10 active tasks exist for this instance.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345', GitHub issue URL, etc.).
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
+        category: 'delivery' work contributes to delivery outcome metrics; 'monitoring' watch-duty and
+            'grooming' ticket assessment/preparation are counted separately and excluded.
         title: Ticket title. summary: short description of what the bot is doing/did.
         metadata: structured progress data (e.g. last_step, files_changed).
         instance_id: Bot instance name — used for multi-instance isolation.
@@ -248,8 +297,8 @@ def register_task_tools(mcp: FastMCP):
         row = await pool.fetchrow(
             """
             INSERT INTO tasks (external_key, source_type, source_url, artifacts,
-                               status, repo, branch, title, summary, instance_id, metadata)
-            VALUES ($1, $2, $3, $4, $5::task_status, $6, $7, $8, $9, $10, $11)
+                               status, category, repo, branch, title, summary, instance_id, metadata)
+            VALUES ($1, $2, $3, $4, $5::task_status, $6, $7, $8, $9, $10, $11, $12)
             RETURNING *
             """,
             external_key,
@@ -257,6 +306,7 @@ def register_task_tools(mcp: FastMCP):
             source_url,
             json.dumps(artifacts),
             status,
+            category,
             repo,
             branch,
             title,
@@ -272,6 +322,7 @@ def register_task_tools(mcp: FastMCP):
                     "external_key": external_key,
                     "title": title,
                     "status": status,
+                    "category": category,
                     "instance_id": instance_id,
                 },
             )
@@ -288,10 +339,13 @@ def register_task_tools(mcp: FastMCP):
         title: str | None = None,
         summary: str | None = None,
         metadata: dict | None = None,
+        category: Literal["delivery", "monitoring", "grooming"] | None = None,
     ) -> dict:
         """Update fields on an existing task. Lookup by external_key + source_type.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         summary: human-readable description of current state/what was done.
+        category: 'delivery', 'monitoring', or 'grooming'. Monitoring and grooming are excluded from
+            delivery outcome metrics. Category-only updates preserve reports and lifecycle.
         metadata: structured progress data (e.g. last_step, files_changed, commits, repos, prs).
             Merged with existing metadata.
             Changed values invalidate staged outcomes except last_step, next_step and status_before_pause.
@@ -341,6 +395,10 @@ def register_task_tools(mcp: FastMCP):
             idx += 1
             sets.append(f"summary = ${idx}")
             params.append(summary)
+        if category is not None:
+            idx += 1
+            sets.append(f"category = ${idx}")
+            params.append(category)
         if not sets and metadata is None:
             raise ValueError("No fields to update")
 
@@ -397,6 +455,7 @@ def register_task_tools(mcp: FastMCP):
                 {
                     "external_key": external_key,
                     "status": result["status"],
+                    "category": result["category"],
                     "summary": result.get("summary"),
                 },
             )
@@ -428,6 +487,9 @@ def register_task_tools(mcp: FastMCP):
         regardless of authorType.
         A staged report does not archive the task; call task_remove afterward. Manual dashboard archive
         remains unreported.
+        Grooming acceptance needs evidence of assessment, labels/repository mappings, points, and sprint
+        preparation as applicable. Task existence or done status does not prove acceptance. Repeated
+        no-new-ticket checks need separate no-op adjudication before accepted evidence is reported.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345')."""
         try:
             parsed_verified_at = datetime.fromisoformat(verified_at.replace("Z", "+00:00")) if verified_at else None
@@ -515,7 +577,6 @@ def register_task_tools(mcp: FastMCP):
         message: str,
         external_key: str | None = None,
         repo: str | None = None,
-        instance_id: str | None = None,
     ) -> dict:
         """Update the bot's current activity status. Call this at the start and end of each cycle,
         and when switching between tasks.
@@ -523,8 +584,9 @@ def register_task_tools(mcp: FastMCP):
         message: Human-readable description of what the bot is doing right now.
         external_key: The ticket/task being worked on (e.g. Jira key 'RHCLOUD-12345').
         repo: The repo being worked in (if any).
-        instance_id: Bot instance name for multi-instance setups."""
+        Do NOT pass an instance_id parameter: the bot instance identity is bound to the MCP connection."""
         pool = get_pool()
+        instance_id = resolve_instance_id()
         source_type = "jira" if external_key else None
         row = await pool.fetchrow(
             """

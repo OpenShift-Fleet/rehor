@@ -327,6 +327,16 @@ class TestSquidPlaywrightAllowlist:
     def test_redhat_domains_allowed(self, squid_conf):
         assert ".redhat.com" in squid_conf
 
+    def test_anchore_grype_db_allowed(self, squid_conf):
+        assert ".anchore.io" in squid_conf
+
+    def test_quay_registry_allowed(self, squid_conf):
+        assert "acl allowed_domains dstdomain quay.io" in squid_conf
+
+    def test_quay_s3_storage_allowed(self, squid_conf):
+        """Quay hands out direct presigned S3 URLs for blobs."""
+        assert "acl allowed_domains dstdomain s3.us-east-1.amazonaws.com" in squid_conf
+
     def test_no_direct_anthropic_in_allowlist(self, squid_conf):
         lines = [
             line.strip()

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import type { ContentHash } from "./domain/run";
+import { isOpenCodeRuntime } from "./domain/runtime-selection";
 import { isMissingFile } from "./utils";
 
 export enum InstructionStrategy {
@@ -108,6 +109,7 @@ export function sha256Hash(value: string): ContentHash {
 }
 
 export interface CyclePromptOptions {
+  runtimeId?: string;
   label: string;
   instanceId?: string | null;
   preflightPrompt?: string | null;
@@ -116,9 +118,12 @@ export interface CyclePromptOptions {
 /** Build the current Python runner prompt without changing workflow wording. */
 export function buildCyclePrompt(options: CyclePromptOptions): string {
   const instanceLine = options.instanceId
-    ? ` Your instance ID is: ${options.instanceId}. Pass instance_id="${options.instanceId}" to ALL task tool calls (task_list, task_add, task_update, task_check_capacity, bot_status_update).`
+    ? ` Your instance ID is: ${options.instanceId}. Pass instance_id="${options.instanceId}" to task tool calls that accept it (task_list, task_add, task_check_capacity). Do NOT pass instance_id to bot_status_update — it is bound to the MCP connection.`
     : "";
-  const prefix = `Your primary label is: ${options.label}.${instanceLine} Follow the instructions in CLAUDE.md. `;
+  const guidance = isOpenCodeRuntime(options.runtimeId)
+    ? "Follow native OpenCode instructions and AGENTS.md."
+    : "Follow the instructions in CLAUDE.md.";
+  const prefix = `Your primary label is: ${options.label}.${instanceLine} ${guidance} `;
   const cavemanLine =
     "IMPORTANT: Use ULTRA caveman output for all internal text — " +
     "drop articles, filler, hedging, conjunctions. Abbreviate: DB/auth/config/req/res/fn/impl/env/dep/pkg. " +

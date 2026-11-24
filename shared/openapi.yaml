@@ -59,6 +59,10 @@ paths:
         - name: repo
           in: query
           schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to summarize all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
         - name: decision
           in: query
           schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
@@ -84,6 +88,50 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /api/task-outcomes/trends:
+    get:
+      operationId: getTaskOutcomeTrends
+      summary: Get task outcome counts grouped by UTC calendar month
+      parameters:
+        - name: from
+          in: query
+          description: Inclusive UTC YYYY-MM-DD start date.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive UTC YYYY-MM-DD end date.
+          schema: { type: string, format: date }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Chronological monthly task and outcome counts, including zero-filled months.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeTrends' }
+        '400':
+          description: Invalid filter or date range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   /api/task-outcomes/tasks:
     get:
       operationId: listTaskOutcomes
@@ -92,6 +140,10 @@ paths:
         - name: repo
           in: query
           schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include delivery, monitoring, and grooming tasks.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
         - name: decision
           in: query
           schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
@@ -573,6 +625,148 @@ paths:
               schema:
                 type: string
 
+  /api/locks:
+    get:
+      operationId: listSessionLocks
+      summary: List session locks, including expired ones (expiry is authoritative)
+      responses:
+        '200':
+          description: Session locks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionLock'
+
+  /api/locks/acquire:
+    post:
+      operationId: acquireSessionLock
+      summary: Atomically acquire a session lock (expired locks are takeable)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockAcquireRequest'
+      responses:
+        '200':
+          description: Lock acquired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockAcquired'
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock held by someone else
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockConflict'
+
+  /api/locks/renew:
+    post:
+      operationId: renewSessionLock
+      summary: Extend a held, unexpired session lock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockRenewRequest'
+      responses:
+        '200':
+          description: Lock renewed
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock lost (token mismatch, missing, or expired)
+
+  /api/locks/release:
+    post:
+      operationId: releaseSessionLock
+      summary: Release a session lock (idempotent)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockReleaseRequest'
+      responses:
+        '200':
+          description: Release result (released is false when never held, already released, or token mismatch)
+        '400':
+          description: Invalid payload
+
+  /api/session-registry:
+    get:
+      operationId: listSessionRegistry
+      summary: List session registry records, oldest first (storage only; the dispatcher interprets state values)
+      parameters:
+        - in: query
+          name: state
+          required: false
+          description: Exact-match state filter
+          schema: { type: string, minLength: 1, maxLength: 32 }
+      responses:
+        '200':
+          description: Session registry records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionRegistryRecord'
+        '400':
+          description: Invalid state filter
+
+  /api/session-registry/register:
+    post:
+      operationId: registerSession
+      summary: Upsert a session registry record (re-registering the same run_id resets it to open)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryRegisterRequest'
+      responses:
+        '200':
+          description: Session registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryRegistered'
+        '400':
+          description: Invalid payload
+
+  /api/session-registry/update:
+    post:
+      operationId: updateSession
+      summary: Patch fields on a session registry record (absent fields untouched, null clears names/detail/lock_token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryUpdateRequest'
+      responses:
+        '200':
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryUpdated'
+        '400':
+          description: Invalid payload
+        '404':
+          description: Unknown run_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryNotFound'
+
   /api/bot-status:
     get:
       operationId: getBotStatus
@@ -821,7 +1015,7 @@ components:
 
     TaskOutcomeTask:
       type: object
-      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
+      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, category, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
       properties:
         taskId: { type: integer }
         externalKey: { type: string }
@@ -837,6 +1031,12 @@ components:
             archivedAt: { type: string, format: date-time, nullable: true }
           additionalProperties: false
         state: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: >-
+            Work category. Monitoring is watch-duty work; grooming is ticket assessment/preparation.
+            Both are shown separately and excluded from delivery acceptance rate and outcome coverage.
         repo: { type: string, nullable: true }
         canonicalRepositories: { type: array, items: { type: string } }
         title: { type: string, nullable: true }
@@ -882,14 +1082,44 @@ components:
         offset: { type: integer, minimum: 0 }
       additionalProperties: false
 
+    GroomingOutcomes:
+      type: object
+      description: Grooming-category states only; acceptance requires evidence, never task existence or done status alone.
+      required: [acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+      properties:
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+      additionalProperties: false
+
     TaskOutcomeRepositorySummary:
       type: object
-      required: [repo, acceptanceRate, taskCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
+      required: [repo, acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
       properties:
         repo: { type: string }
-        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        acceptanceRate:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+        outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
         taskCount: { type: integer, minimum: 0 }
+        deliveryTaskCount: { type: integer, minimum: 0 }
+        monitoringCount:
+          type: integer
+          minimum: 0
+          description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+        groomingCount:
+          type: integer
+          minimum: 0
+          description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+        groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
         acceptedCount: { type: integer, minimum: 0 }
+        acceptedNoOpCount: { type: integer, minimum: 0 }
         rejectedCount: { type: integer, minimum: 0 }
         obsoleteCount: { type: integer, minimum: 0 }
         inconclusiveCount: { type: integer, minimum: 0 }
@@ -901,7 +1131,7 @@ components:
 
     TaskOutcomeSummary:
       type: object
-      required: [period, summary, repositories, freshness, backfill]
+      required: [period, summary, repositories, metricDefinitions, freshness, backfill]
       properties:
         period:
           type: object
@@ -912,12 +1142,29 @@ components:
           additionalProperties: false
         summary:
           type: object
-          required: [acceptanceRate, taskCount, repositoryCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+          required: [acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, repositoryCount, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
           properties:
-            acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+            acceptanceRate:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 1
+              description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+            outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
             taskCount: { type: integer, minimum: 0 }
+            deliveryTaskCount: { type: integer, minimum: 0 }
+            monitoringCount:
+              type: integer
+              minimum: 0
+              description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+            groomingCount:
+              type: integer
+              minimum: 0
+              description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+            groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
             repositoryCount: { type: integer, minimum: 0 }
             acceptedCount: { type: integer, minimum: 0 }
+            acceptedNoOpCount: { type: integer, minimum: 0 }
             rejectedCount: { type: integer, minimum: 0 }
             obsoleteCount: { type: integer, minimum: 0 }
             inconclusiveCount: { type: integer, minimum: 0 }
@@ -925,6 +1172,15 @@ components:
             wipCount: { type: integer, minimum: 0 }
           additionalProperties: false
         repositories: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeRepositorySummary' } }
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, outcomeCoverage, monitoring, grooming]
+          properties:
+            acceptanceRate: { type: string }
+            outcomeCoverage: { type: string }
+            monitoring: { type: string }
+            grooming: { type: string }
+          additionalProperties: false
         freshness:
           type: object
           required: [generatedAt]
@@ -940,6 +1196,53 @@ components:
           additionalProperties: false
       additionalProperties: false
 
+    TaskOutcomeTrendMonth:
+      type: object
+      required: [month, taskCount, deliveryCount, monitoringCount, groomingCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, acceptanceRate]
+      properties:
+        month: { type: string, pattern: '^\d{4}-\d{2}$' }
+        taskCount: { type: integer, minimum: 0 }
+        deliveryCount: { type: integer, minimum: 0 }
+        monitoringCount: { type: integer, minimum: 0 }
+        groomingCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+      additionalProperties: false
+
+    TaskOutcomeTrends:
+      type: object
+      required: [period, months, freshness, metricDefinitions]
+      properties:
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+          additionalProperties: false
+        months:
+          type: array
+          items: { $ref: '#/components/schemas/TaskOutcomeTrendMonth' }
+        freshness:
+          type: object
+          required: [generatedAt]
+          properties:
+            generatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, month]
+          properties:
+            acceptanceRate: { type: string }
+            month: { type: string }
+          additionalProperties: false
+      additionalProperties: false
+
     TaskItem:
       type: object
       required:
@@ -949,6 +1252,7 @@ components:
         - source_type
         - artifacts
         - status
+        - category
         - repo
         - branch
         - created_at
@@ -970,6 +1274,10 @@ components:
               url: { type: string }
               type: { type: string }
         status: { type: string }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: Monitoring watch-duty and grooming ticket assessment/preparation are excluded from delivery outcome metrics.
         repo: { type: string }
         branch: { type: string }
         title: { type: string, nullable: true }
@@ -1031,6 +1339,8 @@ components:
         num_turns: { type: integer }
         duration_ms: { type: integer }
         cost_usd: { type: number }
+        cost_status: { type: string, nullable: true, enum: [provider, estimated, unknown, null] }
+        cost_incomplete: { type: boolean }
         input_tokens: { type: integer }
         output_tokens: { type: integer }
         cache_read_tokens: { type: integer }
@@ -1104,6 +1414,8 @@ components:
         total_turns: { type: integer }
         idle_cycles: { type: integer }
         error_cycles: { type: integer }
+        estimated_cycles: { type: integer }
+        incomplete_cycles: { type: integer }
 
     BotStatus:
       type: object
@@ -1118,6 +1430,131 @@ components:
         instance_id: { type: string }
         updated_at: { type: string }
         cycle_start: { type: string, nullable: true }
+
+    SessionLock:
+      type: object
+      required: [key, holder, acquired_at, expires_at]
+      properties:
+        key: { type: string }
+        holder: { type: string }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockAcquireRequest:
+      type: object
+      required: [key, holder, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockAcquired:
+      type: object
+      required: [acquired, key, holder, lock_token, acquired_at, expires_at]
+      properties:
+        acquired: { type: boolean, enum: [true] }
+        key: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockConflict:
+      type: object
+      required: [acquired, key, holder]
+      properties:
+        acquired: { type: boolean, enum: [false] }
+        key: { type: string }
+        holder: { type: string, nullable: true }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockRenewRequest:
+      type: object
+      required: [key, lock_token, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockReleaseRequest:
+      type: object
+      required: [key, lock_token]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    SessionRegistryRecord:
+      type: object
+      required: [run_id, agent_id, holder, lock_token, state, workspace_name, sandbox_name, provider_name, profile_name, started_at, updated_at, detail]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid, nullable: true }
+        state: { type: string }
+        workspace_name: { type: string, nullable: true }
+        sandbox_name: { type: string, nullable: true }
+        provider_name: { type: string, nullable: true }
+        profile_name: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryRegisterRequest:
+      type: object
+      required: [run_id, agent_id, holder]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        lock_token: { type: string, format: uuid }
+      additionalProperties: false
+
+    SessionRegistryRegistered:
+      type: object
+      required: [registered, run_id, started_at]
+      properties:
+        registered: { type: boolean, enum: [true] }
+        run_id: { type: string, format: uuid }
+        started_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionRegistryUpdateRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id: { type: string, format: uuid }
+        state: { type: string, minLength: 1, maxLength: 32 }
+        workspace_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        sandbox_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        provider_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        profile_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+        lock_token: { type: string, format: uuid, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryUpdated:
+      type: object
+      required: [updated, record]
+      properties:
+        updated: { type: boolean, enum: [true] }
+        record: { $ref: '#/components/schemas/SessionRegistryRecord' }
+      additionalProperties: false
+
+    SessionRegistryNotFound:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: boolean, enum: [false] }
+      additionalProperties: false
 
     BotInstance:
       type: object

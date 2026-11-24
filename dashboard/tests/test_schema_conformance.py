@@ -17,6 +17,7 @@ from fixtures.api_payloads import (
     MEMORIES,
     TASK_OUTCOME_SUMMARY,
     TASK_OUTCOME_TASKS,
+    TASK_OUTCOME_TRENDS,
     TASKS,
     cycle_entry,
     cycle_run,
@@ -175,6 +176,9 @@ class TestTaskOutcomeFixtureConformance:
     def test_detail_fixture(self):
         task = TASK_OUTCOME_TASKS[0]
         _validate({**task, "outcomeHistory": [task["outcome"]], "taskCycles": []}, "TaskOutcomeTask")
+
+    def test_trends_fixture(self):
+        _validate(TASK_OUTCOME_TRENDS, "TaskOutcomeTrends")
 
 
 class TestCostsResponseConformance:

@@ -32,7 +32,8 @@ export interface ProviderSelection {
 
 export interface RunLimits {
   timeoutMs: number;
-  maxTurns: number;
+  /** Per-cycle-run USD cost budget; the run hard-aborts past its grace window. */
+  budgetUsd: number;
   maxOutputTokens?: number;
 }
 
@@ -53,6 +54,8 @@ export interface RehorRun {
   instructionHash: ContentHash;
   configHash: ContentHash;
   policyHash: ContentHash;
+  /** Selected runtime adapter; optional for schema-v1 runs created before canary rollout. */
+  runtimeId?: string;
   provider: ProviderSelection;
   limits: RunLimits;
   preflightPayloadRef: string | null;

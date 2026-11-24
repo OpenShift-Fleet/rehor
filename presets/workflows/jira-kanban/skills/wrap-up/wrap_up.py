@@ -17,7 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jira_mcp import jira_call
 from memory_mcp import memory_call
 
-MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/mcp").rstrip("/")
+MEMORY_URL = os.environ.get("BOT_MEMORY_URL", "http://localhost:8080").rstrip("/")
+if MEMORY_URL.endswith("/mcp") and urllib.parse.urlsplit(MEMORY_URL).path.endswith("/mcp"):
+    MEMORY_URL = MEMORY_URL.removesuffix("/mcp").rstrip("/")
 PROJECT_REPOS = Path(__file__).resolve().parent.parent.parent.parent / "project-repos.json"
 REPOS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "repos"
 
@@ -28,8 +30,18 @@ def http_request(url, method="GET", body=None, headers=None, timeout=15):
     if body is not None:
         data = json.dumps(body).encode()
         hdrs["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
     try:
+        sandbox_headers = {}
+        if os.environ.get("REHOR_INPUT_SOURCE") == "sandbox":
+            sys.path.insert(0, str(Path(os.environ["HOME"]) / "app"))
+            from bot.sandbox_transport import memory_api_headers
+
+            # Caller-provided credentials must not override the scoped config.
+            hdrs = {key: value for key, value in hdrs.items() if key.lower() != "authorization"}
+            sandbox_headers = memory_api_headers(url, method)
+        req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
+        for name, value in sandbox_headers.items():
+            req.add_unredirected_header(name, value)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}

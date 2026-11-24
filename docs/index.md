@@ -1,15 +1,28 @@
-# What
+# Řehoř
 
 Řehoř is an autonomous developer tool. A selected workflow discovers
-work, implements code changes in target repos, opens PRs/MRs, and maintains
-them through CI and review cycles. It runs as a polling loop using the Claude
-Agent SDK, with optional integrations for Jira Cloud, GitHub, GitLab, and
-persistent memory backed by PostgreSQL.
+work, implements code changes in target repos, and maintains PRs and MRs
+through CI and review. It integrates with Jira Cloud, GitHub, GitLab, and a
+PostgreSQL-backed memory server.
 
-The bot operates in workflow-defined cycles. Lightweight Python preflight
-scripts check each workflow's external systems for actionable work. An AI
-session only starts when there's something to do, so the common "nothing
-changed" case costs zero tokens.
+## How a dispatched cycle works
+
+```mermaid
+flowchart TD
+ D[Dispatcher reads instance config] --> P[Registered TypeScript preflights]
+ P -->|Actionable work| S[OpenShell sandbox]
+ P -->|No start decision| N[No model session]
+ S --> O[Coordinator runs OpenCode V2 once]
+```
+
+The [dispatcher](agent-dispatcher-deployment.md) checks for work before it
+creates a sandbox. Only `start` results go into the prompt. The sandbox runner
+consumes that prompt once and exits; it does not run preflights again. Cycles
+without a model session use no model tokens.
+
+Instance repositories select and configure registered preflights in
+`instance.yaml`. If a check doesn't exist, [contribute it to this repository](presets/custom-preflight.md).
+The dispatcher does not execute preflight scripts from instance repositories.
 
 ## Why
 
@@ -19,45 +32,11 @@ changed" case costs zero tokens.
 - **Learns from past work** — completed work is stored as RAG memories, so the bot improves over time
 - **Cost-efficient** — preflight scripts filter out "nothing to do" cycles before any AI tokens are spent
 
-## How
+## Example dispatcher output
 
-1. **Configure your instance** — select a workflow and env presets using the [Presets Overview](presets/README.md)
-2. **Configure the workflow's source** — for `jira-sprint`, add the bot label and a `repo:<name>` label to groomed Jira tickets; custom workflows define their own source
-3. **Preflight scripts gather data** — each cycle, workflow-specific Python scripts check configured external systems for actionable changes
-4. **AI session runs only when needed** — if any preflight script returns "start", Claude receives all gathered data and acts on it
-5. **PR lifecycle is automatic** — the bot handles CI failures, review feedback, merge conflicts, and post-merge cleanup
-
-For the full cycle diagram and state machine, see [Bot Workflow Loop](bot-workflow-loop.md).
-
-```
-Workflow source reports actionable work
-    → Workflow claims or tracks work item
-        → Agent implements on branch bot/KEY
-            → PR or equivalent artifact opened
-                → CI fix / review feedback loop
-                    → Work completed, learnings stored
-```
-
-## Example
-
-A real ticket: RHCLOUD-37254 ("RBAC allowing roles with same name as System Roles").
-
-1. A human groomed the ticket and added labels `hcc-ai-platform-accessmanagement` and `repo:insights-rbac`
-2. The bot found it via JQL, assigned itself, transitioned to "In Progress", added it to the active sprint
-3. It cloned `insights-rbac`, created branch `bot/RHCLOUD-37254`, loaded the `rbac` persona, read the repo's `CLAUDE.md`, and implemented the fix
-4. It pushed the branch, opened a PR via `gh pr create`, transitioned the ticket to "Code Review", and commented on Jira with the PR link
-5. A human reviewed the PR. Each cycle, the bot checked for new feedback and addressed comments
-6. Once merged, the bot transitioned the ticket to "Done" and stored learnings in RAG memory
-
-For more examples (cross-repo features, CVE triage, UI changes with screenshots), see the [Operations Guide](https://github.com/RedHatInsights/platform-frontend-ai-dev/blob/master/OPERATIONS.md#what-the-bot-has-done).
+The [FleetShift profile](https://github.com/fleetshift/fleetshift-bot-instance/blob/main/instance/fleetshift-config/agent/instance.yaml) selects dispatcher-managed preflights and OpenCode. On Nov 13, its agent opened [PR #39](https://github.com/stolostron/ocm-fleet/pull/39), proposing a versioned console-config provider for `stolostron/ocm-fleet`: config sources, validation and error states, plugin bootstrap, manifest-asset URL resolution, tests, and usage docs. GitHub showed the PR open at last review; this is proposed work, not a merged change.
 
 ## Common Mistakes
-
-**Wrong NetworkPolicy proxy label.** The proxy pod's label is `app.kubernetes.io/name: devbot-proxy`, not `proxy`. Using the wrong label silently blocks all bot egress. The bot will start but hang forever waiting for the executor connection. See [Onboarding](onboarding-new-instance.md#gotchas) for details.
-
-**DNS port is 5353, not 53.** OpenShift uses a custom DNS server on port 5353 in the `openshift-dns` namespace. Standard port 53 or `kube-dns` selectors cause pods to hang on name resolution.
-
-**Missing `ScaledObject.keda.sh` in managedResourceTypes.** Without this, app-interface prunes the KEDA cron scaler on every sync, and your bot won't auto-scale. See [Scheduling](scheduling.md).
 
 **Unused env presets waste build time.** The `node` and `go` presets install version managers and compilers. Skip them if your repos don't need them. See [Env Presets](presets/envs.md).
 
@@ -70,22 +49,16 @@ For more examples (cross-repo features, CVE triage, UI changes with screenshots)
 - Verify `repo:<name>` labels match keys in `project-repos.json`
 - Check if the bot is at the 10-task capacity limit via the dashboard
 
-**Bot pod starts but hangs:**
-
-- Check NetworkPolicy labels (must be `devbot-proxy`, not `proxy`)
-- Check DNS egress (port 5353, not 53, targeting `openshift-dns` namespace)
-- Verify executor connectivity in logs: "Connected to executor at devbot-proxy:9090"
-
 **Bot runs but never starts AI sessions:**
 
-- Check preflight logs — all scripts returning "skip" means no actionable work was found
+- Check dispatcher preflight logs. A `skip` decision means no actionable work was found.
 - Verify there are open PRs with CI failures, review feedback, or unassigned sprint tickets
 - Look for "error" results in preflight output, which indicate API connectivity issues
 
 Custom workflows have their own source and preflight checks. Use their workflow
 documentation instead of applying Jira-specific checks.
 
-For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsights/platform-frontend-ai-dev/blob/master/OPERATIONS.md).
+For current operational procedures, see the [Operations Overview](operations/index.md).
 
 ---
 
@@ -93,23 +66,25 @@ For the full operations guide, see [OPERATIONS.md](https://github.com/RedHatInsi
 
 | Section | What you'll find |
 |---------|-----------------|
-| [Onboarding a New Instance](onboarding-new-instance.md) | Step-by-step guide: runner repo, deploy template, Konflux, app-interface, Jira setup |
+| [Onboarding a New Instance](onboarding-new-instance.md) | Build a runner image and enroll its profile in the dispatcher |
+| [Agent Dispatcher Deployment](agent-dispatcher-deployment.md) | Dispatcher deployment contract, configuration, rollout, rollback, observability |
+| [Dispatcher Credentials and Secrets](dispatcher-secrets.md) | Current platform authentication and planned sandbox secrets |
 | [Instance Configuration](presets/instance-config.md) | `instance.yaml`, env-preset selection, and configuration precedence |
-| [Scheduling](scheduling.md) | KEDA cron scaler configuration for business-hours-only operation |
-| [Bot Workflow Loop](bot-workflow-loop.md) | Cycle architecture, preflight system, task state machine with diagrams |
+| [Bot Workflow Loop](bot-workflow-loop.md) | From preflight decision to sandbox cleanup |
+| [Scheduling](scheduling.md) | Current dispatcher cadence and planned per-instance schedules |
 | [Debugging Cycles and Improving Agents](debugging-cycles-and-agents.md) | Find cycle transcripts, diagnose decisions, and improve agent behavior safely |
-| [Coordinator Runtime Contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md) | Provider-neutral runtime boundary, invariants, and Python compatibility |
+| [Coordinator Runtime Contract](https://github.com/OpenShift-Fleet/rehor/blob/master/coordinator/README.md) | Runtime boundary and lifecycle |
 | [Git Auth Proxy](git-auth-proxy.md) | Credential isolation design for the proxy sidecar |
-| [Preset System Design](presets-design.md) | Architecture decisions behind the preset composition model |
 | [Presets Overview](presets/README.md) | How workflow and env presets work together |
 | [Workflow Presets](presets/workflows.md) | Built-in workflow reference (jira-sprint) |
 | [Env Presets](presets/envs.md) | Available env presets: node, go, browser, container-scan, slack, etc. |
 | [Custom Workflows](presets/custom-workflows.md) | Building your own workflow for specialized automation |
-| [Custom Preflight Scripts](presets/custom-preflight.md) | Writing pre-session data-gathering scripts |
-| [Preset Migration Guide](migrations/preset-migration-guide.md) | Migrating existing instances to the preset system |
-| [OpenCode Migration Design](migrations/opencode-migration.md) | Migrating from Claude Code and Vertex auth to OpenCode and direct OpenAI keys |
+| [Dispatcher Preflights](presets/custom-preflight.md) | Configure registered checks or contribute new ones to Řehoř |
+| [Preflight Reference](presets/preflight-reference.md) | Registered checks and their input parameters |
 | [Roadmap](roadmap.md) | Planned improvements and new capabilities |
 | [Operations Overview](operations/index.md) | Daily operations and verification runbooks |
+
+For previous deployment patterns, see [Legacy documentation](legacy/index.md).
 
 ## Contributing to these docs
 

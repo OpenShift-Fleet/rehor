@@ -26,6 +26,7 @@ from fixtures.api_payloads import (
     TASK_CYCLE_GROUPS,
     TASK_OUTCOME_SUMMARY,
     TASK_OUTCOME_TASKS,
+    TASK_OUTCOME_TRENDS,
     TASKS,
 )
 
@@ -98,6 +99,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/task-outcomes/summary":
             self.send_json(TASK_OUTCOME_SUMMARY)
 
+        elif path == "/api/task-outcomes/trends":
+            self.send_json(TASK_OUTCOME_TRENDS)
+
         elif path == "/api/task-outcomes/tasks":
             items = TASK_OUTCOME_TASKS[:]
             repo_filter = qs.get("repo", [None])[0]
@@ -141,6 +145,40 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/bot-status":
             self.send_json(BOT_STATUS)
+
+        elif path == "/api/locks":
+            # Session mutex leases (REHOR-218); expiry is authoritative.
+            self.send_json(
+                [
+                    {
+                        "key": "agent-session:mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "acquired_at": "2026-11-13T10:00:00Z",
+                        "expires_at": "2026-11-13T10:30:00Z",
+                    }
+                ]
+            )
+
+        elif path == "/api/session-registry":
+            # Durable session records (REHOR-218); the dispatcher interprets state.
+            self.send_json(
+                [
+                    {
+                        "run_id": "b1a2c3d4-0000-4000-8000-000000000001",
+                        "agent_id": "mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "lock_token": "b1a2c3d4-0000-4000-8000-000000000002",
+                        "state": "open",
+                        "workspace_name": "wmocksessionregistry1",
+                        "sandbox_name": "smocksessionregistry1",
+                        "provider_name": "vmocksessionregistry1",
+                        "profile_name": "pmocksessionregistry1",
+                        "started_at": "2026-11-13T10:00:00Z",
+                        "updated_at": "2026-11-13T10:05:00Z",
+                        "detail": None,
+                    }
+                ]
+            )
 
         elif path == "/api/instances":
             self.send_json(
@@ -301,8 +339,9 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                pass
-            self.send_json(groups)
+                task_ids = {r["task_id"] for r in CYCLE_RUNS if r.get("instance_id") == instance_id}
+                groups = [g for g in groups if g["task_id"] in task_ids]
+            self.send_json({"items": groups, "total": len(groups)})
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
             run_id = int(path.split("/")[3])
@@ -442,6 +481,8 @@ if __name__ == "__main__":
     print("  GET  /api/tasks             - List tasks (with filters)")
     print("  GET  /api/stats             - Task & memory stats")
     print("  GET  /api/bot-status        - Bot status")
+    print("  GET  /api/locks             - Session locks (REHOR-218)")
+    print("  GET  /api/session-registry  - Session registry (REHOR-218)")
     print("  GET  /api/instances         - Bot instances")
     print("  GET  /api/memories          - List memories (with filters)")
     print("  GET  /api/memories/:id      - Get memory by ID")
@@ -453,6 +494,7 @@ if __name__ == "__main__":
     print("  GET  /api/cycle-runs/by-task - Cycle runs grouped by task")
     print("  GET  /api/cycle-runs/:id/transcript - Cycle run transcript")
     print("  GET  /api/task-outcomes/summary - Task outcome rollup")
+    print("  GET  /api/task-outcomes/trends - Monthly task outcome trends")
     print("  GET  /api/task-outcomes/tasks - Task outcome list")
     print("  GET  /api/task-outcomes/tasks/:task_id - Task outcome detail")
     print("  GET  /api/analytics         - Analytics summary")

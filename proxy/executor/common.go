@@ -24,7 +24,9 @@ func (r *statusRecorder) Unwrap() http.ResponseWriter {
 func stripSensitiveResponseHeaders(resp *http.Response) error {
 	resp.Header.Del("Authorization")
 	resp.Header.Del("Set-Cookie")
+	resp.Header.Del("Set-Cookie2")
 	resp.Header.Del("WWW-Authenticate")
+	resp.Header.Del("Proxy-Authenticate")
 	for k := range resp.Header {
 		ck := http.CanonicalHeaderKey(k)
 		if strings.HasPrefix(ck, "X-") && strings.Contains(ck, "Token") {
