@@ -1,6 +1,8 @@
-# Rehor Roadmap
+# Řehoř Roadmap
 
-Planned improvements and new capabilities for the Rehor autonomous development platform.
+Planned improvements and new capabilities for the Řehoř autonomous development tool.
+
+For the planned workload-scoped sandbox secret references and impact boundaries, see [Dispatcher Credentials and Secrets](dispatcher-secrets.md#planned-configure-a-tier-2-sandbox-secret).
 
 ---
 
@@ -33,25 +35,6 @@ Engineer experience items (§9–§12) pair naturally with platform foundations:
 
 ---
 
-## Status
-
-| Item | Status |
-|------|--------|
-| CI Foundation | Planned |
-| Logging & Observability | Planned |
-| Run Identity | Planned |
-| Shared Memory MCP | Planned |
-| Agentic SDLC Integration | Planned |
-| Model Customization | Planned |
-| Task Blocker Explanation | Planned |
-| Ticket Readiness Doctor | Planned |
-| Failure Fingerprinting | Planned |
-| Onboarding Agent | Planned |
-| Improvement Agent | Planned (after telemetry exists) |
-| Workflow Presets | Planned (scrum-jira exists today) |
-
----
-
 ## 1. Shared Memory MCP Server
 
 Expose the memory server as a read-only MCP endpoint that engineers can connect to from their local Claude Code, Cursor, or other agentic tool sessions.
@@ -79,7 +62,7 @@ A dedicated bot instance that automates onboarding new teams and repos onto the 
 **Why:** Today, onboarding a new instance requires manual setup — creating config files, Jira labels, Konflux components, and repo permissions. An onboarding agent can handle the mechanical steps while maintaining a conversation with the requester across Jira comments, PR reviews, and other channels to gather requirements and iterate on the configuration.
 
 **How it works:**
-- Triggered by a new Jira issue (e.g., "Onboard repo X to Rehor")
+- Triggered by a new Jira issue (e.g., "Onboard repo X to Řehoř")
 - Engages in a multi-channel dialog with the reporter (Jira comments, PRs) to gather details:
   - Repository URL and hosting platform (GitHub / GitLab)
   - Jira project and board
@@ -136,7 +119,7 @@ Each preset includes its own workflow CLAUDE.md, preflight checks, and default c
 
 Integrate with the [Fleet Engineering Agentic SDLC](https://github.com/OpenShift-Fleet/agentic-sdlc) tooling — a shared skill and command catalog used across the organization.
 
-**Why:** The agentic-sdlc repo provides battle-tested skills (`start-work`, `finish-work`, `pr-review`, `jira-create`, etc.) and SDLC practices that the broader engineering org already uses. Aligning Rehor with these standards means bot instances follow the same workflows human engineers do, and improvements flow both ways.
+**Why:** The agentic-sdlc repo provides battle-tested skills (`start-work`, `finish-work`, `pr-review`, `jira-create`, etc.) and SDLC practices that the broader engineering org already uses. Aligning Řehoř with these standards means bot instances follow the same workflows human engineers do, and improvements flow both ways.
 
 **Integration points:**
 - Install the agentic-sdlc plugin into bot runner images so skills are available at runtime
@@ -193,7 +176,7 @@ Add structured logging and traceability across bot runs so engineers and the pla
 **Why:** The current logging infrastructure is unstructured plain text with no cross-event correlation:
 - `bot/run.py` uses `[%(asctime)s] %(message)s` format — no structured/JSON logging anywhere, no `structlog` or equivalent in the project.
 - No correlation ID links events across a single cycle. The main loop runs preflight → agent cycle → cost recording → transcript storage, but each step logs independently. `session_id` from Claude SDK is captured *after* the cycle ends, never used during it. Preflight scripts have zero ID awareness.
-- Preflight duration is not tracked — `_run_script()` runs subprocesses but never records timing. Only the Claude SDK's `duration_ms` on the agent cycle itself is captured.
+- Preflight duration is not tracked — `_run_script` runs subprocesses but never records timing. Only the Claude SDK's `duration_ms` on the agent cycle itself is captured.
 - Multiple silent failures: dashboard status push uses bare `except Exception: pass` (`bot/agent.py:59-61`); cost API push catches all exceptions at DEBUG level only (`bot/costs.py:88-91`); WebSocket events swallow all errors silently (`server.py:133`).
 - Engineers diagnose issues by grepping `data/bot.log` (plain text, append mode). There is no way to filter by cycle, task, or error class.
 
@@ -225,7 +208,7 @@ Add a stable identifier that links all artifacts produced by a single bot run.
 
 ## 10. Task Blocker Explanation
 
-Show why Rehor did not pick up a task and what an engineer must do next. The task detail view should expose the latest preflight decision, failed checks, stale inputs, retry timing, and a short remediation message.
+Show why Řehoř did not pick up a task and what an engineer must do next. The task detail view should expose the latest preflight decision, failed checks, stale inputs, retry timing, and a short remediation message.
 
 **Why:** Engineers cannot currently ask "why hasn't PROJ-123 been picked up?" Preflight produces free-text skip reasons (e.g., "No eligible work — 3 candidates lack repo: labels"), but these are dumped as a single text blob into idle cycle runs (`progress.summary`, truncated to 2000 chars), not linked to individual tasks. The dashboard shows paused tasks with `paused_reason` and idle cycle run summaries, but candidate tickets that were evaluated and skipped have no representation in the dashboard at all — they only exist in Jira. The Task model has no field for `last_skip_reason` or `last_preflight_result`. Today, engineers must go to the Cycle Runs page, filter for "idle" cycle type, read free-text summaries across multiple cycles, and piece together why their ticket wasn't picked — or read runner logs directly.
 
@@ -244,7 +227,7 @@ Show why Rehor did not pick up a task and what an engineer must do next. The tas
 
 ## 11. Ticket Readiness Doctor
 
-Validate whether a Jira ticket is sufficiently well-specified for Rehor to work on it, and improve it when it isn't.
+Validate whether a Jira ticket is sufficiently well-specified for Řehoř to work on it, and improve it when it isn't.
 
 **Why:** Underspecified tickets are the most common reason bot runs produce wrong or incomplete results. The bot starts work, discovers ambiguity mid-implementation, and either guesses wrong or stalls. Catching specification gaps before execution saves bot cycles and engineer rework.
 
@@ -284,4 +267,3 @@ Despite this, the system has no infrastructure for error analysis: errors are st
 **First slice:** Normalize deterministic error signatures, count occurrences by repository and workflow, and link each signature to recent examples and an optional human-maintained workaround. Add an error breakdown to the dashboard (replacing the current single error count).
 
 **Guardrail:** Never hide the original error or automatically apply a fix from a fingerprint. Success means repeated incidents are diagnosed faster and the platform team can prioritize the most common failure classes.
-

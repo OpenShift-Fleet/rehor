@@ -5,9 +5,14 @@ on:
     paths:
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'requirements.txt'
       - 'proxy/executor/go.mod'
       - 'proxy/executor/go.sum'
       - 'dashboard/package-lock.json'
+      - 'coordinator/package.json'
+      - 'coordinator/package-lock.json'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/dependency-audit.yml'
   push:
     branches:
@@ -15,9 +20,14 @@ on:
     paths:
       - 'pyproject.toml'
       - 'uv.lock'
+      - 'requirements.txt'
       - 'proxy/executor/go.mod'
       - 'proxy/executor/go.sum'
       - 'dashboard/package-lock.json'
+      - 'coordinator/package.json'
+      - 'coordinator/package-lock.json'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/dependency-audit.yml'
   schedule:
     - cron: '30 7 * * 1' # every monday 7:30 UTC
@@ -25,8 +35,6 @@ on:
 permissions:
   contents: read
 
-# TODO(REHOR follow-up): switch go-audit and node-audit back to blocking
-# once dependency remediation lands for Go/Node vulnerabilities.
 jobs:
   python-audit:
     runs-on: ubuntu-latest
@@ -48,6 +56,11 @@ jobs:
 
       - name: Check lockfile drift
         run: uv lock --check
+
+      - name: Check requirements.txt export drift
+        run: |
+          uv export --frozen --no-dev --no-emit-project -o requirements.txt
+          git diff --exit-code HEAD -- requirements.txt
 
       - name: Run pip-audit
         run: |
@@ -72,13 +85,7 @@ jobs:
       - name: Run govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          set +e
-          govulncheck ./...
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::warning::govulncheck reported vulnerabilities. report-only mode is enabled until dependency remediation is merged."
-          fi
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
   node-audit:
     runs-on: ubuntu-latest
@@ -91,9 +98,9 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 20
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: dashboard/package-lock.json
 
@@ -102,10 +109,85 @@ jobs:
 
       - name: Run npm audit
         run: |
-          set +e
-          npm audit --audit-level=high
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::warning::npm audit reported vulnerabilities. report-only mode is enabled until dependency remediation is merged."
-          fi
+          # TODO(REHOR-95): remove GHSA-qwww-vcr4-c8h2 allowlist when a fixed
+          # react-router-dom release is available upstream.
+          npm audit --audit-level=high --json > audit.json || true
+          node <<'EOF'
+          const fs = require("fs");
+          const report = JSON.parse(fs.readFileSync("audit.json", "utf8"));
+          const allowed = new Set(["GHSA-qwww-vcr4-c8h2"]);
+          const findings = new Map();
+
+          for (const vuln of Object.values(report.vulnerabilities || {})) {
+            if (!["high", "critical"].includes(vuln.severity)) continue;
+            for (const via of vuln.via || []) {
+              if (!via || typeof via === "string") continue;
+              const severity = via.severity || vuln.severity;
+              if (!["high", "critical"].includes(severity)) continue;
+              const advisory = (via.url || "").split("/").pop() || via.source?.toString() || "unknown";
+              findings.set(advisory, via.url || advisory);
+            }
+          }
+
+          if (findings.size === 0) {
+            process.exit(0);
+          }
+
+          const unresolved = [...findings.keys()].filter((id) => !allowed.has(id));
+          if (unresolved.length > 0) {
+            console.error("unallowlisted high/critical npm audit findings:");
+            for (const id of unresolved) {
+              console.error(`- ${id}: ${findings.get(id)}`);
+            }
+            process.exit(1);
+          }
+
+          console.warn("allowlisted npm audit findings detected:");
+          for (const [id, url] of findings.entries()) {
+            console.warn(`- ${id}: ${url}`);
+          }
+          console.warn("TODO(REHOR-95): remove allowlist after upstream React Router fix is released.");
+          EOF
+
+  coordinator-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: coordinator
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: coordinator/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level high
+
+  root-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run npm audit
+        run: npm audit --audit-level high

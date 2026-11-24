@@ -32,6 +32,7 @@ class RepositoryConfig:
     fork: str | None = None  # e.g., "catastrophe-brandon/hcc-ai-assistant"
     upstream_url: str | None = None
     fork_url: str | None = None
+    origin: str | None = None  # owner/repo of the local checkout's primary remote
 
 
 PR_TEMPLATE_PATHS = [
@@ -123,10 +124,21 @@ class PushAndPROperations:
 
             repo_config = config[repo_name]
             repo_type = repo_config.get("type", "github")
-            upstream = repo_config.get("upstream")
-            fork = repo_config.get("fork")
 
-            self.repo_config = RepositoryConfig(repo_type=repo_type, is_fork=bool(fork), upstream=upstream, fork=fork)
+            # Accept both "fork"/"upstream" (owner/repo) and "url"/"upstream"
+            # (full git URLs) key styles; normalize everything to owner/repo.
+            raw_fork = repo_config.get("fork") or repo_config.get("url")
+            raw_upstream = repo_config.get("upstream")
+            fork = self._normalize_repo_ref(raw_fork) if raw_fork else None
+            upstream = self._normalize_repo_ref(raw_upstream) if raw_upstream else None
+
+            self.repo_config = RepositoryConfig(
+                repo_type=repo_type,
+                is_fork=bool(fork and upstream and fork != upstream),
+                upstream=upstream,
+                fork=fork,
+                origin=fork or upstream,
+            )
 
             return OperationResult(
                 True,
@@ -185,6 +197,7 @@ class PushAndPROperations:
                 fork=origin_owner_repo if is_fork else None,
                 upstream_url=upstream_url,
                 fork_url=origin_url if is_fork else None,
+                origin=origin_owner_repo,
             )
 
             return OperationResult(
@@ -215,13 +228,37 @@ class PushAndPROperations:
                 owner_repo = parts[1].replace(".git", "")
                 return owner_repo
         elif url.startswith("http"):
-            # HTTPS format
-            parts = url.split("/")
-            if len(parts) >= 2:
-                owner_repo = "/".join(parts[-2:]).replace(".git", "")
-                return owner_repo
+            # HTTPS format. Preserve the full path after the host so nested
+            # GitLab namespaces (group/subgroup/project) are not truncated.
+            rest = url.split("://", 1)[1]
+            path = rest.split("/", 1)[1] if "/" in rest else ""
+            if path:
+                return path.rstrip("/").replace(".git", "")
 
         return url  # Fallback to original URL
+
+    def _normalize_repo_ref(self, value: str) -> str:
+        """Normalize a repo reference to owner/repo.
+
+        Accepts either "owner/repo" or a full git URL (SSH/HTTPS).
+        """
+        if "://" in value or value.startswith("git@"):
+            return self._extract_owner_repo(value)
+        return value
+
+    def _stdout_text(self, result: subprocess.CompletedProcess) -> str:
+        """Return command stdout as text regardless of bytes/str."""
+        out = result.stdout
+        if isinstance(out, bytes):
+            return (out or b"").decode(errors="replace")
+        return out or ""
+
+    def _stdout_json(self, result: subprocess.CompletedProcess) -> dict:
+        """Parse JSON from command stdout; empty dict on failure."""
+        try:
+            return json.loads(self._stdout_text(result) or "{}")
+        except json.JSONDecodeError:
+            return {}
 
     @staticmethod
     def find_pr_template(repo_dir: Path | None = None) -> OperationResult:
@@ -367,8 +404,11 @@ class PushAndPROperations:
         """
         Create pull/merge request with correct flags.
 
-        Uses gh pr create for GitHub or glab mr create for GitLab.
-        Handles fork scenario with --head flag (GitHub) or proper remote (GitLab).
+        Uses the gh/glab REST APIs for GitHub/GitLab. The repo-context
+        subcommands (`gh pr create`/`glab mr create`) cannot run through the
+        executor thin client.
+        Handles fork scenario with an explicit head ref (GitHub) or the
+        upstream target project (GitLab).
 
         Returns:
             OperationResult with pr_url and pr_number
@@ -393,95 +433,168 @@ class PushAndPROperations:
             return OperationResult(False, f"create_pr failed: {e!s}")
 
     def _create_github_pr(self) -> OperationResult:
-        """Create GitHub PR with gh pr create."""
+        """Create GitHub PR via the REST API.
+
+        `gh pr create` cannot be used: gh is a thin client executing in the
+        remote executor container with no access to the sandbox repo, so it
+        cannot resolve repo/branch context. Explicit `gh api` calls need no
+        repo context.
+        """
         if self.repo_config.is_fork:
-            # gh pr create --repo <upstream> --head <fork>:<branch> --title <title> --body <body>
+            # POST repos/<upstream>/pulls head=<fork-owner>:<branch>
             if not self.repo_config.upstream or not self.repo_config.fork:
                 return OperationResult(False, "Upstream and fork repositories required for fork workflow")
 
-            cmd = [
-                "gh",
-                "pr",
-                "create",
-                "--repo",
-                self.repo_config.upstream,
-                "--head",
-                f"{self.repo_config.fork.split('/')[0]}:{self.current_branch}",
-                "--title",
-                self.title,
-                "--body",
-                self.body,
-            ]
+            target = self.repo_config.upstream
+            head = f"{self.repo_config.fork.split('/')[0]}:{self.current_branch}"
         else:
-            # gh pr create --title <title> --body <body>
-            cmd = ["gh", "pr", "create", "--title", self.title, "--body", self.body]
+            # POST repos/<origin>/pulls head=<branch>
+            target = self.repo_config.origin or self.repo_config.upstream
+            if not target:
+                if self.dry_run:
+                    target = "<owner/repo>"
+                else:
+                    return OperationResult(False, "Target repository not detected for direct push")
+            head = self.current_branch
 
-        result = self._run_command(cmd, check=False)
+        # Resolve default branch for the base ref (gh pr create used to infer it).
+        branch_result = self._run_command(["gh", "api", f"repos/{target}", "--jq", ".default_branch"], check=False)
+        base = self._stdout_text(branch_result).strip()
+        if not base and self.dry_run:
+            base = "main"
+        if not base:
+            stderr = branch_result.stderr if isinstance(branch_result.stderr, str) else ""
+            return OperationResult(False, f"gh api failed to resolve default branch for {target}: {stderr}")
 
-        if result.returncode != 0:
-            stderr = result.stderr if result.stderr else ""
-            return OperationResult(False, f"gh pr create failed: {stderr}")
-
-        # Parse PR URL from stdout
-        stdout = result.stdout if result.stdout else ""
-        pr_url = stdout.strip().split("\n")[-1] if stdout else None
-
-        # Extract PR number from URL
-        pr_number = None
-        if pr_url and "/pull/" in pr_url:
-            pr_number = pr_url.split("/pull/")[-1]
-
-        self.pr_url = pr_url
-        self.pr_number = pr_number
-
-        return OperationResult(
-            True,
-            f"Created PR #{pr_number}" if pr_number else "Created PR",
-            data={"pr_url": pr_url, "pr_number": pr_number},
-        )
-
-    def _create_gitlab_mr(self) -> OperationResult:
-        """Create GitLab MR with glab mr create."""
-        # glab mr create --hostname gitlab.cee.redhat.com --title <title> --description <body>
         cmd = [
-            "glab",
-            "mr",
-            "create",
-            "--hostname",
-            "gitlab.cee.redhat.com",
-            "--title",
-            self.title,
-            "--description",
-            self.body,
+            "gh",
+            "api",
+            f"repos/{target}/pulls",
+            "-X",
+            "POST",
+            "-f",
+            f"title={self.title}",
+            "-f",
+            f"body={self.body}",
+            "-f",
+            f"head={head}",
+            "-f",
+            f"base={base}",
         ]
 
         result = self._run_command(cmd, check=False)
 
+        if self.dry_run:
+            return OperationResult(True, "Created PR (dry run)", data={"pr_url": None, "pr_number": None})
+
         if result.returncode != 0:
-            stderr = result.stderr if result.stderr else ""
-            return OperationResult(False, f"glab mr create failed: {stderr}")
+            stderr = result.stderr if isinstance(result.stderr, str) else ""
+            return OperationResult(False, f"gh api create PR failed: {stderr}")
 
-        # Parse MR URL from stdout
-        stdout = result.stdout if result.stdout else ""
-        mr_url = None
-        mr_number = None
+        payload = self._stdout_json(result)
+        pr_url = payload.get("html_url")
+        pr_number = payload.get("number")
+        if not pr_url or not pr_number:
+            return OperationResult(False, "gh api create PR returned no PR URL/number")
 
-        for line in stdout.split("\n"):
-            if "merge_requests/" in line or "!=" in line:
-                mr_url = line.strip()
-                # Extract MR number
-                if "!" in line:
-                    parts = line.split("!")
-                    if len(parts) > 1:
-                        mr_number = parts[1].split()[0]
-
-        self.pr_url = mr_url
-        self.pr_number = mr_number
+        self.pr_url = pr_url
+        self.pr_number = str(pr_number)
 
         return OperationResult(
             True,
-            f"Created MR !{mr_number}" if mr_number else "Created MR",
-            data={"pr_url": mr_url, "pr_number": mr_number},
+            f"Created PR #{pr_number}",
+            data={"pr_url": pr_url, "pr_number": str(pr_number)},
+        )
+
+    def _create_gitlab_mr(self) -> OperationResult:
+        """Create GitLab MR via the REST API.
+
+        `glab mr create` cannot be used: glab is a thin client executing in
+        the remote executor container with no access to the sandbox repo.
+
+        For forks the MR is created in the fork (source) project with
+        `target_project_id` pointing at the upstream project, matching where
+        push_branch pushed the branch.
+        """
+        if self.repo_config.is_fork:
+            source = self.repo_config.fork or self.repo_config.origin
+            upstream = self.repo_config.upstream
+            if not source or not upstream:
+                if self.dry_run:
+                    source = source or "<owner/repo>"
+                    upstream = upstream or "<owner/repo>"
+                else:
+                    return OperationResult(False, "Fork and upstream projects required for fork MR workflow")
+        else:
+            source = self.repo_config.origin or self.repo_config.upstream
+            upstream = None
+            if not source:
+                if self.dry_run:
+                    source = "<owner/repo>"
+                else:
+                    return OperationResult(False, "Target project not detected")
+
+        # Resolve default branch for the target ref (and the upstream project
+        # id for forks) against the upstream project when forking, the source
+        # project otherwise.
+        target = upstream or source
+        branch_result = self._run_command(
+            ["glab", "api", f"projects/{target.replace('/', '%2F')}", "--hostname", "gitlab.cee.redhat.com"],
+            check=False,
+        )
+        payload = self._stdout_json(branch_result)
+        base = str(payload.get("default_branch") or "")
+        upstream_id = payload.get("id")
+        if not base and self.dry_run:
+            base = "main"
+        if not base:
+            return OperationResult(False, f"glab api failed to resolve default branch for {target}")
+
+        if upstream and upstream_id is None and not self.dry_run:
+            return OperationResult(False, f"glab api failed to resolve project id for {upstream}")
+
+        encoded = source.replace("/", "%2F")
+        cmd = [
+            "glab",
+            "api",
+            f"projects/{encoded}/merge_requests",
+            "-X",
+            "POST",
+            "-f",
+            f"source_branch={self.current_branch}",
+            "-f",
+            f"target_branch={base}",
+            "-f",
+            f"title={self.title}",
+            "-f",
+            f"description={self.body}",
+        ]
+        if upstream and upstream_id is not None:
+            cmd += ["-f", f"target_project_id={upstream_id}"]
+        cmd += ["--hostname", "gitlab.cee.redhat.com"]
+
+        result = self._run_command(cmd, check=False)
+
+        if self.dry_run:
+            return OperationResult(True, "Created MR (dry run)", data={"pr_url": None, "pr_number": None})
+
+        if result.returncode != 0:
+            stderr = result.stderr if isinstance(result.stderr, str) else ""
+            return OperationResult(False, f"glab api create MR failed: {stderr}")
+
+        payload = self._stdout_json(result)
+        mr_url = payload.get("web_url")
+        mr_number = payload.get("iid")
+        if not mr_url or not mr_number:
+            return OperationResult(False, "glab api create MR returned no MR URL/iid")
+
+        self.pr_url = mr_url
+        self.pr_number = str(mr_number)
+
+        return OperationResult(
+            True,
+            f"Created MR !{mr_number}",
+            data={"pr_url": mr_url, "pr_number": str(mr_number)},
         )
 
 

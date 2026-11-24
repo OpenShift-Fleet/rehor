@@ -44,7 +44,7 @@ run_preset() {
 }
 
 # Runtimes first, then tools that depend on them
-ORDER="node go browser container-scan dev-proxy patternfly-mcp slack"
+ORDER="node go python browser container-scan dev-proxy patternfly-mcp slack"
 
 for env in $ORDER; do
     echo "$ENVS" | tr ' ' '\n' | grep -qx "$env" || continue

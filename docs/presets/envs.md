@@ -13,6 +13,7 @@ source: jira
 envs:
   - node          # nvm + Node.js
   - go            # goenv + Go
+  - python        # pyenv + ruff + mypy
   - browser       # Chromium + chrome-devtools MCP
   - slack         # Slack notifications
 ```
@@ -25,11 +26,11 @@ Presets are installed during `docker build` — their `install.sh` scripts run a
 
 **Path**: `presets/envs/node/`
 
-Installs [nvm](https://github.com/nvm-sh/nvm) (Node Version Manager) with Node.js 22 LTS as the default. The bot can switch versions per-repo at runtime.
+Installs [nvm](https://github.com/nvm-sh/nvm) (Node Version Manager) with Node.js 24 LTS as the default. The bot can switch versions per-repo at runtime.
 
 **What gets installed**:
 - nvm v0.40.3 at `/usr/local/nvm`
-- Node.js 22 (LTS) as default
+- Node.js 24 (LTS) as default
 - `node`, `npm`, `npx` symlinked to `/usr/local/bin/`
 - Shell init via `/etc/profile.d/nvm.sh`
 
@@ -49,12 +50,12 @@ nvm use 20        # switch to it
 
 **Path**: `presets/envs/go/`
 
-Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.24.2 and 1.25.7, plus golangci-lint.
+Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.26.10 and 1.27.3, plus golangci-lint.
 
 **What gets installed**:
 - goenv at `/usr/local/goenv`
-- Go 1.24.2 (default) and 1.25.7
-- golangci-lint v2.1.6
+- Go 1.26.10 (default) and 1.27.3
+- golangci-lint v2.13.2
 - `go`, `gofmt`, `golangci-lint` symlinked to `/usr/local/bin/`
 - Shell init via `/etc/profile.d/goenv.sh`
 
@@ -64,6 +65,34 @@ Installs [goenv](https://github.com/go-nv/goenv) (Go version manager) with Go 1.
 ```bash
 goenv install 1.23.0    # install a specific version
 goenv global 1.23.0     # set as default
+```
+
+**Depends on**: nothing
+
+---
+
+## python
+
+**Path**: `presets/envs/python/`
+
+Installs [pyenv](https://github.com/pyenv/pyenv) (Python version manager) with Python 3.12.8 as the default, plus ruff and mypy for linting and type checking.
+
+**What gets installed**:
+- pyenv at `/usr/local/pyenv`
+- Python 3.12.8 (default; override with `PYTHONVERSIONS` build arg)
+- ruff and mypy (installed into pyenv's default Python)
+- `pyenv`, `ruff`, `mypy` symlinked to `/usr/local/bin/`
+- Shell init via `/etc/profile.d/pyenv.sh`
+
+**When to use**: Any instance working on Python repos — backends, data pipelines, ML services, operators with Python components.
+
+**System Python unchanged**: The bot runtime uses system Python 3.12 via uv (`.venv/bin` is first on `PATH`). This preset does **not** symlink `python` or `python3` to `/usr/local/bin/` — repo work uses pyenv for version switching without affecting the bot itself.
+
+**Version switching**:
+```bash
+pyenv install 3.11.11    # install a specific version
+pyenv global 3.11.11     # set as default
+pyenv local 3.11.11      # pin version in a repo directory
 ```
 
 **Depends on**: nothing
@@ -110,8 +139,7 @@ Installs Chromium and the chrome-devtools MCP server for visual verification. Th
 
 ```
 # Dev proxy hostname — resolves to localhost where Caddy listens
-127.0.0.1    stage.foo.redhat.com
-::1          stage.foo.redhat.com
+127.0.0.1 stage.foo.redhat.com::1 stage.foo.redhat.com
 ```
 
 The entrypoint loads this file automatically. Instances without `extra-hosts` are unaffected. Use this when Chrome needs to resolve hostnames that don't exist in public DNS (e.g. dev-proxy targets).
@@ -175,10 +203,10 @@ Adds the Slack notification skill. The bot sends alerts when PRs are created, ti
 The payload key is auto-detected from the URL: `{"text": ...}` for Incoming Webhooks, `{"msg": ...}` for Workflow Builder.
 
 **Optional env vars**:
-- `SLACK_NOTIFY_MODE` — `immediate` (default) or `daily_digest`. In immediate mode, each event sends a separate Slack message with 48h cooldown. In daily digest mode, events queue and are sent as a single summary message at the configured hour.
+- `SLACK_NOTIFY_MODE` — `immediate` (default) or `daily_digest`. In immediate mode, each event sends a separate Slack message with 48h cooldown. In daily digest mode, individual notifications are suppressed and a daily snapshot of open PRs (from the tasks table) is sent at the configured hour.
 - `SLACK_DIGEST_HOUR` — UTC hour (0-23) when the daily digest is sent. Opt-in: digest is disabled unless this is set. The bot runner triggers it automatically after each cycle — zero LLM tokens spent.
 
-Both `SLACK_NOTIFY_MODE=daily_digest` and `SLACK_DIGEST_HOUR` must be set to enable digest mode. Without `SLACK_DIGEST_HOUR`, notifications fall back to immediate mode.
+Both `SLACK_NOTIFY_MODE=daily_digest` and `SLACK_DIGEST_HOUR` must be set to enable digest mode. Without `SLACK_DIGEST_HOUR`, digest is disabled (notifications still suppressed but no digest is sent).
 
 **Depends on**: nothing
 

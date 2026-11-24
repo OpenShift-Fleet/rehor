@@ -1,18 +1,18 @@
-import type { Task } from '../types';
-import { timeAgo, sourceUrl, displayKey } from '../utils';
 import {
   Card,
   CardBody,
   CardHeader,
   CardTitle,
+  Content,
   Flex,
   FlexItem,
+  Icon,
   Label,
   LabelGroup,
-  Content,
-  Icon
-} from '@patternfly/react-core';
-import { ExclamationTriangleIcon } from '@patternfly/react-icons';
+} from "@patternfly/react-core";
+import { ExclamationTriangleIcon } from "@patternfly/react-icons";
+import type { Task } from "../types";
+import { displayKey, sourceUrl, timeAgo } from "../utils";
 
 interface Props {
   task: Task;
@@ -21,21 +21,21 @@ interface Props {
 }
 
 const statusLabels: Record<string, string> = {
-  in_progress: 'In Progress',
-  pr_open: 'PR Open',
-  pr_changes: 'Changes Requested',
-  done: 'Done',
-  paused: 'Paused',
-  archived: 'Archived',
+  in_progress: "In Progress",
+  pr_open: "PR Open",
+  pr_changes: "Changes Requested",
+  done: "Done",
+  paused: "Paused",
+  archived: "Archived",
 };
 
-const statusColors: Record<string, 'blue' | 'green' | 'orange' | 'red' | 'purple' | 'grey'> = {
-  in_progress: 'blue',
-  pr_open: 'green',
-  pr_changes: 'orange',
-  done: 'grey',
-  paused: 'purple',
-  archived: 'grey',
+const statusColors: Record<string, "blue" | "green" | "orange" | "red" | "purple" | "grey"> = {
+  in_progress: "blue",
+  pr_open: "green",
+  pr_changes: "orange",
+  done: "grey",
+  paused: "purple",
+  archived: "grey",
 };
 
 export default function TaskCard({ task, selected, onClick }: Props) {
@@ -49,14 +49,29 @@ export default function TaskCard({ task, selected, onClick }: Props) {
       isGlass
       isSelected={selected}
       onClick={onClick}
-      style={{ cursor: 'pointer', borderLeft: `3px solid ${task.status === 'in_progress' ? 'var(--accent)' : task.status === 'pr_changes' ? 'var(--yellow)' : task.status === 'pr_open' ? 'var(--green)' : task.status === 'paused' ? 'var(--purple)' : 'transparent'}` }}
+      style={{
+        cursor: "pointer",
+        borderLeft: `3px solid ${task.status === "in_progress" ? "var(--accent)" : task.status === "pr_changes" ? "var(--yellow)" : task.status === "pr_open" ? "var(--green)" : task.status === "paused" ? "var(--purple)" : "transparent"}`,
+      }}
     >
       <CardHeader
-        actions={{ actions: <Label color={statusColors[task.status] || 'grey'}>{statusLabels[task.status] || task.status}</Label> }}
+        actions={{
+          actions: (
+            <Label color={statusColors[task.status] || "grey"}>
+              {statusLabels[task.status] || task.status}
+            </Label>
+          ),
+        }}
       >
         <CardTitle>
           {url ? (
-            <a href={url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ fontWeight: 600 }}>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{ fontWeight: 600 }}
+            >
               {key}
             </a>
           ) : (
@@ -65,10 +80,12 @@ export default function TaskCard({ task, selected, onClick }: Props) {
         </CardTitle>
       </CardHeader>
       <CardBody>
-        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+        <Flex direction={{ default: "column" }} gap={{ default: "gapSm" }}>
           {task.title && (
             <FlexItem>
-              <Content component="p" style={{ margin: 0 }}>{task.title}</Content>
+              <Content component="p" style={{ margin: 0 }}>
+                {task.title}
+              </Content>
             </FlexItem>
           )}
           <FlexItem>
@@ -89,13 +106,20 @@ export default function TaskCard({ task, selected, onClick }: Props) {
           </FlexItem>
           {task.instance_id && (
             <FlexItem>
-              <Label variant="outline" color="grey">{task.instance_id}</Label>
+              <Label variant="outline" color="grey">
+                {task.instance_id}
+              </Label>
             </FlexItem>
           )}
           {task.paused_reason && (
             <FlexItem>
-              <Content component="p" style={{ margin: 0, color: 'var(--yellow)', fontSize: '13px' }}>
-                <Icon status="warning" size="sm"><ExclamationTriangleIcon /></Icon>{' '}
+              <Content
+                component="p"
+                style={{ margin: 0, color: "var(--yellow)", fontSize: "13px" }}
+              >
+                <Icon status="warning" size="sm">
+                  <ExclamationTriangleIcon />
+                </Icon>{" "}
                 {task.paused_reason}
               </Content>
             </FlexItem>
@@ -103,7 +127,8 @@ export default function TaskCard({ task, selected, onClick }: Props) {
           {task.slack_notification && (
             <FlexItem>
               <Label variant="outline" icon={<span>🔔</span>}>
-                {task.slack_notification.event_type.replace(/_/g, ' ')} · {timeAgo(task.slack_notification.sent_at)}
+                {task.slack_notification.event_type.replace(/_/g, " ")} ·{" "}
+                {timeAgo(task.slack_notification.sent_at)}
               </Label>
             </FlexItem>
           )}

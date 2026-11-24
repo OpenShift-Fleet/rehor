@@ -29,17 +29,21 @@ var (
 	timeout  = flag.Duration("timeout", 60*time.Second, "per-command timeout")
 
 	vertexListen  = flag.String("vertex-listen", ":8443", "vertex auth proxy listen address")
+	gitAuthListen = flag.String("git-auth-listen", ":8447", "git auth proxy listen address")
 	vertexProject = flag.String("vertex-project", "", "real GCP project ID")
 	vertexRegion  = flag.String("vertex-region", "", "real GCP region")
 
 	jiraListen   = flag.String("jira-listen", ":8445", "jira auth proxy listen address")
 	jiraURL      = flag.String("jira-url", "", "upstream Jira URL")
-	jiraUsername  = flag.String("jira-username", "", "Jira username")
+	jiraUsername = flag.String("jira-username", "", "Jira username")
 	jiraToken    = flag.String("jira-token", "", "Jira API token")
 
 	screenshotListen = flag.String("screenshot-listen", ":8446", "screenshot upload proxy listen address")
 
-	glitchtipListen = flag.String("glitchtip-listen", ":8447", "glitchtip auth proxy listen address")
+	openaiListen   = flag.String("openai-listen", ":8450", "openai-compatible auth proxy listen address")
+	registryListen = flag.String("registry-listen", ":8451", "Red Hat registry pull proxy listen address")
+
+	glitchtipListen = flag.String("glitchtip-listen", ":8448", "glitchtip auth proxy listen address")
 	glitchtipURL    = flag.String("glitchtip-url", "", "upstream GlitchTip URL")
 	glitchtipToken  = flag.String("glitchtip-token", "", "GlitchTip API token")
 
@@ -75,6 +79,7 @@ func (s *server) Execute(ctx context.Context, req *pb.ExecuteRequest) (*pb.Execu
 
 	if err := s.policy.Check(tool, args); err != nil {
 		log.Printf("policy-deny: tool=%s subcmd=%s reason=%s", tool, subcmd, err)
+		executor.PolicyDenyTotal.WithLabelValues(tool).Inc()
 		exitCode = 1
 		return &pb.ExecuteResponse{
 			Stderr:   err.Error() + "\n",
@@ -213,11 +218,20 @@ func main() {
 	if v := os.Getenv("VERTEX_AUTH_LISTEN"); v != "" {
 		*vertexListen = v
 	}
+	if v := os.Getenv("GIT_AUTH_LISTEN"); v != "" {
+		*gitAuthListen = v
+	}
 	if v := os.Getenv("GCP_PROJECT_ID"); v != "" {
 		*vertexProject = v
 	}
 	if v := os.Getenv("GCP_REGION"); v != "" {
 		*vertexRegion = v
+	}
+	if v := os.Getenv("OPENAI_AUTH_LISTEN"); v != "" {
+		*openaiListen = v
+	}
+	if v := os.Getenv("REGISTRY_AUTH_LISTEN"); v != "" {
+		*registryListen = v
 	}
 	if v := os.Getenv("JIRA_AUTH_LISTEN"); v != "" {
 		*jiraListen = v
@@ -247,6 +261,26 @@ func main() {
 		*metricsListen = v
 	}
 
+	// Opt-in agent HTTP gateway (REHOR-251/252). Default disabled; when
+	// disabled no new configuration is required and legacy startup is
+	// unchanged. Enabled with malformed or incomplete configuration, it
+	// fails here, before any listener is opened.
+	httpGateway, err := httpGatewayEnabled()
+	if err != nil {
+		log.Fatalf("agent gateways: %v", err)
+	}
+	var gateways *agentGateways
+	if httpGateway {
+		if gateways, err = buildAgentGateways(*listen); err != nil {
+			log.Fatalf("agent gateways: %v", err)
+		}
+	}
+
+	registryHandler, err := executor.NewRegistryProxy(os.Getenv("REGISTRY_REDHAT_USERNAME"), os.Getenv("REGISTRY_REDHAT_TOKEN"))
+	if err != nil {
+		log.Fatalf("registry config: %v", err)
+	}
+
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	metricsSrv := &http.Server{Addr: *metricsListen, Handler: metricsMux}
@@ -264,14 +298,50 @@ func main() {
 
 	policy := executor.DefaultPolicy()
 
-	grpcSrv := grpc.NewServer()
-	pb.RegisterExecutorServer(grpcSrv, &server{
+	// The same *server instance is registered on the legacy gRPC surface
+	// and served to HTTP clients by the shared executor HTTP wrapper.
+	execSrv := &server{
 		policy:   policy,
 		ghPath:   *ghPath,
 		glabPath: *glabPath,
 		gpgPath:  *gpgPath,
 		timeout:  *timeout,
-	})
+	}
+	grpcSrv := grpc.NewServer()
+	pb.RegisterExecutorServer(grpcSrv, execSrv)
+
+	// The legacy listener now speaks both protocols on one address:
+	// plaintext gRPC (HTTP/2 h2c prior knowledge) is dispatched to the
+	// unchanged legacy grpc.Server, and HTTP/1.1 POST /executor/execute to
+	// the shared wrapper around the same *server.Execute. One http.Server
+	// drives both; grpcSrv.Serve is NOT called on the listener.
+	execHTTP, err := executorGatewayHandler(execSrv)
+	if err != nil {
+		log.Fatalf("executor HTTP wrapper: %v", err)
+	}
+	listenerSrv := &http.Server{
+		Handler: newDualProtocolHandler(grpcSrv, execHTTP),
+		// Only bounds time to receive request headers (including the h2c
+		// PRI preface); streaming bodies and long-lived gRPC streams are
+		// unaffected. Body sizes are bounded by the handler chain.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	var registrySrv *http.Server
+	if registryHandler != nil {
+		registrySrv = &http.Server{
+			Addr:              *registryListen,
+			Handler:           executor.InstrumentHTTPHandler("registry", registryHandler),
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+		go func() {
+			log.Printf("registry-auth-proxy listening on %s", *registryListen)
+			if err := registrySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("registry proxy: %v", err)
+			}
+		}()
+	}
 
 	var vertexSrv *http.Server
 	if *vertexProject != "" {
@@ -289,6 +359,44 @@ func main() {
 			log.Printf("vertex-auth-proxy listening on %s (project=%s region=%s)", *vertexListen, *vertexProject, *vertexRegion)
 			if err := vertexSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("vertex proxy: %v", err)
+			}
+		}()
+	}
+
+	// OpenAI-compatible gateway. Off unless a key is present, so Claude-only
+	// deploys keep working; fail closed on a missing allowlist like Vertex.
+	var openaiSrv *http.Server
+	if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+		op := executor.OpenAIPolicyFromEnv()
+		if err := executor.ValidateOpenAIConfig(apiKey, op); err != nil {
+			log.Fatalf("openai config: %v", err)
+		}
+		handler := executor.InstrumentHTTPHandler("openai", executor.NewOpenAIProxy(apiKey, op))
+		openaiSrv = &http.Server{Addr: *openaiListen, Handler: handler}
+		go func() {
+			log.Printf("openai-auth-proxy listening on %s", *openaiListen)
+			if err := openaiSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("openai proxy: %v", err)
+			}
+		}()
+	}
+
+	var gitAuthSrv *http.Server
+	// Keep Git auth opt-in until deployment exposes 8447 and moves GlitchTip off it.
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_AUTH_ENABLED")), "true") &&
+		(os.Getenv("GH_TOKEN") != "" || os.Getenv("GITLAB_TOKEN") != "") {
+		if err := executor.ValidateGitAuthConfig(); err != nil {
+			log.Fatalf("git auth config: %v", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("GITLAB_TLS_SKIP_VERIFY")), "true") {
+			log.Printf("WARNING: GITLAB_TLS_SKIP_VERIFY=true disables TLS certificate verification for gitlab.cee.redhat.com")
+		}
+		handler := executor.InstrumentHTTPHandler("gitauth", executor.NewGitAuthProxy())
+		gitAuthSrv = &http.Server{Addr: *gitAuthListen, Handler: handler}
+		go func() {
+			log.Printf("git-auth-proxy listening on %s", *gitAuthListen)
+			if err := gitAuthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("git auth proxy: %v", err)
 			}
 		}()
 	}
@@ -335,16 +443,50 @@ func main() {
 		}()
 	}
 
+	// Start the opt-in agent gateways. The HTTP gateway routes
+	// /executor/execute to the dual-protocol legacy listener; the public
+	// gRPC surface stays legacy-only.
+	if gateways != nil {
+		if err := gateways.start(); err != nil {
+			log.Fatalf("agent gateways: %v", err)
+		}
+	}
+
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		log.Println("shutting down...")
-		grpcSrv.GracefulStop()
+		// Stop accepting new public gateway traffic first, with a bounded
+		// grace even if clients keep connections or streams open.
+		if gateways != nil {
+			gateways.shutdown()
+		}
+		// Drain HTTP/1.1 (and server-owned) connections on the
+		// dual-protocol listener. h2c-hijacked gRPC connections are owned
+		// by grpcSrv and are stopped separately with a bounded grace.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := listenerSrv.Shutdown(ctx); err != nil {
+			log.Printf("executor listener shutdown error: %v", err)
+			listenerSrv.Close()
+		}
+		cancel()
+		shutdownGRPCServer(grpcSrv, executorShutdownGrace)
+		ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if vertexSrv != nil {
 			vertexSrv.Shutdown(ctx)
+		}
+		if openaiSrv != nil {
+			openaiSrv.Shutdown(ctx)
+		}
+		if registrySrv != nil {
+			registrySrv.Shutdown(ctx)
+		}
+		if gitAuthSrv != nil {
+			gitAuthSrv.Shutdown(ctx)
 		}
 		if jiraSrv != nil {
 			jiraSrv.Shutdown(ctx)
@@ -360,8 +502,18 @@ func main() {
 		}
 	}()
 
-	log.Printf("executor-server listening on %s", *listen)
-	if err := grpcSrv.Serve(lis); err != nil {
+	log.Printf("executor-server listening on %s (legacy gRPC + HTTP POST /executor/execute)", *listen)
+	if err := listenerSrv.Serve(lis); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("serve: %v", err)
+	}
+	// Serve returns http.ErrServerClosed as soon as Shutdown closes the
+	// listener — long before active HTTP requests, gRPC streams, and the
+	// legacy backend servers have drained. Join the bounded shutdown here
+	// so in-flight commands finish instead of being truncated by an early
+	// process exit.
+	select {
+	case <-shutdownDone:
+	case <-time.After(shutdownJoinGrace):
+		log.Printf("executor listener: shutdown drain did not finish within %s; exiting", shutdownJoinGrace)
 	}
 }

@@ -55,8 +55,7 @@ rehor/
         __init__.py
       conftest.py          # Pytest configuration
       test_*.py            # Test files (import fixtures)
-    src/                   # React components
-    ...
+ src/ # React components...
 ```
 
 ### Using Fixtures
@@ -67,7 +66,7 @@ rehor/
 from fixtures import TASKS, task, memory
 
 
-def test_something():
+def test_something:
     # Use default dataset
     assert len(TASKS) == 6
 

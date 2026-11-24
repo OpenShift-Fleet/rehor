@@ -1,0 +1,14 @@
+name: python
+type: env
+description: Python via pyenv (version manager) + ruff + mypy — switch versions with pyenv install/global
+
+install: install.sh
+
+provides:
+  binaries:
+    - pyenv
+    - ruff
+    - mypy
+
+env_vars:
+  PYENV_ROOT: "/usr/local/pyenv"

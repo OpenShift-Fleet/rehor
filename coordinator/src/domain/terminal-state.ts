@@ -1,0 +1,31 @@
+export const TERMINAL_STATES = [
+  "completed",
+  "failed",
+  "interrupted",
+  "cancelled",
+  "timed_out",
+] as const;
+
+export type TerminalState = (typeof TERMINAL_STATES)[number];
+export type RuntimeTerminalState = Extract<TerminalState, "completed" | "failed">;
+
+/** Provider-neutral context needed by existing cost, transcript, and status projections. */
+export interface TerminalWorkContext {
+  taskId?: number;
+  externalKey?: string;
+  repository?: string;
+  workType?: string;
+  summary?: string;
+}
+
+export interface TerminalEventPayload extends Readonly<Record<string, unknown>> {
+  state: TerminalState;
+  reason?: string;
+  resultText?: string;
+  noWork?: boolean;
+  turns?: number;
+  durationMs?: number;
+  /** True when runtime cleanup detected a child/process-group leak. */
+  resourceLeak?: boolean;
+  context?: TerminalWorkContext;
+}

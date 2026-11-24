@@ -21,7 +21,10 @@ from common import (
     get_capacity,
     get_task_prs,
     get_tasks,
+    interrupted_retry_due,
+    is_newer,
     load_project_repos,
+    match_repo_labels,
     output_result,
     save_state,
 )
@@ -38,26 +41,44 @@ BOT_KANBAN_JQL_EXTRA = os.environ.get("BOT_KANBAN_JQL_EXTRA", "")
 # Triage helpers (same logic as jira_sprint_preflight)
 # ---------------------------------------------------------------------------
 
+# MCP tool max; returns oldest-first, no pagination: https://github.com/sooperset/mcp-atlassian/issues/1215
+JIRA_COMMENT_LIMIT = 100
+
 
 def _jira_issue(key):
     return jira_call(
         "jira_get_issue",
         {
             "issue_key": key,
-            "fields": "summary,status,assignee,labels,issuelinks,comment",
-            "comment_limit": 10,
+            "fields": "summary,status,assignee,labels,issuelinks,comment,updated",
+            "comment_limit": JIRA_COMMENT_LIMIT,
         },
     )
 
 
 def _has_new_jira_feedback(jira_comments, last_addressed):
     for c in jira_comments:
-        ct = c.get("created", "")[:16]
-        if last_addressed and ct > last_addressed[:16]:
+        if last_addressed and is_newer(c.get("created", ""), last_addressed):
             body = c.get("body", "")
             if not ("### " in body or "| " in body or "PR:" in body):
                 return True
     return False
+
+
+def _comments_may_be_truncated(jira_data, all_comments, last_addressed):
+    """Detect when the MCP tool's oldest-first comment limit hid newer comments.
+
+    The MCP tool returns up to JIRA_COMMENT_LIMIT comments oldest-first
+    with no pagination or ordering support.  When the returned count hits
+    that ceiling AND the issue was updated after last_addressed, newer
+    comments were likely truncated.
+    """
+    if not jira_data or not last_addressed:
+        return False
+    if len(all_comments) < JIRA_COMMENT_LIMIT:
+        return False
+    updated = jira_data.get("updated") or (jira_data.get("fields") or {}).get("updated", "")
+    return is_newer(updated, last_addressed) if updated else False
 
 
 def _fmt_jira(task, jira_data, jira_comments):
@@ -78,7 +99,7 @@ def _fmt_jira(task, jira_data, jira_comments):
         jc = [
             {
                 "author": c.get("author", {}).get("displayName", "?"),
-                "t": c.get("created", "")[:16],
+                "t": c.get("created", ""),
                 "b": c.get("body", ""),
             }
             for c in jira_comments
@@ -108,20 +129,12 @@ def _jira_search(jql, limit=10):
     return data if isinstance(data, list) else data.get("issues", [])
 
 
-def _match_repo_labels(labels, repo_lookup):
-    repo_labels = [label.replace("repo:", "") for label in labels if label.startswith("repo:")]
-    if not repo_labels:
-        return []
-    matched = [repo_lookup[r] for r in repo_labels if r in repo_lookup]
-    return matched if len(matched) == len(repo_labels) else []
-
-
 def _format_candidates(issues, repo_lookup):
     results = []
     for issue in issues:
         fields = issue.get("fields") or issue
         labels = fields.get("labels", [])
-        repos = _match_repo_labels(labels, repo_lookup)
+        repos = match_repo_labels(labels, repo_lookup)
         comment_data = fields.get("comment", {})
         comments = (comment_data.get("comments") or [])[-5:] if isinstance(comment_data, dict) else []
         status = fields.get("status", {})
@@ -276,11 +289,10 @@ def main():
             prs = get_task_prs(t)
 
             jira = _jira_issue(key) if key else None
-            jira_comments = []
+            all_comments = []
             if jira:
-                jira_comments = (
-                    jira.get("comments") or jira.get("fields", {}).get("comment", {}).get("comments") or []
-                )[-10:]
+                all_comments = jira.get("comments") or jira.get("fields", {}).get("comment", {}).get("comments") or []
+            jira_comments = all_comments[-10:]
 
             is_interrupted = (
                 t.get("status") == "in_progress"
@@ -288,9 +300,19 @@ def main():
                 and not meta.get("prs")
                 and not prs
                 and meta.get("last_step") != "investigation_posted"
+                # Blocked tasks waiting on external input only re-trigger
+                # after the retry cooldown; unblocked mid-work resumes
+                # immediately (crashed cycles leave last_addressed stale
+                # and stay actionable).
+                and (not meta.get("blockers") or interrupted_retry_due(t))
             )
 
-            if _has_new_jira_feedback(jira_comments, t.get("last_addressed", "")):
+            last_addr = t.get("last_addressed", "")
+            has_feedback = _has_new_jira_feedback(jira_comments, last_addr)
+            if not has_feedback and _comments_may_be_truncated(jira, all_comments, last_addr):
+                has_feedback = True
+
+            if has_feedback:
                 feedback_tasks.append((t, jira, jira_comments))
             elif is_interrupted:
                 interrupted_tasks.append((t, jira, jira_comments))

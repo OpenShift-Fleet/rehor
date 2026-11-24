@@ -12,6 +12,8 @@ sys.path.insert(0, str(SHARED_DIR))
 sys.path.insert(0, str(SKILLS_DIR))
 
 from jira_kanban_preflight import (
+    JIRA_COMMENT_LIMIT,
+    _comments_may_be_truncated,
     _has_new_jira_feedback,
     _parse_statuses,
     main,
@@ -493,3 +495,89 @@ def test_bot_label_in_investigation_query(env_vars, monkeypatch):
     assert len(captured_jqls) == 1
     assert "labels = hcc-ai-lightspeed-core" in captured_jqls[0]
     assert "labels = needs-investigation" in captured_jqls[0]
+
+
+# --- _comments_may_be_truncated ---
+
+
+def test_truncated_when_at_limit_and_updated():
+    """Exactly JIRA_COMMENT_LIMIT comments + updated after last_addressed → truncated."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is True
+
+
+def test_not_truncated_when_under_limit():
+    """Fewer than JIRA_COMMENT_LIMIT comments → never truncated regardless of updated."""
+    comments = [{"created": "2026-06-01T10:00:00"}]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is False
+
+
+def test_not_truncated_when_not_updated():
+    """At limit but updated before last_addressed → not truncated."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-06-15T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is False
+
+
+def test_not_truncated_when_no_last_addressed():
+    """No last_addressed → not truncated (first encounter)."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "") is False
+
+
+def test_not_truncated_when_no_jira_data():
+    assert _comments_may_be_truncated(None, [], "2026-07-01T10:00:00") is False
+
+
+def test_truncated_with_fields_updated_path():
+    """updated under fields.updated also works."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"fields": {"updated": "2026-08-01T10:00:00"}}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is True
+
+
+# --- truncation fallback in main() ---
+
+
+def test_truncated_comments_trigger_feedback(env_vars, monkeypatch, capsys):
+    """When comments are truncated and issue was updated, task is treated as feedback."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "LCORE-TRUNC",
+                "status": "pr_open",
+                "repo": "lightspeed-stack",
+                "last_addressed": "2026-07-01T10:00:00",
+                "metadata": {"prs": [{"repo": "lightspeed-stack", "number": 1, "host": "github"}]},
+            }
+        ]
+    )
+    old_comments = [
+        {
+            "created": f"2026-06-{(i % 28) + 1:02d}T10:00:00",
+            "body": f"Old comment {i}",
+            "author": {"displayName": "Human"},
+        }
+        for i in range(JIRA_COMMENT_LIMIT)
+    ]
+    jira_data = {
+        "updated": "2026-08-05T19:52:00",
+        "fields": {
+            "status": {"name": "Code Review"},
+            "labels": [],
+            "issuelinks": [],
+        },
+        "comments": old_comments,
+    }
+    monkeypatch.setattr("jira_kanban_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_kanban_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_kanban_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_kanban_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "JIRA FEEDBACK" in out["content"]

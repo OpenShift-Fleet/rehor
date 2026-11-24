@@ -20,7 +20,7 @@ python3 .claude/skills/post-plan/post_plan.py '<json_config>' 2>&1
 
 ```json
 {
-  "epic_key": "RHCLOUD-12345",
+ "epic_key": "TEAM-12345",
   "instance_name": "my-team-agent-dev",
   "config_name": "my-team-config",
   "bot_name": "devbot-myteam",

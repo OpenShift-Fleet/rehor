@@ -1,8 +1,12 @@
 """Tests for preflight shared modules (presets/shared/preflight/)."""
 
+import json
 import sys
+import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 SHARED_DIR = Path(__file__).resolve().parent.parent.parent / "presets" / "shared" / "preflight"
 sys.path.insert(0, str(SHARED_DIR))
@@ -10,14 +14,46 @@ sys.path.insert(0, str(SHARED_DIR))
 from common import (
     build_repo_lookup,
     fmt_comments,
+    interrupted_retry_due,
     is_bot_author,
+    is_newer,
+    parse_iso,
     upstream_repo,
 )
-from gh_pr_status import classify_gh, has_new_feedback
-from gl_mr_status import classify_gl
-from gl_mr_status import has_new_feedback as gl_has_new_feedback
+from gh_pr_status import classify_gh, gh_pr_comments, has_new_feedback
+from gh_pr_status import main as gh_main
+from gl_mr_status import (
+    ci_failure_needs_session as gl_ci_failure_needs_session,
+)
+from gl_mr_status import (
+    classify_gl,
+    gl_mr_notes,
+)
+from gl_mr_status import (
+    has_new_feedback as gl_has_new_feedback,
+)
 
 # --- upstream_repo ---
+
+
+def test_shared_http_get_ignores_memory_token(monkeypatch):
+    from common import http_get
+
+    monkeypatch.setenv("BOT_MEMORY_TOKEN", "synthetic-secret")
+    response = MagicMock()
+    response.__enter__.return_value.read.return_value = b'{"items": []}'
+    with patch("common.urllib.request.urlopen", return_value=response) as urlopen:
+        assert http_get("http://localhost:8080/api/tasks") == {"items": []}
+    assert urlopen.call_args.args[0].get_header("Authorization") is None
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_shared_http_get_rejects_auth_errors(status):
+    from common import http_get
+
+    error = urllib.error.HTTPError("http://localhost:8080/api/tasks", status, "denied", {}, None)
+    with patch("common.urllib.request.urlopen", side_effect=error), pytest.raises(RuntimeError, match=str(status)):
+        http_get("http://localhost:8080/api/tasks")
 
 
 def test_upstream_repo_qualified_github():
@@ -55,6 +91,19 @@ def test_upstream_repo_bare_gitlab():
     assert host == "gitlab"
 
 
+def test_upstream_repo_bare_matches_upstream_basename():
+    repos = {
+        "konflux": {
+            "upstream": "https://gitlab.cee.redhat.com/releng/konflux-release-data.git",
+            "host": "gitlab",
+        }
+    }
+    with patch("common.load_project_repos", return_value=repos):
+        path, host = upstream_repo("konflux-release-data")
+    assert path == "releng/konflux-release-data"
+    assert host == "gitlab"
+
+
 # --- build_repo_lookup ---
 
 
@@ -86,6 +135,7 @@ def test_is_bot_author_known_bots():
     assert is_bot_author("github-actions") is True
     assert is_bot_author("my-app[bot]") is True
     assert is_bot_author("coderabbit-bot") is True
+    assert is_bot_author("openshift-ci-robot") is True
 
 
 def test_is_bot_author_humans():
@@ -132,6 +182,89 @@ def test_fmt_comments_no_truncation():
     assert "truncated" not in result
 
 
+def test_fmt_comments_since_filter_same_minute():
+    """Comment posted seconds after last_addressed in the same minute must show.
+
+    Regression: minute-truncated comparison hid same-minute comments
+    (RHCLOUD-53177 — Jira comment 08:59:41 vs last_addressed 08:59:05).
+    """
+    comments = [{"a": "karelhala", "t": "2026-11-10T08:59:41.053+0000", "b": "please respond"}]
+    result = fmt_comments(comments, "test", since="2026-11-10T08:59:05.470894+00:00")
+    assert "karelhala" in result
+    assert "none since last_addressed" not in result
+
+
+# --- parse_iso / is_newer ---
+
+
+def test_parse_iso_formats():
+    assert parse_iso("2026-11-10T08:59:41Z") is not None
+    assert parse_iso("2026-11-10T08:59:41.053+0000") is not None
+    assert parse_iso("2026-11-10T08:59:41.053+00:00") is not None
+    assert parse_iso("2026-11-10T08:59:41") is not None
+    assert parse_iso("") is None
+    assert parse_iso(None) is None
+    assert parse_iso("not a timestamp") is None
+
+
+def test_parse_iso_naive_assumed_utc():
+    naive = parse_iso("2026-11-10T08:59:41")
+    aware = parse_iso("2026-11-10T08:59:41+00:00")
+    assert naive == aware
+
+
+def test_is_newer_same_minute():
+    """Full-resolution comparison: 36 seconds apart in the same minute counts."""
+    assert is_newer("2026-11-10T08:59:41.053+0000", "2026-11-10T08:59:05.470894+00:00") is True
+    assert is_newer("2026-11-10T08:59:05.470894+00:00", "2026-11-10T08:59:41.053+0000") is False
+
+
+def test_is_newer_mixed_formats():
+    """Jira (+0000), GitHub (Z), and DB (+00:00) formats interoperate."""
+    assert is_newer("2026-11-09T14:59:56Z", "2026-11-09T14:59:05+00:00") is True
+    assert is_newer("2026-11-09T14:59:56Z", "2026-11-09T15:00:05+0000") is False
+
+
+def test_is_newer_equal_timestamps():
+    assert is_newer("2026-11-10T08:59:41Z", "2026-11-10T08:59:41+00:00") is False
+
+
+def test_is_newer_unparseable_falls_back_to_minute_prefix():
+    """Both values unparseable → legacy minute-prefix string comparison."""
+    assert is_newer("w-2026-11-10T09:00", "w-2026-11-10T08:59") is True
+    assert is_newer("w-2026-11-10T08:59", "w-2026-11-10T09:00") is False
+
+
+# --- interrupted_retry_due ---
+
+
+def test_interrupted_retry_due_never_addressed():
+    """No last_addressed → immediately actionable (first encounter / crash)."""
+    assert interrupted_retry_due({}) is True
+    assert interrupted_retry_due({"last_addressed": None}) is True
+
+
+def test_interrupted_retry_due_fresh_stamp_waits():
+    from datetime import UTC, datetime, timedelta
+
+    recent = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    assert interrupted_retry_due({"last_addressed": recent}) is False
+
+
+def test_interrupted_retry_due_stale_stamp_retries():
+    from datetime import UTC, datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    assert interrupted_retry_due({"last_addressed": stale}) is True
+
+
+def test_interrupted_retry_due_cooldown_boundary():
+    from datetime import UTC, datetime, timedelta
+
+    boundary = (datetime.now(UTC) - timedelta(minutes=30, seconds=5)).isoformat()
+    assert interrupted_retry_due({"last_addressed": boundary}) is True
+
+
 # --- classify_gh ---
 
 
@@ -165,10 +298,106 @@ def test_classify_gh_ci_failure():
     assert "test" in issues[0]
 
 
-def test_classify_gh_changes_requested():
+def test_classify_gh_changes_requested_review_old():
+    """Old CHANGES_REQUESTED review (before last_addressed) should not add issues."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T10:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T18:00:00")
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
+
+
+def test_production_cycle_skips_addressed_sticky_review_and_ci_failure(monkeypatch):
+    """Cycle 39824 source data must not launch session for already-addressed work."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39824-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (6, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("RedHatInsights/notifications-frontend", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "CI FAILING" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_production_cycle_skips_automated_ci_robot_comments(monkeypatch):
+    """Cycle 39746 source data must ignore automated CI comments as feedback."""
+    fixture_path = Path(__file__).parent / "fixtures" / "preflight" / "cycle-39746-gh.json"
+    fixture = json.loads(fixture_path.read_text())
+    output = {}
+
+    monkeypatch.setattr("gh_pr_status.INSTANCE_ID", "test-instance")
+    monkeypatch.setattr("gh_pr_status.get_tasks", lambda: [fixture["task"]])
+    monkeypatch.setattr("gh_pr_status.get_capacity", lambda: (9, 10))
+    monkeypatch.setattr("gh_pr_status.get_task_prs", lambda task: task["metadata"]["prs"])
+    monkeypatch.setattr("gh_pr_status.upstream_repo", lambda repo: ("openshift/console", "github"))
+    monkeypatch.setattr("gh_pr_status.gh_pr", lambda owner_repo, number: fixture["pr"])
+    monkeypatch.setattr("gh_pr_status.gh_pr_comments", lambda owner_repo, number: fixture["comments"])
+    monkeypatch.setattr("gh_pr_status.save_state", lambda state: None)
+    monkeypatch.setattr(
+        "gh_pr_status.output_result", lambda status, content: output.update(status=status, content=content)
+    )
+
+    gh_main()
+
+    assert output["status"] == "skip"
+    assert "FEEDBACK" not in output["content"]
+    assert "CLEAN" in output["content"]
+
+
+def test_gl_addressed_ci_failure_does_not_need_session():
+    enriched = {
+        "task": {"last_addressed": "2026-09-02T10:09:00+00:00"},
+        "mr_notes": [],
+    }
+
+    assert gl_ci_failure_needs_session(enriched) is False
+
+
+def test_classify_gh_changes_requested_review_new():
+    """New CHANGES_REQUESTED review (after last_addressed) should add review:{author}."""
+    pr = {
+        "state": "OPEN",
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-07-14T18:00:00Z",
+                "author": {"login": "reviewer"},
+            },
+        ],
+    }
+    state, issues = classify_gh(pr, last_addressed="2026-07-14T10:00:00")
+    assert "review:reviewer" in issues
+
+
+def test_classify_gh_reviewdecision_without_reviews():
+    """reviewDecision alone (no reviews array) should not add issues."""
     pr = {"state": "OPEN", "reviewDecision": "CHANGES_REQUESTED"}
     state, issues = classify_gh(pr)
-    assert "changes_requested" in issues
+    assert "changes_requested" not in issues
+    assert not any(i.startswith("review:") for i in issues)
 
 
 def test_classify_gh_review_comment():
@@ -248,6 +477,7 @@ def _make_ci_enriched(last_addressed=None, extra_issues=None, pr_comments=None):
         },
         "prs": [{"repo": "test-repo", "num": 1, "host": "github", "state": "OPEN", "issues": issues, "data": {}}],
         "pr_comments": pr_comments or [],
+        "mr_notes": pr_comments or [],
         "issues": issues,
     }
 
@@ -262,14 +492,19 @@ def _classify_bucket(enriched_list):
         elif "closed" in issues:
             closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith("ci_fail") for i in issues)
-            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
+            if ci_only and not gl_ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
-        elif any(i in ("changes_requested",) or i.startswith("review:") for i in issues) or has_new_feedback(e):
+        elif any(i in ("changes_requested",) or i.startswith("review:") for i in issues):
+            if has_new_feedback(e) or not e["task"].get("last_addressed"):
+                feedback.append(e)
+            else:
+                clean.append(e)
+        elif has_new_feedback(e):
             feedback.append(e)
         else:
             clean.append(e)
@@ -300,6 +535,14 @@ def test_ci_plus_conflict_is_actionable():
     assert len(result["clean"]) == 0
 
 
+def test_ci_plus_unresolved_discussions_is_actionable():
+    """CI failure combined with unresolved discussions stays actionable."""
+    e = _make_ci_enriched(last_addressed="2026-07-14T17:49", extra_issues=["unresolved_threads"])
+    result = _classify_bucket([e])
+    assert len(result["ci_fail"]) == 1
+    assert len(result["clean"]) == 0
+
+
 def test_ci_only_with_new_feedback_is_actionable():
     """CI-only with last_addressed but new human comment → actionable."""
     e = _make_ci_enriched(
@@ -320,6 +563,33 @@ def test_ci_only_with_old_feedback_is_clean():
     result = _classify_bucket([e])
     assert len(result["clean"]) == 1
     assert len(result["ci_fail"]) == 0
+
+
+def test_ci_plus_old_changes_requested_is_clean():
+    """CI fail + old CHANGES_REQUESTED review (before last_addressed) → CLEAN.
+
+    This is the main bug fix: sticky reviewDecision no longer causes false positives.
+    The review was addressed (before last_addressed), so should be suppressed.
+    """
+    e = _make_ci_enriched(
+        last_addressed="2026-07-14T18:00",
+        pr_comments=[],
+    )
+    # No "changes_requested" in issues because classify_gh filters old reviews
+    result = _classify_bucket([e])
+    assert len(result["clean"]) == 1
+    assert len(result["ci_fail"]) == 0
+
+
+def test_ci_plus_new_changes_requested_is_actionable():
+    """CI failure + NEW changes_requested review → actionable."""
+    e = _make_ci_enriched(
+        last_addressed="2026-07-14T10:00",
+        extra_issues=["review:reviewer"],  # New review adds review:{author}, not changes_requested
+    )
+    result = _classify_bucket([e])
+    assert len(result["ci_fail"]) == 1
+    assert len(result["clean"]) == 0
 
 
 # --- classify_gl ---
@@ -394,6 +664,28 @@ def test_gh_has_new_feedback_empty():
     assert has_new_feedback(enriched) is False
 
 
+def test_gh_has_new_feedback_same_minute_after_last_addressed():
+    """PR comment posted seconds after last_addressed in the same minute counts.
+
+    Regression for RHCLOUD-53177: karelhala's PR #312 comment at
+    2026-11-09T14:59:56Z was masked by last_addressed 2026-11-09T15:03-style
+    minute-prefix comparison when both truncated to the same minute.
+    """
+    enriched = {
+        "task": {"last_addressed": "2026-11-10T08:59:05.470894+00:00"},
+        "pr_comments": [{"a": "karelhala", "t": "2026-11-10T08:59:41Z", "b": "please respond"}],
+    }
+    assert has_new_feedback(enriched) is True
+
+
+def test_gh_has_new_feedback_same_minute_before_last_addressed():
+    enriched = {
+        "task": {"last_addressed": "2026-11-10T08:59:41+00:00"},
+        "pr_comments": [{"a": "karelhala", "t": "2026-11-10T08:59:05Z", "b": "please respond"}],
+    }
+    assert has_new_feedback(enriched) is False
+
+
 # --- has_new_feedback (GL) ---
 
 
@@ -419,3 +711,65 @@ def test_gl_has_new_feedback_bot_ignored():
         "mr_notes": [{"a": "my-app[bot]", "t": "2026-07-01T10:00", "b": "automated check"}],
     }
     assert gl_has_new_feedback(enriched) is False
+
+
+# --- pagination (GH + GL) ---
+
+
+def test_gh_pr_comments_uses_paginate():
+    """gh api calls include --paginate to fetch all pages of comments."""
+    import json as json_mod
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = json_mod.dumps({"a": "user", "t": "2026-07-01T10:00", "b": "hi"})
+
+    with patch("gh_pr_status.subprocess.run", return_value=mock_result) as mock_run:
+        gh_pr_comments("org/repo", 1)
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            assert "--paginate" in cmd, f"--paginate missing from command: {cmd}"
+
+
+def test_gl_mr_notes_uses_paginate():
+    """glab api calls include --paginate to fetch all pages of notes."""
+    import json as json_mod
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = json_mod.dumps(
+        [
+            {"author": {"username": "reviewer"}, "created_at": "2026-07-01T10:00:00", "body": "note", "system": False},
+        ]
+    )
+
+    with patch("gl_mr_status.subprocess.run", return_value=mock_result) as mock_run:
+        notes = gl_mr_notes("team/project", 42)
+        cmd = mock_run.call_args[0][0]
+        assert "--paginate" in cmd, f"--paginate missing from command: {cmd}"
+        assert len(notes) == 1
+        assert notes[0]["a"] == "reviewer"
+
+
+def test_gl_mr_notes_filters_system():
+    """System notes are excluded from results."""
+    import json as json_mod
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = json_mod.dumps(
+        [
+            {
+                "author": {"username": "reviewer"},
+                "created_at": "2026-07-01T10:00:00",
+                "body": "looks good",
+                "system": False,
+            },
+            {"author": {"username": "gitlab"}, "created_at": "2026-07-01T10:01:00", "body": "merged", "system": True},
+        ]
+    )
+
+    with patch("gl_mr_status.subprocess.run", return_value=mock_result):
+        notes = gl_mr_notes("team/project", 42)
+        assert len(notes) == 1
+        assert notes[0]["b"] == "looks good"

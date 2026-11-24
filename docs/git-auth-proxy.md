@@ -90,26 +90,43 @@ The proxy maintains a map of allowed hosts and their auth configuration:
 type GitHost struct {
     Scheme   string            // "https"
     AuthType string            // "bearer" or "basic"
-    Token    func() string     // token getter (reads env at call time)
-    Username func() string     // for basic auth only
+ Token func string // token getter (reads env at call time)
+ Username func string // for basic auth only
+    TLSInsecureSkipVerify bool  // break-glass only, defaults to false
+    TLSCACertFile string        // optional PEM bundle path for custom CAs
+    TLSCACertPEM string         // optional PEM content for custom CAs
 }
 
 var hosts = map[string]GitHost{
     "github.com": {
         Scheme:   "https",
         AuthType: "bearer",
-        Token:    func() string { return os.Getenv("GH_TOKEN") },
+ Token: func string { return os.Getenv("GH_TOKEN") },
     },
     "gitlab.cee.redhat.com": {
         Scheme:   "https",
         AuthType: "basic",
-        Username: func() string { return os.Getenv("GL_USERNAME") },
-        Token:    func() string { return os.Getenv("GITLAB_TOKEN") },
+ Username: func string { return os.Getenv("GL_USERNAME") },
+ Token: func string { return os.Getenv("GITLAB_TOKEN") },
     },
 }
 ```
 
 Requests to unregistered hosts are rejected with 403. This is a security boundary — the proxy only forwards to explicitly configured git providers.
+
+TLS verification is strict by default. For internal GitLab certificate chains, prefer providing a CA bundle via one of:
+- `GITLAB_CA_CERT_B64` (base64 PEM; decoded by proxy startup)
+- `GITLAB_CA_CERT_PEM` (raw PEM)
+- `GITLAB_CA_CERT_FILE` (path to PEM bundle)
+
+The internal `gitlab.cee.redhat.com` currently uses a self-signed chain. Its approved stage configuration sets `GITLAB_TLS_SKIP_VERIFY=true` on the Git auth proxy. This skips verification only for the allowlisted GitLab upstream connection made by that proxy; it does not disable TLS verification for other hosts or direct Git connections. Never set `GIT_SSL_NO_VERIFY` or global `http.sslVerify=false` in the bot.
+
+### Troubleshooting GitLab clone/fetch/push
+
+- Git transport must be rewritten through `http://devbot-proxy:8447/gitlab.cee.redhat.com/` by `GIT_AUTH_PROXY_HOST=devbot-proxy`.
+- Confirm the generated `.gitconfig` contains the host-specific `insteadOf` rewrite and the sandbox NetworkPolicy allows TCP 8447 to `devbot-proxy`.
+- If Git reports a certificate-chain error and proxy logs show no request for that repository, the bot connected directly; fix proxy routing rather than changing credentials or disabling client-side TLS.
+- `glab` API calls use a separate path; the Git auth listener handles Git smart-HTTP transport, not `glab` CLI API requests.
 
 ### Request Flow
 
@@ -143,6 +160,10 @@ Git over HTTPS uses two endpoints per repo:
 
 No special handling needed — the proxy is auth injection only.
 
+> Deployment follow-up: Git auth remains opt-in until the OpenShift template
+> exposes port 8447 for Git auth and moves the existing GlitchTip listener to a
+> separate port. Local Compose validation enables it with `GIT_AUTH_ENABLED=true`.
+
 ## Implementation
 
 ### New File: `proxy/executor/gitauth.go`
@@ -156,7 +177,7 @@ package executor
 // URL scheme: http://devbot-proxy:8447/<host>/<path>
 // Example:    http://proxy:8447/github.com/org/repo.git/info/refs
 //           → https://github.com/org/repo.git/info/refs + Authorization header
-func NewGitAuthProxy() http.Handler
+func NewGitAuthProxy http.Handler
 ```
 
 Follows the exact same pattern as `jira.go` and `vertex.go`:
@@ -277,7 +298,7 @@ After the git-auth proxy is validated, remove credential helper support:
 
 1. Remove `gh auth git-credential` from executor policy allowlist
 2. Remove `glab credential-helper` handler from executor server
-3. Remove credential helper lines from `.gitconfig` generation in `setup_git()`
+3. Remove credential helper lines from `.gitconfig` generation in `setup_git`
 4. Remove `needsStdin` cases for credential helpers in executor client
 
 This is a separate follow-up — both paths can coexist during migration.
@@ -293,7 +314,7 @@ This is a separate follow-up — both paths can coexist during migration.
 
 ### Phase 2: Switch Workload to URL Rewrite
 
-- Update `setup_git()` in `bot/run.py` to use `insteadOf` when `GIT_AUTH_PROXY` env var is set
+- Update `setup_git` in `bot/run.py` to use `insteadOf` when `GIT_AUTH_PROXY` env var is set
 - Deploy and validate pushes work through the proxy
 - Both credential-helper and proxy paths work simultaneously
 

@@ -1,0 +1,5 @@
+workflow: jira-sprint
+source: jira
+envs:
+  - node
+  - browser

@@ -356,8 +356,8 @@ class TestSlackNotify:
         assert params["external_key"] == "TICKET-123"
         assert params["event_type"] == "pr_created"
         assert params["webhook_url"] == "https://hooks.slack.com/test"
-        assert params["pr_url"] == "https://github.com/test/repo/pull/1"
-        assert params["pr_number"] == 1
+        assert "pr_url" not in params
+        assert "pr_number" not in params
         assert "Test PR" in params["message"]
 
     def test_slack_notify_no_webhook(self, temp_dir, monkeypatch):
@@ -379,10 +379,14 @@ class TestSlackNotify:
         assert "Slack webhook not configured" in result.message
 
     @patch("scripts.post_pr_operations.memory_call")
-    def test_slack_notify_queued_for_digest(self, mock_memory_call, operations, monkeypatch):
-        """Test Slack notification queued in digest mode."""
+    def test_slack_notify_suppressed_in_digest_mode(self, mock_memory_call, operations, monkeypatch):
+        """Test Slack notification suppressed in digest mode."""
         monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
-        mock_memory_call.return_value = {"sent": False, "queued": True, "reason": "Queued for daily digest"}
+        mock_memory_call.return_value = {
+            "sent": False,
+            "suppressed": True,
+            "reason": "Suppressed — daily digest mode active",
+        }
 
         result = operations.slack_notify(
             pr_url="https://github.com/test/repo/pull/3",

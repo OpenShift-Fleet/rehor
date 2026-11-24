@@ -427,6 +427,210 @@ async def test_cycle_runs_filter_by_type(db):
     assert len(rows) == 2
 
 
+# --- REHOR-102: No-transcript merge into progress_store row ---
+
+
+@pytest.mark.asyncio
+async def test_no_transcript_merges_into_progress_store_row(db):
+    """REHOR-102: When record_transcript posts without a transcript (file not found),
+    the API should merge metadata into the existing progress_store row, not create a duplicate.
+
+    Simulates the real sequence:
+    1. progress_store creates a cycle_run (no transcript)
+    2. record_transcript posts tool_calls/tokens_used but no transcript_b64
+    Expected: single row with merged metadata, NOT two rows.
+    """
+    await _apply_schema(db)
+    task = await _insert_task(db, "REHOR-102")
+    task_id = task["id"]
+
+    # Step 1: progress_store creates the initial row
+    orphan = await _insert_cycle_run(
+        db,
+        task_id=task_id,
+        instance_id="bot-merge-test",
+        tool_calls=None,
+        tokens_used=None,
+        progress={"last_step": "implemented"},
+    )
+    assert orphan["has_transcript"] is False
+
+    # Step 2: record_transcript merges metadata (no transcript)
+    merged = await db.fetchrow(
+        """
+        UPDATE cycle_runs
+        SET transcript = COALESCE($1, transcript),
+            tool_calls = COALESCE($2, tool_calls),
+            tokens_used = COALESCE($3, tokens_used)
+        WHERE id = (
+            SELECT id FROM cycle_runs
+            WHERE instance_id = $4
+              AND transcript IS NULL
+              AND created_at > NOW() - INTERVAL '2 hours'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id, tool_calls, tokens_used,
+                  (transcript IS NOT NULL) AS has_transcript
+        """,
+        None,  # no transcript bytes
+        87,
+        150000,
+        "bot-merge-test",
+    )
+    assert merged is not None
+    assert merged["id"] == orphan["id"]
+    assert merged["tool_calls"] == 87
+    assert merged["tokens_used"] == 150000
+    assert merged["has_transcript"] is False
+
+    # Verify only one row exists
+    total = await db.fetchval(
+        "SELECT COUNT(*) FROM cycle_runs WHERE instance_id = $1",
+        "bot-merge-test",
+    )
+    assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_transcript_merge_preserves_existing_transcript(db):
+    """REHOR-102: COALESCE($1, transcript) must not overwrite an existing transcript with NULL."""
+    await _apply_schema(db)
+
+    await _insert_cycle_run(
+        db,
+        instance_id="bot-preserve-test",
+        transcript=b"existing-transcript-data",
+        tool_calls=10,
+    )
+
+    result = await db.fetchrow(
+        """
+        UPDATE cycle_runs
+        SET transcript = COALESCE($1, transcript),
+            tool_calls = COALESCE($2, tool_calls)
+        WHERE id = (
+            SELECT id FROM cycle_runs
+            WHERE instance_id = $3
+              AND transcript IS NULL
+              AND created_at > NOW() - INTERVAL '2 hours'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id
+        """,
+        None,
+        99,
+        "bot-preserve-test",
+    )
+    # UPDATE should match nothing — the existing row already has a transcript
+    assert result is None
+
+    # Verify the existing transcript is untouched
+    row = await db.fetchrow(
+        "SELECT transcript, tool_calls FROM cycle_runs WHERE instance_id = $1",
+        "bot-preserve-test",
+    )
+    assert bytes(row["transcript"]) == b"existing-transcript-data"
+    assert row["tool_calls"] == 10
+
+
+@pytest.mark.asyncio
+async def test_no_transcript_no_orphan_creates_new_row(db):
+    """REHOR-102: When no orphan exists, the INSERT fallback creates a new row."""
+    await _apply_schema(db)
+
+    # No pre-existing rows for this instance — UPDATE will find nothing
+    result = await db.fetchrow(
+        """
+        UPDATE cycle_runs
+        SET transcript = COALESCE($1, transcript),
+            tool_calls = COALESCE($2, tool_calls)
+        WHERE id = (
+            SELECT id FROM cycle_runs
+            WHERE instance_id = $3
+              AND transcript IS NULL
+              AND created_at > NOW() - INTERVAL '2 hours'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id
+        """,
+        None,
+        50,
+        "bot-new-instance",
+    )
+    assert result is None  # nothing to merge into
+
+    # Fallback INSERT creates a new row
+    row = await _insert_cycle_run(
+        db,
+        instance_id="bot-new-instance",
+        tool_calls=50,
+        tokens_used=20000,
+    )
+    assert row["id"] is not None
+    assert row["tool_calls"] == 50
+
+    total = await db.fetchval(
+        "SELECT COUNT(*) FROM cycle_runs WHERE instance_id = $1",
+        "bot-new-instance",
+    )
+    assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_duplicate_cycle_runs_without_fix(db):
+    """REHOR-102: Reproduce the exact bug — progress_store + record_transcript
+    without transcript should NOT create two rows."""
+    await _apply_schema(db)
+    task = await _insert_task(db, "REHOR-102-DUPE")
+    task_id = task["id"]
+
+    # progress_store creates row #1
+    await _insert_cycle_run(
+        db,
+        task_id=task_id,
+        instance_id="bot-dupe-test",
+        progress={"last_step": "opened_pr"},
+    )
+
+    # record_transcript: attempt UPDATE first (the fix)
+    merged = await db.fetchrow(
+        """
+        UPDATE cycle_runs
+        SET transcript = COALESCE($1, transcript),
+            finished_at = COALESCE($2, finished_at, NOW()),
+            tool_calls = COALESCE($3, tool_calls),
+            tokens_used = COALESCE($4, tokens_used),
+            task_id = COALESCE(task_id, $5)
+        WHERE id = (
+            SELECT id FROM cycle_runs
+            WHERE instance_id = $6
+              AND transcript IS NULL
+              AND created_at > NOW() - INTERVAL '2 hours'
+            ORDER BY created_at DESC
+            LIMIT 1
+        )
+        RETURNING id
+        """,
+        None,  # no transcript
+        None,  # finished_at
+        45,
+        120000,
+        task_id,
+        "bot-dupe-test",
+    )
+    # The UPDATE should succeed — merged into row #1
+    assert merged is not None
+
+    total = await db.fetchval(
+        "SELECT COUNT(*) FROM cycle_runs WHERE instance_id = $1",
+        "bot-dupe-test",
+    )
+    assert total == 1
+
+
 # --- Costs POST with external_key ---
 
 

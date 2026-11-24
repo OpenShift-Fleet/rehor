@@ -15,6 +15,7 @@ from common import (
     get_task_prs,
     get_tasks,
     is_bot_author,
+    is_newer,
     load_state,
     output_result,
     save_state,
@@ -45,6 +46,7 @@ def gl_mr_notes(project_path, num):
             [
                 "glab",
                 "api",
+                "--paginate",
                 f"projects/{encoded}/merge_requests/{num}/notes?per_page=50&sort=asc",
                 "--hostname",
                 "gitlab.cee.redhat.com",
@@ -57,7 +59,7 @@ def gl_mr_notes(project_path, num):
             return [
                 {
                     "a": n.get("author", {}).get("username", "?"),
-                    "t": n.get("created_at", "")[:16],
+                    "t": n.get("created_at", ""),
                     "b": n.get("body", ""),
                 }
                 for n in json.loads(r.stdout)
@@ -140,10 +142,15 @@ def has_new_feedback(enriched):
     for c in enriched["mr_notes"]:
         if is_bot_author(c.get("a", "?")):
             continue
-        ct = c.get("t", "")[:16]
-        if not last_addr or ct > last_addr[:16]:
+        if not last_addr or is_newer(c.get("t", ""), last_addr):
             return True
     return False
+
+
+def ci_failure_needs_session(enriched):
+    """Return whether an addressed CI failure needs another agent session."""
+    task = enriched["task"]
+    return not task.get("last_addressed") or has_new_feedback(enriched)
 
 
 def fmt_task(enriched):
@@ -158,7 +165,7 @@ def fmt_task(enriched):
     return "\n".join(lines)
 
 
-def main():
+def main(suppress_terminal_if_addressed=False):
     if not INSTANCE_ID:
         output_result("error", "BOT_INSTANCE_ID not set")
         return
@@ -181,11 +188,21 @@ def main():
     for e in enriched:
         issues = e["issues"]
         if "merged" in issues:
-            merged.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                merged.append(e)
         elif "closed" in issues:
-            closed.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_fail.append(e)
+            ci_only = all(i.startswith("ci_fail") for i in issues)
+            if ci_only and not ci_failure_needs_session(e):
+                clean.append(e)
+            else:
+                ci_fail.append(e)
         elif "conflict" in issues:
             conflict.append(e)
         elif "unresolved_threads" in issues or has_new_feedback(e):

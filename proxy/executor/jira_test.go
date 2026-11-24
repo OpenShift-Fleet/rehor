@@ -92,3 +92,30 @@ func TestJiraValidateConfig(t *testing.T) {
 		t.Error("empty token should fail")
 	}
 }
+
+func TestJiraStripsSensitiveResponseHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Authorization", "Bearer leaked-token")
+		w.Header().Set("Set-Cookie", "session=secret")
+		w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+		w.Header().Set("X-Access-Token", "abc")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler := NewJiraProxy(upstream.URL, "bot@redhat.com", "secret-token")
+
+	req := httptest.NewRequest("GET", "/rest/api/2/issue/PROJ-123", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	for _, h := range []string{"Authorization", "Set-Cookie", "WWW-Authenticate", "X-Access-Token"} {
+		if got := w.Header().Get(h); got != "" {
+			t.Errorf("client got %s = %q, want empty", h, got)
+		}
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+}

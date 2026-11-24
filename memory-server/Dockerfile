@@ -1,17 +1,20 @@
 # Stage 1: Build the React dashboard
-FROM registry.access.redhat.com/ubi9/nodejs-22:latest AS dashboard
+FROM registry.access.redhat.com/ubi9/nodejs-22:latest@sha256:130884e8be8170676be0c660fb63333ad68b496455cc075e1cb7b3fa596681a6 AS dashboard
 USER 0
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
 RUN npm ci
 COPY dashboard/ .
+COPY shared/ /app/shared/
 RUN npm run build
 
 # Stage 2: Python memory server
-FROM registry.access.redhat.com/ubi9/python-312-minimal:latest
+FROM registry.access.redhat.com/ubi9/python-312-minimal:latest@sha256:1826b5dfde1430f458f864cf04b17130e316d0b7246cc6d5b1ed85c7d968e3eb
 USER 0
 
-RUN pip3 install uv
+# Updating Python dependencies does not update vulnerable RPMs in the pinned base.
+RUN microdnf upgrade -y && microdnf clean all
+RUN pip3 install 'uv>=0.13.4'
 
 WORKDIR /app
 
@@ -34,7 +37,7 @@ RUN uv run python -c "from sentence_transformers import SentenceTransformer; Sen
 # Offline mode — model is baked in, no network/cache writes needed at runtime
 ENV HF_HUB_OFFLINE=1
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 # Run python directly from the pre-built venv — avoids uv cache init permission
 # issues with OpenShift arbitrary UIDs (astral-sh/uv#10023)

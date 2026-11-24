@@ -19,15 +19,60 @@ parameters:
   required: true
 - name: VERTEX_ALLOWED_MODELS
   required: true
+# Empty default: existing deploys keep working before the Vault key exists.
+# The API key itself is never a parameter — secret only.
+- name: OPENAI_ALLOWED_MODELS
+  value: ""
 - name: PROXY_NAME
   value: devbot-proxy
 - name: JIRA_SECRET_NAME
   value: devbot-secrets
+- name: REGISTRY_SECRET_NAME
+  description: Optional Vault-backed Secret with registry-redhat-username and registry-redhat-token
+  value: redhat-registry-credentials
+- name: GIT_AUTH_ENABLED
+  value: "false"
+- name: GITLAB_TLS_SKIP_VERIFY
+  value: "false"
+- name: DASHBOARD_URL
+  description: public hostname for the memory server dashboard
+  required: true
+- name: OUTCOMES_URL
+  description: public hostname for the read-only task-outcome metrics Route (port 8081)
+  required: true
+- name: MODEL_PROXY_URL
+  description: >
+    public hostname for the authenticated model-gateway Route (oauth-proxy in
+    front of the proxy :8450 OpenAI-compatible gateway). Empty lets the router
+    assign a hostname; consumed by cross-cluster sandboxed agents.
+  value: ""
+- name: MODEL_PROXY_TOKEN_SERVICE_ACCOUNT
+  description: >
+    service-account identity of the dispatcher-minted credential (the SA the
+    dispatcher mints tokens for, not the dispatcher's own runtime SA). The
+    model-gateway oauth-proxy SAR admits exactly the identities that can
+    mint tokens for this SA. Requires a Role/RoleBinding granting this SA
+    create on serviceaccounts/token for itself, mirroring the dispatcher's
+    token-request role in app-interface.
+  value: devbot-memory-server
+- name: AGENT_HTTP_GATEWAY_ENABLED
+  description: >
+    Enables the services HTTP gateway (oauth sidecar :8453 -> loopback
+    mux :8454). The executor :9090 listener serves gRPC + HTTP
+    regardless of this flag. Default false until rollout.
+  value: "false"
+- name: SERVICE_GATEWAY_URL
+  description: >
+    Public hostname of the services gateway Route; empty means
+    router-assigned.
+  value: ""
 objects:
 
 # ============================================================================
 # Shared infrastructure for dev-bot instances (memory-server + proxy).
-# Bot pods are deployed by instance-specific repos/templates.
+# Bot workloads are deployed by instance-specific OpenShell SandboxTemplate /
+# SandboxWarmPool templates, usually with KEDA scheduling.
+# See deploy/sandbox-template.example.yaml. This template owns shared services.
 #
 # Prerequisites:
 #
@@ -40,6 +85,7 @@ objects:
 #      gh-bot-gpg-private    — GPG private key (base64)
 #      gh-bot-cli-token      — GitHub personal access token
 #      gl-bot-cli-token      — GitLab personal access token
+#      gitlab-ca-cert-b64    — (optional) base64 PEM bundle for internal GitLab CAs
 #      gcp-vertex-claude-sa  — Google service account key (base64)
 #      jira-email            — Jira username/email (unless JIRA_SECRET_NAME overrides)
 #      jira-token            — Jira API token (unless JIRA_SECRET_NAME overrides)
@@ -47,11 +93,56 @@ objects:
 #      konflux-read-token    — (optional) KubeArchive SA token for Konflux build logs
 #      glitchtip-url         — GlitchTip instance URL (e.g. https://glitchtip.devshift.net)
 #      glitchtip-token       — GlitchTip API token for error tracking
+#      openai-api-key        — OpenAI API key for the :8450 gateway.
+#                              Proxy-only; the :8450 listener stays off until it exists.
 # 3. (Optional) Separate Jira secret (JIRA_SECRET_NAME) with keys:
 #      jira-email            — Jira username/email for this instance
 #      jira-token            — Jira API token for this instance
+# 4. ServiceAccount "devbot-memory-server" with oauth-redirecturi annotation
+#      (requires DASHBOARD_URL parameter matching the Route hostname)
+# 5. Secret "devbot-secrets" with key session_secret
+#      (provision via Vault in app-interface namespace YAML; shared by the
+#      memory-server and proxy oauth-proxy sidecars for cookie signing)
+# 6. Role/RoleBinding (app-interface) granting the token-identity SA
+#      (MODEL_PROXY_TOKEN_SERVICE_ACCOUNT, default devbot-memory-server)
+#      create on serviceaccounts/token for itself — the model-gateway
+#      oauth-proxy SAR admits exactly this identity, matching the
+#      dispatcher-minted token delivered to sandboxed agents. Mirror of
+#      the existing agent-dispatcher/token-request.role.yml.
+# 7. Agent gateway wiring (REHOR-251/252), additive and disabled by
+#      default: ONE new public endpoint — the services HTTP gateway
+#      (edge Route -> oauth-proxy :8453 -> loopback mux :8454). The
+#      executor :9090 listener keeps serving legacy gRPC and new HTTP
+#      /executor/execute with unchanged Service/NetworkPolicy; the
+#      loopback mux is never exposed. Legacy Squid and all existing
+#      ports stay unchanged.
 #
 # ============================================================================
+
+# --- Memory Server ServiceAccount (OpenShift OAuth client) ---
+- kind: ServiceAccount
+  apiVersion: v1
+  metadata:
+    name: devbot-memory-server
+    labels:
+      app.kubernetes.io/name: memory-server
+      app.kubernetes.io/part-of: devbot
+    annotations:
+      serviceaccounts.openshift.io/oauth-redirecturi.dashboard: 'https://${DASHBOARD_URL}/oauth/callback'
+
+# --- OAuth proxy API delegation ---
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: devbot-memory-server-auth-delegator
+  subjects:
+  - kind: ServiceAccount
+    name: devbot-memory-server
+    namespace: ${NAMESPACE}
+  roleRef:
+    kind: ClusterRole
+    name: system:auth-delegator
+    apiGroup: rbac.authorization.k8s.io
 
 # --- Memory Server Deployment ---
 - apiVersion: apps/v1
@@ -77,7 +168,43 @@ objects:
           app.kubernetes.io/name: memory-server
           app.kubernetes.io/part-of: devbot
       spec:
+        serviceAccountName: devbot-memory-server
+        volumes:
+        - name: oauth-proxy-cookie-secret
+          secret:
+            secretName: devbot-secrets
+            items:
+            - key: session_secret
+              path: session_secret
         containers:
+        - name: oauth-proxy
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.18.0-202506230505.p0.gcbd44ad.assembly.stream.el9
+          ports:
+          - containerPort: 8443
+            name: dashboard
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8443
+          - -upstream=http://localhost:8080
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - '--openshift-sar={"resource": "projects", "verb": "list"}'
+          - '--openshift-delegate-urls={"/": {"verb": "list", "resource": "projects"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-memory-server
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
         - name: memory-server
           image: ${MEMORY_SERVER_IMAGE}:${MEMORY_SERVER_IMAGE_TAG}
           securityContext:
@@ -90,6 +217,9 @@ objects:
           ports:
           - containerPort: 8080
             name: http
+            protocol: TCP
+          - containerPort: 8081
+            name: readonly
             protocol: TCP
           - containerPort: 9091
             name: metrics
@@ -134,6 +264,12 @@ objects:
                 name: devbot-secrets
                 key: konflux-read-token
                 optional: true
+          - name: READONLY_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: readonly-api-key
+                optional: true
           startupProbe:
             httpGet:
               path: /health
@@ -175,12 +311,20 @@ objects:
       targetPort: http
       protocol: TCP
       name: http
+    - port: 8081
+      targetPort: readonly
+      protocol: TCP
+      name: readonly
     - port: 9091
       targetPort: metrics
       protocol: TCP
       name: metrics
+    - port: 8443
+      targetPort: 8443
+      protocol: TCP
+      name: dashboard
 
-# --- Memory Server Route (dashboard + health) ---
+# --- Memory Server Route (dashboard behind oauth-proxy SSO) ---
 - apiVersion: route.openshift.io/v1
   kind: Route
   metadata:
@@ -189,14 +333,60 @@ objects:
       app.kubernetes.io/name: memory-server
       app.kubernetes.io/part-of: devbot
   spec:
+    host: ${DASHBOARD_URL}
     to:
       kind: Service
       name: devbot-memory-server
     port:
-      targetPort: http
+      targetPort: dashboard
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
+
+# --- Read-only Outcomes Route (API-key protected, port 8081) ---
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: devbot-memory-outcomes
+    labels:
+      app.kubernetes.io/name: memory-server
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${OUTCOMES_URL}
+    to:
+      kind: Service
+      name: devbot-memory-server
+    port:
+      targetPort: readonly
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+# --- Proxy ServiceAccount (OAuth client for the model-gateway oauth-proxy) ---
+# Bearer-only: the model gateway is machine-to-machine (sandboxed agents send
+# a dispatcher-minted service-account token), so no oauth-redirecturi
+# annotation is needed; the browser flow is never used.
+- kind: ServiceAccount
+  apiVersion: v1
+  metadata:
+    name: devbot-proxy
+    labels:
+      app.kubernetes.io/name: devbot-proxy
+      app.kubernetes.io/part-of: devbot
+
+# --- Model gateway oauth-proxy API delegation (TokenReview for bearers) ---
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRoleBinding
+  metadata:
+    name: devbot-proxy-auth-delegator
+  subjects:
+  - kind: ServiceAccount
+    name: devbot-proxy
+    namespace: ${NAMESPACE}
+  roleRef:
+    kind: ClusterRole
+    name: system:auth-delegator
+    apiGroup: rbac.authorization.k8s.io
 
 # --- Proxy Deployment (Squid + Executor server — holds all CLI secrets) ---
 - apiVersion: apps/v1
@@ -222,7 +412,85 @@ objects:
           app.kubernetes.io/name: ${PROXY_NAME}
           app.kubernetes.io/part-of: devbot
       spec:
+        serviceAccountName: devbot-proxy
+        volumes:
+        - name: oauth-proxy-cookie-secret
+          secret:
+            secretName: devbot-secrets
+            items:
+            - key: session_secret
+              path: session_secret
         containers:
+        - name: oauth-proxy
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.18.0-202506230505.p0.gcbd44ad.assembly.stream.el9
+          ports:
+          - containerPort: 8452
+            name: model-auth
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8452
+          - -upstream=http://localhost:8450
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          # Tighter than the memory dashboard's projects/list SAR: the model
+          # gateway is machine-only and spends money, so only identities that
+          # can create serviceaccounts/token for the token-identity SA pass —
+          # exactly the credential the dispatcher delivers to sandboxed agents
+          # (the minted token's own identity, plus the dispatcher runtime SA).
+          # --openshift-delegate-urls is what enables delegated bearer-token
+          # authentication (TokenReview + per-path authorization); without it
+          # oauth-proxy only authorizes the browser OAuth flow. Its value is
+          # parsed as k8s authorizationv1.ResourceAttributes (field "name").
+          # --openshift-sar guards the OAuth login flow and is posted to the
+          # legacy authorization.openshift.io API (field "resourceName").
+          - '--openshift-sar={"resource": "serviceaccounts", "subresource": "token", "verb": "create", "resourceName": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          - '--openshift-delegate-urls={"/": {"resource": "serviceaccounts", "subresource": "token", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
+        # Services gateway auth sidecar: TokenReview + token-mint SAR,
+        # same contract as the model-gateway sidecar. Proxies to the
+        # loopback mux :8454; returns 502 while the gateway is disabled.
+        - name: oauth-services
+          image: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.18.0-202506230505.p0.gcbd44ad.assembly.stream.el9
+          ports:
+          - containerPort: 8453
+            name: gateway-auth
+            protocol: TCP
+          args:
+          - -provider=openshift
+          - -https-address=
+          - -http-address=:8453
+          - -upstream=http://127.0.0.1:8454
+          - -openshift-ca=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          - '--openshift-sar={"resource": "serviceaccounts", "subresource": "token", "verb": "create", "resourceName": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}'
+          - '--openshift-delegate-urls={"/": {"resource": "serviceaccounts", "subresource": "token", "verb": "create", "name": "${MODEL_PROXY_TOKEN_SERVICE_ACCOUNT}", "namespace": "${NAMESPACE}"}}'
+          - --cookie-secret-file=/etc/secrets/session_secret
+          - --cookie-samesite=none
+          - --client-id=system:serviceaccount:${NAMESPACE}:devbot-proxy
+          - --client-secret-file=/var/run/secrets/kubernetes.io/serviceaccount/token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+          - name: oauth-proxy-cookie-secret
+            mountPath: /etc/secrets
+            readOnly: true
         - name: proxy
           image: ${PROXY_IMAGE}:${PROXY_IMAGE_TAG}
           securityContext:
@@ -249,7 +517,16 @@ objects:
             name: screenshot
             protocol: TCP
           - containerPort: 8447
+            name: git-auth
+            protocol: TCP
+          - containerPort: 8448
             name: glitchtip
+            protocol: TCP
+          - containerPort: 8450
+            name: openai-auth
+            protocol: TCP
+          - containerPort: 8451
+            name: registry-auth
             protocol: TCP
           - containerPort: 9091
             name: metrics
@@ -293,8 +570,37 @@ objects:
             value: ${GCP_REGION}
           - name: VERTEX_ALLOWED_MODELS
             value: ${VERTEX_ALLOWED_MODELS}
+          - name: OPENAI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: openai-api-key
+                optional: true
+          # Both keys absent: registry listener remains disabled.
+          - name: REGISTRY_REDHAT_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: ${REGISTRY_SECRET_NAME}
+                key: registry-redhat-username
+                optional: true
+          - name: REGISTRY_REDHAT_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: ${REGISTRY_SECRET_NAME}
+                key: registry-redhat-token
+                optional: true
+          - name: OPENAI_ALLOWED_MODELS
+            value: ${OPENAI_ALLOWED_MODELS}
           - name: JIRA_URL
             value: https://redhat.atlassian.net
+          # REHOR-263 pathname destinations on the HTTP gateway: /github
+          # and /gitlab reuse GH_TOKEN/GITLAB_TOKEN from devbot-secrets;
+          # these upstream URLs have no in-code defaults, so the routes
+          # stay fail-closed (503) without them.
+          - name: GITHUB_API_URL
+            value: https://api.github.com
+          - name: GITLAB_API_URL
+            value: https://gitlab.cee.redhat.com
           - name: JIRA_USERNAME
             valueFrom:
               secretKeyRef:
@@ -315,14 +621,33 @@ objects:
               secretKeyRef:
                 name: devbot-secrets
                 key: glitchtip-token
+          - name: GIT_AUTH_ENABLED
+            value: ${GIT_AUTH_ENABLED}
+          - name: GITLAB_TLS_SKIP_VERIFY
+            value: ${GITLAB_TLS_SKIP_VERIFY}
+          - name: GITLAB_CA_CERT_B64
+            valueFrom:
+              secretKeyRef:
+                name: devbot-secrets
+                key: gitlab-ca-cert-b64
+                optional: true
+          # --- Agent services HTTP gateway (REHOR-251) ---
+          # Gates only the loopback mux :8454; executor :9090 (gRPC +
+          # HTTP) always runs. Auth lives in the oauth-services sidecar.
+          - name: AGENT_HTTP_GATEWAY_ENABLED
+            value: ${AGENT_HTTP_GATEWAY_ENABLED}
+          # HTTP /metrics avoids Squid logging TCP kubelet probes as
+          # DENIED error:transaction-end-before-headers (TCP:3128).
           livenessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 5
             periodSeconds: 15
           readinessProbe:
-            tcpSocket:
-              port: 3128
+            httpGet:
+              path: /metrics
+              port: metrics
             initialDelaySeconds: 3
             periodSeconds: 10
           resources:
@@ -331,7 +656,7 @@ objects:
               memory: 128Mi
             limits:
               cpu: 300m
-              memory: 256Mi
+              memory: 512Mi
 
 # --- Proxy Service ---
 - apiVersion: v1
@@ -367,13 +692,94 @@ objects:
       protocol: TCP
       name: screenshot
     - port: 8447
+      targetPort: git-auth
+      protocol: TCP
+      name: git-auth
+    - port: 8448
       targetPort: glitchtip
       protocol: TCP
       name: glitchtip
+    - port: 8450
+      targetPort: openai-auth
+      protocol: TCP
+      name: openai-auth
+    - port: 8452
+      targetPort: model-auth
+      protocol: TCP
+      name: model-auth
+    - port: 8451
+      targetPort: registry-auth
+      protocol: TCP
+      name: registry-auth
     - port: 9091
       targetPort: metrics
       protocol: TCP
       name: metrics
+
+# --- Model Gateway Route (oauth-proxy :8452, authenticated) ---
+# Cross-cluster sandboxed agents cannot reach in-namespace service DNS or
+# IPs; the OpenAI-compatible :8450 gateway is exposed through an
+# authenticated Route instead. Clients present a dispatcher-minted
+# service-account bearer (validated via TokenReview + the token-mint SAR);
+# the gateway itself never validates incoming bearers, so the oauth-proxy IS
+# the authentication boundary. In-namespace callers keep using
+# http://devbot-proxy:8450 directly.
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: ${PROXY_NAME}-model
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${MODEL_PROXY_URL}
+    to:
+      kind: Service
+      name: ${PROXY_NAME}
+    port:
+      targetPort: model-auth
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+# --- Agent Gateways Service (REHOR-251) ---
+# Exposes the oauth-services auth port; TLS terminates at the router.
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: ${PROXY_NAME}-gateways
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    type: ClusterIP
+    selector:
+      app.kubernetes.io/name: ${PROXY_NAME}
+    ports:
+    - port: 8453
+      targetPort: gateway-auth
+      protocol: TCP
+      name: gateway-auth
+
+# --- Services Gateway Route (REHOR-251) ---
+# Public authenticated entry point; plain HTTP redirects to HTTPS.
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: ${PROXY_NAME}-services
+    labels:
+      app.kubernetes.io/name: ${PROXY_NAME}
+      app.kubernetes.io/part-of: devbot
+  spec:
+    host: ${SERVICE_GATEWAY_URL}
+    to:
+      kind: Service
+      name: ${PROXY_NAME}-gateways
+    port:
+      targetPort: gateway-auth
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
 
 # --- NetworkPolicy: Proxy accepts ingress from bot pods ---
 - apiVersion: networking.k8s.io/v1
@@ -405,6 +811,27 @@ objects:
       - port: 8446
         protocol: TCP
       - port: 8447
+        protocol: TCP
+      - port: 8448
+        protocol: TCP
+      - port: 8450
+        protocol: TCP
+      - port: 8451
+        protocol: TCP
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
+      ports:
+      - port: 8452
+        protocol: TCP
+    # Router -> services gateway auth port.
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            network.openshift.io/policy-group: ingress
+      ports:
+      - port: 8453
         protocol: TCP
     - from:
       - namespaceSelector:
@@ -440,7 +867,9 @@ objects:
           matchLabels:
             network.openshift.io/policy-group: ingress
       ports:
-      - port: 8080
+      - port: 8443
+        protocol: TCP
+      - port: 8081
         protocol: TCP
     - from:
       - namespaceSelector:

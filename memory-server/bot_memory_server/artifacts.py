@@ -8,6 +8,23 @@ def build_artifacts(metadata) -> list[dict]:
     seen_urls: set[str] = set()
 
     meta = metadata if isinstance(metadata, dict) else {}
+    for item in meta.get("related_items", []):
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url", "")
+        if not url:
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        artifacts.append(
+            {
+                "name": item.get("name", url),
+                "url": url,
+                "type": item.get("type", "related"),
+            }
+        )
+
     for pr in meta.get("prs", []):
         url = pr.get("url", "")
         if not url or url in seen_urls:

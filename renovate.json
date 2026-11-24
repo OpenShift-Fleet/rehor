@@ -1,3 +1,0 @@
-{
-  "extends": ["github>RedHatInsights/shared-workflows//renovate/backend"]
-}

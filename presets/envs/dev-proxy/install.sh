@@ -11,7 +11,11 @@ fi
 if [ -d /home/botuser/app/dev-proxy ]; then
     cd /home/botuser/app/dev-proxy
     go build -o /usr/local/bin/caddy .
+    mkdir -p /etc/caddy
     cp Caddyfile /etc/caddy/Caddyfile
     cp start-proxy.sh /usr/local/bin/start-dev-proxy.sh
     chmod +x /usr/local/bin/start-dev-proxy.sh
+    echo "[dev-proxy] Caddy built and installed"
+else
+    echo "WARNING: dev-proxy source not found at /home/botuser/app/dev-proxy" >&2
 fi

@@ -2,9 +2,13 @@ package executor
 
 import (
 	"bytes"
+	"crypto/tls"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -25,9 +29,9 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 		"github.com": {
 			Scheme:   upstreamURL.Scheme,
 			Host:     upstreamURL.Host,
-			AuthType: "bearer",
+			AuthType: "basic",
 			Token:    func() string { return "test-gh-token-123" },
-			Username: nil,
+			Username: func() string { return "github-bot" },
 		},
 	}
 
@@ -40,7 +44,7 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
-	wantAuth := "Bearer test-gh-token-123"
+	wantAuth := "Basic Z2l0aHViLWJvdDp0ZXN0LWdoLXRva2VuLTEyMw=="
 	if gotAuth != wantAuth {
 		t.Errorf("Authorization = %q, want %q", gotAuth, wantAuth)
 	}
@@ -49,6 +53,22 @@ func TestGitAuthProxy_GitHub(t *testing.T) {
 	}
 	if gotQuery != "service=git-upload-pack" {
 		t.Errorf("Query = %q, want service=git-upload-pack", gotQuery)
+	}
+}
+
+func TestDefaultHostRegistry_GitHubUsesBasicAuth(t *testing.T) {
+	t.Setenv("GH_USERNAME", "github-bot")
+	t.Setenv("GH_TOKEN", "token")
+
+	host := defaultHostRegistry()["github.com"]
+	if host.AuthType != AuthTypeBasic {
+		t.Fatalf("AuthType = %q, want %q", host.AuthType, AuthTypeBasic)
+	}
+	if got := host.Username(); got != "github-bot" {
+		t.Errorf("Username() = %q, want github-bot", got)
+	}
+	if got := host.Token(); got != "token" {
+		t.Errorf("Token() = %q, want token", got)
 	}
 }
 
@@ -331,4 +351,356 @@ func TestValidateGitAuthConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetEnvAsBool(t *testing.T) {
+	tests := []struct {
+		name         string
+		envValue     string
+		defaultValue bool
+		want         bool
+	}{
+		{
+			name:         "empty env var returns default true",
+			envValue:     "",
+			defaultValue: true,
+			want:         true,
+		},
+		{
+			name:         "empty env var returns default false",
+			envValue:     "",
+			defaultValue: false,
+			want:         false,
+		},
+		{
+			name:         "true string returns true",
+			envValue:     "true",
+			defaultValue: false,
+			want:         true,
+		},
+		{
+			name:         "false string returns false",
+			envValue:     "false",
+			defaultValue: true,
+			want:         false,
+		},
+		{
+			name:         "1 returns true",
+			envValue:     "1",
+			defaultValue: false,
+			want:         true,
+		},
+		{
+			name:     "yes returns true",
+			envValue: "yes",
+			want:     true,
+		},
+		{
+			name:     "on returns true",
+			envValue: "on",
+			want:     true,
+		},
+		{
+			name:         "0 returns false",
+			envValue:     "0",
+			defaultValue: true,
+			want:         false,
+		},
+		{
+			name:     "no returns false",
+			envValue: "no",
+			want:     false,
+		},
+		{
+			name:     "off returns false",
+			envValue: "off",
+			want:     false,
+		},
+		{
+			name:         "invalid value returns default",
+			envValue:     "invalid",
+			defaultValue: true,
+			want:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_BOOL_VAR", tt.envValue)
+			got := getEnvAsBool("TEST_BOOL_VAR", tt.defaultValue)
+			if got != tt.want {
+				t.Errorf("getEnvAsBool() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPerHostTransportManager_TLSConfig(t *testing.T) {
+	tests := []struct {
+		name                   string
+		host                   string
+		hostRegistry           map[string]*GitHost
+		wantInsecureSkipVerify bool
+		wantMinVersion         uint16
+	}{
+		{
+			name: "gitlab with InsecureSkipVerify true",
+			host: "gitlab.cee.redhat.com",
+			hostRegistry: map[string]*GitHost{
+				"gitlab.cee.redhat.com": {
+					Scheme:                "https",
+					Host:                  "gitlab.cee.redhat.com",
+					AuthType:              AuthTypeBasic,
+					Token:                 func() string { return "token" },
+					Username:              func() string { return "user" },
+					TLSInsecureSkipVerify: true,
+				},
+			},
+			wantInsecureSkipVerify: true,
+			wantMinVersion:         tls.VersionTLS12,
+		},
+		{
+			name: "github with InsecureSkipVerify false",
+			host: "github.com",
+			hostRegistry: map[string]*GitHost{
+				"github.com": {
+					Scheme:                "https",
+					Host:                  "github.com",
+					AuthType:              AuthTypeBasic,
+					Token:                 func() string { return "token" },
+					Username:              func() string { return "github-bot" },
+					TLSInsecureSkipVerify: false,
+				},
+			},
+			wantInsecureSkipVerify: false,
+			wantMinVersion:         tls.VersionTLS12,
+		},
+		{
+			name:                   "unknown host defaults to secure",
+			host:                   "unknown.com",
+			hostRegistry:           map[string]*GitHost{},
+			wantInsecureSkipVerify: false,
+			wantMinVersion:         tls.VersionTLS12,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := NewPerHostTransportManager(tt.hostRegistry)
+			tlsConfig := manager.getTLSConfigForHost(tt.host)
+
+			if tlsConfig.InsecureSkipVerify != tt.wantInsecureSkipVerify {
+				t.Errorf("InsecureSkipVerify = %v, want %v", tlsConfig.InsecureSkipVerify, tt.wantInsecureSkipVerify)
+			}
+			if tlsConfig.MinVersion != tt.wantMinVersion {
+				t.Errorf("MinVersion = %v, want %v", tlsConfig.MinVersion, tt.wantMinVersion)
+			}
+		})
+	}
+}
+
+func TestPerHostTransportManager_CachesTransports(t *testing.T) {
+	hostRegistry := map[string]*GitHost{
+		"github.com": {
+			Scheme:   "https",
+			Host:     "github.com",
+			AuthType: AuthTypeBasic,
+			Token:    func() string { return "token" },
+			Username: func() string { return "github-bot" },
+		},
+	}
+
+	manager := NewPerHostTransportManager(hostRegistry)
+
+	// Create a mock request
+	req1, _ := http.NewRequest("GET", "https://github.com/test", nil)
+	req2, _ := http.NewRequest("GET", "https://github.com/test2", nil)
+
+	// The manager should cache the transport for the same host
+	_, _ = manager.RoundTrip(req1)
+	transport1 := manager.transports["github.com"]
+
+	_, _ = manager.RoundTrip(req2)
+	transport2 := manager.transports["github.com"]
+
+	// Should be the same transport instance (cached)
+	if transport1 != transport2 {
+		t.Error("Expected transport to be cached for the same host")
+	}
+}
+
+func TestGitAuthProxy_GitLabWithTLSInsecureSkipVerify(t *testing.T) {
+	var gotAuth, gotPath string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+
+	registry := map[string]*GitHost{
+		"gitlab.cee.redhat.com": {
+			Scheme:                upstreamURL.Scheme,
+			Host:                  upstreamURL.Host,
+			AuthType:              "basic",
+			Token:                 func() string { return "test-gl-token" },
+			Username:              func() string { return "gitlab-bot" },
+			TLSInsecureSkipVerify: true,
+		},
+	}
+
+	handler := newGitAuthProxyWithRegistry(registry)
+
+	req := httptest.NewRequest("POST", "/gitlab.cee.redhat.com/team/project.git/git-receive-pack", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+	wantAuth := "Basic Z2l0bGFiLWJvdDp0ZXN0LWdsLXRva2Vu"
+	if gotAuth != wantAuth {
+		t.Errorf("Authorization = %q, want %q", gotAuth, wantAuth)
+	}
+	if gotPath != "/team/project.git/git-receive-pack" {
+		t.Errorf("Path = %q, want /team/project.git/git-receive-pack", gotPath)
+	}
+}
+
+func TestGitAuthProxy_GitLabTLSVerificationRemainsStrictWhenDisabled(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	registry := map[string]*GitHost{
+		"gitlab.cee.redhat.com": {
+			Scheme:   upstreamURL.Scheme,
+			Host:     upstreamURL.Host,
+			AuthType: AuthTypeBasic,
+			Token:    func() string { return "token" },
+			Username: func() string { return "user" },
+		},
+	}
+
+	handler := newGitAuthProxyWithRegistry(registry)
+	req := httptest.NewRequest("GET", "/gitlab.cee.redhat.com/team/project.git/info/refs", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", w.Code)
+	}
+}
+
+func TestGitAuthProxy_GitLabTLSVerificationSucceedsWithCustomCA(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	upstreamURL, _ := url.Parse(upstream.URL)
+	certDER := upstream.TLS.Certificates[0].Certificate[0]
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	registry := map[string]*GitHost{
+		"gitlab.cee.redhat.com": {
+			Scheme:       upstreamURL.Scheme,
+			Host:         upstreamURL.Host,
+			AuthType:     AuthTypeBasic,
+			Token:        func() string { return "token" },
+			Username:     func() string { return "user" },
+			TLSCACertPEM: strings.TrimSpace(string(certPEM)),
+		},
+	}
+
+	handler := newGitAuthProxyWithRegistry(registry)
+	req := httptest.NewRequest("GET", "/gitlab.cee.redhat.com/team/project.git/info/refs", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
+
+func TestLoadSystemCertPoolWithCustomCA_InvalidInputs(t *testing.T) {
+	t.Run("invalid file path", func(t *testing.T) {
+		_, err := loadSystemCertPoolWithCustomCA("/nonexistent/ca.pem", "")
+		if err == nil {
+			t.Fatal("expected error for invalid file path")
+		}
+	})
+
+	t.Run("invalid pem string", func(t *testing.T) {
+		_, err := loadSystemCertPoolWithCustomCA("", "not-a-pem")
+		if err == nil {
+			t.Fatal("expected error for invalid pem")
+		}
+	})
+}
+
+func TestValidateGitAuthConfig_InvalidCAConfig(t *testing.T) {
+	t.Setenv("GH_TOKEN", "gh-token")
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GL_USERNAME", "")
+
+	t.Run("invalid ca file path", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_FILE", "/nonexistent/ca.pem")
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_FILE") {
+			t.Fatalf("expected GITLAB_CA_CERT_FILE error, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca file content", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "invalid-ca.pem")
+		if err := os.WriteFile(path, []byte("not-a-valid-pem-certificate"), 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		t.Setenv("GITLAB_CA_CERT_FILE", path)
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_FILE does not contain valid PEM certificates") {
+			t.Fatalf("expected invalid PEM error, got %v", err)
+		}
+	})
+
+	t.Run("invalid ca pem", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_FILE", "")
+		t.Setenv("GITLAB_CA_CERT_PEM", "not-a-pem")
+
+		err := ValidateGitAuthConfig()
+		if err == nil || !strings.Contains(err.Error(), "GITLAB_CA_CERT_PEM") {
+			t.Fatalf("expected GITLAB_CA_CERT_PEM error, got %v", err)
+		}
+	})
+
+	t.Run("valid ca file", func(t *testing.T) {
+		t.Setenv("GITLAB_CA_CERT_PEM", "")
+		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+		certDER := upstream.TLS.Certificates[0].Certificate[0]
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "ca.pem")
+		if err := os.WriteFile(path, certPEM, 0600); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		t.Setenv("GITLAB_CA_CERT_FILE", path)
+
+		err := ValidateGitAuthConfig()
+		if err != nil {
+			t.Fatalf("expected valid config, got %v", err)
+		}
+	})
 }

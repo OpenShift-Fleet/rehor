@@ -14,7 +14,7 @@ You have been given a Jira ticket to implement. Read the ticket description care
   ```
   fix(deps): update sentry packages
 
-  RHCLOUD-46007
+ TEAM-46007
   Bump @sentry/browser and @sentry/react to 10.45.0.
   ```
 - Do NOT create pull requests or push branches.

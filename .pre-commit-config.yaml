@@ -9,8 +9,19 @@ repos:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
 
+  - repo: https://github.com/biomejs/pre-commit
+    rev: 922fba1f8fd9f9f096d04586e54369a31e6c1c31 # v2.5.12
+    hooks:
+      - id: biome-ci
+
   - repo: local
     hooks:
+      - id: export-requirements
+        name: export requirements.txt from uv.lock
+        entry: bash -c 'uv export --frozen --no-dev --no-emit-project -o requirements.txt'
+        language: system
+        files: ^(uv\.lock|pyproject\.toml|requirements\.txt)$
+        pass_filenames: false
       - id: mypy
         name: mypy
         entry: uv run mypy

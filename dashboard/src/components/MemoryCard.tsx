@@ -1,15 +1,15 @@
-import type { Memory } from '../types';
-import { sourceUrl, displayKey } from '../utils';
 import {
   Card,
-  CardHeader,
-  CardTitle,
   CardBody,
   CardFooter,
+  CardHeader,
+  CardTitle,
+  Content,
   Label,
   LabelGroup,
-  Content
-} from '@patternfly/react-core';
+} from "@patternfly/react-core";
+import type { Memory } from "../types";
+import { displayKey, sourceUrl } from "../utils";
 
 interface Props {
   memory: Memory;
@@ -18,48 +18,46 @@ interface Props {
   onClick?: () => void;
 }
 
-const categoryColors: Record<string, 'green' | 'orange' | 'blue' | 'grey'> = {
-  learning: 'green',
-  review_feedback: 'orange',
-  codebase_pattern: 'blue',
+const categoryColors: Record<string, "green" | "orange" | "blue" | "grey"> = {
+  learning: "green",
+  review_feedback: "orange",
+  codebase_pattern: "blue",
 };
 
 export default function MemoryCard({ memory, selected, showSimilarity, onClick }: Props) {
-  const preview = memory.content.length > 150
-    ? memory.content.slice(0, 150) + '...'
-    : memory.content;
+  const preview =
+    memory.content.length > 150 ? memory.content.slice(0, 150) + "..." : memory.content;
 
-  const badgeColor = categoryColors[memory.category] || 'green';
+  const badgeColor = categoryColors[memory.category] || "green";
 
   return (
-    <Card
-      isCompact
-      isGlass
-      isSelected={selected}
-      onClick={onClick}
-      style={{ cursor: 'pointer' }}
-    >
+    <Card isCompact isGlass isSelected={selected} onClick={onClick} style={{ cursor: "pointer" }}>
       <CardHeader>
         <CardTitle>{memory.title}</CardTitle>
       </CardHeader>
       <CardBody>
-        <Content component="p" style={{ color: 'var(--pf-t--global--text--color--subtle)', margin: 0 }}>
+        <Content
+          component="p"
+          style={{ color: "var(--pf-t--global--text--color--subtle)", margin: 0 }}
+        >
           {preview}
         </Content>
       </CardBody>
       <CardFooter>
         <LabelGroup>
-          <Label color={badgeColor}>{memory.category.replace(/_/g, ' ')}</Label>
+          <Label color={badgeColor}>{memory.category.replace(/_/g, " ")}</Label>
           {memory.repo && <Label variant="outline">{memory.repo}</Label>}
           {displayKey(memory) && (
             <span onClick={(e) => e.stopPropagation()}>
-              <Label color="blue" href={sourceUrl(memory) || '#'}>
+              <Label color="blue" href={sourceUrl(memory) || "#"}>
                 {displayKey(memory)}
               </Label>
             </span>
           )}
           {memory.tags.map((t) => (
-            <Label key={t} variant="outline">{t}</Label>
+            <Label key={t} variant="outline">
+              {t}
+            </Label>
           ))}
           {showSimilarity && memory.similarity != null && (
             <Label color="blue">{(memory.similarity * 100).toFixed(0)}%</Label>

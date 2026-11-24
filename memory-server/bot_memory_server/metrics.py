@@ -1,9 +1,15 @@
+import asyncio
+import logging
 import re
 import time
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
+
+DB_GAUGE_REFRESH_INTERVAL_SECONDS = 60
 
 REQUEST_COUNT = Counter(
     "http_requests_total",
@@ -16,6 +22,82 @@ REQUEST_LATENCY = Histogram(
     ["method", "path"],
     buckets=[0.05, 0.1, 0.25, 0.5, 0.8, 1.0, 2.5, 5.0],
 )
+
+# --- DB-backed gauges (lifetime totals, refreshed periodically from Postgres) ---
+# Real-time cost/token counters live on the agent (REHOR-46); memory-server
+# exposes restart-safe aggregates for fleet reconciliation.
+
+DB_COST_USD = Gauge(
+    "devbot_db_cost_usd",
+    "Lifetime USD spend from DB",
+    ["model", "label"],
+)
+DB_INPUT_TOKENS = Gauge(
+    "devbot_db_input_tokens",
+    "Lifetime input tokens from DB",
+    ["model", "label"],
+)
+DB_OUTPUT_TOKENS = Gauge(
+    "devbot_db_output_tokens",
+    "Lifetime output tokens from DB",
+    ["model", "label"],
+)
+DB_CACHE_READ_TOKENS = Gauge(
+    "devbot_db_cache_read_tokens",
+    "Lifetime cache read tokens from DB",
+    ["model", "label"],
+)
+DB_CACHE_WRITE_TOKENS = Gauge(
+    "devbot_db_cache_write_tokens",
+    "Lifetime cache write tokens from DB",
+    ["model", "label"],
+)
+DB_CYCLES = Gauge(
+    "devbot_db_cycles",
+    "Lifetime cycle count from DB",
+    ["model", "label"],
+)
+
+
+async def refresh_db_gauges() -> None:
+    """Query Postgres cycle aggregates and update the DB-backed gauges."""
+    from .db import get_pool
+
+    rows = await get_pool().fetch(
+        """
+        SELECT COALESCE(model, 'unknown') AS model,
+               COALESCE(label, 'unknown') AS label,
+               SUM(cost_usd) AS cost_usd,
+               SUM(input_tokens) AS input_tokens,
+               SUM(output_tokens) AS output_tokens,
+               SUM(cache_read_tokens) AS cache_read_tokens,
+               SUM(cache_write_tokens) AS cache_write_tokens,
+               COUNT(*) AS cycles
+        FROM cycles
+        GROUP BY model, label
+        """
+    )
+    for r in rows:
+        labels = {"model": r["model"], "label": r["label"]}
+        DB_COST_USD.labels(**labels).set(float(r["cost_usd"] or 0))
+        DB_INPUT_TOKENS.labels(**labels).set(r["input_tokens"] or 0)
+        DB_OUTPUT_TOKENS.labels(**labels).set(r["output_tokens"] or 0)
+        DB_CACHE_READ_TOKENS.labels(**labels).set(r["cache_read_tokens"] or 0)
+        DB_CACHE_WRITE_TOKENS.labels(**labels).set(r["cache_write_tokens"] or 0)
+        DB_CYCLES.labels(**labels).set(r["cycles"] or 0)
+
+
+async def db_gauge_refresh_loop() -> None:
+    """Background task: refresh DB-backed gauges every 60s until cancelled."""
+    while True:
+        try:
+            await refresh_db_gauges()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to refresh DB-backed Prometheus gauges")
+        await asyncio.sleep(DB_GAUGE_REFRESH_INTERVAL_SECONDS)
+
 
 _ID_RE = re.compile(r"/([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}|\d+)")
 

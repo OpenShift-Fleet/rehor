@@ -12,11 +12,13 @@ def task(
     day: str = "01",
     repo: str = "test-repo",
     branch: str = "main",
+    category: str = "delivery",
 ) -> dict[str, Any]:
     """Generate task payload."""
     return {
         "id": id,
         "external_key": key,
+        "jira_key": key,
         "source_type": "jira",
         "source_url": f"https://issues.redhat.com/browse/{key}",
         "artifacts": [
@@ -24,6 +26,7 @@ def task(
             {"name": "Branch", "url": f"https://github.com/example/{repo}/tree/{branch}", "type": "branch"},
         ],
         "status": status,
+        "category": category,
         "repo": repo,
         "branch": branch,
         "title": summary,
@@ -76,6 +79,7 @@ def cycle_run(
     started_day: str = "01",
     duration_min: int = 5,
     has_transcript: bool = True,
+    progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate cycle run payload."""
     start = f"2026-07-{started_day}T10:00:00Z"
@@ -89,7 +93,9 @@ def cycle_run(
         "finished_at": end,
         "tool_calls": 12,
         "tokens_used": 15000,
-        "progress": {"phase": "implementation", "completed_steps": 3, "total_steps": 5},
+        "progress": progress
+        if progress is not None
+        else {"phase": "implementation", "completed_steps": 3, "total_steps": 5},
         "input_prompt": "Implement the login bug fix for RHCLOUD-001",
         "created_at": start,
         "has_transcript": has_transcript,
@@ -106,8 +112,12 @@ def cycle_entry(
     no_work: bool = False,
     external_key: str | None = None,
     repo: str | None = None,
+    instance_id: str | None = None,
 ) -> dict[str, Any]:
-    """Generate cycle entry (costs) payload."""
+    """Generate cycle entry (costs) payload.
+
+    Omit instance_id to simulate pre-migration rows (column exists, value is NULL).
+    """
     return {
         "id": id,
         "timestamp": f"2026-07-{day}T10:00:00Z",
@@ -128,6 +138,7 @@ def cycle_entry(
         "repo": repo,
         "work_type": "implementation" if not no_work else None,
         "summary": f"Completed work on {external_key}" if external_key else "Idle cycle",
+        "instance_id": instance_id,
     }
 
 
@@ -147,6 +158,191 @@ TASKS = {
     "RHCLOUD-004": task(4, "RHCLOUD-004", "Update dependencies", "in_progress", day="04", repo="frontend"),
     "RHCLOUD-005": task(5, "RHCLOUD-005", "Optimize database queries", "done", day="05", repo="backend"),
     "RHCLOUD-006": task(6, "RHCLOUD-006", "Fix memory leak", "archived", day="06", repo="worker"),
+}
+
+TASK_OUTCOME_TASKS = [
+    {
+        "taskId": 7,
+        "externalKey": "RHCLOUD-007",
+        "sourceType": "jira",
+        "sourceUrl": "https://issues.redhat.com/browse/RHCLOUD-007",
+        "lifecycle": {
+            "status": "archived",
+            "createdAt": "2026-07-07T10:00:00Z",
+            "lastAddressed": "2026-07-07T15:30:00Z",
+            "archivedAt": "2026-07-07T15:30:00Z",
+        },
+        "state": "accepted",
+        "category": "delivery",
+        "repo": "frontend",
+        "canonicalRepositories": ["frontend"],
+        "title": "Fix login bug",
+        "summary": "Merged pull request",
+        "outcome": {
+            "id": 3,
+            "decision": "accepted",
+            "confidence": "conclusive",
+            "reason": "Pull request merged into target repository.",
+            "reportedBy": "agent",
+            "reportedAt": "2026-07-07T15:29:00Z",
+            "verifiedAt": "2026-07-07T15:28:00Z",
+            "artifacts": [
+                {
+                    "type": "github_pr",
+                    "url": "https://github.com/example/frontend/pull/123",
+                    "baseRepo": "frontend",
+                    "headRepo": "fork/frontend",
+                }
+            ],
+            "evidence": [
+                {
+                    "source": "github",
+                    "reference": "https://github.com/example/frontend/pull/123",
+                    "resolution": "accepted",
+                    "disposition": "MERGED",
+                    "reason": "Pull request merged into target repository.",
+                }
+            ],
+            "canonicalRepositories": ["frontend"],
+            "notes": None,
+            "runId": "mock-run-7",
+            "reportingCycleId": 31,
+            "attempt": 1,
+            "workflow": "jira-sprint",
+            "instanceId": "dev-bot",
+        },
+        "artifacts": [
+            {
+                "type": "github_pr",
+                "url": "https://github.com/example/frontend/pull/123",
+                "baseRepo": "frontend",
+                "headRepo": "fork/frontend",
+            }
+        ],
+        "evidence": [
+            {
+                "source": "github",
+                "reference": "https://github.com/example/frontend/pull/123",
+                "resolution": "accepted",
+                "disposition": "MERGED",
+                "reason": "Pull request merged into target repository.",
+            }
+        ],
+        "timestamps": {
+            "createdAt": "2026-07-07T10:00:00Z",
+            "lastAddressed": "2026-07-07T15:30:00Z",
+            "archivedAt": "2026-07-07T15:30:00Z",
+            "reportedAt": "2026-07-07T15:29:00Z",
+            "verifiedAt": "2026-07-07T15:28:00Z",
+        },
+    }
+]
+
+TASK_OUTCOME_SUMMARY = {
+    "period": {"from": None, "to": None},
+    "summary": {
+        "acceptanceRate": 1.0,
+        "outcomeCoverage": 1.0,
+        "taskCount": 1,
+        "deliveryTaskCount": 1,
+        "monitoringCount": 0,
+        "groomingCount": 0,
+        "groomingOutcomes": {
+            "acceptedCount": 0,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+        },
+        "repositoryCount": 1,
+        "acceptedCount": 1,
+        "acceptedNoOpCount": 0,
+        "rejectedCount": 0,
+        "obsoleteCount": 0,
+        "inconclusiveCount": 0,
+        "unreportedCount": 0,
+        "wipCount": 0,
+    },
+    "repositories": [
+        {
+            "repo": "frontend",
+            "acceptanceRate": 1.0,
+            "outcomeCoverage": 1.0,
+            "taskCount": 1,
+            "deliveryTaskCount": 1,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "groomingOutcomes": {
+                "acceptedCount": 0,
+                "rejectedCount": 0,
+                "obsoleteCount": 0,
+                "inconclusiveCount": 0,
+                "unreportedCount": 0,
+                "wipCount": 0,
+            },
+            "acceptedCount": 1,
+            "acceptedNoOpCount": 0,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+            "reasons": {"Pull request merged into target repository.": 1},
+            "providers": {"github": 1},
+        }
+    ],
+    "metricDefinitions": {
+        "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+        "outcomeCoverage": "reported delivery outcomes / (delivery tasks - delivery WIP); monitoring and grooming excluded",
+        "monitoring": "Watch-duty tasks; counted separately and excluded from delivery outcome metrics.",
+        "grooming": (
+            "Ticket assessment/preparation (labels/repository mappings, points, sprint); outcomes reported "
+            "separately and excluded from delivery metrics. Task existence, done status, or a no-new-ticket "
+            "check does not prove acceptance; repeated checks require separate no-op adjudication."
+        ),
+    },
+    "freshness": {"generatedAt": "2026-07-07T15:30:00Z"},
+    "backfill": {"state": "not_started", "unknownCount": 0},
+}
+
+TASK_OUTCOME_TRENDS = {
+    "period": {"from": "2026-06-01", "to": "2026-07-07"},
+    "months": [
+        {
+            "month": "2026-06",
+            "taskCount": 1,
+            "deliveryCount": 1,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "acceptedCount": 1,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+            "acceptanceRate": 1.0,
+        },
+        {
+            "month": "2026-07",
+            "taskCount": 0,
+            "deliveryCount": 0,
+            "monitoringCount": 0,
+            "groomingCount": 0,
+            "acceptedCount": 0,
+            "rejectedCount": 0,
+            "obsoleteCount": 0,
+            "inconclusiveCount": 0,
+            "unreportedCount": 0,
+            "wipCount": 0,
+            "acceptanceRate": None,
+        },
+    ],
+    "freshness": {"generatedAt": "2026-07-07T15:30:00Z"},
+    "metricDefinitions": {
+        "acceptanceRate": "accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded",
+        "month": "UTC calendar month derived from the task event timestamp",
+    },
 }
 
 MEMORIES = [
@@ -190,18 +386,140 @@ MEMORIES = [
 ]
 
 CYCLE_RUNS = [
-    cycle_run(1, 1, "implementation", started_day="01", duration_min=5),
-    cycle_run(2, 1, "review", started_day="01", duration_min=3),
+    cycle_run(
+        1,
+        1,
+        "implementation",
+        started_day="01",
+        duration_min=5,
+        progress={
+            "last_step": "pr_opened",
+            "next_step": "await_review",
+            "files_changed": ["eslint.config.mjs", "package.json"],
+            "commits": ["fb55339"],
+        },
+    ),
+    cycle_run(
+        2,
+        1,
+        "review",
+        started_day="01",
+        duration_min=3,
+        progress={
+            "last_step": "review_addressed",
+            "next_step": "await_review",
+            "files_changed": 20,
+            "commits": ["0263f26"],
+        },
+    ),
     cycle_run(3, 2, "implementation", started_day="02", duration_min=8),
     cycle_run(4, None, "idle_check", started_day="03", duration_min=1, has_transcript=False),
 ]
 
 COSTS = [
-    cycle_entry(1, "impl-RHCLOUD-001", day="01", cost=0.12, external_key="RHCLOUD-001", repo="frontend"),
-    cycle_entry(2, "review-RHCLOUD-001", day="01", cost=0.08, external_key="RHCLOUD-001", repo="frontend"),
-    cycle_entry(3, "impl-RHCLOUD-002", day="02", cost=0.15, external_key="RHCLOUD-002", repo="ui-lib"),
-    cycle_entry(4, "idle", day="03", cost=0.01, no_work=True),
-    cycle_entry(5, "impl-RHCLOUD-004", day="04", cost=0.10, external_key="RHCLOUD-004", repo="frontend"),
+    # dev-bot entries
+    cycle_entry(
+        1, "impl-RHCLOUD-001", day="01", cost=0.12, external_key="RHCLOUD-001", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        2, "review-RHCLOUD-001", day="01", cost=0.08, external_key="RHCLOUD-001", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        6, "impl-RHCLOUD-005", day="02", cost=0.22, external_key="RHCLOUD-005", repo="backend", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        8, "impl-RHCLOUD-006", day="03", cost=0.18, external_key="RHCLOUD-006", repo="worker", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        9, "review-RHCLOUD-006", day="03", cost=0.05, external_key="RHCLOUD-006", repo="worker", instance_id="dev-bot"
+    ),
+    cycle_entry(
+        11, "impl-RHCLOUD-008", day="04", cost=0.31, external_key="RHCLOUD-008", repo="backend", instance_id="dev-bot"
+    ),
+    cycle_entry(4, "idle", day="05", cost=0.01, no_work=True, instance_id="dev-bot"),
+    cycle_entry(
+        14, "impl-RHCLOUD-010", day="06", cost=0.14, external_key="RHCLOUD-010", repo="frontend", instance_id="dev-bot"
+    ),
+    cycle_entry(16, "error-cycle", day="07", cost=0.03, is_error=True, instance_id="dev-bot"),
+    cycle_entry(
+        18, "impl-RHCLOUD-012", day="08", cost=0.19, external_key="RHCLOUD-012", repo="backend", instance_id="dev-bot"
+    ),
+    # staging-bot entries
+    cycle_entry(
+        3, "impl-RHCLOUD-002", day="01", cost=0.15, external_key="RHCLOUD-002", repo="ui-lib", instance_id="staging-bot"
+    ),
+    cycle_entry(
+        5,
+        "impl-RHCLOUD-004",
+        day="02",
+        cost=0.10,
+        external_key="RHCLOUD-004",
+        repo="frontend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        7,
+        "review-RHCLOUD-005",
+        day="02",
+        cost=0.06,
+        external_key="RHCLOUD-005",
+        repo="backend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        10,
+        "impl-RHCLOUD-007",
+        day="04",
+        cost=0.25,
+        external_key="RHCLOUD-007",
+        repo="ui-lib",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        12,
+        "review-RHCLOUD-007",
+        day="04",
+        cost=0.04,
+        external_key="RHCLOUD-007",
+        repo="ui-lib",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        13,
+        "impl-RHCLOUD-009",
+        day="05",
+        cost=0.17,
+        external_key="RHCLOUD-009",
+        repo="frontend",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(15, "idle-staging", day="06", cost=0.01, no_work=True, instance_id="staging-bot"),
+    cycle_entry(
+        17,
+        "impl-RHCLOUD-011",
+        day="07",
+        cost=0.28,
+        external_key="RHCLOUD-011",
+        repo="worker",
+        instance_id="staging-bot",
+    ),
+    cycle_entry(
+        19,
+        "review-RHCLOUD-011",
+        day="08",
+        cost=0.07,
+        external_key="RHCLOUD-011",
+        repo="worker",
+        instance_id="staging-bot",
+    ),
+    # Pre-migration rows: no instance_id passed (old data before the column was added)
+    cycle_entry(20, "legacy-impl-OLD-001", day="09", cost=0.09, external_key="OLD-001", repo="legacy-app"),
+    cycle_entry(21, "legacy-review-OLD-001", day="09", cost=0.04, external_key="OLD-001", repo="legacy-app"),
+    cycle_entry(22, "legacy-idle", day="10", cost=0.01, no_work=True),
+    cycle_entry(23, "legacy-impl-OLD-002", day="10", cost=0.13, external_key="OLD-002", repo="legacy-app"),
+    cycle_entry(24, "legacy-error", day="11", cost=0.02, is_error=True),
+    cycle_entry(25, "legacy-impl-OLD-003", day="12", cost=0.11, external_key="OLD-003", repo="old-service"),
+    cycle_entry(26, "legacy-review-OLD-003", day="12", cost=0.05, external_key="OLD-003", repo="old-service"),
 ]
 
 EMBEDDINGS = [
@@ -329,7 +647,6 @@ BOT_STATUS = {
     "instance_id": "dev-bot",
     "updated_at": "2026-07-22T10:00:00Z",
     "cycle_start": "2026-07-22T09:55:00Z",
-    "last_seen": "2026-07-22T10:00:00Z",
 }
 
 TASK_CYCLE_GROUPS = [
@@ -358,6 +675,35 @@ TASK_CYCLE_GROUPS = [
         "total_tokens": 45000,
         "first_cycle": "2026-07-02T10:00:00Z",
         "last_cycle": "2026-07-02T18:00:00Z",
+    },
+]
+
+DAILY_COSTS = [
+    {
+        "day": "2026-07-01",
+        "cycles": 2,
+        "total_cost": 0.20,
+        "input_tokens": 20000,
+        "output_tokens": 10000,
+        "cache_read": 4000,
+        "cache_write": 2000,
+        "total_duration": 600000,
+        "total_turns": 16,
+        "idle_cycles": 0,
+        "error_cycles": 0,
+    },
+    {
+        "day": "2026-07-02",
+        "cycles": 1,
+        "total_cost": 0.15,
+        "input_tokens": 10000,
+        "output_tokens": 5000,
+        "cache_read": 2000,
+        "cache_write": 1000,
+        "total_duration": 300000,
+        "total_turns": 8,
+        "idle_cycles": 0,
+        "error_cycles": 0,
     },
 ]
 

@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import uuid
 from datetime import date as date_type
 from datetime import datetime
 
@@ -13,11 +14,10 @@ from starlette.responses import JSONResponse, Response
 from .db import get_pool
 from .embeddings import embed
 from .events import Event, bus
+from .task_outcomes import TaskArchiveError, archive_task
 from .tools.tasks import ACTIVE_STATUSES
 
 logger = logging.getLogger(__name__)
-
-wake_signals: set[str] = set()
 
 
 def _parse_json_field(value):
@@ -135,18 +135,23 @@ async def api_tasks(request: Request) -> JSONResponse:
 
 
 async def api_task_delete(request: Request) -> JSONResponse:
-    """Archive a task by key (soft delete — preserves history)."""
+    """Archive a reported workflow task; manual=true explicitly archives unreported."""
     pool = get_pool()
     key = request.path_params.get("key")
     if not key:
         return JSONResponse({"error": "missing key"}, status_code=400)
-    row = await pool.fetchrow(
-        "UPDATE tasks SET status = 'archived'::task_status WHERE external_key = $1 RETURNING *",
-        key,
-    )
-    if not row:
-        return JSONResponse({"error": f"Task {key} not found"}, status_code=404)
-    await bus.publish(Event("task_archived", {"external_key": key}))
+    manual = request.query_params.get("manual", "false").casefold()
+    if manual not in {"true", "false"}:
+        return JSONResponse({"error": "manual must be true or false"}, status_code=400)
+    source_type = request.query_params.get("source_type")
+    if source_type == "":
+        return JSONResponse({"error": "source_type must not be empty"}, status_code=400)
+    try:
+        row, _, changed = await archive_task(pool, external_key=key, source_type=source_type, manual=manual == "true")
+    except TaskArchiveError as exc:
+        return JSONResponse(exc.payload, status_code=exc.status_code)
+    if changed:
+        await bus.publish(Event("task_archived", {"external_key": key, "source_type": row["source_type"]}))
     return JSONResponse({"archived": True, "external_key": key, "task": _task(row)})
 
 
@@ -167,6 +172,8 @@ async def api_task_unarchive(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " archived_at = NULL, outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'archived'::task_status"
         " RETURNING *",
@@ -204,6 +211,8 @@ async def api_task_pause(request: Request) -> JSONResponse:
 
     row = await pool.fetchrow(
         "UPDATE tasks SET status = 'paused'::task_status,"
+        " outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " paused_reason = $2,"
         " metadata = jsonb_set(COALESCE(metadata, '{}'), '{status_before_pause}', to_jsonb(status::text))"
         " WHERE external_key = $1 AND status = ANY($3)"
@@ -240,6 +249,8 @@ async def api_task_unpause(request: Request) -> JSONResponse:
     new_status = _restore_status_from_row(existing)
     row = await pool.fetchrow(
         "UPDATE tasks SET status = $2::task_status, paused_reason = NULL,"
+        " outcome_report_id = NULL,"
+        " last_addressed = NOW(),"
         " metadata = metadata - 'status_before_pause'"
         " WHERE external_key = $1 AND status = 'paused'::task_status"
         " RETURNING *",
@@ -532,14 +543,41 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    instance_id = body.get("instance_id")
     row = await pool.fetchrow(
         """
         UPDATE bot_status SET state = $1, message = $2, external_key = $3, source_type = $4,
-            repo = $5,
+            repo = $5, instance_id = COALESCE($6, instance_id),
             cycle_start = CASE WHEN state = 'idle' AND $1 = 'working' THEN NOW() ELSE cycle_start END,
             updated_at = NOW()
         WHERE id = 1 RETURNING *
         """,
+        state,
+        message,
+        external_key,
+        source_type,
+        repo,
+        instance_id,
+    )
+    await pool.execute(
+        """
+        INSERT INTO bot_instances (instance_id, state, message, external_key, source_type, repo,
+                                   cycle_start, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6,
+            CASE WHEN $2 = 'working' THEN NOW() ELSE NULL END,
+            NOW())
+        ON CONFLICT (instance_id) DO UPDATE SET
+            state = $2, message = $3,
+            external_key = COALESCE($4, bot_instances.external_key),
+            source_type = COALESCE($5, bot_instances.source_type),
+            repo = COALESCE($6, bot_instances.repo),
+            cycle_start = CASE
+                WHEN bot_instances.state = 'idle' AND $2 = 'working' THEN NOW()
+                ELSE bot_instances.cycle_start
+            END,
+            updated_at = NOW()
+        """,
+        instance_id,
         state,
         message,
         external_key,
@@ -552,6 +590,7 @@ async def api_bot_status_update(request: Request) -> JSONResponse:
         "external_key": row.get("external_key"),
         "source_type": row.get("source_type"),
         "repo": row["repo"],
+        "instance_id": row.get("instance_id"),
         "cycle_start": row["cycle_start"].isoformat() if row["cycle_start"] else None,
         "updated_at": row["updated_at"].isoformat(),
     }
@@ -595,7 +634,6 @@ def _instance_row(r, active_tasks: int = 0) -> dict:
         "last_idle_reminder_sent_at": (
             r["last_idle_reminder_sent_at"].isoformat() if r.get("last_idle_reminder_sent_at") else None
         ),
-        "last_seen": r["last_seen"].isoformat() if r.get("last_seen") else None,
     }
 
 
@@ -646,10 +684,16 @@ async def api_instance_idle_update(request: Request) -> JSONResponse:
 async def api_costs(request: Request) -> JSONResponse:
     """GET /api/costs — list cycle cost records. POST to add one."""
     if request.method == "POST":
-        return await api_costs_add(request)
+        return await _api_costs_add(request)
     pool = get_pool()
     limit = int(request.query_params.get("limit", "200"))
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     pidx = len(date_params) + 1
     rows = await pool.fetch(
@@ -672,7 +716,9 @@ async def api_costs(request: Request) -> JSONResponse:
                SUM(duration_ms) AS total_duration,
                SUM(num_turns) AS total_turns,
                SUM(CASE WHEN no_work THEN 1 ELSE 0 END) AS idle_cycles,
-               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles
+               SUM(CASE WHEN is_error THEN 1 ELSE 0 END) AS error_cycles,
+               COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_cycles,
+               COUNT(*) FILTER (WHERE cost_incomplete OR cost_status = 'unknown') AS incomplete_cycles
         FROM cycles
         WHERE {date_filter}
         GROUP BY DATE(timestamp)
@@ -693,6 +739,8 @@ async def api_costs(request: Request) -> JSONResponse:
             "total_turns": r["total_turns"],
             "idle_cycles": r["idle_cycles"],
             "error_cycles": r["error_cycles"],
+            "estimated_cycles": r["estimated_cycles"],
+            "incomplete_cycles": r["incomplete_cycles"],
         }
         for r in daily_rows
     ]
@@ -700,27 +748,36 @@ async def api_costs(request: Request) -> JSONResponse:
     return JSONResponse({"items": items, "daily": daily})
 
 
-async def api_costs_add(request: Request) -> JSONResponse:
+async def _api_costs_add(request: Request) -> JSONResponse:
     """POST /api/costs — record a new cycle cost entry."""
     pool = get_pool()
     body = await request.json()
 
     external_key = body.get("external_key")
     source_type = body.get("source_type") or ("jira" if external_key else None)
+    cost_status = body.get("cost_status")
+    if cost_status not in (None, "provider", "estimated", "unknown"):
+        return JSONResponse({"error": "Invalid cost_status"}, status_code=400)
+    cost_usd = body.get("cost_usd", 0)
+    if cost_status == "unknown":
+        if cost_usd not in (None, 0):
+            return JSONResponse({"error": "Unknown cost must have cost_usd = 0"}, status_code=400)
+        cost_usd = 0
     row = await pool.fetchrow(
         """
         INSERT INTO cycles (label, session_id, num_turns, duration_ms, cost_usd,
                             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                             model, is_error, no_work,
-                            external_key, source_type, repo, work_type, summary)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                            external_key, source_type, repo, work_type, summary, instance_id,
+                            cost_status, cost_incomplete)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         RETURNING *
         """,
         body.get("label", ""),
         body.get("session_id", ""),
         body.get("num_turns", 0),
         body.get("duration_ms", 0),
-        body.get("cost_usd", 0),
+        cost_usd,
         body.get("input_tokens", 0),
         body.get("output_tokens", 0),
         body.get("cache_read_tokens", 0),
@@ -733,8 +790,12 @@ async def api_costs_add(request: Request) -> JSONResponse:
         body.get("repo"),
         body.get("work_type"),
         body.get("summary"),
+        body.get("instance_id"),
+        cost_status,
+        bool(body.get("cost_incomplete", False)) or cost_status == "unknown",
     )
     cycle = _cycle(row)
+
     await bus.publish(Event("cycle_recorded", cycle))
     return JSONResponse(cycle, status_code=201)
 
@@ -761,6 +822,12 @@ async def api_analytics(request: Request) -> JSONResponse:
     """GET /api/analytics — aggregated stats for the analytics dashboard."""
     pool = get_pool()
     date_filter, date_params = _parse_date_filter(request)
+
+    instance_id = request.query_params.get("instance_id")
+    if instance_id:
+        idx = len(date_params) + 1
+        date_filter += f" AND instance_id = ${idx}"
+        date_params.append(instance_id)
 
     # Work type breakdown (derived from ticket titles + work_type)
     work_type_rows = await pool.fetch(
@@ -808,6 +875,8 @@ async def api_analytics(request: Request) -> JSONResponse:
     )
 
     # Ticket lifecycle — cycles per ticket, impl vs review, cost, time to resolve
+    # Qualify column refs for the JOIN (both cycles and tasks have instance_id/timestamp)
+    c_date_filter = date_filter.replace("instance_id", "c.instance_id").replace("timestamp", "c.timestamp")
     ticket_rows = await pool.fetch(
         f"""
         SELECT
@@ -822,7 +891,7 @@ async def api_analytics(request: Request) -> JSONResponse:
             ROUND(EXTRACT(EPOCH FROM (MAX(c.timestamp) - MIN(c.timestamp)))/3600.0, 1) AS hours_span
         FROM cycles c
         LEFT JOIN tasks t ON t.external_key = c.external_key
-        WHERE {date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
+        WHERE {c_date_filter} AND c.external_key IS NOT NULL AND NOT c.no_work
         GROUP BY c.external_key, t.title, t.status, t.repo
         ORDER BY total_cycles DESC
         LIMIT 30
@@ -1067,20 +1136,34 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
     instance_id_val = body.get("instance_id")
     input_prompt = body.get("input_prompt")
 
-    # When uploading a transcript, attach it to the most recent cycle_run
-    # for this specific instance that has no transcript yet (created by
-    # progress_store during the same cycle).
+    # Attach metadata (and optional transcript) to the most recent cycle_run
+    # for this instance that has no transcript yet (created by progress_store
+    # during the same cycle). If no transcript is available, still merge the
+    # metadata so we don't create a duplicate cycle_run.
     row = None
-    if transcript_bytes and instance_id_val:
+    if instance_id_val:
         row = await pool.fetchrow(
             f"""
             UPDATE cycle_runs
-            SET transcript = $1,
+            SET transcript = COALESCE($1, transcript),
                 finished_at = COALESCE($2, finished_at, NOW()),
-                tool_calls = COALESCE($3, tool_calls),
-                tokens_used = COALESCE($4, tokens_used),
+                tool_calls = COALESCE(NULLIF($3, 0), tool_calls),
+                tokens_used = COALESCE(NULLIF($4, 0), tokens_used),
                 task_id = COALESCE(task_id, $5),
-                input_prompt = COALESCE($7, input_prompt)
+                input_prompt = COALESCE($7, input_prompt),
+                started_at = CASE
+                    WHEN $8::timestamptz IS NULL THEN started_at
+                    WHEN started_at IS NULL THEN $8
+                    WHEN $8 < started_at THEN $8
+                    ELSE started_at
+                END,
+                cycle_type = CASE
+                    WHEN $9::text IS NULL THEN cycle_type
+                    WHEN $9::text = 'error' THEN 'error'
+                    ELSE COALESCE(cycle_type, $9)
+                END,
+                progress = COALESCE(progress, '{{}}'::jsonb)
+                           || COALESCE($10::jsonb, '{{}}'::jsonb)
             WHERE id = (
                 SELECT id FROM cycle_runs
                 WHERE instance_id = $6
@@ -1098,6 +1181,9 @@ async def api_cycle_runs_add(request: Request) -> JSONResponse:
             task_id,
             instance_id_val,
             input_prompt,
+            parsed_started,
+            body.get("cycle_type"),
+            json.dumps(progress) if progress is not None else None,
         )
 
     if row is None:
@@ -1160,8 +1246,10 @@ async def api_cycle_run_transcript(request: Request) -> Response:
         try:
             import zstandard as zstd
 
-            decompressor = zstd.ZstdDecompressor()
+            decompressor = zstd.ZstdDecompressor().decompressobj()
             decompressed = decompressor.decompress(transcript)
+            if not decompressor.eof or decompressor.unused_data:
+                raise zstd.ZstdError("incomplete zstd frame")
             return Response(
                 content=decompressed,
                 media_type="application/x-ndjson",
@@ -1256,40 +1344,6 @@ async def api_cycle_runs_by_task(request: Request) -> JSONResponse:
     return JSONResponse({"items": groups, "total": len(groups)})
 
 
-async def api_instance_wake_trigger(request: Request) -> JSONResponse:
-    """POST /api/instances/{instance_id}/wake — request a sleeping bot to wake up."""
-    pool = get_pool()
-    instance_id = request.path_params.get("instance_id")
-    if not instance_id:
-        return JSONResponse({"error": "missing instance_id"}, status_code=400)
-
-    row = await pool.fetchrow("SELECT instance_id FROM bot_instances WHERE instance_id = $1", instance_id)
-    if not row:
-        return JSONResponse({"error": f"Instance {instance_id} not found"}, status_code=404)
-
-    wake_signals.add(instance_id)
-    await bus.publish(Event("instance_wake", {"instance_id": instance_id}))
-    return JSONResponse({"ok": True})
-
-
-async def api_instance_wake_check(request: Request) -> JSONResponse:
-    """GET /api/instances/{instance_id}/wake — poll for a wake signal (consumed on read)."""
-    instance_id = request.path_params.get("instance_id")
-    if not instance_id:
-        return JSONResponse({"error": "missing instance_id"}, status_code=400)
-
-    pool = get_pool()
-    await pool.execute(
-        "UPDATE bot_instances SET last_seen = NOW() WHERE instance_id = $1",
-        instance_id,
-    )
-
-    if instance_id in wake_signals:
-        wake_signals.discard(instance_id)
-        return JSONResponse({"wake": True})
-    return JSONResponse({"wake": False})
-
-
 def _task(row, slack_notif=None) -> dict:
     raw_artifacts = row.get("artifacts")
     if isinstance(raw_artifacts, str):
@@ -1307,6 +1361,7 @@ def _task(row, slack_notif=None) -> dict:
         "source_url": row.get("source_url"),
         "artifacts": artifacts,
         "status": row["status"],
+        "category": row.get("category", "delivery"),
         "repo": row["repo"],
         "branch": row["branch"],
         "title": row.get("title"),
@@ -1331,6 +1386,8 @@ def _cycle(row) -> dict:
         "num_turns": row["num_turns"],
         "duration_ms": row["duration_ms"],
         "cost_usd": float(row["cost_usd"]),
+        "cost_status": row.get("cost_status"),
+        "cost_incomplete": row.get("cost_incomplete", False),
         "input_tokens": row["input_tokens"],
         "output_tokens": row["output_tokens"],
         "cache_read_tokens": row["cache_read_tokens"],
@@ -1343,6 +1400,7 @@ def _cycle(row) -> dict:
         "repo": row.get("repo"),
         "work_type": row.get("work_type"),
         "summary": row.get("summary"),
+        "instance_id": row.get("instance_id"),
     }
 
 
@@ -1376,3 +1434,358 @@ def _cycle_run(row) -> dict:
         "created_at": row["created_at"].isoformat(),
         "has_transcript": bool(row.get("has_transcript", False)),
     }
+
+
+# --- Session locks (REHOR-218) ---
+# Storage + interface only: the dispatcher owns acquire/renew/release
+# lifecycle. All atomicity lives in single SQL statements; expiry is
+# authoritative, rows may linger until the key is re-acquired.
+
+LOCK_KEY_MAX = 512
+LOCK_HOLDER_MAX = 256
+LOCK_TTL_MAX = 86400
+
+
+def _validate_lock_key(key) -> str | None:
+    if not isinstance(key, str) or not 1 <= len(key) <= LOCK_KEY_MAX:
+        return f"key must be a string of 1..{LOCK_KEY_MAX} characters"
+    return None
+
+
+def _validate_lock_holder(holder) -> str | None:
+    if not isinstance(holder, str) or not 1 <= len(holder) <= LOCK_HOLDER_MAX:
+        return f"holder must be a string of 1..{LOCK_HOLDER_MAX} characters"
+    return None
+
+
+def _validate_lock_ttl(ttl_seconds) -> str | None:
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int) or not 1 <= ttl_seconds <= LOCK_TTL_MAX:
+        return f"ttl_seconds must be an integer between 1 and {LOCK_TTL_MAX}"
+    return None
+
+
+async def api_locks_acquire(request: Request) -> JSONResponse:
+    """POST /api/locks/acquire — atomically acquire a session lock.
+
+    Expired locks are takeable. The lock token is generated in Python and
+    passed as a parameter (mock-friendly, no pgcrypto dependency).
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    holder = body.get("holder")
+    ttl_seconds = body.get("ttl_seconds")
+
+    for error in (_validate_lock_key(key), _validate_lock_holder(holder), _validate_lock_ttl(ttl_seconds)):
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+
+    lock_token = uuid.uuid4()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO session_locks (lock_key, holder, lock_token, acquired_at, expires_at)
+        VALUES ($1, $2, $4, NOW(), NOW() + make_interval(secs => $3))
+        ON CONFLICT (lock_key) DO UPDATE SET
+            holder = $2, lock_token = $4, acquired_at = NOW(),
+            expires_at = NOW() + make_interval(secs => $3)
+            WHERE session_locks.expires_at <= NOW()
+        RETURNING lock_token, holder, acquired_at, expires_at
+        """,
+        key,
+        holder,
+        ttl_seconds,
+        lock_token,
+    )
+    if row is not None:
+        result = {
+            "acquired": True,
+            "key": key,
+            "holder": row["holder"],
+            "lock_token": str(row["lock_token"]),
+            "acquired_at": row["acquired_at"].isoformat(),
+            "expires_at": row["expires_at"].isoformat(),
+        }
+        status = 200
+    else:
+        current = await pool.fetchrow(
+            "SELECT holder, acquired_at, expires_at FROM session_locks WHERE lock_key = $1",
+            key,
+        )
+        if current is not None:
+            result = {
+                "acquired": False,
+                "key": key,
+                "holder": current["holder"],
+                "acquired_at": current["acquired_at"].isoformat(),
+                "expires_at": current["expires_at"].isoformat(),
+            }
+        else:
+            # Raced away between the failed upsert and this SELECT.
+            result = {"acquired": False, "key": key, "holder": None}
+        status = 409
+    await bus.publish(Event("session_locks", {"action": "acquire", "key": key, "holder": holder}))
+    return JSONResponse(result, status_code=status)
+
+
+def _validate_lock_token(lock_token) -> str | None:
+    if not isinstance(lock_token, str) or not lock_token:
+        return "lock_token must be a non-empty string"
+    try:
+        uuid.UUID(lock_token)
+    except ValueError:
+        return "lock_token must be a UUID"
+    return None
+
+
+async def api_locks_renew(request: Request) -> JSONResponse:
+    """POST /api/locks/renew — extend a held, unexpired lock.
+
+    Token mismatch, missing row, or already expired are indistinguishable:
+    the client treats any 409 as a lost lock.
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    lock_token = body.get("lock_token")
+    ttl_seconds = body.get("ttl_seconds")
+
+    for error in (_validate_lock_key(key), _validate_lock_ttl(ttl_seconds)):
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+    error = _validate_lock_token(lock_token)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        """
+        UPDATE session_locks SET expires_at = NOW() + make_interval(secs => $2)
+        WHERE lock_key = $1 AND lock_token = $3 AND expires_at > NOW()
+        RETURNING expires_at
+        """,
+        key,
+        ttl_seconds,
+        lock_token,
+    )
+    await bus.publish(Event("session_locks", {"action": "renew", "key": key}))
+    if row is None:
+        return JSONResponse({"renewed": False}, status_code=409)
+    return JSONResponse({"renewed": True, "expires_at": row["expires_at"].isoformat()})
+
+
+async def api_locks_release(request: Request) -> JSONResponse:
+    """POST /api/locks/release — release a lock by key + token.
+
+    Idempotent: never held, already released, and token mismatch are
+    indistinguishable by design.
+    """
+    pool = get_pool()
+    body = await request.json()
+    key = body.get("key")
+    lock_token = body.get("lock_token")
+
+    error = _validate_lock_key(key)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+    error = _validate_lock_token(lock_token)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        "DELETE FROM session_locks WHERE lock_key = $1 AND lock_token = $2 RETURNING lock_token",
+        key,
+        lock_token,
+    )
+    await bus.publish(Event("session_locks", {"action": "release", "key": key}))
+    return JSONResponse({"released": row is not None})
+
+
+async def api_locks_list(request: Request) -> JSONResponse:
+    """GET /api/locks — list all locks, including expired ones.
+
+    Expiry is authoritative; clients read expires_at.
+    """
+    pool = get_pool()
+    rows = await pool.fetch("SELECT lock_key, holder, acquired_at, expires_at FROM session_locks ORDER BY acquired_at")
+    return JSONResponse(
+        [
+            {
+                "key": row["lock_key"],
+                "holder": row["holder"],
+                "acquired_at": row["acquired_at"].isoformat(),
+                "expires_at": row["expires_at"].isoformat(),
+            }
+            for row in rows
+        ]
+    )
+
+
+# Session registry — durable tracking of dispatcher sandbox sessions so a
+# replacement dispatcher pod can reconcile in-flight work after a restart or
+# hard kill (REHOR-218 phase 2). Dumb storage: the dispatcher owns the
+# lifecycle and interprets state values; the server only validates types and
+# lengths.
+
+REGISTRY_AGENT_ID_MAX = 512
+REGISTRY_HOLDER_MAX = 256
+REGISTRY_STATE_MAX = 32
+REGISTRY_NAME_MAX = 64
+
+REGISTRY_NAME_FIELDS = {
+    "state": REGISTRY_STATE_MAX,
+    "workspace_name": REGISTRY_NAME_MAX,
+    "sandbox_name": REGISTRY_NAME_MAX,
+    "provider_name": REGISTRY_NAME_MAX,
+    "profile_name": REGISTRY_NAME_MAX,
+}
+
+
+def _validate_run_id(run_id) -> str | None:
+    if not isinstance(run_id, str) or not run_id:
+        return "run_id must be a UUID string"
+    try:
+        uuid.UUID(run_id)
+    except ValueError:
+        return "run_id must be a UUID string"
+    return None
+
+
+def _validate_registry_field(field, value, maximum) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= maximum:
+        return f"{field} must be a string of 1..{maximum} characters"
+    return None
+
+
+def _serialize_session_registry_row(row) -> dict:
+    return {
+        "run_id": row["run_id"],
+        "agent_id": row["agent_id"],
+        "holder": row["holder"],
+        "lock_token": row["lock_token"],
+        "state": row["state"],
+        "workspace_name": row["workspace_name"],
+        "sandbox_name": row["sandbox_name"],
+        "provider_name": row["provider_name"],
+        "profile_name": row["profile_name"],
+        "started_at": row["started_at"].isoformat(),
+        "updated_at": row["updated_at"].isoformat(),
+        "detail": row["detail"],
+    }
+
+
+async def api_session_registry_register(request: Request) -> JSONResponse:
+    """POST /api/session-registry/register — upsert a session record.
+
+    Re-registering the same run_id resets it to open with fresh timestamps
+    and cleared names/detail.
+    """
+    pool = get_pool()
+    body = await request.json()
+    run_id = body.get("run_id")
+    agent_id = body.get("agent_id")
+    holder = body.get("holder")
+    lock_token = body.get("lock_token")
+
+    errors = [
+        _validate_run_id(run_id),
+        _validate_registry_field("agent_id", agent_id, REGISTRY_AGENT_ID_MAX),
+        _validate_registry_field("holder", holder, REGISTRY_HOLDER_MAX),
+    ]
+    if lock_token is not None:
+        errors.append(_validate_lock_token(lock_token))
+    for error in errors:
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO session_registry (run_id, agent_id, holder, lock_token)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (run_id) DO UPDATE SET
+            agent_id = $2, holder = $3, lock_token = $4, state = 'open',
+            workspace_name = NULL, sandbox_name = NULL, provider_name = NULL,
+            profile_name = NULL, detail = NULL,
+            started_at = NOW(), updated_at = NOW()
+        RETURNING run_id, started_at
+        """,
+        run_id,
+        agent_id,
+        holder,
+        lock_token,
+    )
+    await bus.publish(Event("session_registry", {"action": "register", "run_id": run_id, "holder": holder}))
+    return JSONResponse({"registered": True, "run_id": row["run_id"], "started_at": row["started_at"].isoformat()})
+
+
+async def api_session_registry_update(request: Request) -> JSONResponse:
+    """POST /api/session-registry/update — patch fields on a session record.
+
+    Absent fields are untouched; explicit null clears a name, detail, or
+    lock_token. State values are stored verbatim, never interpreted.
+    """
+    pool = get_pool()
+    body = await request.json()
+    run_id = body.get("run_id")
+
+    error = _validate_run_id(run_id)
+    if error:
+        return JSONResponse({"error": error}, status_code=400)
+
+    updates: dict[str, object] = {}
+    for field, maximum in REGISTRY_NAME_FIELDS.items():
+        if field not in body:
+            continue
+        value = body[field]
+        if value is None and field != "state":
+            updates[field] = None  # explicit null clears the name
+            continue
+        error = _validate_registry_field(field, value, maximum)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        updates[field] = value
+    if "detail" in body:
+        updates["detail"] = body["detail"]
+    if "lock_token" in body:
+        lock_token = body["lock_token"]
+        if lock_token is not None:
+            error = _validate_lock_token(lock_token)
+            if error:
+                return JSONResponse({"error": error}, status_code=400)
+        updates["lock_token"] = lock_token
+
+    if not updates:
+        return JSONResponse({"error": "at least one updatable field is required"}, status_code=400)
+
+    assignments = []
+    params: list[object] = [run_id]
+    for index, (field, value) in enumerate(updates.items(), start=2):
+        assignments.append(f"{field} = ${index}")
+        params.append(json.dumps(value) if field == "detail" and value is not None else value)
+    assignments.append("updated_at = NOW()")
+    row = await pool.fetchrow(
+        f"UPDATE session_registry SET {', '.join(assignments)} WHERE run_id = $1 RETURNING *",
+        *params,
+    )
+    await bus.publish(Event("session_registry", {"action": "update", "run_id": run_id}))
+    if row is None:
+        return JSONResponse({"updated": False}, status_code=404)
+    return JSONResponse({"updated": True, "record": _serialize_session_registry_row(row)})
+
+
+async def api_session_registry_list(request: Request) -> JSONResponse:
+    """GET /api/session-registry — list session records, oldest first.
+
+    Optional exact-match state filter; state values are not interpreted.
+    """
+    pool = get_pool()
+    state = request.query_params.get("state")
+    if state is not None:
+        error = _validate_registry_field("state", state, REGISTRY_STATE_MAX)
+        if error:
+            return JSONResponse({"error": error}, status_code=400)
+        rows = await pool.fetch(
+            "SELECT * FROM session_registry WHERE state = $1 ORDER BY started_at",
+            state,
+        )
+    else:
+        rows = await pool.fetch("SELECT * FROM session_registry ORDER BY started_at")
+    return JSONResponse([_serialize_session_registry_row(row) for row in rows])

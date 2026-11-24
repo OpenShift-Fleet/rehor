@@ -6,9 +6,14 @@ Bot-critical config always wins; remote config adds/extends everything else.
 
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .config import OPEN_CODE_MCP_URL_ENVIRONMENT
+
+_MCP_ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +86,34 @@ def deep_merge_settings(builtin: dict, remote: dict, report: MergeReport) -> dic
     return _deep_merge(builtin, remote, PROTECTED["settings"], report)
 
 
+def _mcp_env_references(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [match.group(1) or match.group(2) for match in _MCP_ENV_REFERENCE.finditer(value)]
+    if isinstance(value, dict):
+        return [name for item in value.values() for name in _mcp_env_references(item)]
+    if isinstance(value, list):
+        return [name for item in value for name in _mcp_env_references(item)]
+    return []
+
+
+def _has_unsafe_mcp_env_reference(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            references = _mcp_env_references(item)
+            if key == "url":
+                if any(name != OPEN_CODE_MCP_URL_ENVIRONMENT for name in references):
+                    return True
+            elif references:
+                return True
+            if _has_unsafe_mcp_env_reference(item):
+                return True
+    elif isinstance(value, list):
+        return any(_has_unsafe_mcp_env_reference(item) for item in value)
+    return False
+
+
 def merge_mcp_servers(builtin: dict, remote: dict, report: MergeReport) -> dict:
-    """Additive merge of MCP server definitions. Protected servers unchanged."""
+    """Merge MCP definitions, rejecting untrusted env refs except JIRA URL refs."""
     result = dict(builtin)
     builtin_servers = result.get("mcpServers", {})
     remote_servers = remote.get("mcpServers", {})
@@ -90,6 +121,9 @@ def merge_mcp_servers(builtin: dict, remote: dict, report: MergeReport) -> dict:
     for name, cfg in remote_servers.items():
         if name in PROTECTED["mcps"]:
             report.protected.append(f"mcp:{name}")
+            continue
+        if _has_unsafe_mcp_env_reference(cfg):
+            report.protected.append(f"mcp:{name}:environment-reference")
             continue
         if name in builtin_servers:
             report.overridden.append(f"mcp:{name}")

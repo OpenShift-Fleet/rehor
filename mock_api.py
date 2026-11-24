@@ -7,7 +7,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 # Add dashboard/tests to path so we can import fixtures
 sys.path.insert(0, str(Path(__file__).parent / "dashboard" / "tests"))
@@ -18,11 +18,15 @@ from fixtures.api_payloads import (
     BOT_STATUS,
     COSTS,
     CYCLE_RUNS,
+    DAILY_COSTS,
     EMBEDDINGS,
     MAX_ACTIVE,
     MEMORIES,
     TAGS,
     TASK_CYCLE_GROUPS,
+    TASK_OUTCOME_SUMMARY,
+    TASK_OUTCOME_TASKS,
+    TASK_OUTCOME_TRENDS,
     TASKS,
 )
 
@@ -92,6 +96,42 @@ class Handler(BaseHTTPRequestHandler):
             tasks = tasks[offset : offset + limit]
             self.send_json({"items": tasks, "total": total, "limit": limit, "offset": offset})
 
+        elif path == "/api/task-outcomes/summary":
+            self.send_json(TASK_OUTCOME_SUMMARY)
+
+        elif path == "/api/task-outcomes/trends":
+            self.send_json(TASK_OUTCOME_TRENDS)
+
+        elif path == "/api/task-outcomes/tasks":
+            items = TASK_OUTCOME_TASKS[:]
+            repo_filter = qs.get("repo", [None])[0]
+            decision_filter = qs.get("decision", [None])[0]
+            source_filter = qs.get("source", [None])[0]
+            if repo_filter:
+                items = [item for item in items if repo_filter in item["canonicalRepositories"]]
+            if decision_filter:
+                items = [item for item in items if item["state"] == decision_filter]
+            if source_filter:
+                items = [
+                    item
+                    for item in items
+                    if any(entry["source"].lower() == source_filter.lower() for entry in item["evidence"])
+                ]
+            total = len(items)
+            limit = int(qs.get("limit", ["50"])[0])
+            offset = int(qs.get("offset", ["0"])[0])
+            self.send_json({"items": items[offset : offset + limit], "total": total, "limit": limit, "offset": offset})
+
+        elif path.startswith("/api/task-outcomes/tasks/"):
+            try:
+                task_id = int(path.rsplit("/", 1)[-1])
+            except ValueError:
+                return self.send_json({"error": "Task not found"}, 404)
+            item = next((item for item in TASK_OUTCOME_TASKS if item["taskId"] == task_id), None)
+            if item is None:
+                return self.send_json({"error": "Task not found"}, 404)
+            self.send_json({**item, "outcomeHistory": [item["outcome"]], "taskCycles": []})
+
         elif path == "/api/stats":
             task_counts: dict = {}
             for t in TASKS.values():
@@ -106,6 +146,40 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/bot-status":
             self.send_json(BOT_STATUS)
 
+        elif path == "/api/locks":
+            # Session mutex leases (REHOR-218); expiry is authoritative.
+            self.send_json(
+                [
+                    {
+                        "key": "agent-session:mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "acquired_at": "2026-11-13T10:00:00Z",
+                        "expires_at": "2026-11-13T10:30:00Z",
+                    }
+                ]
+            )
+
+        elif path == "/api/session-registry":
+            # Durable session records (REHOR-218); the dispatcher interprets state.
+            self.send_json(
+                [
+                    {
+                        "run_id": "b1a2c3d4-0000-4000-8000-000000000001",
+                        "agent_id": "mock-agent",
+                        "holder": "rehor-agent-dispatcher-mock",
+                        "lock_token": "b1a2c3d4-0000-4000-8000-000000000002",
+                        "state": "open",
+                        "workspace_name": "wmocksessionregistry1",
+                        "sandbox_name": "smocksessionregistry1",
+                        "provider_name": "vmocksessionregistry1",
+                        "profile_name": "pmocksessionregistry1",
+                        "started_at": "2026-11-13T10:00:00Z",
+                        "updated_at": "2026-11-13T10:05:00Z",
+                        "detail": None,
+                    }
+                ]
+            )
+
         elif path == "/api/instances":
             self.send_json(
                 [
@@ -119,7 +193,6 @@ class Handler(BaseHTTPRequestHandler):
                         "repo": BOT_STATUS["repo"],
                         "cycle_start": BOT_STATUS["cycle_start"],
                         "updated_at": BOT_STATUS["updated_at"],
-                        "last_seen": BOT_STATUS.get("last_seen"),
                         "active_tasks": sum(1 for t in TASKS.values() if t["status"] in ACTIVE_STATUSES),
                         "max_tasks": MAX_ACTIVE,
                     },
@@ -133,7 +206,6 @@ class Handler(BaseHTTPRequestHandler):
                         "repo": None,
                         "cycle_start": None,
                         "updated_at": "2026-07-20T08:00:00Z",
-                        "last_seen": "2026-07-20T08:00:00Z",
                         "active_tasks": 0,
                         "max_tasks": 5,
                     },
@@ -188,19 +260,58 @@ class Handler(BaseHTTPRequestHandler):
                 memories = [m for m in memories if tag in m["tags"]]
 
             memories = [{**m, "similarity": 0.85} for m in memories[:limit]]
-            self.send_json({"items": memories, "total": len(memories)})
+            self.send_json(memories)
 
         elif path == "/api/memories/embeddings":
-            self.send_json({"items": EMBEDDINGS, "total": len(EMBEDDINGS)})
+            self.send_json(EMBEDDINGS)
 
         elif path == "/api/tags":
             self.send_json(TAGS)
 
         elif path == "/api/costs":
             limit = int(qs.get("limit", ["200"])[0])
+            instance_filter = qs.get("instance_id", [None])[0]
 
-            costs = COSTS[:limit]
-            self.send_json({"items": costs, "total": len(costs), "limit": limit, "offset": 0})
+            costs = COSTS[:]
+            if instance_filter:
+                costs = [c for c in costs if c.get("instance_id") == instance_filter]
+            costs = costs[:limit]
+
+            if instance_filter:
+                daily = {}
+                for c in costs:
+                    day = c["timestamp"][:10]
+                    if day not in daily:
+                        daily[day] = {
+                            "day": day,
+                            "cycles": 0,
+                            "total_cost": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cache_read": 0,
+                            "cache_write": 0,
+                            "total_duration": 0,
+                            "total_turns": 0,
+                            "idle_cycles": 0,
+                            "error_cycles": 0,
+                        }
+                    daily[day]["cycles"] += 1
+                    daily[day]["total_cost"] += c["cost_usd"]
+                    daily[day]["input_tokens"] += c["input_tokens"]
+                    daily[day]["output_tokens"] += c["output_tokens"]
+                    daily[day]["cache_read"] += c["cache_read_tokens"]
+                    daily[day]["cache_write"] += c["cache_write_tokens"]
+                    daily[day]["total_duration"] += c["duration_ms"]
+                    daily[day]["total_turns"] += c["num_turns"]
+                    if c["no_work"]:
+                        daily[day]["idle_cycles"] += 1
+                    if c["is_error"]:
+                        daily[day]["error_cycles"] += 1
+                daily_result = list(daily.values())
+            else:
+                daily_result = DAILY_COSTS
+
+            self.send_json({"items": costs, "daily": daily_result})
 
         elif path == "/api/cycle-runs":
             task_id = qs.get("task_id", [None])[0]
@@ -228,8 +339,8 @@ class Handler(BaseHTTPRequestHandler):
             instance_id = qs.get("instance_id", [None])[0]
             groups = TASK_CYCLE_GROUPS[:]
             if instance_id:
-                # In real impl would filter, here just return all
-                pass
+                task_ids = {r["task_id"] for r in CYCLE_RUNS if r.get("instance_id") == instance_id}
+                groups = [g for g in groups if g["task_id"] in task_ids]
             self.send_json({"items": groups, "total": len(groups)})
 
         elif path.startswith("/api/cycle-runs/") and "/transcript" in path:
@@ -246,7 +357,34 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(transcript.encode())
 
         elif path == "/api/analytics":
-            self.send_json(ANALYTICS)
+            instance_filter = qs.get("instance_id", [None])[0]
+            if instance_filter:
+                filtered = [c for c in COSTS if c.get("instance_id") == instance_filter]
+                work = [c for c in filtered if not c["no_work"] and not c["is_error"]]
+                total_cost = sum(c["cost_usd"] for c in filtered)
+                self.send_json(
+                    {
+                        "summary": {
+                            "total_cycles": len(filtered),
+                            "work_cycles": len(work),
+                            "idle_cycles": sum(1 for c in filtered if c["no_work"]),
+                            "error_cycles": sum(1 for c in filtered if c["is_error"]),
+                            "unique_tickets": len({c["external_key"] for c in work if c.get("external_key")}),
+                            "total_cost": round(total_cost, 2),
+                            "avg_cost_per_work_cycle": round(total_cost / len(work), 2) if work else 0,
+                            "avg_turns": round(sum(c["num_turns"] for c in work) / len(work), 1) if work else 0,
+                            "avg_duration_ms": round(sum(c["duration_ms"] for c in work) / len(work)) if work else 0,
+                            "repos_touched": len({c["repo"] for c in work if c.get("repo")}),
+                            "tickets_resolved": 0,
+                        },
+                        "work_types": ANALYTICS["work_types"],
+                        "repos": ANALYTICS["repos"],
+                        "tickets": ANALYTICS["tickets"],
+                        "feedback": ANALYTICS["feedback"],
+                    }
+                )
+            else:
+                self.send_json(ANALYTICS)
 
         else:
             self.send_json({"error": "not found"}, 404)
@@ -291,12 +429,6 @@ class Handler(BaseHTTPRequestHandler):
             print(f"  bot-status → state={BOT_STATUS['state']} key={BOT_STATUS['external_key']}")
             return self.send_json({"ok": True})
 
-        if len(parts) == 4 and parts[0] == "api" and parts[1] == "instances" and parts[3] == "wake":
-            print(f"  Wake requested for {parts[2]}")
-            BOT_STATUS["state"] = "working"
-            BOT_STATUS["message"] = "Starting cycle..."
-            return self.send_json({"ok": True})
-
         if len(parts) == 4 and parts[3] == "unarchive":
             key = parts[2]
             if key not in TASKS:
@@ -307,13 +439,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def do_DELETE(self):
-        parts = urlparse(self.path).path.strip("/").split("/")
+        parsed = urlparse(self.path)
+        parts = parsed.path.strip("/").split("/")
+        qs = parse_qs(parsed.query)
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "tasks":
-            key = parts[2]
-            if key in TASKS:
-                TASKS[key]["status"] = "archived"
-                print(f"  Archived {key}")
+            key = unquote(parts[2])
+            if key not in TASKS:
+                return self.send_json({"error": f"Task {key} not found"}, 404)
+            if qs.get("manual", [""])[0] != "true":
+                return self.send_json(
+                    {
+                        "error": "Archive failed; ignore DONE. Call task_outcome_report for same task "
+                        "(artifacts,evidence,notes), then task_remove. Do not rerun skill; other steps may have completed.",
+                        "recoverable": True,
+                    },
+                    409,
+                )
+            TASKS[key]["status"] = "archived"
+            if "outcome_report_id" in TASKS[key]:
+                TASKS[key]["outcome_report_id"] = None
+            print(f"  Archived {key}")
             return self.send_json({"archived": True})
 
         if len(parts) == 3 and parts[0] == "api" and parts[1] == "memories":
@@ -335,6 +481,8 @@ if __name__ == "__main__":
     print("  GET  /api/tasks             - List tasks (with filters)")
     print("  GET  /api/stats             - Task & memory stats")
     print("  GET  /api/bot-status        - Bot status")
+    print("  GET  /api/locks             - Session locks (REHOR-218)")
+    print("  GET  /api/session-registry  - Session registry (REHOR-218)")
     print("  GET  /api/instances         - Bot instances")
     print("  GET  /api/memories          - List memories (with filters)")
     print("  GET  /api/memories/:id      - Get memory by ID")
@@ -345,13 +493,16 @@ if __name__ == "__main__":
     print("  GET  /api/cycle-runs        - Cycle run history")
     print("  GET  /api/cycle-runs/by-task - Cycle runs grouped by task")
     print("  GET  /api/cycle-runs/:id/transcript - Cycle run transcript")
+    print("  GET  /api/task-outcomes/summary - Task outcome rollup")
+    print("  GET  /api/task-outcomes/trends - Monthly task outcome trends")
+    print("  GET  /api/task-outcomes/tasks - Task outcome list")
+    print("  GET  /api/task-outcomes/tasks/:task_id - Task outcome detail")
     print("  GET  /api/analytics         - Analytics summary")
     print("  POST /api/tasks/:key/pause  - Pause a task")
     print("  POST /api/tasks/:key/unpause - Unpause a task")
     print("  POST /api/tasks/:key/unarchive - Unarchive a task")
-    print("  POST /api/instances/:id/wake - Wake an instance")
     print("  POST /api/bot-status        - Update bot status")
-    print("  DELETE /api/tasks/:key      - Archive a task")
+    print("  DELETE /api/tasks/:key?manual=true - Manually archive a task (unreported)")
     print("  DELETE /api/memories/:id    - Delete a memory")
     print("\nMock Data:")
     print(f"  Tasks: {len(TASKS)} ({', '.join(TASKS.keys())})")

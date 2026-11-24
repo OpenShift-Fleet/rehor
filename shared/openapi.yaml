@@ -1,0 +1,1694 @@
+openapi: 3.0.3
+info:
+  title: Dev Bot Memory Server API
+  version: 0.1.0
+  description: API for the Dev Bot memory server — tasks, memories, costs, cycle runs, and analytics.
+
+servers:
+  - url: /
+
+paths:
+  /api/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks with optional filters
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: exclude_status
+          in: query
+          schema: { type: string }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of tasks
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TaskItem'
+
+  /api/task-outcomes/summary:
+    get:
+      operationId: getTaskOutcomeSummary
+      summary: Get task outcome and repository rollups
+      parameters:
+        - name: from
+          in: query
+          description: Inclusive UTC YYYY-MM-DD filter on the latest outcome/report or lifecycle activity timestamp.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive UTC YYYY-MM-DD filter on the latest outcome/report or lifecycle activity timestamp.
+          schema: { type: string, format: date }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to summarize all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          description: Evidence provider, matched case-insensitively.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Holistic and per-repository outcome summary.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeSummary' }
+        '400':
+          description: Invalid filter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/task-outcomes/trends:
+    get:
+      operationId: getTaskOutcomeTrends
+      summary: Get task outcome counts grouped by UTC calendar month
+      parameters:
+        - name: from
+          in: query
+          description: Inclusive UTC YYYY-MM-DD start date.
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Inclusive UTC YYYY-MM-DD end date.
+          schema: { type: string, format: date }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include all categories.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Chronological monthly task and outcome counts, including zero-filled months.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeTrends' }
+        '400':
+          description: Invalid filter or date range.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/task-outcomes/tasks:
+    get:
+      operationId: listTaskOutcomes
+      summary: List task outcomes with filters and stable offset pagination
+      parameters:
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: category
+          in: query
+          description: Optional task category; omit to include delivery, monitoring, and grooming tasks.
+          schema: { type: string, enum: [delivery, monitoring, grooming] }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [conclusive, inconclusive] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Filtered task outcomes, newest activity first with task ID tie-break.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomePage' }
+        '400':
+          description: Invalid filter or pagination value.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/task-outcomes/tasks/{task_id}:
+    get:
+      operationId: getTaskOutcomeDetail
+      summary: Get full outcome report history and evidence for one task
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Task lifecycle, current report, full append-only outcome history, artifacts, and evidence.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskOutcomeTask' }
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/tasks/{key}:
+    delete:
+      operationId: archiveTask
+      summary: Archive (soft-delete) a task
+      description: Requires a valid staged outcome report by default. Reported retries preserve the selected report and timestamps. Use manual=true only for explicit manual/dashboard archival, which clears the selected report pointer and remains unreported; report history is preserved.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+        - name: manual
+          in: query
+          required: false
+          description: Explicit manual/dashboard archive without an outcome report.
+          schema: { type: boolean, default: false }
+        - name: source_type
+          in: query
+          required: false
+          description: Task source identity. Omit only when the external key identifies exactly one task; ambiguous keys are rejected.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task archived
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [archived, external_key, task]
+                properties:
+                  archived: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+        '400':
+          description: Invalid manual or source_type query parameter.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404':
+          description: Task not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409':
+          description: Missing or invalid outcome report, or ambiguous task key. Error leads with recovery instructions visible in the first 200 response characters; detail, evidence schema guidance, external_key and source_type follow. Task remains unchanged.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - type: object
+                    properties:
+                      detail: { type: string }
+                      evidence: { type: string }
+                      external_key: { type: string }
+                      source_type: { type: string, nullable: true }
+
+  /api/tasks/{key}/pause:
+    post:
+      operationId: pauseTask
+      summary: Pause a task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paused_reason: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Task paused
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paused, external_key, task]
+                properties:
+                  paused: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+
+  /api/tasks/{key}/unpause:
+    post:
+      operationId: unpauseTask
+      summary: Unpause a task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task unpaused
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unpaused, external_key, task]
+                properties:
+                  unpaused: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+        '409':
+          description: Too many active tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/tasks/{key}/unarchive:
+    post:
+      operationId: unarchiveTask
+      summary: Restore an archived task
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task unarchived
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [unarchived, external_key, task]
+                properties:
+                  unarchived: { type: boolean }
+                  external_key: { type: string }
+                  task: { $ref: '#/components/schemas/TaskItem' }
+
+  /api/memories:
+    get:
+      operationId: listMemories
+      summary: List memories with optional filters
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of memories
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MemoryItem'
+
+  /api/memories/{id}:
+    get:
+      operationId: getMemory
+      summary: Get a single memory by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Memory item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryItem'
+    delete:
+      operationId: deleteMemory
+      summary: Delete a memory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Memory deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: integer }
+
+  /api/memories/search:
+    get:
+      operationId: searchMemories
+      summary: Search memories by similarity
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: repo
+          in: query
+          schema: { type: string }
+        - name: tag
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          description: Array of memory items with similarity scores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/MemoryItem'
+                    - type: object
+                      required: [similarity]
+                      properties:
+                        similarity: { type: number }
+
+  /api/memories/upload:
+    post:
+      operationId: uploadMemories
+      summary: Bulk upload memories
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memories]
+              properties:
+                memories:
+                  type: array
+                  items: { type: object }
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploaded, errors]
+                properties:
+                  uploaded: { type: integer }
+                  errors:
+                    type: array
+                    items: { type: string }
+
+  /api/memories/embeddings:
+    get:
+      operationId: getEmbeddings
+      summary: Get PCA-projected 3D embedding coordinates
+      responses:
+        '200':
+          description: Array of embedding points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EmbeddingPoint'
+
+  /api/costs:
+    get:
+      operationId: listCosts
+      summary: List cost entries with daily aggregates
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200 }
+        - name: days
+          in: query
+          schema: { type: integer }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Cost entries and daily aggregates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostsResponse'
+    post:
+      operationId: addCostEntry
+      summary: Record a new cost entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CycleEntryItem'
+      responses:
+        '201':
+          description: Created cost entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleEntryItem'
+
+  /api/cycle-runs:
+    get:
+      operationId: listCycleRuns
+      summary: List cycle runs with optional filters
+      parameters:
+        - name: task_id
+          in: query
+          schema: { type: string }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+        - name: cycle_type
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        '200':
+          description: Paginated list of cycle runs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CycleRunItem'
+    post:
+      operationId: addCycleRun
+      summary: Record a new cycle run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Created cycle run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleRunItem'
+
+  /api/cycle-runs/by-task:
+    get:
+      operationId: listCycleRunsByTask
+      summary: Cycle runs grouped by task
+      parameters:
+        - name: instance_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Task cycle groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TaskCycleGroup'
+
+  /api/cycle-runs/{id}/transcript:
+    get:
+      operationId: getCycleRunTranscript
+      summary: Get cycle run transcript (binary)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: decompress
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Raw transcript data
+          content:
+            application/zstd:
+              schema:
+                type: string
+                format: binary
+            application/x-ndjson:
+              schema:
+                type: string
+
+  /api/locks:
+    get:
+      operationId: listSessionLocks
+      summary: List session locks, including expired ones (expiry is authoritative)
+      responses:
+        '200':
+          description: Session locks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionLock'
+
+  /api/locks/acquire:
+    post:
+      operationId: acquireSessionLock
+      summary: Atomically acquire a session lock (expired locks are takeable)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockAcquireRequest'
+      responses:
+        '200':
+          description: Lock acquired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockAcquired'
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock held by someone else
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionLockConflict'
+
+  /api/locks/renew:
+    post:
+      operationId: renewSessionLock
+      summary: Extend a held, unexpired session lock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockRenewRequest'
+      responses:
+        '200':
+          description: Lock renewed
+        '400':
+          description: Invalid payload
+        '409':
+          description: Lock lost (token mismatch, missing, or expired)
+
+  /api/locks/release:
+    post:
+      operationId: releaseSessionLock
+      summary: Release a session lock (idempotent)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionLockReleaseRequest'
+      responses:
+        '200':
+          description: Release result (released is false when never held, already released, or token mismatch)
+        '400':
+          description: Invalid payload
+
+  /api/session-registry:
+    get:
+      operationId: listSessionRegistry
+      summary: List session registry records, oldest first (storage only; the dispatcher interprets state values)
+      parameters:
+        - in: query
+          name: state
+          required: false
+          description: Exact-match state filter
+          schema: { type: string, minLength: 1, maxLength: 32 }
+      responses:
+        '200':
+          description: Session registry records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionRegistryRecord'
+        '400':
+          description: Invalid state filter
+
+  /api/session-registry/register:
+    post:
+      operationId: registerSession
+      summary: Upsert a session registry record (re-registering the same run_id resets it to open)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryRegisterRequest'
+      responses:
+        '200':
+          description: Session registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryRegistered'
+        '400':
+          description: Invalid payload
+
+  /api/session-registry/update:
+    post:
+      operationId: updateSession
+      summary: Patch fields on a session registry record (absent fields untouched, null clears names/detail/lock_token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionRegistryUpdateRequest'
+      responses:
+        '200':
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryUpdated'
+        '400':
+          description: Invalid payload
+        '404':
+          description: Unknown run_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRegistryNotFound'
+
+  /api/bot-status:
+    get:
+      operationId: getBotStatus
+      summary: Get current bot status
+      responses:
+        '200':
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotStatus'
+    post:
+      operationId: updateBotStatus
+      summary: Update bot status
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state: { type: string }
+                message: { type: string }
+                repo: { type: string }
+                external_key: { type: string }
+                source_type: { type: string }
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+
+  /api/instances:
+    get:
+      operationId: listInstances
+      summary: List bot instances
+      responses:
+        '200':
+          description: Array of bot instances
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BotInstance'
+
+  /api/instances/{instance_id}:
+    get:
+      operationId: getInstance
+      summary: Get a single bot instance
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Bot instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotInstance'
+
+  /api/instances/{instance_id}/idle:
+    patch:
+      operationId: updateInstanceIdle
+      summary: Update idle tracking for an instance
+      parameters:
+        - name: instance_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                idle_consecutive_cycles: { type: integer }
+                last_idle_reminder_sent_at: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Updated instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BotInstance'
+
+  /api/analytics:
+    get:
+      operationId: getAnalytics
+      summary: Get analytics summary
+      parameters:
+        - name: days
+          in: query
+          schema: { type: integer }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: instance_id
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsData'
+
+  /api/tags:
+    get:
+      operationId: listTags
+      summary: List all memory tags
+      responses:
+        '200':
+          description: Array of tag strings
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /api/stats:
+    get:
+      operationId: getStats
+      summary: Get summary statistics
+      responses:
+        '200':
+          description: Stats summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: object
+                    additionalProperties: { type: integer }
+                  memories:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      by_category:
+                        type: object
+                        additionalProperties: { type: integer }
+                      by_repo:
+                        type: object
+                        additionalProperties: { type: integer }
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    PaginatedResponse:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array }
+        total: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    TaskOutcomeReport:
+      type: object
+      required: [id, decision, confidence, reason, reportedBy, reportedAt, verifiedAt, artifacts, evidence, canonicalRepositories, notes, runId, reportingCycleId, attempt, workflow, instanceId]
+      properties:
+        id: { type: integer }
+        decision: { type: string, enum: [accepted, rejected, obsolete, inconclusive] }
+        confidence: { type: string, enum: [conclusive, inconclusive] }
+        reason: { type: string }
+        reportedBy: { type: string }
+        reportedAt: { type: string, format: date-time }
+        verifiedAt: { type: string, format: date-time, nullable: true }
+        artifacts: { type: array, items: { $ref: '#/components/schemas/OutcomeArtifact' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/OutcomeEvidence' } }
+        canonicalRepositories: { type: array, items: { type: string } }
+        notes: { type: string, nullable: true }
+        runId: { type: string, nullable: true }
+        reportingCycleId: { type: integer, nullable: true }
+        attempt: { type: integer, nullable: true }
+        workflow: { type: string, nullable: true }
+        instanceId: { type: string, nullable: true }
+      additionalProperties: false
+
+    OutcomeArtifact:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string }
+        id: { type: string, nullable: true }
+        url: { type: string, nullable: true }
+        supersedes: { type: array, items: { type: string } }
+      additionalProperties: true
+
+    OutcomeEvidence:
+      type: object
+      required: [source, reference, resolution, disposition, reason]
+      properties:
+        source: { type: string }
+        reference: { type: string }
+        resolution: { type: string, enum: [accepted, rejected, unknown] }
+        disposition: { type: string }
+        reason: { type: string }
+        kind:
+          type: string
+          enum: [state, comment]
+          default: state
+          description: >-
+            Evidence category: state for provider/workflow facts, comment for authored commentary.
+            Omitted kind defaults to state for compatibility; callers must set comment for comments.
+        authorType:
+          type: string
+          enum: [human, workflow, agent, automation]
+          nullable: true
+          description: >-
+            Author category, used only for comment evidence: agent/automation comments are ignored;
+            human/workflow comments are authoritative. Missing authorType remains authoritative for compatibility.
+            State evidence is valid regardless of authorType.
+      additionalProperties: false
+
+    TaskOutcomeTask:
+      type: object
+      required: [taskId, externalKey, sourceType, sourceUrl, lifecycle, state, category, repo, canonicalRepositories, title, summary, outcome, artifacts, evidence, timestamps]
+      properties:
+        taskId: { type: integer }
+        externalKey: { type: string }
+        sourceType: { type: string }
+        sourceUrl: { type: string, nullable: true }
+        lifecycle:
+          type: object
+          required: [status, createdAt, lastAddressed, archivedAt]
+          properties:
+            status: { type: string }
+            createdAt: { type: string, format: date-time }
+            lastAddressed: { type: string, format: date-time }
+            archivedAt: { type: string, format: date-time, nullable: true }
+          additionalProperties: false
+        state: { type: string, enum: [accepted, rejected, obsolete, inconclusive, unreported, wip] }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: >-
+            Work category. Monitoring is watch-duty work; grooming is ticket assessment/preparation.
+            Both are shown separately and excluded from delivery acceptance rate and outcome coverage.
+        repo: { type: string, nullable: true }
+        canonicalRepositories: { type: array, items: { type: string } }
+        title: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        outcome:
+          allOf:
+            - $ref: '#/components/schemas/TaskOutcomeReport'
+          nullable: true
+        artifacts: { type: array, items: { $ref: '#/components/schemas/OutcomeArtifact' } }
+        evidence: { type: array, items: { $ref: '#/components/schemas/OutcomeEvidence' } }
+        timestamps:
+          type: object
+          required: [createdAt, lastAddressed, archivedAt, reportedAt, verifiedAt]
+          properties:
+            createdAt: { type: string, format: date-time }
+            lastAddressed: { type: string, format: date-time }
+            archivedAt: { type: string, format: date-time, nullable: true }
+            reportedAt: { type: string, format: date-time, nullable: true }
+            verifiedAt: { type: string, format: date-time, nullable: true }
+          additionalProperties: false
+        outcomeHistory: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeReport' } }
+        taskCycles: { type: array, items: { $ref: '#/components/schemas/TaskCycleReference' } }
+      additionalProperties: false
+
+    TaskCycleReference:
+      type: object
+      required: [id, cycleType, instanceId, startedAt, finishedAt]
+      properties:
+        id: { type: integer }
+        cycleType: { type: string }
+        instanceId: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+      additionalProperties: false
+
+    TaskOutcomePage:
+      type: object
+      required: [items, total, limit, offset]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeTask' } }
+        total: { type: integer, minimum: 0 }
+        limit: { type: integer, minimum: 1 }
+        offset: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    GroomingOutcomes:
+      type: object
+      description: Grooming-category states only; acceptance requires evidence, never task existence or done status alone.
+      required: [acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+      properties:
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+      additionalProperties: false
+
+    TaskOutcomeRepositorySummary:
+      type: object
+      required: [repo, acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, reasons, providers]
+      properties:
+        repo: { type: string }
+        acceptanceRate:
+          type: number
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+        outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        taskCount: { type: integer, minimum: 0 }
+        deliveryTaskCount: { type: integer, minimum: 0 }
+        monitoringCount:
+          type: integer
+          minimum: 0
+          description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+        groomingCount:
+          type: integer
+          minimum: 0
+          description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+        groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
+        acceptedCount: { type: integer, minimum: 0 }
+        acceptedNoOpCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+        reasons: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+        providers: { type: object, additionalProperties: { type: integer, minimum: 0 } }
+      additionalProperties: false
+
+    TaskOutcomeSummary:
+      type: object
+      required: [period, summary, repositories, metricDefinitions, freshness, backfill]
+      properties:
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date, nullable: true }
+            to: { type: string, format: date, nullable: true }
+          additionalProperties: false
+        summary:
+          type: object
+          required: [acceptanceRate, outcomeCoverage, taskCount, deliveryTaskCount, monitoringCount, groomingCount, groomingOutcomes, repositoryCount, acceptedCount, acceptedNoOpCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount]
+          properties:
+            acceptanceRate:
+              type: number
+              nullable: true
+              minimum: 0
+              maximum: 1
+              description: Accepted / (accepted + rejected + obsolete) for delivery-category tasks; monitoring and grooming excluded.
+            outcomeCoverage: { type: number, nullable: true, minimum: 0, maximum: 1 }
+            taskCount: { type: integer, minimum: 0 }
+            deliveryTaskCount: { type: integer, minimum: 0 }
+            monitoringCount:
+              type: integer
+              minimum: 0
+              description: Watch-duty task count. Excluded from acceptance rate and outcome coverage.
+            groomingCount:
+              type: integer
+              minimum: 0
+              description: Ticket assessment/preparation count. Excluded from delivery acceptance rate and outcome coverage.
+            groomingOutcomes: { $ref: '#/components/schemas/GroomingOutcomes' }
+            repositoryCount: { type: integer, minimum: 0 }
+            acceptedCount: { type: integer, minimum: 0 }
+            acceptedNoOpCount: { type: integer, minimum: 0 }
+            rejectedCount: { type: integer, minimum: 0 }
+            obsoleteCount: { type: integer, minimum: 0 }
+            inconclusiveCount: { type: integer, minimum: 0 }
+            unreportedCount: { type: integer, minimum: 0 }
+            wipCount: { type: integer, minimum: 0 }
+          additionalProperties: false
+        repositories: { type: array, items: { $ref: '#/components/schemas/TaskOutcomeRepositorySummary' } }
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, outcomeCoverage, monitoring, grooming]
+          properties:
+            acceptanceRate: { type: string }
+            outcomeCoverage: { type: string }
+            monitoring: { type: string }
+            grooming: { type: string }
+          additionalProperties: false
+        freshness:
+          type: object
+          required: [generatedAt]
+          properties:
+            generatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        backfill:
+          type: object
+          required: [state, unknownCount]
+          properties:
+            state: { type: string, enum: [not_started, in_progress, complete, failed] }
+            unknownCount: { type: integer, minimum: 0 }
+          additionalProperties: false
+      additionalProperties: false
+
+    TaskOutcomeTrendMonth:
+      type: object
+      required: [month, taskCount, deliveryCount, monitoringCount, groomingCount, acceptedCount, rejectedCount, obsoleteCount, inconclusiveCount, unreportedCount, wipCount, acceptanceRate]
+      properties:
+        month: { type: string, pattern: '^\d{4}-\d{2}$' }
+        taskCount: { type: integer, minimum: 0 }
+        deliveryCount: { type: integer, minimum: 0 }
+        monitoringCount: { type: integer, minimum: 0 }
+        groomingCount: { type: integer, minimum: 0 }
+        acceptedCount: { type: integer, minimum: 0 }
+        rejectedCount: { type: integer, minimum: 0 }
+        obsoleteCount: { type: integer, minimum: 0 }
+        inconclusiveCount: { type: integer, minimum: 0 }
+        unreportedCount: { type: integer, minimum: 0 }
+        wipCount: { type: integer, minimum: 0 }
+        acceptanceRate: { type: number, nullable: true, minimum: 0, maximum: 1 }
+      additionalProperties: false
+
+    TaskOutcomeTrends:
+      type: object
+      required: [period, months, freshness, metricDefinitions]
+      properties:
+        period:
+          type: object
+          required: [from, to]
+          properties:
+            from: { type: string, format: date }
+            to: { type: string, format: date }
+          additionalProperties: false
+        months:
+          type: array
+          items: { $ref: '#/components/schemas/TaskOutcomeTrendMonth' }
+        freshness:
+          type: object
+          required: [generatedAt]
+          properties:
+            generatedAt: { type: string, format: date-time }
+          additionalProperties: false
+        metricDefinitions:
+          type: object
+          required: [acceptanceRate, month]
+          properties:
+            acceptanceRate: { type: string }
+            month: { type: string }
+          additionalProperties: false
+      additionalProperties: false
+
+    TaskItem:
+      type: object
+      required:
+        - id
+        - external_key
+        - jira_key
+        - source_type
+        - artifacts
+        - status
+        - category
+        - repo
+        - branch
+        - created_at
+        - paused_reason
+        - metadata
+      properties:
+        id: { type: integer }
+        external_key: { type: string }
+        jira_key: { type: string }
+        source_type: { type: string }
+        source_url: { type: string, nullable: true }
+        artifacts:
+          type: array
+          items:
+            type: object
+            required: [name, url, type]
+            properties:
+              name: { type: string }
+              url: { type: string }
+              type: { type: string }
+        status: { type: string }
+        category:
+          type: string
+          enum: [delivery, monitoring, grooming]
+          description: Monitoring watch-duty and grooming ticket assessment/preparation are excluded from delivery outcome metrics.
+        repo: { type: string }
+        branch: { type: string }
+        title: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        created_at: { type: string }
+        last_addressed: { type: string, nullable: true }
+        paused_reason: { type: string, nullable: true }
+        instance_id: { type: string, nullable: true }
+        metadata: { type: object }
+        slack_notification:
+          nullable: true
+          type: object
+          properties:
+            event_type: { type: string }
+            message: { type: string }
+            sent_at: { type: string }
+      additionalProperties: false
+
+    MemoryItem:
+      type: object
+      required: [id, category, repo, title, content, tags, created_at, metadata]
+      properties:
+        id: { type: integer }
+        category: { type: string }
+        repo: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        title: { type: string }
+        content: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        metadata: { type: object }
+      additionalProperties: false
+
+    CycleEntryItem:
+      type: object
+      required:
+        - id
+        - timestamp
+        - label
+        - session_id
+        - num_turns
+        - duration_ms
+        - cost_usd
+        - input_tokens
+        - output_tokens
+        - cache_read_tokens
+        - cache_write_tokens
+        - model
+        - is_error
+        - no_work
+      properties:
+        id: { type: integer }
+        timestamp: { type: string }
+        label: { type: string }
+        session_id: { type: string }
+        num_turns: { type: integer }
+        duration_ms: { type: integer }
+        cost_usd: { type: number }
+        cost_status: { type: string, nullable: true, enum: [provider, estimated, unknown, null] }
+        cost_incomplete: { type: boolean }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read_tokens: { type: integer }
+        cache_write_tokens: { type: integer }
+        model: { type: string }
+        is_error: { type: boolean }
+        no_work: { type: boolean }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        work_type: { type: string, nullable: true }
+        summary: { type: string, nullable: true }
+        instance_id: { type: string, nullable: true }
+      additionalProperties: false
+
+    CycleRunItem:
+      type: object
+      required:
+        - id
+        - task_id
+        - cycle_type
+        - instance_id
+        - started_at
+        - finished_at
+        - tool_calls
+        - tokens_used
+        - progress
+        - created_at
+        - has_transcript
+      properties:
+        id: { type: integer }
+        task_id: { type: integer, nullable: true }
+        cycle_type: { type: string }
+        instance_id: { type: string }
+        started_at: { type: string, nullable: true }
+        finished_at: { type: string, nullable: true }
+        tool_calls: { type: integer }
+        tokens_used: { type: integer }
+        progress: { type: object }
+        input_prompt: { type: string, nullable: true }
+        created_at: { type: string }
+        has_transcript: { type: boolean }
+      additionalProperties: false
+
+    CostsResponse:
+      type: object
+      required: [items, daily]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CycleEntryItem'
+        daily:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyAggregate'
+      additionalProperties: false
+
+    DailyAggregate:
+      type: object
+      required: [day, cycles, total_cost, input_tokens, output_tokens, cache_read, cache_write, total_duration, total_turns, idle_cycles, error_cycles]
+      properties:
+        day: { type: string }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read: { type: integer }
+        cache_write: { type: integer }
+        total_duration: { type: integer }
+        total_turns: { type: integer }
+        idle_cycles: { type: integer }
+        error_cycles: { type: integer }
+        estimated_cycles: { type: integer }
+        incomplete_cycles: { type: integer }
+
+    BotStatus:
+      type: object
+      required: [state, message, external_key, source_type, repo, instance_id, updated_at, cycle_start]
+      properties:
+        state: { type: string }
+        message: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        source_url: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        instance_id: { type: string }
+        updated_at: { type: string }
+        cycle_start: { type: string, nullable: true }
+
+    SessionLock:
+      type: object
+      required: [key, holder, acquired_at, expires_at]
+      properties:
+        key: { type: string }
+        holder: { type: string }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockAcquireRequest:
+      type: object
+      required: [key, holder, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockAcquired:
+      type: object
+      required: [acquired, key, holder, lock_token, acquired_at, expires_at]
+      properties:
+        acquired: { type: boolean, enum: [true] }
+        key: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockConflict:
+      type: object
+      required: [acquired, key, holder]
+      properties:
+        acquired: { type: boolean, enum: [false] }
+        key: { type: string }
+        holder: { type: string, nullable: true }
+        acquired_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionLockRenewRequest:
+      type: object
+      required: [key, lock_token, ttl_seconds]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+        ttl_seconds: { type: integer, minimum: 1, maximum: 86400 }
+      additionalProperties: false
+
+    SessionLockReleaseRequest:
+      type: object
+      required: [key, lock_token]
+      properties:
+        key: { type: string, minLength: 1, maxLength: 512 }
+        lock_token: { type: string, minLength: 1 }
+      additionalProperties: false
+
+    SessionRegistryRecord:
+      type: object
+      required: [run_id, agent_id, holder, lock_token, state, workspace_name, sandbox_name, provider_name, profile_name, started_at, updated_at, detail]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string }
+        holder: { type: string }
+        lock_token: { type: string, format: uuid, nullable: true }
+        state: { type: string }
+        workspace_name: { type: string, nullable: true }
+        sandbox_name: { type: string, nullable: true }
+        provider_name: { type: string, nullable: true }
+        profile_name: { type: string, nullable: true }
+        started_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryRegisterRequest:
+      type: object
+      required: [run_id, agent_id, holder]
+      properties:
+        run_id: { type: string, format: uuid }
+        agent_id: { type: string, minLength: 1, maxLength: 512 }
+        holder: { type: string, minLength: 1, maxLength: 256 }
+        lock_token: { type: string, format: uuid }
+      additionalProperties: false
+
+    SessionRegistryRegistered:
+      type: object
+      required: [registered, run_id, started_at]
+      properties:
+        registered: { type: boolean, enum: [true] }
+        run_id: { type: string, format: uuid }
+        started_at: { type: string, format: date-time }
+      additionalProperties: false
+
+    SessionRegistryUpdateRequest:
+      type: object
+      required: [run_id]
+      properties:
+        run_id: { type: string, format: uuid }
+        state: { type: string, minLength: 1, maxLength: 32 }
+        workspace_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        sandbox_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        provider_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        profile_name: { type: string, minLength: 1, maxLength: 64, nullable: true }
+        detail: { description: Arbitrary JSON payload, stored verbatim, nullable: true }
+        lock_token: { type: string, format: uuid, nullable: true }
+      additionalProperties: false
+
+    SessionRegistryUpdated:
+      type: object
+      required: [updated, record]
+      properties:
+        updated: { type: boolean, enum: [true] }
+        record: { $ref: '#/components/schemas/SessionRegistryRecord' }
+      additionalProperties: false
+
+    SessionRegistryNotFound:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: boolean, enum: [false] }
+      additionalProperties: false
+
+    BotInstance:
+      type: object
+      required: [instance_id, state, message, external_key, source_type, repo, cycle_start, updated_at, active_tasks, max_tasks]
+      properties:
+        instance_id: { type: string }
+        state: { type: string }
+        message: { type: string }
+        external_key: { type: string, nullable: true }
+        source_type: { type: string, nullable: true }
+        source_url: { type: string, nullable: true }
+        repo: { type: string, nullable: true }
+        cycle_start: { type: string, nullable: true }
+        updated_at: { type: string }
+        active_tasks: { type: integer }
+        max_tasks: { type: integer }
+        idle_consecutive_cycles: { type: integer }
+        last_idle_reminder_sent_at: { type: string, nullable: true }
+
+    EmbeddingPoint:
+      type: object
+      required: [id, title, content, category, repo, tags, x, y, z]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        content: { type: string }
+        category: { type: string }
+        repo: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        x: { type: number }
+        y: { type: number }
+        z: { type: number }
+
+    TaskCycleGroup:
+      type: object
+      required: [task_id, external_key, title, task_status, repo, cycle_count, transcript_count, total_tool_calls, total_tokens, first_cycle, last_cycle]
+      properties:
+        task_id: { type: integer }
+        external_key: { type: string }
+        title: { type: string }
+        task_status: { type: string }
+        repo: { type: string }
+        cycle_count: { type: integer }
+        transcript_count: { type: integer }
+        total_tool_calls: { type: integer }
+        total_tokens: { type: integer }
+        first_cycle: { type: string }
+        last_cycle: { type: string }
+
+    AnalyticsData:
+      type: object
+      required: [summary, work_types, repos, tickets, feedback]
+      properties:
+        summary:
+          $ref: '#/components/schemas/AnalyticsSummary'
+        work_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkTypeEntry'
+        repos:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepoEntry'
+        tickets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TicketEntry'
+        feedback:
+          $ref: '#/components/schemas/FeedbackStats'
+
+    AnalyticsSummary:
+      type: object
+      required: [total_cycles, work_cycles, idle_cycles, error_cycles, unique_tickets, total_cost, avg_cost_per_work_cycle, avg_turns, avg_duration_ms, repos_touched, tickets_resolved]
+      properties:
+        total_cycles: { type: integer }
+        work_cycles: { type: integer }
+        idle_cycles: { type: integer }
+        error_cycles: { type: integer }
+        unique_tickets: { type: integer }
+        total_cost: { type: number }
+        avg_cost_per_work_cycle: { type: number }
+        avg_turns: { type: number }
+        avg_duration_ms: { type: integer }
+        repos_touched: { type: integer }
+        tickets_resolved: { type: integer }
+
+    WorkTypeEntry:
+      type: object
+      required: [category, cycles, total_cost, avg_cost, avg_turns, avg_duration_ms]
+      properties:
+        category: { type: string }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        avg_cost: { type: number }
+        avg_turns: { type: integer }
+        avg_duration_ms: { type: integer }
+
+    RepoEntry:
+      type: object
+      required: [repo, tickets, cycles, total_cost, avg_turns]
+      properties:
+        repo: { type: string }
+        tickets: { type: integer }
+        cycles: { type: integer }
+        total_cost: { type: number }
+        avg_turns: { type: integer }
+
+    TicketEntry:
+      type: object
+      required: [external_key, title, status, repo, total_cycles, impl_cycles, review_cycles, total_cost, hours_span]
+      properties:
+        external_key: { type: string }
+        title: { type: string }
+        status: { type: string }
+        repo: { type: string }
+        total_cycles: { type: integer }
+        impl_cycles: { type: integer }
+        review_cycles: { type: integer }
+        total_cost: { type: number }
+        hours_span: { type: number }
+
+    FeedbackStats:
+      type: object
+      required: [avg_review_rounds, zero_review, one_review, multi_review]
+      properties:
+        avg_review_rounds: { type: number }
+        zero_review: { type: integer }
+        one_review: { type: integer }
+        multi_review: { type: integer }
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }

@@ -1,5 +1,5 @@
-import { createContext, useContext, useRef, useCallback, type ReactNode } from 'react';
-import type { WSEvent } from '../src/types';
+import { createContext, type ReactNode, useCallback, useContext, useRef } from "react";
+import type { WSEvent } from "../src/types";
 
 interface WSContextValue {
   connected: boolean;

@@ -136,4 +136,4 @@ Override any value via the `resources` object in the requirements JSON.
 - **BOT_REPLICAS**: String `"0"`, not integer — KEDA manages scaling
 - **Fork URL generation**: GH forks → `https://github.com/<fork_account>/<repo>.git`; GL forks → `https://gitlab.cee.redhat.com/<fork_account>/<repo>.git`. Both SSH and HTTPS input URLs are parsed correctly. Custom fork repo names supported via `fork_name` field. HTTPS is required — the bot authenticates via `gh`/`glab` credential helpers, not SSH keys.
 - **Memory server label**: `app.kubernetes.io/name: memory-server` (not `devbot-memory-server`)
-- **Proxy ports**: 3128 (HTTP), 9090 (executor), 8443 (Vertex), 8444 (Jira MCP), 8446 (GH release upload)
+- **Proxy ports**: 3128 (HTTP), 9090 (executor), 8443 (Vertex), 8444 (Jira MCP), 8446 (GH release upload), 8450 (OpenAI-compatible gateway)

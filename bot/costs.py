@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from .constants import MEMORY_API_BASE
+from .metrics import record_cycle_metrics
 
 if TYPE_CHECKING:
     from .agent import CycleContext
@@ -39,32 +40,63 @@ def _is_no_work(text: str) -> bool:
     return any(p.lower() in lower for p in _NO_WORK_PATTERNS)
 
 
-def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
-    """Build a cost entry dict from an SDK ResultMessage."""
-    usage = getattr(result, "usage", None) or {}
-    result_text = getattr(result, "result", "") or ""
+def summarize_result(result) -> dict:
+    """Model / token / cache fields from an SDK ResultMessage.
 
+    Used by `_build_entry` (JSONL/API) and the cycle-done log so those numbers
+    cannot drift. `cache_ratio` is logging-only — not an API field.
+    """
+    usage = getattr(result, "usage", None) or {}
     model = ""
     model_usage = getattr(result, "model_usage", None)
     if model_usage and isinstance(model_usage, dict):
         model = next(iter(model_usage.keys()), "")
 
+    cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
+    cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+    ratio = f"{cache_read / cache_write:.2f}" if cache_write else "n/a"
+
+    return {
+        "model": model,
+        "model_usage": model_usage if model_usage else {},
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "cache_ratio": ratio,
+    }
+
+
+def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
+    """Build a cost entry dict from an SDK ResultMessage."""
+    summary = summarize_result(result)
+    result_text = getattr(result, "result", "") or ""
+
     entry = {
         "timestamp": datetime.now(UTC).isoformat(),
         "label": label,
-        "session_id": getattr(result, "session_id", ""),
+        "session_id": getattr(result, "session_id", "") or (ctx.session_id if ctx else "") or "",
         "num_turns": getattr(result, "num_turns", 0),
         "duration_ms": getattr(result, "duration_ms", 0),
         "cost_usd": getattr(result, "total_cost_usd", 0) or 0,
-        "input_tokens": usage.get("input_tokens", 0),
-        "output_tokens": usage.get("output_tokens", 0),
-        "cache_read_tokens": usage.get("cache_read_input_tokens", 0),
-        "cache_write_tokens": usage.get("cache_creation_input_tokens", 0),
-        "model": model,
-        "model_usage": model_usage if model_usage else {},
+        "input_tokens": summary["input_tokens"],
+        "output_tokens": summary["output_tokens"],
+        "cache_read_tokens": summary["cache_read_tokens"],
+        "cache_write_tokens": summary["cache_write_tokens"],
+        "model": summary["model"],
+        "model_usage": summary["model_usage"],
         "is_error": getattr(result, "subtype", "") != "success",
         "no_work": _is_no_work(result_text),
     }
+
+    cost_status = getattr(result, "cost_status", None)
+    if isinstance(cost_status, str) and cost_status:
+        entry["cost_status"] = cost_status
+    cost_incomplete = getattr(result, "cost_incomplete", None)
+    if isinstance(cost_incomplete, bool):
+        entry["cost_incomplete"] = cost_incomplete
+    elif entry.get("cost_status") == "unknown":
+        entry["cost_incomplete"] = True
 
     if ctx:
         entry["external_key"] = ctx.jira_key
@@ -75,13 +107,41 @@ def _build_entry(label: str, result, ctx: CycleContext | None = None) -> dict:
     return entry
 
 
-def record_cost(costs_file: Path, label: str, result, ctx: CycleContext | None = None) -> bool:
+def record_cost(
+    costs_file: Path,
+    label: str,
+    result,
+    ctx: CycleContext | None = None,
+    instance_id: str | None = None,
+    workflow: str = "unknown",
+) -> bool:
     """Record cost data from a ResultMessage.
 
-    Writes to costs.jsonl (local) and pushes to the dashboard API.
+    Writes to costs.jsonl (local), pushes to the dashboard API, and increments
+    agent Prometheus cost/token counters.
     Returns True if the cycle found no work (for sleep interval decision).
     """
     entry = _build_entry(label, result, ctx)
+    if instance_id:
+        entry["instance_id"] = instance_id
+
+    if entry["is_error"]:
+        status = "error"
+    elif entry["no_work"]:
+        status = "idle"
+    else:
+        status = "ok"
+    record_cycle_metrics(
+        model=entry["model"],
+        label=label,
+        workflow=workflow,
+        status=status,
+        cost_usd=entry["cost_usd"],
+        input_tokens=entry["input_tokens"],
+        output_tokens=entry["output_tokens"],
+        cache_read_tokens=entry["cache_read_tokens"],
+        cache_write_tokens=entry["cache_write_tokens"],
+    )
 
     # Write to local jsonl (backward compat with costs.sh)
     with open(costs_file, "a") as f:

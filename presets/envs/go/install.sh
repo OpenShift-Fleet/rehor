@@ -15,7 +15,7 @@ export PATH="$GOENV_ROOT/bin:$PATH"
 eval "$(goenv init -)"
 
 # Pre-install default Go versions
-GOVERSIONS="${GOVERSIONS:-1.24.2 1.25.7}"
+GOVERSIONS="${GOVERSIONS:-1.26.10 1.27.3}"
 DEFAULT=$(echo $GOVERSIONS | awk '{print $1}')
 for v in $GOVERSIONS; do
     if goenv versions --bare 2>/dev/null | grep -q "^${v}$"; then
@@ -34,7 +34,9 @@ cat > /etc/profile.d/goenv.sh << 'PROFILE'
 export GOENV_ROOT="/usr/local/goenv"
 export GOENV_PATH_ORDER=front
 export PATH="$GOENV_ROOT/bin:$PATH"
-eval "$(goenv init -)"
+# || true: goenv rehash inside init output can exit non-zero (e.g. in containers).
+# This is benign — PATH, shims, and the goenv function are set up before rehash runs.
+eval "$(goenv init -)" || true
 PROFILE
 
 # Symlink go to /usr/local/bin for non-interactive shells
@@ -46,6 +48,6 @@ fi
 
 # golangci-lint
 if ! command -v golangci-lint &>/dev/null; then
-    curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v2.1.6/golangci-lint-2.1.6-linux-${ARCH}.tar.gz" \
+    curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v2.13.2/golangci-lint-2.13.2-linux-${ARCH}.tar.gz" \
         | tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/golangci-lint'
 fi

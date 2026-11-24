@@ -1,0 +1,45 @@
+{
+  "cycle": "39418",
+  "workflow": "jira-sprint",
+  "preflight": {
+    "gh_pr_status": {
+      "status": "skip",
+      "content": "GH PR Status (3 PRs checked): CLEAN (3)"
+    },
+    "gl_mr_status": {
+      "status": "skip",
+      "content": "GL MR status: no GL MRs to check (4 active tasks)"
+    },
+    "jira_sprint": {
+      "status": "start",
+      "capacity": {
+        "active": 4,
+        "max": 10
+      },
+      "active_tasks": [
+        "RHCLOUD-48765",
+        "RHCLOUD-48760",
+        "RHCLOUD-48758",
+        "RHCLOUD-48906"
+      ],
+      "candidates": [
+        {
+          "key": "RHCLOUD-50805",
+          "status": "Backlog",
+          "priority": "Normal",
+          "type": "Story",
+          "repo": "notifications-backend",
+          "title": "Bump actions/setup-java from 5 to 6",
+          "description": "Replace the removed adopt distribution with temurin."
+        }
+      ]
+    }
+  },
+  "agent_outcome": {
+    "session_started": true,
+    "work_attempted": false,
+    "reason": "Candidate required a protected GitHub Actions workflow change; deployed policy blocked the agent.",
+    "jira_comment_posted": true
+  },
+  "classification": "expected_preflight_start_but_avoidable_token_spend"
+}

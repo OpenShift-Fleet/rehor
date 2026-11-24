@@ -12,6 +12,8 @@ sys.path.insert(0, str(SHARED_DIR))
 sys.path.insert(0, str(SKILLS_DIR))
 
 from jira_sprint_preflight import (
+    JIRA_COMMENT_LIMIT,
+    _comments_may_be_truncated,
     _has_new_jira_feedback,
     main,
 )
@@ -41,6 +43,22 @@ def test_pr_link_not_feedback():
 
 def test_empty_comments():
     assert _has_new_jira_feedback([], "2026-06-30T10:00:00") is False
+
+
+def test_same_minute_after_last_addressed_detected():
+    """Comment posted seconds after last_addressed in the same minute counts.
+
+    Regression for RHCLOUD-53177: Jira comment 19450291 at
+    2026-11-10T08:59:41 vs last_addressed 08:59:05 — both truncated to
+    '2026-11-10T08:59' by the [:16] comparison, so feedback was missed.
+    """
+    comments = [{"created": "2026-11-10T08:59:41.053+0000", "body": "can you read it and implement it?"}]
+    assert _has_new_jira_feedback(comments, "2026-11-10T08:59:05.470894+00:00") is True
+
+
+def test_same_minute_before_last_addressed_ignored():
+    comments = [{"created": "2026-11-10T08:59:05.053+0000", "body": "can you read it and implement it?"}]
+    assert _has_new_jira_feedback(comments, "2026-11-10T08:59:41.470894+00:00") is False
 
 
 # --- main() decision logic ---
@@ -424,3 +442,202 @@ def test_interrupted_task_returns_start(env_vars, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out.strip())
     assert out["status"] == "start"
     assert "INTERRUPTED" in out["content"]
+
+
+# --- interrupted blocked-task cooldown ---
+
+
+def test_interrupted_blocked_recently_addressed_waits(env_vars, monkeypatch, capsys):
+    """Blocked task whose last clean cycle just ran must not re-trigger every cycle.
+
+    Regression for the Ctibor/CCXDEV-17030 spin: 37 no-op cycles in 4 hours,
+    each ending with metadata.blockers set and a fresh last_addressed stamp.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    recently = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": recently,
+                "metadata": {"last_step": "assessment_blocked", "blockers": ["prod SBOM copy Forbidden"]},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "skip"
+    assert "INTERRUPTED" not in out["content"]
+    assert "CLEAN" in out["content"]
+
+
+def test_interrupted_blocked_stale_last_addressed_retries(env_vars, monkeypatch, capsys):
+    """Blocked task past the retry cooldown re-triggers (poll for external state)."""
+    from datetime import UTC, datetime, timedelta
+
+    stale = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": stale,
+                "metadata": {"last_step": "assessment_blocked", "blockers": ["prod SBOM copy Forbidden"]},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "INTERRUPTED" in out["content"]
+
+
+def test_interrupted_unblocked_recently_addressed_resumes(env_vars, monkeypatch, capsys):
+    """No declared blockers → mid-work resume stays immediate (no cooldown)."""
+    from datetime import UTC, datetime, timedelta
+
+    recently = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-5",
+                "status": "in_progress",
+                "repo": "my-repo",
+                "last_addressed": recently,
+                "metadata": {"last_step": "implemented"},
+            }
+        ]
+    )
+    jira_data = {
+        "fields": {
+            "status": {"name": "In Progress"},
+            "labels": [],
+            "issuelinks": [],
+            "comment": {"comments": []},
+        }
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "INTERRUPTED" in out["content"]
+
+
+# --- _comments_may_be_truncated ---
+
+
+def test_truncated_when_at_limit_and_updated():
+    """Exactly JIRA_COMMENT_LIMIT comments + updated after last_addressed → truncated."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is True
+
+
+def test_not_truncated_when_under_limit():
+    """Fewer than JIRA_COMMENT_LIMIT comments → never truncated regardless of updated."""
+    comments = [{"created": "2026-06-01T10:00:00"}]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is False
+
+
+def test_not_truncated_when_not_updated():
+    """At limit but updated before last_addressed → not truncated."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-06-15T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is False
+
+
+def test_not_truncated_when_no_last_addressed():
+    """No last_addressed → not truncated (first encounter)."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"updated": "2026-08-01T10:00:00"}
+    assert _comments_may_be_truncated(jira_data, comments, "") is False
+
+
+def test_not_truncated_when_no_jira_data():
+    assert _comments_may_be_truncated(None, [], "2026-07-01T10:00:00") is False
+
+
+def test_truncated_with_fields_updated_path():
+    """updated under fields.updated also works."""
+    comments = [{"created": f"2026-06-{i:02d}T10:00:00"} for i in range(1, JIRA_COMMENT_LIMIT + 1)]
+    jira_data = {"fields": {"updated": "2026-08-01T10:00:00"}}
+    assert _comments_may_be_truncated(jira_data, comments, "2026-07-01T10:00:00") is True
+
+
+# --- truncation fallback in main() ---
+
+
+def test_truncated_comments_trigger_feedback(env_vars, monkeypatch, capsys):
+    """When comments are truncated and issue was updated, task is treated as feedback."""
+    tasks = _mock_tasks(
+        active=[
+            {
+                "external_key": "TEST-TRUNC",
+                "status": "pr_open",
+                "repo": "my-repo",
+                "last_addressed": "2026-07-01T10:00:00",
+                "metadata": {"prs": [{"repo": "my-repo", "number": 1, "host": "github"}]},
+            }
+        ]
+    )
+    old_comments = [
+        {
+            "created": f"2026-06-{(i % 28) + 1:02d}T10:00:00",
+            "body": f"Old comment {i}",
+            "author": {"displayName": "Human"},
+        }
+        for i in range(JIRA_COMMENT_LIMIT)
+    ]
+    jira_data = {
+        "updated": "2026-08-05T19:52:00",
+        "fields": {
+            "status": {"name": "Code Review"},
+            "labels": [],
+            "issuelinks": [],
+        },
+        "comments": old_comments,
+    }
+    monkeypatch.setattr("jira_sprint_preflight.get_tasks", lambda: tasks)
+    monkeypatch.setattr("jira_sprint_preflight.get_capacity", lambda: (1, 10))
+    monkeypatch.setattr("jira_sprint_preflight._jira_issue", lambda key: jira_data)
+    monkeypatch.setattr("jira_sprint_preflight.jira_cleanup", lambda: None)
+
+    main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert out["status"] == "start"
+    assert "JIRA FEEDBACK" in out["content"]

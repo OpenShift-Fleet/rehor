@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -69,6 +70,8 @@ def _run_script(script: Path, script_dir: Path) -> ScriptResult:
     extra = [str(shared_preflight), str(skills_dir)]
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(extra + ([existing] if existing else []))
+    logger.info("Preflight %s starting", name)
+    t0 = time.monotonic()
     try:
         proc = subprocess.run(
             ["python3", str(script)],
@@ -79,37 +82,45 @@ def _run_script(script: Path, script_dir: Path) -> ScriptResult:
             env=env,
         )
     except subprocess.TimeoutExpired:
-        logger.error("Preflight %s timed out after %ds", name, PREFLIGHT_TIMEOUT)
+        elapsed = time.monotonic() - t0
+        logger.error(
+            "Preflight %s timed out after %ds (elapsed %.2fs)",
+            name,
+            PREFLIGHT_TIMEOUT,
+            elapsed,
+        )
         return ScriptResult(name=name, status="error", content=f"{name} timed out after {PREFLIGHT_TIMEOUT}s")
+
+    elapsed = time.monotonic() - t0
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip() or f"{name} exited with code {proc.returncode}"
-        logger.error("Preflight %s failed (exit %d): %s", name, proc.returncode, stderr[:200])
+        logger.error("Preflight %s failed (exit %d) in %.2fs: %s", name, proc.returncode, elapsed, stderr[:200])
         return ScriptResult(name=name, status="error", content=stderr)
 
     stdout = proc.stdout.strip()
     if not stdout:
-        logger.error("Preflight %s produced no output", name)
+        logger.error("Preflight %s produced no output in %.2fs", name, elapsed)
         return ScriptResult(name=name, status="error", content=f"{name} produced no output")
 
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        logger.error("Preflight %s output is not valid JSON: %s", name, exc)
+        logger.error("Preflight %s output is not valid JSON in %.2fs: %s", name, elapsed, exc)
         return ScriptResult(name=name, status="error", content=f"{name} invalid JSON: {exc}\nstdout: {stdout[:500]}")
 
     status = data.get("status", "")
     content = data.get("content", "")
 
     if status not in ("start", "skip", "error"):
-        logger.error("Preflight %s returned unknown status: %s", name, status)
+        logger.error("Preflight %s returned unknown status in %.2fs: %s", name, elapsed, status)
         return ScriptResult(name=name, status="error", content=f"{name} unknown status: {status}")
 
     if status == "start" and not content:
-        logger.error("Preflight %s returned start with empty content", name)
+        logger.error("Preflight %s returned start with empty content in %.2fs", name, elapsed)
         return ScriptResult(name=name, status="error", content=f"{name} returned start with empty content")
 
-    logger.info("Preflight %s → %s (%d chars)", name, status, len(content))
+    logger.info("Preflight %s → %s (%d chars) in %.2fs", name, status, len(content), elapsed)
     return ScriptResult(name=name, status=status, content=content)
 
 

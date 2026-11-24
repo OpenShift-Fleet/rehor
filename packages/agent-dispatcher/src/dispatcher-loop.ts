@@ -1,0 +1,66 @@
+import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
+import { tmpdir } from "node:os";
+import { runDispatcherCycle, type DispatcherCycleOptions, type DispatcherCycleResult } from "./dispatcher-cycle.js";
+import { SessionDispatcher, type SessionCompletion } from "./dispatch-sessions.js";
+import { isForwardedPreflightVariable } from "./preflight-env.js";
+
+export type DispatcherLoopOptions = {
+  repositoriesJson: string;
+  signal?: AbortSignal;
+  /** Complete environment for preflights; defaults to the filtered process environment. */
+  env?: NodeJS.ProcessEnv;
+  /** Sandbox launch for a start decision. Defaults to completing without creating a sandbox. */
+  launch?: DispatcherCycleOptions["launch"];
+  /** Mints the per-cycle memory credential used by the preflight engine. */
+  memoryCredential?: () => Promise<string>;
+  /** Services-gateway base URL; the proxy route for external-system preflights. */
+  serviceGatewayUrl?: URL;
+  preflightStateDir?: DispatcherCycleOptions["preflightStateDir"];
+  slackWebhooks?: DispatcherCycleOptions["slackWebhooks"];
+  jenkins?: DispatcherCycleOptions["jenkins"];
+  /** Observes each completed cycle result; lifecycle records are emitted inside the cycle. */
+  onCycle?: (result: DispatcherCycleResult) => void;
+  /** Cycle spacing. Defaults to five minutes. */
+  intervalMs?: number;
+};
+
+/** Forward only non-secret settings the sandbox runtime environment needs. */
+export function preflightEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value !== undefined && isForwardedPreflightVariable(name)) env[name] = value;
+  }
+  return env;
+}
+
+/**
+ * Repeated dispatcher cycles until aborted. Sessions are not drained here:
+ * a retained session (unknown completion) must not hold the loop hostage, and
+ * shutdown deadlines remain the caller's responsibility.
+ */
+export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise<void> {
+  const sessions = new SessionDispatcher();
+  const signal = options.signal;
+  const intervalMs = options.intervalMs ?? 5 * 60_000;
+  const cacheRoot = process.env.AGENT_DISPATCHER_CONFIG_DIR || join(tmpdir(), "rehor-agent-dispatcher");
+  const emit = options.onCycle;
+  const env = options.env ?? preflightEnvironment();
+  const launch = options.launch ?? (async (): Promise<SessionCompletion> => "not-created");
+  while (!signal?.aborted) {
+    try {
+      const result = await runDispatcherCycle({
+        repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions,
+        signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl,
+        preflightStateDir: options.preflightStateDir, slackWebhooks: options.slackWebhooks, jenkins: options.jenkins,
+      });
+      if (!signal?.aborted) emit?.(result);
+      await sleep(intervalMs, undefined, { signal });
+    } catch {
+      if (!signal?.aborted) {
+        console.error("Dispatcher cycle failed");
+        try { await sleep(intervalMs, undefined, { signal }); } catch { break; }
+      }
+    }
+  }
+}

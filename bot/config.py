@@ -7,23 +7,71 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
 from .constants import _DEFAULT_COOLDOWN_SECONDS
 
+OPEN_CODE_MCP_URL_ENVIRONMENT = "JIRA_MCP_URL"
+
+DEFAULT_RUNTIME_ID = "claude"
+DEFAULT_PROVIDER_ID = "vertex"
+DEFAULT_OPENCODE_PROVIDER_ID = "rehor-openai"
+DEFAULT_OPENCODE_MODEL = "gpt-6-luna"
+OPENCODE_RUNTIME_ID = "opencode"
+SUPPORTED_RUNTIME_IDS = frozenset({DEFAULT_RUNTIME_ID, OPENCODE_RUNTIME_ID})
+SUPPORTED_PROVIDER_IDS = frozenset({DEFAULT_PROVIDER_ID, "rehor-openai", "rehor-openai-chat"})
+
+
+def default_provider_for_runtime(runtime: str) -> str:
+    if runtime == OPENCODE_RUNTIME_ID:
+        return DEFAULT_OPENCODE_PROVIDER_ID
+    return DEFAULT_PROVIDER_ID
+
 
 @dataclass
 class Config:
     model: str
+    # max_turns is only used by the legacy bot/agent.py direct-agent path; the
+    # coordinator enforces a per-cycle USD cost budget instead (budget_usd).
     max_turns: int
     interval: int
     idle_interval: int
     cycle_timeout: int
     board_key: str
     idle_reminder_cooldown_seconds: int = _DEFAULT_COOLDOWN_SECONDS
+    opencode_model: str = DEFAULT_OPENCODE_MODEL
+    model_tiers: dict[str, str] = field(default_factory=dict)
+    opencode_max_tool_calls: int = 200
+    budget_usd: float = 5.0
+
+
+def _nonempty_model(value: object) -> str | None:
+    """Return stripped string if non-empty, otherwise None."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _load_model_tiers(raw_tiers: object) -> dict[str, str]:
+    """Parse claude.modelTiers dict, dropping empty or non-string entries with warnings."""
+    logger = logging.getLogger(__name__)
+    if not isinstance(raw_tiers, dict):
+        return {}
+    tiers: dict[str, str] = {}
+    for tier, model in raw_tiers.items():
+        if not isinstance(tier, str) or not tier.strip():
+            continue
+        cleaned_tier = tier.strip()
+        cleaned_model = _nonempty_model(model)
+        if cleaned_model:
+            tiers[cleaned_tier] = cleaned_model
+        else:
+            logger.warning("Dropping invalid or empty model for tier '%s' in claude.modelTiers", tier)
+    return tiers
 
 
 @dataclass
@@ -35,6 +83,10 @@ class InstanceConfig:
     envs: list[str] | None = None  # None = all available, [] = none
     claude_md_strategy: str = "ignore"  # replace / append / ignore
     idle_cycle_limit: int = 0  # 0 = feature disabled
+    cycle_timeout_seconds: int | None = None  # None = config.json claude.cycleTimeoutSeconds
+    model: str | None = None
+    runtime: str = DEFAULT_RUNTIME_ID
+    provider: str = DEFAULT_PROVIDER_ID
 
     @classmethod
     def from_yaml(cls, path: Path) -> InstanceConfig:
@@ -42,12 +94,24 @@ class InstanceConfig:
             data = yaml.safe_load(f) or {}
         claude_md = data.get("claude_md")
         strategy = claude_md.get("strategy", "ignore") if isinstance(claude_md, dict) else "ignore"
+        runtime = (
+            _nonempty_model(data.get("runtime")) or _nonempty_model(os.environ.get("BOT_RUNTIME")) or DEFAULT_RUNTIME_ID
+        )
+        provider = (
+            _nonempty_model(data.get("provider"))
+            or _nonempty_model(os.environ.get("BOT_PROVIDER"))
+            or default_provider_for_runtime(runtime)
+        )
         return cls(
             workflow=data.get("workflow", "jira-sprint"),
             source=data.get("source", "jira"),
             envs=data.get("envs"),
             claude_md_strategy=strategy,
             idle_cycle_limit=int(data.get("idle_cycle_limit", 0)),
+            cycle_timeout_seconds=data.get("cycle_timeout_seconds"),
+            model=_nonempty_model(data.get("model")),
+            runtime=runtime,
+            provider=provider,
         )
 
     @classmethod
@@ -57,7 +121,10 @@ class InstanceConfig:
         envs: list[str] | None = None
         if envs_str is not None:
             envs = [e.strip() for e in envs_str.split(",") if e.strip()]
-        return cls(workflow=workflow, envs=envs)
+        model = _nonempty_model(os.environ.get("BOT_MODEL"))
+        runtime = _nonempty_model(os.environ.get("BOT_RUNTIME")) or DEFAULT_RUNTIME_ID
+        provider = _nonempty_model(os.environ.get("BOT_PROVIDER")) or default_provider_for_runtime(runtime)
+        return cls(workflow=workflow, envs=envs, model=model, runtime=runtime, provider=provider)
 
 
 def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
@@ -67,17 +134,56 @@ def load_instance_config(remote_agent_dir: Path | None) -> InstanceConfig:
         yaml_path = remote_agent_dir / "instance.yaml"
         if yaml_path.is_file():
             ic = InstanceConfig.from_yaml(yaml_path)
+            if ic.model is None and (env_model := _nonempty_model(os.environ.get("BOT_MODEL"))):
+                ic.model = env_model
             logger.info(
-                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s",
+                "Loaded instance.yaml: workflow=%s, source=%s, envs=%s, runtime=%s, provider=%s, model=%s, "
+                "cycle_timeout=%s",
                 ic.workflow,
                 ic.source,
                 ic.envs,
+                ic.runtime,
+                ic.provider,
+                ic.model,
+                ic.cycle_timeout_seconds,
             )
             return ic
 
     ic = InstanceConfig.from_env()
-    logger.info("No instance.yaml — env/defaults: workflow=%s, envs=%s", ic.workflow, ic.envs)
+    logger.info(
+        "No instance.yaml — env/defaults: workflow=%s, envs=%s, runtime=%s, provider=%s, model=%s",
+        ic.workflow,
+        ic.envs,
+        ic.runtime,
+        ic.provider,
+        ic.model,
+    )
     return ic
+
+
+def _valid_cycle_timeout(value: object) -> bool:
+    """cycle_timeout_seconds must be a positive int; YAML bools, strings, and floats are invalid."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def apply_cycle_timeout_override(config: Config, instance_config: InstanceConfig) -> None:
+    """Override the global cycle timeout with instance.yaml ``cycle_timeout_seconds``.
+
+    Effective timeout precedence: instance.yaml ``cycle_timeout_seconds``,
+    then config.json ``claude.cycleTimeoutSeconds`` (loaded into
+    ``config.cycle_timeout``). ``validate_instance_config`` rejects invalid
+    values at startup; the guard here also protects the per-cycle reload in
+    run.py, which does not re-run full instance validation.
+    """
+    logger = logging.getLogger(__name__)
+    value = instance_config.cycle_timeout_seconds
+    if value is None:
+        return
+    if not _valid_cycle_timeout(value):
+        logger.error("Ignoring invalid cycle_timeout_seconds=%r — must be a positive integer", value)
+        return
+    logger.info("Cycle timeout: %ds (source=instance)", value)
+    config.cycle_timeout = value
 
 
 def resolve_workflow_dir(
@@ -103,13 +209,49 @@ def resolve_active_envs(script_dir: Path, instance_config: InstanceConfig) -> li
     return sorted(d.name for d in envs_dir.iterdir() if d.is_dir() and d.name != ".gitkeep")
 
 
+def validate_runtime_provider_selection(runtime: str, provider: str) -> list[str]:
+    """Return configuration errors for a runtime/provider pair.
+
+    The selection is deliberately validated at the Python/coordinator boundary
+    so a canary cannot silently fall back to an unrelated provider. The
+    TypeScript Claude adapter currently supports Vertex; OpenCode supports the
+    Vertex route, native OpenAI Responses, and OpenAI-compatible Chat Completions.
+    """
+    errors: list[str] = []
+    if runtime not in SUPPORTED_RUNTIME_IDS:
+        errors.append(
+            f"Unsupported runtime '{runtime}'. Supported runtimes: {', '.join(sorted(SUPPORTED_RUNTIME_IDS))}"
+        )
+    if provider not in SUPPORTED_PROVIDER_IDS:
+        errors.append(
+            f"Unsupported provider '{provider}'. Supported providers: {', '.join(sorted(SUPPORTED_PROVIDER_IDS))}"
+        )
+    if runtime == DEFAULT_RUNTIME_ID and provider != DEFAULT_PROVIDER_ID:
+        errors.append(
+            f"Runtime '{DEFAULT_RUNTIME_ID}' supports provider '{DEFAULT_PROVIDER_ID}' only; got '{provider}'"
+        )
+    return errors
+
+
 def validate_instance_config(
     script_dir: Path,
     instance_config: InstanceConfig,
     remote_agent_dir: Path | None = None,
 ) -> None:
-    """Validate instance config references exist. FATAL on missing workflow, WARNING on missing env."""
+    """Validate instance config references exist. FATAL on invalid selection/workflow, WARNING on missing env."""
     logger = logging.getLogger(__name__)
+
+    selection_errors = validate_runtime_provider_selection(instance_config.runtime, instance_config.provider)
+    if selection_errors:
+        for error in selection_errors:
+            logger.error("FATAL: %s", error)
+        logger.error("Runtime/provider selection validation failed. Check instance.yaml or deployment env.")
+        sys.exit(1)
+
+    cycle_timeout = instance_config.cycle_timeout_seconds
+    if cycle_timeout is not None and not _valid_cycle_timeout(cycle_timeout):
+        logger.error("FATAL: cycle_timeout_seconds must be a positive integer, got %r", cycle_timeout)
+        sys.exit(1)
 
     wf_dir = resolve_workflow_dir(script_dir, instance_config.workflow, remote_agent_dir)
     if not wf_dir.is_dir():
@@ -142,23 +284,46 @@ def load_config(script_dir: Path) -> Config:
     """Load bot configuration from config.json."""
     with open(script_dir / "config.json") as f:
         raw = json.load(f)
+    claude_cfg = raw.get("claude", {})
+    opencode_cfg = raw.get("opencode", {})
+    opencode_model = _nonempty_model(opencode_cfg.get("model")) if isinstance(opencode_cfg, dict) else None
+    opencode_max_tool_calls = opencode_cfg.get("maxToolCalls", 200) if isinstance(opencode_cfg, dict) else 200
+    if type(opencode_max_tool_calls) is not int or opencode_max_tool_calls <= 0:
+        raise ValueError("opencode.maxToolCalls must be a positive integer")
+    if budget_override := os.environ.get("REHOR_OPENCODE_MAX_TOOL_CALLS"):
+        if not re.fullmatch(r"[0-9]+", budget_override) or int(budget_override, 10) <= 0:
+            raise ValueError("REHOR_OPENCODE_MAX_TOOL_CALLS must be a positive base-10 integer")
+        opencode_max_tool_calls = int(budget_override, 10)
     return Config(
-        model=raw["claude"]["model"],
-        max_turns=raw["claude"]["maxTurns"],
+        model=claude_cfg["model"],
+        opencode_model=opencode_model or DEFAULT_OPENCODE_MODEL,
+        opencode_max_tool_calls=opencode_max_tool_calls,
+        max_turns=claude_cfg["maxTurns"],
         interval=raw["polling"]["intervalSeconds"],
         idle_interval=raw["polling"].get("idleIntervalSeconds", 300),
-        cycle_timeout=raw["claude"].get("cycleTimeoutSeconds", 1800),
+        cycle_timeout=claude_cfg.get("cycleTimeoutSeconds", 3600),
         board_key=raw["jira"]["boardKey"],
         idle_reminder_cooldown_seconds=raw["polling"].get("idleReminderCooldownSeconds", _DEFAULT_COOLDOWN_SECONDS),
+        model_tiers=_load_model_tiers(claude_cfg.get("modelTiers")),
+        budget_usd=float(claude_cfg.get("budgetUsd", 5.0)),
     )
 
 
-def load_mcp_servers(script_dir: Path) -> dict:
-    """Load and merge MCP servers from bot and persona configs.
+def load_mcp_servers(
+    script_dir: Path,
+    *,
+    resolve_env: bool = True,
+    include_project: bool = False,
+) -> dict:
+    """Load the complete merged MCP configuration for each runtime.
 
-    The root .mcp.json (bot-memory, chrome-devtools) is loaded automatically
-    by the SDK via setting_sources=["project"]. This function loads additional
-    servers: bot-specific (bot/mcp.json for mcp-atlassian) and per-persona.
+    Claude Code can discover the project-level ``.mcp.json`` itself, but the
+    provider-neutral coordinator cannot rely on that ambient discovery. The
+    OpenCode bridge opts into ``include_project=True`` so it receives the
+    protected project servers explicitly; the legacy default remains unchanged.
+
+    ``resolve_env=False`` preserves ``${VAR}`` references for the OpenCode
+    renderer; the resolved default remains for the legacy Claude path.
     """
     servers: dict = {}
 
@@ -169,7 +334,7 @@ def load_mcp_servers(script_dir: Path) -> dict:
         with open(bot_mcp) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     merged_mcp = script_dir / "data" / "merged-mcp.json"
     if merged_mcp.exists():
@@ -177,14 +342,58 @@ def load_mcp_servers(script_dir: Path) -> dict:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
             if name not in servers:
-                servers[name] = _resolve_env_vars(cfg)
+                servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
 
     for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
         with open(mcp_file) as f:
             data = json.load(f)
         for name, cfg in data.get("mcpServers", {}).items():
-            servers[name] = _resolve_env_vars(cfg)
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
+
+    # Project-level servers are protected by the merge contract and must win
+    # over optional persona definitions. This explicit result is consumed by
+    # the OpenCode renderer; Claude's project discovery remains compatible.
+    root_mcp = script_dir / ".mcp.json"
+    if include_project and root_mcp.exists():
+        with open(root_mcp) as f:
+            data = json.load(f)
+        for name, cfg in data.get("mcpServers", {}).items():
+            servers[name] = _resolve_env_vars(cfg) if resolve_env else cfg
     return servers
+
+
+def discover_optional_mcp_servers(script_dir: Path) -> list[str]:
+    """Return MCP servers supplied by optional persona and environment layers."""
+    names: set[str] = set()
+
+    for mcp_file in sorted(script_dir.glob("personas/*/mcp.json")):
+        with open(mcp_file) as f:
+            data = json.load(f)
+        servers = data.get("mcpServers", {})
+        if isinstance(servers, dict):
+            names.update(name for name in servers if isinstance(name, str))
+
+    # Environment manifests declare MCP servers under provides.mcp_servers.
+    # Every env counts, not only the active ones: ALLOWED_TOOLS lists their
+    # wildcards for all instances, so an instance without the env must skip
+    # them rather than fail OpenCode config validation.
+    for manifest in sorted(script_dir.glob("presets/envs/*/manifest.yaml")):
+        names.update(_manifest_mcp_server_names(manifest))
+
+    return sorted(names)
+
+
+def _manifest_mcp_server_names(path: Path) -> set[str]:
+    if not path.is_file():
+        return set()
+    with open(path) as f:
+        manifest = yaml.safe_load(f) or {}
+    provided = manifest.get("provides", {}).get("mcp_servers", {})
+    if isinstance(provided, dict):
+        return {name for name in provided if isinstance(name, str)}
+    if isinstance(provided, list):
+        return {name for name in provided if isinstance(name, str)}
+    return set()
 
 
 def _resolve_env_vars(obj):
@@ -219,15 +428,63 @@ def load_manifest(
         return yaml.safe_load(f)
 
 
+def resolve_cycle_model(
+    script_dir: Path,
+    instance_config: InstanceConfig,
+    global_config: Config,
+    remote_agent_dir: Path | None = None,
+) -> str:
+    """Resolve the cycle model following override, workflow-tier, and runtime-default precedence:
+
+    1. instance.yaml `model` (explicit pin)
+    2. BOT_MODEL environment variable (deploy overlay, applied in load_instance_config)
+    3. workflow manifest.yaml `model_tier` for Claude/Vertex; OpenCode/OpenAI routes reject it until separately mapped
+    4. provider-specific global model (`claude.model` or `opencode.model`)
+
+    Presets name a tier, not a model ID, so shared workflows stay provider-neutral;
+    only deployment-owned config (instance.yaml, BOT_MODEL, config.json) carries IDs.
+    """
+    logger = logging.getLogger(__name__)
+    if pinned := _nonempty_model(instance_config.model):
+        logger.info("Resolved cycle model: %s (source=instance)", pinned)
+        return pinned
+    manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir) or {}
+    if tier := _nonempty_model(manifest.get("model_tier")):
+        if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider != "vertex":
+            raise ValueError(
+                f"Workflow '{instance_config.workflow}' requests model tier '{tier}', but OpenCode provider "
+                f"'{instance_config.provider}' has no model-tier mapping; set an explicit model in instance.yaml "
+                "or BOT_MODEL"
+            )
+        if pinned := global_config.model_tiers.get(tier):
+            logger.info("Resolved cycle model: %s (source=workflow:%s tier=%s)", pinned, instance_config.workflow, tier)
+            return pinned
+        logger.error(
+            "Workflow '%s' requests model tier '%s' not defined in config.json claude.modelTiers — using default",
+            instance_config.workflow,
+            tier,
+        )
+    if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider == "rehor-openai-chat":
+        raise ValueError(
+            "OpenCode provider 'rehor-openai-chat' requires an explicit model; set model in instance.yaml or BOT_MODEL"
+        )
+    if instance_config.runtime == OPENCODE_RUNTIME_ID and instance_config.provider == "rehor-openai":
+        logger.info("Resolved cycle model: %s (source=config.json opencode.model)", global_config.opencode_model)
+        return global_config.opencode_model
+    logger.info("Resolved cycle model: %s (source=config.json claude.model)", global_config.model)
+    return global_config.model
+
+
 def validate_manifest(
     script_dir: Path,
     workflow: str,
     mcp_servers: dict,
     remote_agent_dir: Path | None = None,
+    model_tiers: dict[str, str] | None = None,
 ) -> None:
     """Validate workflow manifest requirements at startup.
 
-    FATAL (sys.exit) on missing required MCP servers or env vars.
+    FATAL (sys.exit) on missing required MCP servers, env vars, or unknown model tier.
     WARNING on missing optional env vars or absent manifest.
     """
     logger = logging.getLogger(__name__)
@@ -256,6 +513,9 @@ def validate_manifest(
         if not os.environ.get(var):
             errors.append(f"Required env var '{var}' not set")
 
+    if model_tiers is not None and (tier := _nonempty_model(manifest.get("model_tier"))) and tier not in model_tiers:
+        errors.append(f"Model tier '{tier}' not defined in config.json claude.modelTiers")
+
     if errors:
         for err in errors:
             logger.error("FATAL: %s", err)
@@ -279,10 +539,14 @@ SECRET_ENV_VARS = [
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GITLAB_TOKEN",
+    "JIRA_API_TOKEN",
+    "JIRA_MCP_TOKEN",
+    "JIRA_USERNAME",
     "GPG_PRIVATE_KEY_B64",
     "GPG_SIGNING_KEY",
     "SSO_USERNAME",
     "SSO_PASSWORD",
+    "REHOR_MODEL_PROXY_TOKEN",
 ]
 
 

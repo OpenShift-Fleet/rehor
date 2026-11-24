@@ -1,0 +1,6 @@
+workflow: jira-sprint
+source: jira
+envs:
+  - node
+  - go
+  - container-scan

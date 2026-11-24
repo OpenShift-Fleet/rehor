@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { EmbeddingPoint, Memory } from '../types';
-import { fetchEmbeddings, fetchMemory } from '../api';
-import DetailPanel from '../components/DetailPanel';
-import { deleteMemory } from '../api';
+import { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { deleteMemory, fetchEmbeddings, fetchMemory } from "../api";
+import DetailPanel from "../components/DetailPanel";
+import type { EmbeddingPoint, Memory } from "../types";
 
 const CATEGORY_COLORS: Record<string, number> = {
   learning: 0x3fb950,
@@ -40,7 +39,7 @@ export default function EmbeddingMap() {
       60,
       container.clientWidth / container.clientHeight,
       0.1,
-      1000
+      1000,
     );
     camera.position.set(3, 3, 3);
 
@@ -65,11 +64,12 @@ export default function EmbeddingMap() {
       new THREE.Vector3(0, 0, axisLen),
     ];
     axisDirections.forEach((dir, i) => {
-      const geo = new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        dir,
-      ]);
-      const mat = new THREE.LineBasicMaterial({ color: axisColors[i], opacity: 0.3, transparent: true });
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), dir]);
+      const mat = new THREE.LineBasicMaterial({
+        color: axisColors[i],
+        opacity: 0.3,
+        transparent: true,
+      });
       scene.add(new THREE.Line(geo, mat));
     });
 
@@ -94,8 +94,8 @@ export default function EmbeddingMap() {
         if (idx !== hoveredIndex) {
           hoveredIndex = idx;
           const pt = pointData[idx];
-          tooltip.style.display = 'block';
-          tooltip.innerHTML = `<strong>${pt.title}</strong><br/><span class="viz-tooltip-cat">${pt.category.replace(/_/g, ' ')}</span>`;
+          tooltip.style.display = "block";
+          tooltip.innerHTML = `<strong>${pt.title}</strong><br/><span class="viz-tooltip-cat">${pt.category.replace(/_/g, " ")}</span>`;
           // Dim others, highlight hovered
           spheres.forEach((s, i) => {
             const mat = s.material as THREE.MeshBasicMaterial;
@@ -108,11 +108,11 @@ export default function EmbeddingMap() {
             }
           });
         }
-        tooltip.style.left = e.clientX - container.getBoundingClientRect().left + 12 + 'px';
-        tooltip.style.top = e.clientY - container.getBoundingClientRect().top - 10 + 'px';
+        tooltip.style.left = e.clientX - container.getBoundingClientRect().left + 12 + "px";
+        tooltip.style.top = e.clientY - container.getBoundingClientRect().top - 10 + "px";
       } else if (hoveredIndex !== -1) {
         hoveredIndex = -1;
-        tooltip.style.display = 'none';
+        tooltip.style.display = "none";
         spheres.forEach((s) => {
           const mat = s.material as THREE.MeshBasicMaterial;
           mat.opacity = 0.85;
@@ -137,8 +137,8 @@ export default function EmbeddingMap() {
       }
     };
 
-    container.addEventListener('mousemove', onMouseMove);
-    container.addEventListener('click', onClick);
+    container.addEventListener("mousemove", onMouseMove);
+    container.addEventListener("click", onClick);
 
     const onResize = () => {
       if (disposed) return;
@@ -146,7 +146,7 @@ export default function EmbeddingMap() {
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
     };
-    window.addEventListener('resize', onResize);
+    window.addEventListener("resize", onResize);
 
     const resizeObserver = new ResizeObserver(onResize);
     resizeObserver.observe(container);
@@ -170,7 +170,11 @@ export default function EmbeddingMap() {
       });
 
       // Lines between nearby same-category points
-      const lineMat = new THREE.LineBasicMaterial({ color: 0x30363d, opacity: 0.3, transparent: true });
+      const lineMat = new THREE.LineBasicMaterial({
+        color: 0x30363d,
+        opacity: 0.3,
+        transparent: true,
+      });
       for (let i = 0; i < points.length; i++) {
         for (let j = i + 1; j < points.length; j++) {
           if (points[i].category !== points[j].category) continue;
@@ -202,9 +206,9 @@ export default function EmbeddingMap() {
     cleanupRef.current = () => {
       disposed = true;
       cancelAnimationFrame(animId);
-      container.removeEventListener('mousemove', onMouseMove);
-      container.removeEventListener('click', onClick);
-      window.removeEventListener('resize', onResize);
+      container.removeEventListener("mousemove", onMouseMove);
+      container.removeEventListener("click", onClick);
+      window.removeEventListener("resize", onResize);
       resizeObserver.disconnect();
       controls.dispose();
       renderer.dispose();
@@ -238,18 +242,18 @@ export default function EmbeddingMap() {
   return (
     <div className="split-layout viz-layout">
       <div className="viz-container" ref={containerRef}>
-        <div className="viz-tooltip" ref={tooltipRef} style={{ display: 'none' }} />
+        <div className="viz-tooltip" ref={tooltipRef} style={{ display: "none" }} />
         <div className="viz-legend">
           <div className="viz-legend-item">
-            <span className="viz-dot" style={{ background: '#3fb950' }} />
+            <span className="viz-dot" style={{ background: "#3fb950" }} />
             learning
           </div>
           <div className="viz-legend-item">
-            <span className="viz-dot" style={{ background: '#d29922' }} />
+            <span className="viz-dot" style={{ background: "#d29922" }} />
             review feedback
           </div>
           <div className="viz-legend-item">
-            <span className="viz-dot" style={{ background: '#58a6ff' }} />
+            <span className="viz-dot" style={{ background: "#58a6ff" }} />
             codebase pattern
           </div>
         </div>

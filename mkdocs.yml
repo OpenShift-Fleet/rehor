@@ -1,15 +1,14 @@
-site_name: Dev Bot (Rehor)
-site_description: Autonomous Jira-driven developer agent documentation
-repo_url: https://github.com/RedHatInsights/platform-frontend-ai-dev
-repo_name: RedHatInsights/platform-frontend-ai-dev
-
+site_name: Řehoř
+site_description: Workflow-driven autonomous developer tool documentation
+site_url: https://openshift-fleet.github.io/rehor/
 theme:
   name: material
+  logo: assets/images/icon.png
+  favicon: assets/images/favicon.png
   font:
-    text: Red Hat Text
-    code: Red Hat Mono
+    text: false
+    code: false
   features:
-    - navigation.tabs
     - navigation.sections
     - navigation.expand
     - navigation.top
@@ -19,17 +18,19 @@ theme:
     - content.code.copy
   palette:
     - scheme: default
-      primary: red
-      accent: deep orange
+      primary: black
+      accent: blue
+      toggle:
+        icon: material/brightness-2
+        name: Dark theme
+    - scheme: slate
+      primary: black
+      accent: blue
       toggle:
         icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: red
-      accent: deep orange
-      toggle:
-        icon: material/brightness-4
-        name: Switch to light mode
+        name: Light theme
+repo_url: https://github.com/OpenShift-Fleet/rehor
+repo_name: OpenShift-Fleet/rehor
 
 extra_css:
   - stylesheets/extra.css
@@ -57,18 +58,34 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
+    - Agent Dispatcher Deployment: agent-dispatcher-deployment.md
+    - Instance Configuration: presets/instance-config.md
     - Onboarding a New Instance: onboarding-new-instance.md
-    - Scheduling: scheduling.md
+    - OpenShell Deployment: openshell-deployment.md
   - Architecture:
     - Bot Workflow Loop: bot-workflow-loop.md
+    - Scheduling: scheduling.md
+    - Model Configuration: models.md
+    - Debugging Cycles and Improving Agents: debugging-cycles-and-agents.md
     - Git Auth Proxy: git-auth-proxy.md
-    - Preset System Design: presets-design.md
+    - Agent Proxy Gateway: agent-proxy-gateways.md
+    - Dispatcher Credentials and Secrets: dispatcher-secrets.md
   - Presets:
     - Overview: presets/README.md
     - Workflow Presets: presets/workflows.md
     - Env Presets: presets/envs.md
     - Custom Workflows: presets/custom-workflows.md
-    - Custom Preflight Scripts: presets/custom-preflight.md
-  - Migrations:
-    - Preset Migration Guide: migrations/preset-migration-guide.md
+    - Dispatcher Preflights: presets/custom-preflight.md
+    - Preflight Reference: presets/preflight-reference.md
+  - Operations Runbooks:
+    - Operations Overview: operations/index.md
+    - Branch Protection Rollout: operations/rehor-77-branch-protection-rollout.md
+    - Container Verification: operations/rehor-107-container-verification.md
+    - Container E2E: operations/rehor-62-container-e2e.md
   - Roadmap: roadmap.md
+
+not_in_nav: |
+  /legacy/
+  /migrations/
+  /presets-design.md
+  /scheduling.md

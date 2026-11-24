@@ -1,0 +1,6 @@
+{
+  "name": "@nvidia/openshell-sdk",
+  "projectType": "library",
+  "sourceRoot": "packages/openshell-sdk/dist",
+  "tags": ["scope:agent-dispatcher", "type:vendored-dependency"]
+}

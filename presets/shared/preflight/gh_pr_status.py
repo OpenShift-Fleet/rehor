@@ -16,6 +16,7 @@ from common import (
     get_task_prs,
     get_tasks,
     is_bot_author,
+    is_newer,
     output_result,
     save_state,
     upstream_repo,
@@ -54,7 +55,7 @@ def gh_pr_comments(owner_repo, num):
     ]:
         try:
             r = subprocess.run(
-                ["gh", "api", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
+                ["gh", "api", "--paginate", ep, "--jq", ".[] | {a: .user.login, t: .created_at, b: .body}"],
                 capture_output=True,
                 text=True,
                 timeout=15,
@@ -90,13 +91,10 @@ def classify_gh(pr, last_addressed=""):
         konflux_urls = [c.get("detailsUrl", "") for c in failed_checks if "pipelinerun" in c.get("detailsUrl", "")]
         if konflux_urls:
             issues.append(f"konflux_urls:{';'.join(konflux_urls)}")
-    if pr.get("reviewDecision") == "CHANGES_REQUESTED":
-        issues.append("changes_requested")
-    last_prefix = last_addressed[:16] if last_addressed else ""
     for rv in pr.get("reviews") or []:
         rstate = rv.get("state", "")
-        submitted = (rv.get("submittedAt") or "")[:16]
-        if last_prefix and submitted and submitted <= last_prefix:
+        submitted = rv.get("submittedAt") or ""
+        if last_addressed and submitted and not is_newer(submitted, last_addressed):
             continue
         author = rv.get("author", {}).get("login", "?")
         if rstate == "CHANGES_REQUESTED":
@@ -148,7 +146,7 @@ def enrich_gh(task):
                 pr_comments.append(
                     {
                         "a": rv.get("author", {}).get("login", "?"),
-                        "t": rv.get("submittedAt", "")[:16],
+                        "t": rv.get("submittedAt", ""),
                         "b": f"[REVIEW {rv.get('state', '?')}] {body}",
                     }
                 )
@@ -170,10 +168,15 @@ def has_new_feedback(enriched):
     for c in enriched["pr_comments"]:
         if is_bot_author(c.get("a", "?")):
             continue
-        ct = c.get("t", "")[:16]
-        if not last_addr or ct > last_addr[:16]:
+        if not last_addr or is_newer(c.get("t", ""), last_addr):
             return True
     return False
+
+
+def ci_failure_needs_session(enriched):
+    """Return whether an addressed CI failure needs another agent session."""
+    task = enriched["task"]
+    return not task.get("last_addressed") or has_new_feedback(enriched)
 
 
 def fmt_task(enriched):
@@ -192,7 +195,7 @@ def fmt_task(enriched):
     return "\n".join(lines)
 
 
-def main():
+def main(suppress_terminal_if_addressed=False):
     if not INSTANCE_ID:
         output_result("error", "BOT_INSTANCE_ID not set")
         return
@@ -215,12 +218,18 @@ def main():
     for e in enriched:
         issues = e["issues"]
         if "merged" in issues:
-            merged.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                merged.append(e)
         elif "closed" in issues:
-            closed.append(e)
+            if suppress_terminal_if_addressed and e["task"].get("last_addressed") and not has_new_feedback(e):
+                clean.append(e)
+            else:
+                closed.append(e)
         elif any(i.startswith("ci_fail") for i in issues):
-            ci_only = all(i.startswith(("ci_fail", "konflux_urls", "changes_requested")) for i in issues)
-            if ci_only and e["task"].get("last_addressed") and not has_new_feedback(e):
+            ci_only = all(i.startswith(("ci_fail", "konflux_urls")) for i in issues)
+            if ci_only and not ci_failure_needs_session(e):
                 clean.append(e)
             else:
                 ci_fail.append(e)

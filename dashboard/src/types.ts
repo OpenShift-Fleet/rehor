@@ -10,7 +10,7 @@ export interface Task {
   source_type: string;
   source_url: string | null;
   artifacts: Array<{ name: string; url: string; type: string }>;
-  status: 'in_progress' | 'pr_open' | 'pr_changes' | 'paused' | 'done' | 'archived';
+  status: "in_progress" | "pr_open" | "pr_changes" | "paused" | "done" | "archived";
   repo: string;
   branch: string;
   title: string | null;
@@ -39,7 +39,7 @@ export interface Memory {
 
 export interface BotInstance {
   instance_id: string;
-  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
+  state: "working" | "idle" | "error" | "sleep" | "unknown";
   message: string;
   external_key: string | null;
   source_type: string | null;
@@ -47,13 +47,12 @@ export interface BotInstance {
   repo: string | null;
   cycle_start: string | null;
   updated_at: string;
-  last_seen: string | null;
   active_tasks: number;
   max_tasks: number;
 }
 
 export interface BotStatus {
-  state: 'working' | 'idle' | 'error' | 'sleep' | 'unknown';
+  state: "working" | "idle" | "error" | "sleep" | "unknown";
   message: string;
   external_key: string | null;
   source_type: string | null;
@@ -62,7 +61,6 @@ export interface BotStatus {
   instance_id: string | null;
   cycle_start: string | null;
   updated_at: string;
-  last_seen?: string | null;
 }
 
 export interface CycleEntry {
@@ -73,6 +71,8 @@ export interface CycleEntry {
   num_turns: number;
   duration_ms: number;
   cost_usd: number;
+  cost_status?: "provider" | "estimated" | "unknown" | null;
+  cost_incomplete?: boolean;
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
@@ -99,6 +99,8 @@ export interface DailyAggregate {
   total_turns: number;
   idle_cycles: number;
   error_cycles: number;
+  estimated_cycles?: number;
+  incomplete_cycles?: number;
 }
 
 export interface EmbeddingPoint {

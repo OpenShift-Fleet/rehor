@@ -1,4 +1,4 @@
-import { test as base, type Locator } from '@playwright/test';
+import { test as base, type Locator } from "@playwright/test";
 
 type MountResult = Locator & {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -8,10 +8,10 @@ type MountResult = Locator & {
 
 export const test = base.extend<{ mount: (scenarioId: string) => Promise<MountResult> }>({
   mount: async ({ page }, use) => {
-    await page.goto('/e2e/gallery.html');
+    await page.goto("/e2e/gallery.html");
     await use(async (scenarioId: string): Promise<MountResult> => {
       await page.evaluate((id) => (window as any).mount(id), scenarioId);
-      return Object.assign(page.locator('#root'), {
+      return Object.assign(page.locator("#root"), {
         update: async () => {},
         unmount: async () => {},
       });
@@ -19,4 +19,4 @@ export const test = base.extend<{ mount: (scenarioId: string) => Promise<MountRe
   },
 });
 
-export { expect } from '@playwright/test';
+export { expect } from "@playwright/test";

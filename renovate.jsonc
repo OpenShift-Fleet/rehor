@@ -1,0 +1,95 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  // Renovate overrides for this repository. MintMaker merges them on top of its
+  // global config, which sets the managers, the release-age delay, the
+  // vulnerability alerts, branch naming and PR limits:
+  // https://github.com/konflux-ci/mintmaker/blob/main/config/renovate/renovate.json
+  // A key set here replaces the inherited value; packageRules are added to the
+  // inherited ones; enabledManagers would replace the whole list, so it is never set.
+  // Policy: patch and minor updates of the ecosystems below merge on their own once
+  // the required checks pass. Majors stay on manual review unless a rule names them.
+  // MintMaker docs: https://konflux-ci.dev/docs/mintmaker/user/
+  // Automerge set up with the MintMaker Automerge plugin: https://github.com/gwenneg/mintmaker-automerge
+  "extends": [
+    "github>RedHatInsights/shared-workflows//renovate/backend",
+    // Pins actions to commit SHAs, so a version bump can be told from a moved tag.
+    "helpers:pinGitHubActionDigests"
+  ],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 0,
+  "vulnerabilityAlerts": {
+    "description": "Security fixes bypass the weekly window and open immediately",
+    "schedule": ["at any time"],
+    "prCreation": "immediate",
+    "labels": ["security"]
+  },
+  "lockFileMaintenance": {
+    "schedule": ["* 0-6 * * 1"]
+  },
+  "tekton": {
+    // Konflux pipeline updates in .tekton/: the PR's own Konflux build tests them.
+    "automerge": true,
+    // Any day, instead of MintMaker's Saturday batch.
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    // --- github-actions: patch and minor of the GitHub-maintained actions named below; majors, digest-only and third-party actions stay manual
+    {
+      // Vetted by name: an action runs arbitrary code in CI. Patch and minor only, so a
+      // moved tag with no version change, the shape of a hijacked action, never merges alone.
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "matchDepNames": [
+        "actions/checkout",
+        "actions/deploy-pages",
+        "actions/setup-go",
+        "actions/setup-node",
+        "actions/setup-python",
+        "actions/upload-artifact",
+        "actions/upload-pages-artifact"
+      ],
+      "automerge": true
+    },
+
+    // --- dockerfile: digest, patch and minor of the base images; majors stay manual
+    {
+      // The Konflux PR build builds and tests the image. A digest update is a rebuild of
+      // the same tag; a new RHEL or JDK line is a major and stays on manual review.
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["digest", "patch", "minor"],
+      "automerge": true
+    },
+    {
+      // Pins FROM lines to tag@sha256, so rebuilds of a tag arrive as digest PRs.
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+
+    // --- gomod: patch and minor, indirect dependencies included; majors stay manual
+    {
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    },
+
+    // --- npm: patch and minor; majors, packageManager and engines stay manual
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    },
+    {
+      // packageManager and engines pin every developer's tools, not just CI's.
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["packageManager", "engines"],
+      "automerge": false
+    },
+
+    // --- python: patch and minor; majors stay manual
+    {
+      "matchManagers": ["pip_requirements", "pep621"],
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    }
+  ]
+}

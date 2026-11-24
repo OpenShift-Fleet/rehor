@@ -1,19 +1,19 @@
-import type { CycleRun } from '../types';
-import { timeAgo, formatDuration, formatTokens, sourceUrl } from '../utils';
-import { fetchCycleRunTranscript } from '../api';
 import {
+  Button,
   Card,
+  CardBody,
   CardHeader,
   CardTitle,
-  CardBody,
+  Content,
   Flex,
   FlexItem,
   Label,
   LabelGroup,
-  Button,
-  Content
-} from '@patternfly/react-core';
-import { DownloadIcon } from '@patternfly/react-icons';
+} from "@patternfly/react-core";
+import { DownloadIcon } from "@patternfly/react-icons";
+import { fetchCycleRunTranscript } from "../api";
+import type { CycleRun } from "../types";
+import { formatDuration, formatTokens, sourceUrl, timeAgo } from "../utils";
 
 interface Props {
   run: CycleRun;
@@ -21,18 +21,18 @@ interface Props {
   onClick?: () => void;
 }
 
-const typeColors: Record<string, 'blue' | 'green' | 'orange' | 'grey' | 'red'> = {
-  task_work: 'blue',
-  triage_only: 'green',
-  idle: 'grey',
-  error: 'red',
+const typeColors: Record<string, "blue" | "green" | "orange" | "grey" | "red"> = {
+  task_work: "blue",
+  triage_only: "green",
+  idle: "grey",
+  error: "red",
 };
 
 const typeLabels: Record<string, string> = {
-  task_work: 'Work',
-  triage_only: 'Triage',
-  idle: 'Idle',
-  error: 'Error',
+  task_work: "Work",
+  triage_only: "Triage",
+  idle: "Idle",
+  error: "Error",
 };
 
 export default function CycleRunCard({ run, selected, onClick }: Props) {
@@ -48,10 +48,10 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
     e.stopPropagation();
     try {
       const text = await fetchCycleRunTranscript(run.id);
-      const ts = run.started_at.replace(/[:.]/g, '-').slice(0, 19);
-      const blob = new Blob([text], { type: 'application/x-ndjson' });
+      const ts = run.started_at.replace(/[:.]/g, "-").slice(0, 19);
+      const blob = new Blob([text], { type: "application/x-ndjson" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
       a.download = `cycle-${run.id}-${run.cycle_type}-${ts}.jsonl`;
       a.click();
@@ -62,29 +62,27 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
   };
 
   return (
-    <Card
-      isCompact
-      isGlass
-      isSelected={selected}
-      onClick={onClick}
-      style={{ cursor: 'pointer' }}
-    >
+    <Card isCompact isGlass isSelected={selected} onClick={onClick} style={{ cursor: "pointer" }}>
       <CardHeader
-        actions={{ actions: run.has_transcript ? (
-          <Button variant="plain" size="sm" onClick={handleDownload} title="Download transcript">
-            <DownloadIcon />
-          </Button>
-        ) : undefined }}
+        actions={{
+          actions: run.has_transcript ? (
+            <Button variant="plain" size="sm" onClick={handleDownload} title="Download transcript">
+              <DownloadIcon />
+            </Button>
+          ) : undefined,
+        }}
       >
         <CardTitle>
-          <Flex alignItems={{ default: 'alignItemsCenter' }} gap={{ default: 'gapSm' }}>
+          <Flex alignItems={{ default: "alignItemsCenter" }} gap={{ default: "gapSm" }}>
             <FlexItem>
-              <Label color={typeColors[run.cycle_type] || 'grey'}>
+              <Label color={typeColors[run.cycle_type] || "grey"}>
                 {typeLabels[run.cycle_type] || run.cycle_type}
               </Label>
             </FlexItem>
             <FlexItem>
-              <Content component="small" style={{ margin: 0 }}>#{run.id}</Content>
+              <Content component="small" style={{ margin: 0 }}>
+                #{run.id}
+              </Content>
             </FlexItem>
             <FlexItem>
               <Content component="small" style={{ margin: 0 }} title={run.started_at}>
@@ -95,18 +93,20 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
         </CardTitle>
       </CardHeader>
       <CardBody>
-        <Flex direction={{ default: 'column' }} gap={{ default: 'gapSm' }}>
+        <Flex direction={{ default: "column" }} gap={{ default: "gapSm" }}>
           <FlexItem>
             <LabelGroup>
               {duration != null && <Label variant="outline">{formatDuration(duration)}</Label>}
               {run.tool_calls != null && <Label variant="outline">{run.tool_calls} tools</Label>}
-              {run.tokens_used != null && <Label variant="outline">{formatTokens(run.tokens_used)} tokens</Label>}
+              {run.tokens_used != null && (
+                <Label variant="outline">{formatTokens(run.tokens_used)} tokens</Label>
+              )}
             </LabelGroup>
           </FlexItem>
           {extKey && (
             <FlexItem>
               <span onClick={(e) => e.stopPropagation()}>
-                <Label color="blue" href={extUrl || '#'}>
+                <Label color="blue" href={extUrl || "#"}>
                   {extKey}
                 </Label>
               </span>
@@ -114,19 +114,26 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
           )}
           {progress.summary && (
             <FlexItem>
-              <Content component="p" style={{ margin: 0, color: 'var(--pf-t--global--text--color--subtle)' }}>
+              <Content
+                component="p"
+                style={{ margin: 0, color: "var(--pf-t--global--text--color--subtle)" }}
+              >
                 {String(progress.summary).slice(0, 120)}
               </Content>
             </FlexItem>
           )}
           {progress.last_step && (
             <FlexItem>
-              <Content component="small" style={{ margin: 0 }}>Step: {progress.last_step}</Content>
+              <Content component="small" style={{ margin: 0 }}>
+                Step: {progress.last_step}
+              </Content>
             </FlexItem>
           )}
           {run.instance_id && (
             <FlexItem>
-              <Label variant="outline" color="grey">{run.instance_id}</Label>
+              <Label variant="outline" color="grey">
+                {run.instance_id}
+              </Label>
             </FlexItem>
           )}
         </Flex>
