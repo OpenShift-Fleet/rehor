@@ -5,6 +5,7 @@ import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { nonBlank } from "../../shared/strings.js";
+import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -14,7 +15,6 @@ import {
   quotedStatusList,
 } from "../jira-common/candidates.js";
 import { executionErrorResult, JIRA_CLIENT_NOT_WIRED } from "../jira-common/errors.js";
-import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import {
   ACTIVE_TASK_STATUSES,
   cleanTaskLine,
@@ -162,7 +162,12 @@ export async function runJiraSprintPreflight(
     return { status: "start", content: lines.join("\n") };
   }
 
-  const candidates = await getSprintCandidates(jira, params, repoLookup, resolveBotJiraEmail(params.email, ctx));
+  const candidates = await getSprintCandidates(
+    jira,
+    params,
+    repoLookup,
+    resolveBotJiraEmail(params.email, ctx),
+  );
   const withRepos = candidates.filter((candidate) => candidate.repos.length > 0);
   const withoutRepos = candidates.filter((candidate) => candidate.repos.length === 0);
 

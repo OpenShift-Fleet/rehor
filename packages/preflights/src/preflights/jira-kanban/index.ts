@@ -5,6 +5,7 @@ import type { JiraClient } from "../../shared/jira.js";
 import { buildRepoLookup } from "../../shared/repos.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { nonBlank } from "../../shared/strings.js";
+import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import type { JiraCandidate } from "../jira-common/candidates.js";
 import {
   CANDIDATE_SEARCH_FIELDS,
@@ -14,7 +15,6 @@ import {
   quotedStatusList,
 } from "../jira-common/candidates.js";
 import { executionErrorResult, JIRA_CLIENT_NOT_WIRED } from "../jira-common/errors.js";
-import { resolveBotJiraEmail } from "../jira-common/bot-email.js";
 import {
   ACTIVE_TASK_STATUSES,
   cleanTaskLine,
@@ -169,7 +169,12 @@ export async function runJiraKanbanPreflight(
     return { status: "start", content: lines.join("\n") };
   }
 
-  const candidates = await getKanbanCandidates(jira, params, repoLookup, resolveBotJiraEmail(params.email, ctx));
+  const candidates = await getKanbanCandidates(
+    jira,
+    params,
+    repoLookup,
+    resolveBotJiraEmail(params.email, ctx),
+  );
   if (candidates.length === 0) {
     lines.push("No eligible work candidates in kanban backlog");
     ctx.state.set("jira", { feedback: 0, interrupted: 0 });

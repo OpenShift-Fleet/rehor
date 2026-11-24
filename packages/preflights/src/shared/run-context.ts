@@ -217,9 +217,7 @@ export function createPreflightRunContext(
             instanceId: options.persistentState.instanceId ?? options.instanceId,
           });
   const jiraEmail =
-    options.jiraEmail !== undefined && nonBlank(options.jiraEmail)
-      ? options.jiraEmail
-      : undefined;
+    options.jiraEmail !== undefined && nonBlank(options.jiraEmail) ? options.jiraEmail : undefined;
   return {
     instanceId: options.instanceId,
     runId: options.runId ?? randomUUID(),
