@@ -46,15 +46,39 @@ import { classifyGh } from "./classify.js";
  *   unavailable route, an auth/rate-limit/5xx outage, or a network failure
  *   is never a silent skip. Tolerated failures are recorded as evidence in
  *   the result content.
+ * - The pr-label workflow's `01-gh-pr-status.py` wrapper becomes
+ *   optional inputs with the same defaults-off behavior: `task_key_prefix`
+ *   (its `own_tasks` scoping to `pr-label:*` keys) and
+ *   `review_bot_author` / `review_bot_markers` (its `has_new_feedback`
+ *   override counting marked review-bot comments as new feedback; see
+ *   {@link hasNewReviewBotFeedback} for the timestamp-comparison
+ *   deviation). Without them the preflight behaves exactly as before.
  */
 
-export const GH_PR_STATUS_INPUT = z.strictObject({
-  /**
-   * Suppress merged/closed buckets for tasks already addressed without new
-   * feedback (the onboarding workflow's `main(suppress_terminal_if_addressed=True)`).
-   */
-  suppress_terminal_if_addressed: z.boolean().default(false),
-});
+export const GH_PR_STATUS_INPUT = z
+  .strictObject({
+    /**
+     * Suppress merged/closed buckets for tasks already addressed without new
+     * feedback (the onboarding workflow's `main(suppress_terminal_if_addressed=True)`).
+     */
+    suppress_terminal_if_addressed: z.boolean().default(false),
+    /**
+     * Scope the task scan to external keys starting with this prefix (the
+     * pr-label workflow's `01-gh-pr-status.py` wrapper: `own_tasks` kept
+     * only `pr-label:*` keys so a shared instance id cannot mix other
+     * workflows' tasks into this check). Unset keeps every task.
+     */
+    task_key_prefix: z.string().optional(),
+    /** Review-bot login compared case-insensitively; requires `review_bot_markers`. */
+    review_bot_author: z.string().trim().min(1).optional(),
+    /** Case-insensitive body markers that flag a review finding; requires `review_bot_author`. */
+    review_bot_markers: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .refine(
+    ({ review_bot_author, review_bot_markers }) =>
+      (review_bot_author === undefined) === (review_bot_markers === undefined),
+    { message: "review_bot_author and review_bot_markers must be supplied together" },
+  );
 
 export type GhPrStatusParams = z.infer<typeof GH_PR_STATUS_INPUT>;
 
@@ -101,6 +125,27 @@ export interface GhPrStatusOptions {
    * in clean instead of the terminal buckets. Defaults to false.
    */
   readonly suppressTerminalIfAddressed?: boolean;
+  /**
+   * Scope the task scan to external keys with this prefix (the pr-label
+   * wrapper's `own_tasks` scoping). Unset keeps every task.
+   */
+  readonly taskKeyPrefix?: string;
+  /**
+   * Count marked comments by this review-bot author as new feedback (the
+   * pr-label wrapper's `has_new_feedback` override). Unset keeps the base
+   * bot-comment exclusion.
+   */
+  readonly reviewBotFeedback?: ReviewBotFeedback;
+}
+
+/**
+ * The review-bot feedback rule of the pr-label wrapper's
+ * `01-gh-pr-status.py`: comments by `author` whose body contains any of
+ * `markers` count as new feedback, on top of the base rule.
+ */
+export interface ReviewBotFeedback {
+  readonly author: string;
+  readonly markers: readonly string[];
 }
 
 const BUCKET_SECTIONS: readonly (readonly [keyof GhStatusBuckets, string])[] = [
@@ -202,8 +247,46 @@ export async function enrichGh(
   return { task, prs: prResults, prComments, issues: allIssues };
 }
 
+/**
+ * True when a marked review-bot comment postdates the task's
+ * last_addressed — the pr-label wrapper's `has_new_feedback` override.
+ *
+ * One deliberate deviation from the wrapper, documented here: the Python
+ * wrapper compared minute-truncated strings (`created_at[:16] >
+ * last_addressed[:16]`), dropping same-minute findings — the exact bug the
+ * base port fixed for human comments (RHCLOUD-53177). This port uses the
+ * shared `isNewer` full-resolution comparison, so a marked bot comment
+ * posted seconds after `last_addressed` counts, exactly like a human one.
+ * The Python wrapper's `casefold()` comparisons become `toLowerCase()`
+ * (equivalent for these ASCII logins and markers).
+ */
+function hasNewReviewBotFeedback(enriched: EnrichedGhTask, reviewBot: ReviewBotFeedback): boolean {
+  const author = reviewBot.author.toLowerCase();
+  const markers = reviewBot.markers.map((marker) => marker.toLowerCase());
+  const lastAddressed = enriched.task.last_addressed;
+  for (const comment of enriched.prComments) {
+    const commentAuthorLogin = commentAuthor(comment);
+    const body = comment.b;
+    const isReviewBotFinding =
+      commentAuthorLogin !== null &&
+      commentAuthorLogin.toLowerCase() === author &&
+      typeof body === "string" &&
+      markers.some((marker) => body.toLowerCase().includes(marker));
+    if (!isReviewBotFinding) {
+      continue;
+    }
+    if (!lastAddressed || isNewer(commentTimestamp(comment), lastAddressed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** True when a non-bot PR comment is newer than the task's last_addressed. */
-export function hasNewFeedback(enriched: EnrichedGhTask): boolean {
+export function hasNewFeedback(enriched: EnrichedGhTask, reviewBot?: ReviewBotFeedback): boolean {
+  if (reviewBot !== undefined && hasNewReviewBotFeedback(enriched, reviewBot)) {
+    return true;
+  }
   const lastAddressed = enriched.task.last_addressed;
   for (const comment of enriched.prComments) {
     if (isBotAuthor(commentAuthor(comment))) {
@@ -217,8 +300,11 @@ export function hasNewFeedback(enriched: EnrichedGhTask): boolean {
 }
 
 /** Whether an addressed CI failure needs another agent session. */
-export function ciFailureNeedsSession(enriched: EnrichedGhTask): boolean {
-  return !enriched.task.last_addressed || hasNewFeedback(enriched);
+export function ciFailureNeedsSession(
+  enriched: EnrichedGhTask,
+  reviewBot?: ReviewBotFeedback,
+): boolean {
+  return !enriched.task.last_addressed || hasNewFeedback(enriched, reviewBot);
 }
 
 /**
@@ -236,16 +322,17 @@ export function classifyBuckets(
   const feedback: EnrichedGhTask[] = [];
   const clean: EnrichedGhTask[] = [];
   const suppress = options.suppressTerminalIfAddressed ?? false;
+  const reviewBot = options.reviewBotFeedback;
   for (const enriched of enrichedTasks) {
     const { issues } = enriched;
     if (issues.includes("merged")) {
-      if (suppress && enriched.task.last_addressed && !hasNewFeedback(enriched)) {
+      if (suppress && enriched.task.last_addressed && !hasNewFeedback(enriched, reviewBot)) {
         clean.push(enriched);
       } else {
         merged.push(enriched);
       }
     } else if (issues.includes("closed")) {
-      if (suppress && enriched.task.last_addressed && !hasNewFeedback(enriched)) {
+      if (suppress && enriched.task.last_addressed && !hasNewFeedback(enriched, reviewBot)) {
         clean.push(enriched);
       } else {
         closed.push(enriched);
@@ -254,7 +341,7 @@ export function classifyBuckets(
       const ciOnly = issues.every(
         (issue) => issue.startsWith("ci_fail") || issue.startsWith("konflux_urls"),
       );
-      if (ciOnly && !ciFailureNeedsSession(enriched)) {
+      if (ciOnly && !ciFailureNeedsSession(enriched, reviewBot)) {
         clean.push(enriched);
       } else {
         ciFail.push(enriched);
@@ -264,12 +351,12 @@ export function classifyBuckets(
     } else if (
       issues.some((issue) => issue === "changes_requested" || issue.startsWith("review:"))
     ) {
-      if (hasNewFeedback(enriched) || !enriched.task.last_addressed) {
+      if (hasNewFeedback(enriched, reviewBot) || !enriched.task.last_addressed) {
         feedback.push(enriched);
       } else {
         clean.push(enriched);
       }
-    } else if (hasNewFeedback(enriched)) {
+    } else if (hasNewFeedback(enriched, reviewBot)) {
       feedback.push(enriched);
     } else {
       clean.push(enriched);
@@ -309,8 +396,20 @@ export async function runGhPrStatus(
   options: GhPrStatusOptions = {},
 ): Promise<PreflightExecutionResult> {
   const tasks = await deps.memory.getTasks();
+  // The pr-label wrapper's task scoping: only external keys with the
+  // configured prefix are this workflow's tasks. Applied before the active
+  // filter, so other workflows' tasks never reach the buckets (and never
+  // count as active for the skip message).
+  const scopedTasks =
+    options.taskKeyPrefix === undefined
+      ? tasks
+      : tasks.filter(
+          (task) =>
+            typeof task.external_key === "string" &&
+            task.external_key.startsWith(options.taskKeyPrefix as string),
+        );
   const capacity = await deps.memory.getCapacity();
-  const active = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task?.status ?? ""));
+  const active = scopedTasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task?.status ?? ""));
 
   if (active.length === 0) {
     return {
@@ -443,6 +542,7 @@ export const ghPrStatus = definePreflight({
       };
     }
     try {
+      const { review_bot_author: author, review_bot_markers: markers } = params;
       return await runGhPrStatus(
         {
           memory: ctx.memory,
@@ -452,7 +552,12 @@ export const ghPrStatus = definePreflight({
           ),
           repos: ctx.repos ?? {},
         },
-        { suppressTerminalIfAddressed: params.suppress_terminal_if_addressed },
+        {
+          suppressTerminalIfAddressed: params.suppress_terminal_if_addressed,
+          taskKeyPrefix: params.task_key_prefix,
+          reviewBotFeedback:
+            author !== undefined && markers !== undefined ? { author, markers } : undefined,
+        },
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

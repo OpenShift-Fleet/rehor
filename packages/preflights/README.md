@@ -71,7 +71,11 @@ The registered ids — one registration line each in `createPopulatedRegistry` (
 
 | id           | purpose                                            | required inputs       | optional inputs (default)                                                       |
 | ------------ | -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------- |
-| gh-pr-status | GitHub PR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
+| fabric-konflux-bot-prs | Konflux bot PR consolidation candidates per repo | —           | `bot_author` (`"red-hat-konflux[bot]"`)                                          |
+| fabric-pr-label | labeled GitHub PRs awaiting the Jira claim step | —                  | `pr_label` (`"dev-bot"`), `gh_user_name` (`""`)                                  |
+| fabric-project-state | coordinator project snapshot (Jira scope + PR-only changes) | `controlLabel`, `implementationLabel`, `teamFieldId` | `project` (`"RHCLOUD"`), `includeBacklog` (`false`)              |
+| fabric-review-queue | one labeled PR needing review, resume, approval, or a feedback check | `review_label`, `bot_login` | —                                                              |
+| gh-pr-status | GitHub PR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`), `task_key_prefix` (—), `review_bot_author` + `review_bot_markers` (pair, —) |
 | gl-mr-status | GitLab MR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
 | hcc-merged-pr-violations | merged PRs with failed non-security checks | —            | `scan_only_repos` (—), `lookback_hours` (24), `max_concurrent` (5), `max_prs_per_repo` (50), `task_prefix` (`"merge-violation"`) |
 | hcc-quality-jira-feedback | new human Jira feedback on ongoing quality tasks | — | `task_prefixes` (`["merge-violation", "test-scan"]`) |
@@ -87,6 +91,8 @@ The registered ids — one registration line each in `createPopulatedRegistry` (
 Checks the GitHub PRs of the instance's active tasks — state, mergeability, CI check rollup (including Konflux `detailsUrl` extraction), review decisions, and comments — and classifies them into merged / closed / ci_fail / conflict / feedback / clean buckets. `start` (with Markdown for the agent prompt) when any actionable bucket is non-empty, `skip` otherwise. GitHub is reached through the run context's proxy route; bare repo names resolve through the instance project-repos map.
 
 - `suppress_terminal_if_addressed` (default `false`) — the onboarding mode: merged/closed PRs whose feedback was already addressed are not reported as terminal, so the onboarding agent keeps seeing them until it finishes.
+- `task_key_prefix` (optional) — scope the active-task scan to external keys starting with this prefix (the Fabric pr-label workflow keeps only `pr-label:*` tasks). Unset keeps every task.
+- `review_bot_author` + `review_bot_markers` (optional pair) — count a comment from that login whose body contains any marker (case-insensitive) as new feedback; supplying one without the other is an invalid parameter pair. Without the pair, bot comments are excluded exactly as before.
 
 ### `gl-mr-status`
 

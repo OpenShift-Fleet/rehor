@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { createPreflightRegistry, validateConfig } from "../dist/index.js";
 import { classifyGh } from "../dist/preflights/gh-pr-status/classify.js";
 import {
   ciFailureNeedsSession,
@@ -415,55 +416,60 @@ test("terminal states can be suppressed when already addressed (onboarding mode)
 // --- run flow (Python main()) ---
 
 /**
- * Fixture GitHub client: answers the GraphQL PR query from a gh-view-shaped
- * `pr` fixture and the two comment endpoints from a mapped `comments` list.
+ * Fixture fetch: answers the GraphQL PR query from a gh-view-shaped `pr`
+ * fixture and the two comment endpoints from a mapped `comments` list.
  */
+const prFixtureFetch =
+  (pr, comments = []) =>
+  async (url, init) => {
+    if (url.endsWith("/graphql")) {
+      const body = JSON.parse(init.body);
+      assert.equal(body.variables.number !== undefined, true);
+      return jsonResponse({
+        data: {
+          repository: {
+            pullRequest:
+              pr === null
+                ? null
+                : {
+                    state: pr.state,
+                    mergeable: pr.mergeable,
+                    reviewDecision: pr.reviewDecision ?? null,
+                    url: pr.url ?? null,
+                    title: pr.title ?? null,
+                    isDraft: pr.isDraft ?? false,
+                    reviews: { nodes: pr.reviews ?? [] },
+                    statusCheckRollup: {
+                      contexts: {
+                        nodes: (pr.statusCheckRollup ?? []).map((entry) => ({
+                          __typename: "CheckRun",
+                          name: entry.name,
+                          conclusion: entry.conclusion,
+                          detailsUrl: entry.detailsUrl ?? null,
+                        })),
+                      },
+                    },
+                  },
+          },
+        },
+      });
+    }
+    // REST comment endpoints (fixture comments are already {a, t, b}).
+    if (url.includes("/pulls/") && url.endsWith("/comments")) {
+      return jsonResponse(
+        comments.slice(0, 1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
+      );
+    }
+    return jsonResponse(
+      comments.slice(1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
+    );
+  };
+
+/** The same fixture behind the shared GitHub client. */
 const fixtureGitHubClient = (pr, comments = []) =>
   createGitHubClient({
     baseUrl: "https://proxy.example/devbot-proxy",
-    fetch: async (url, init) => {
-      if (url.endsWith("/graphql")) {
-        const body = JSON.parse(init.body);
-        assert.equal(body.variables.number !== undefined, true);
-        return jsonResponse({
-          data: {
-            repository: {
-              pullRequest:
-                pr === null
-                  ? null
-                  : {
-                      state: pr.state,
-                      mergeable: pr.mergeable,
-                      reviewDecision: pr.reviewDecision ?? null,
-                      url: pr.url ?? null,
-                      title: pr.title ?? null,
-                      isDraft: pr.isDraft ?? false,
-                      reviews: { nodes: pr.reviews ?? [] },
-                      statusCheckRollup: {
-                        contexts: {
-                          nodes: (pr.statusCheckRollup ?? []).map((entry) => ({
-                            __typename: "CheckRun",
-                            name: entry.name,
-                            conclusion: entry.conclusion,
-                            detailsUrl: entry.detailsUrl ?? null,
-                          })),
-                        },
-                      },
-                    },
-            },
-          },
-        });
-      }
-      // REST comment endpoints (fixture comments are already {a, t, b}).
-      if (url.includes("/pulls/") && url.endsWith("/comments")) {
-        return jsonResponse(
-          comments.slice(0, 1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
-        );
-      }
-      return jsonResponse(
-        comments.slice(1).map((c) => ({ user: { login: c.a }, created_at: c.t, body: c.b })),
-      );
-    },
+    fetch: prFixtureFetch(pr, comments),
   });
 
 const fixtureMemoryClient = (tasks) =>
@@ -1125,4 +1131,124 @@ test("run() keeps the exact no-PR skip message when every PR was confirmed missi
     status: "skip",
     content: "GH PR status: no GH PRs to check (1 active tasks)",
   });
+});
+
+// --- the pr-label wrapper's optional inputs (01-gh-pr-status.py port) ---
+
+/** The injectable fetch dispatching the PR query by number. */
+function dispatchFetch(prsByNumber) {
+  return async (url, init) => {
+    if (!url.endsWith("/graphql")) return jsonResponse([]);
+    const pr = prsByNumber[JSON.parse(init.body).variables.number];
+    return pr === undefined
+      ? jsonResponse({ data: { repository: { pullRequest: null } } })
+      : graphqlPrResponse(pr);
+  };
+}
+
+test("task_key_prefix scopes the scan to the workflow's own tasks", async () => {
+  const tasks = [
+    {
+      external_key: "pr-label:org/demo#9",
+      status: "pr_open",
+      repo: "demo",
+      metadata: { prs: [{ repo: "demo", number: 9, host: "github" }] },
+    },
+    {
+      external_key: "RHCLOUD-1",
+      status: "pr_open",
+      repo: "demo",
+      metadata: { prs: [{ repo: "demo", number: 8, host: "github" }] },
+    },
+  ];
+  const makeCtx = () =>
+    createPreflightRunContext({
+      instanceId: "bot-1",
+      memory: { baseUrl: "http://memory:8080", fetch: async () => jsonResponse({ items: tasks }) },
+      proxy: {
+        baseUrl: PROXY_BASE,
+        fetch: dispatchFetch({ 9: { state: "MERGED" }, 8: { state: "OPEN" } }),
+      },
+      repos: FAILURE_REPOS,
+    });
+
+  // Scoped to pr-label: keys, only the workflow's own task is scanned.
+  const scoped = await ghPrStatus.run(makeCtx(), { task_key_prefix: "pr-label:" });
+  assert.equal(scoped.status, "start");
+  assert.ok(scoped.content.includes("pr-label:org/demo#9"));
+  assert.equal(scoped.content.includes("RHCLOUD-1"), false);
+
+  // Without the prefix both tasks are scanned.
+  const unscoped = await ghPrStatus.run(makeCtx(), {});
+  assert.equal(unscoped.status, "start");
+  assert.ok(unscoped.content.includes("RHCLOUD-1"));
+});
+
+const reviewBotInputs = {
+  review_bot_author: "platex-rehor-bot",
+  review_bot_markers: ["dev-review-bot", "fabric-access-finding", "fabric-access-review"],
+};
+
+test("gh-pr-status config accepts flat review-bot inputs only as a valid pair", () => {
+  const registry = createPreflightRegistry([ghPrStatus]);
+  const validate = (withInputs) =>
+    validateConfig([{ id: ghPrStatus.id, with: withInputs }], registry);
+  const flat = { task_key_prefix: "pr-label:", ...reviewBotInputs };
+  assert.deepEqual(validate(flat), {
+    ok: true,
+    entries: [{ id: ghPrStatus.id, params: { suppress_terminal_if_addressed: false, ...flat } }],
+  });
+  assert.equal(validateConfig([ghPrStatus.id], registry).ok, true);
+
+  for (const invalid of [
+    { review_bot_author: reviewBotInputs.review_bot_author },
+    { review_bot_markers: reviewBotInputs.review_bot_markers },
+    { ...flat, review_bot_author: "  " },
+    { ...flat, review_bot_markers: [] },
+    { ...flat, review_bot_markers: [""] },
+    { ...flat, review_bot_markers: "fabric-access-review" },
+    {
+      review_bot_feedback: {
+        author: reviewBotInputs.review_bot_author,
+        markers: reviewBotInputs.review_bot_markers,
+      },
+    },
+  ]) {
+    assert.equal(validate(invalid).ok, false, JSON.stringify(invalid));
+  }
+});
+
+test("configured review-bot inputs count only fresh marked bot comments as feedback", async () => {
+  const task = {
+    external_key: "pr-label:org/demo#9",
+    status: "pr_open",
+    repo: "demo",
+    last_addressed: "2026-07-01T10:00",
+    metadata: { prs: [{ repo: "demo", number: 9, host: "github" }] },
+  };
+  const marked = {
+    a: "platex-rehor-bot",
+    t: "2026-07-02T10:00",
+    b: "fabric-access-review: unused import found",
+  };
+  const pr = { state: "OPEN" };
+  const makeCtx = (comment) =>
+    createPreflightRunContext({
+      instanceId: "bot-1",
+      memory: { baseUrl: "http://memory:8080", fetch: async () => jsonResponse({ items: [task] }) },
+      proxy: { baseUrl: PROXY_BASE, fetch: prFixtureFetch(pr, [comment]) },
+      repos: FAILURE_REPOS,
+    });
+
+  const configured = ghPrStatus.input.parse(reviewBotInputs);
+  assert.equal((await ghPrStatus.run(makeCtx(marked), ghPrStatus.input.parse({}))).status, "skip");
+  assert.equal((await ghPrStatus.run(makeCtx(marked), configured)).status, "start");
+  assert.equal(
+    (await ghPrStatus.run(makeCtx({ ...marked, b: "fyi only" }), configured)).status,
+    "skip",
+  );
+  assert.equal(
+    (await ghPrStatus.run(makeCtx({ ...marked, t: "2026-06-30T10:00" }), configured)).status,
+    "skip",
+  );
 });

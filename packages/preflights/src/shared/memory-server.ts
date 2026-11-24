@@ -109,6 +109,8 @@ export interface MemoryServerClientConfig {
 
 export interface MemoryServerClient {
   getTasks(): Promise<readonly MemoryTask[]>;
+  /** Fully paginated, instance-scoped task listing, including terminal records. */
+  getAllTasks(): Promise<readonly MemoryTask[]>;
   getCapacity(): Promise<TaskCapacity>;
   /**
    * Exact lookup of one task by `external_key`, across every status
@@ -584,6 +586,33 @@ export function createMemoryServerClient(config: MemoryServerClientConfig): Memo
   }
 
   return {
+    async getAllTasks() {
+      if (!config.instanceId) throw new Error("Task listing requires a configured instanceId");
+      const tasks: MemoryTask[] = [];
+      for (let page = 0; page < TASK_LOOKUP_MAX_PAGES; page += 1) {
+        let data: TasksResponse;
+        try {
+          data = await http.getJson<TasksResponse>("/api/tasks", {
+            query: { instance_id: config.instanceId, limit: TASKS_LIMIT, offset: tasks.length },
+          });
+        } catch (error) {
+          throw authReject(error);
+        }
+        if (
+          !Array.isArray(data?.items) ||
+          data.items.some((task) => task?.instance_id !== config.instanceId)
+        ) {
+          throw new Error("Invalid instance-scoped task page");
+        }
+        tasks.push(...data.items);
+        if (typeof data.total === "number") {
+          if (tasks.length >= data.total) return tasks;
+          if (data.items.length === 0)
+            throw new Error("Task listing ended before its reported total");
+        } else if (data.items.length < TASKS_LIMIT) return tasks;
+      }
+      throw new Error("Instance task listing exceeded its pagination limit");
+    },
     async listMemories(tag, limit = 100) {
       try {
         const data = await http.getJson<{ items: readonly MemoryRecord[] }>("/api/memories", {

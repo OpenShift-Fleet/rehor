@@ -9,7 +9,7 @@ import type { FetchLike, FetchRequestInit } from "./http.js";
 import { composeRoute, isPreflightHttpError, PreflightHttpError } from "./http.js";
 import type { MemoryServerClient } from "./memory-server.js";
 import type { ProjectReposMap } from "./repos.js";
-import type { PreflightRunContext } from "./run-context.js";
+import type { PreflightRunContext, PreflightRunState } from "./run-context.js";
 import { parseIso } from "./time.js";
 
 /**
@@ -73,6 +73,13 @@ import { parseIso } from "./time.js";
  * were updated more recently than the window's merges; the search
  * qualifier bounds the window server-side, so the walk stays bounded and
  * still stops at the caller's limit.
+ *
+ * The Fabric Access ports add three more calls, all on the same route,
+ * transport, and timeout discipline: open-PR listing (`gh pr list --state
+ * open` with optional `--author`/`--label`/`--search`, the same GraphQL
+ * `search` shape gh uses), the repository default branch (`gh repo view
+ * --json defaultBranchRef`, the REST repo object's `default_branch`), and
+ * one PR's diff (`gh pr diff`, the `.diff` media type).
  */
 
 /** Route prefix this package requires on the auth proxy for GitHub. */
@@ -135,6 +142,51 @@ export interface GhMergedPr {
   readonly mergedAt: string | null;
 }
 
+/**
+ * An open pull request — the union of the fields the Fabric Access ports
+ * read from `gh pr list --state open --json …`: the pr-label workflow's
+ * `number,title,url,headRefName,author,isCrossRepository,
+ * maintainerCanModify` and the Konflux squash workflow's `number,title,
+ * headRefName,baseRefName,url,labels,body,statusCheckRollup`. One shape
+ * serves both callers; unread fields are simply ignored. The rollup nodes
+ * keep the raw CheckRun/StatusContext shapes, like {@link GhPrData}.
+ */
+export interface GhOpenPr {
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly headRefName: string;
+  readonly baseRefName: string;
+  readonly author: string | null;
+  readonly isCrossRepository: boolean;
+  readonly maintainerCanModify: boolean;
+  readonly labels: readonly string[];
+  readonly body: string;
+  readonly statusCheckRollup: readonly GhStatusCheckEntry[];
+}
+
+/**
+ * Filters of {@link GitHubClient.listOpenPrs} — the `gh pr list` flags the
+ * Fabric Access Python scripts passed: `--author`, `--label`, and the free
+ * `--search` qualifier string. All optional; the bare call lists open PRs.
+ */
+export interface OpenPrListOptions {
+  /** `--author`: PRs authored by this login (quoted search qualifier). */
+  readonly author?: string;
+  /** `--label`: PRs carrying this label (quoted search qualifier). */
+  readonly label?: string;
+  /**
+   * `--search`: extra search qualifiers appended verbatim, e.g.
+   * `chore(deps): consolidate in:title`.
+   */
+  readonly search?: string;
+  /**
+   * Maximum PRs returned (the `gh pr list --limit` default of 30; the
+   * Python scripts never raised it).
+   */
+  readonly limit?: number;
+}
+
 export interface GitHubClientConfig {
   /** Proxy base URL, e.g. `https://proxy.example/devbot-proxy`. */
   readonly baseUrl: string;
@@ -193,6 +245,29 @@ export interface GitHubClient {
    */
   listRepoFiles(ownerRepo: string, branch?: string): Promise<readonly string[]>;
   getFileContents(ownerRepo: string, path: string, ref?: string): Promise<string | null>;
+  /**
+   * List open pull requests — `gh pr list --state open` with the optional
+   * `--author`/`--label`/`--search` filters, through the same GraphQL
+   * `search` endpoint gh itself uses (`repo:… is:pr is:open` plus the
+   * requested qualifiers). Cursor-paginated under one operation-scoped
+   * deadline, stopped at `options.limit` (the gh default 30). Every
+   * failure throws the normal {@link PreflightHttpError}; the caller
+   * applies its failure policy.
+   */
+  listOpenPrs(ownerRepo: string, options?: OpenPrListOptions): Promise<readonly GhOpenPr[]>;
+  /**
+   * The repository's default branch — `gh repo view --json
+   * defaultBranchRef --jq .defaultBranchRef.name`. Resolves `""` when the
+   * API answers without a usable `default_branch`; every transport or
+   * HTTP failure throws the normal {@link PreflightHttpError}.
+   */
+  getDefaultBranch(ownerRepo: string): Promise<string>;
+  /**
+   * One pull request's diff — `gh pr diff <number> --repo <ownerRepo>`,
+   * fetched as the `.diff` media type. An empty diff resolves `""`; every
+   * transport or HTTP failure throws the normal {@link PreflightHttpError}.
+   */
+  getPrDiff(ownerRepo: string, number: number): Promise<string>;
 }
 
 // The fields mirror `gh pr view --json state,mergeable,statusCheckRollup,
@@ -302,13 +377,83 @@ interface MergedPrSearchNode {
   readonly author?: { readonly login?: string | null } | null;
 }
 
-interface MergedPrSearchResponse {
+/** The cursor page envelope every GraphQL `search` connection returns. */
+interface SearchResponse<TNode> {
   readonly search?: {
-    readonly nodes?: readonly (MergedPrSearchNode | null)[] | null;
+    readonly nodes?: readonly (TNode | null)[] | null;
     readonly pageInfo?: {
       readonly hasNextPage?: boolean | null;
       readonly endCursor?: string | null;
     } | null;
+  } | null;
+}
+
+/**
+ * Open-PR search — the GraphQL shape `gh pr list` itself uses: the query
+ * composes `repo:"org/repo" is:pr is:open` plus the caller's `author:`/
+ * `label:`/free-text qualifiers, and one page of 100 results is fetched per
+ * request, cursor-paginated, stopping at the gh default limit of 30.
+ */
+const OPEN_PR_SEARCH_QUERY = `query OpenPrSearch($search: String!, $cursor: String) {
+  search(query: $search, type: ISSUE, first: 100, after: $cursor) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        headRefName
+        baseRefName
+        isCrossRepository
+        maintainerCanModify
+        body
+        author {
+          login
+        }
+        labels(first: 100) {
+          nodes {
+            name
+          }
+        }
+        statusCheckRollup {
+          contexts(first: 100) {
+            nodes {
+              __typename
+              ... on CheckRun {
+                name
+                conclusion
+                detailsUrl
+              }
+              ... on StatusContext {
+                context
+                state
+                targetUrl
+              }
+            }
+          }
+        }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}`;
+
+/** An open-PR `search` node, before normalization to {@link GhOpenPr}. */
+interface OpenPrSearchNode {
+  readonly number?: number | null;
+  readonly title?: string | null;
+  readonly url?: string | null;
+  readonly headRefName?: string | null;
+  readonly baseRefName?: string | null;
+  readonly isCrossRepository?: boolean | null;
+  readonly maintainerCanModify?: boolean | null;
+  readonly body?: string | null;
+  readonly author?: { readonly login?: string | null } | null;
+  readonly labels?: { readonly nodes?: readonly { readonly name?: string | null }[] | null } | null;
+  readonly statusCheckRollup?: {
+    readonly contexts?: { readonly nodes?: readonly RollupNode[] | null } | null;
   } | null;
 }
 
@@ -802,22 +947,18 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
   }
 
   /**
-   * The window mode of merged-PR listing: a GraphQL `search` restricted
-   * to `repo:"org/repo" is:pr is:merged merged:>=<ISO>` — the only
-   * GitHub API shape that filters by merge date server-side, so merges
-   * inside the lookback window are found even when older merged PRs were
-   * updated (and thus sorted by the pulls endpoint) more recently than
-   * the window's merges. Cursor-paginated under one operation-scoped
-   * deadline, stopped at `limit`, on the same headerless route-confined
-   * transport as every other call.
+   * Walk one cursor-paginated GraphQL `search` connection under a single
+   * operation-scoped deadline, stopping at `limit` selected nodes. The
+   * open-PR and merged-PR listings share exactly this paging loop; only
+   * their query, qualifiers and node shape differ.
    */
-  async function searchMergedPrs(
-    ownerRepo: string,
-    limit: number,
-    sinceIso: string,
-  ): Promise<GhMergedPr[]> {
+  async function collectSearchNodes<TNode, TItem>(options: {
+    readonly query: string;
+    readonly search: string;
+    readonly limit: number;
+    readonly select: (node: TNode) => TItem | null;
+  }): Promise<TItem[]> {
     const path = "/graphql";
-    const searchQuery = `repo:"${ownerRepo}" is:pr is:merged merged:>=${sinceIso}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -825,30 +966,26 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
         signal: controller.signal,
         timeoutMs,
       });
-      const merged: GhMergedPr[] = [];
+      const collected: TItem[] = [];
       let cursor: string | null = null;
-      while (merged.length < limit) {
-        const response: MergedPrSearchResponse = await graphql<MergedPrSearchResponse>(
-          MERGED_PR_SEARCH_QUERY,
+      while (collected.length < options.limit) {
+        const response: SearchResponse<TNode> = await graphql<SearchResponse<TNode>>(
+          options.query,
           {
             baseUrl: route,
-            search: searchQuery,
+            search: options.search,
             cursor,
             request: { fetch: deadlineFetch },
           },
         );
-        const connection: MergedPrSearchResponse["search"] = response?.search;
+        const connection: SearchResponse<TNode>["search"] = response?.search;
         for (const node of connection?.nodes ?? []) {
-          if (node?.mergedAt == null) continue;
-          merged.push({
-            number: typeof node.number === "number" ? node.number : 0,
-            title: node.title ?? "",
-            url: node.url ?? "",
-            author: node.author?.login ?? null,
-            mergedAt: node.mergedAt,
-          });
-          if (merged.length >= limit) {
-            return merged;
+          if (node === null || node === undefined) continue;
+          const item = options.select(node);
+          if (item === null) continue;
+          collected.push(item);
+          if (collected.length >= options.limit) {
+            return collected;
           }
         }
         const nextCursor: string | null = connection?.pageInfo?.endCursor ?? null;
@@ -862,7 +999,7 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
         }
         cursor = nextCursor;
       }
-      return merged;
+      return collected;
     } catch (error) {
       if (controller.signal.aborted && !isPreflightHttpError(error)) {
         throw new PreflightHttpError({
@@ -877,6 +1014,156 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The window mode of merged-PR listing: a GraphQL `search` restricted
+   * to `repo:"org/repo" is:pr is:merged merged:>=<ISO>` — the only
+   * GitHub API shape that filters by merge date server-side, so merges
+   * inside the lookback window are found even when older merged PRs were
+   * updated (and thus sorted by the pulls endpoint) more recently than
+   * the window's merges.
+   */
+  async function searchMergedPrs(
+    ownerRepo: string,
+    limit: number,
+    sinceIso: string,
+  ): Promise<GhMergedPr[]> {
+    return collectSearchNodes<MergedPrSearchNode, GhMergedPr>({
+      query: MERGED_PR_SEARCH_QUERY,
+      search: `repo:"${ownerRepo}" is:pr is:merged merged:>=${sinceIso}`,
+      limit,
+      select: (node) =>
+        node.mergedAt == null
+          ? null
+          : {
+              number: typeof node.number === "number" ? node.number : 0,
+              title: node.title ?? "",
+              url: node.url ?? "",
+              author: node.author?.login ?? null,
+              mergedAt: node.mergedAt,
+            },
+    });
+  }
+
+  /**
+   * List open PRs — the GraphQL `search` gh's `pr list` runs, with the
+   * caller's `--author`/`--label`/`--search` qualifiers composed onto
+   * `repo:"org/repo" is:pr is:open`. Cursor-paginated under one
+   * operation-scoped deadline, stopped at `limit` (the gh default 30 —
+   * the Python scripts never raised it). Nodes are normalized to the
+   * {@link GhOpenPr} union of both Fabric Access callers' field sets;
+   * rollup nodes keep the raw CheckRun/StatusContext shapes.
+   */
+  async function listOpenPrs(ownerRepo: string, options?: OpenPrListOptions): Promise<GhOpenPr[]> {
+    splitOwnerRepo(ownerRepo);
+    const limit = options?.limit ?? 30;
+    if (!Number.isInteger(limit) || limit <= 0) {
+      return [];
+    }
+    let searchQuery = `repo:"${ownerRepo}" is:pr is:open`;
+    if (options?.author !== undefined && options.author !== "") {
+      searchQuery += ` author:"${options.author}"`;
+    }
+    if (options?.label !== undefined && options.label !== "") {
+      searchQuery += ` label:"${options.label}"`;
+    }
+    if (options?.search !== undefined && options.search !== "") {
+      searchQuery += ` ${options.search}`;
+    }
+    return collectSearchNodes<OpenPrSearchNode, GhOpenPr>({
+      query: OPEN_PR_SEARCH_QUERY,
+      search: searchQuery,
+      limit,
+      select: (node) => ({
+        number: typeof node.number === "number" ? node.number : 0,
+        title: node.title ?? "",
+        url: node.url ?? "",
+        headRefName: node.headRefName ?? "",
+        baseRefName: node.baseRefName ?? "",
+        author: node.author?.login ?? null,
+        isCrossRepository: node.isCrossRepository === true,
+        maintainerCanModify: node.maintainerCanModify === true,
+        labels: (node.labels?.nodes ?? [])
+          .map((label) => label?.name)
+          .filter((name): name is string => typeof name === "string"),
+        body: node.body ?? "",
+        statusCheckRollup: node.statusCheckRollup?.contexts?.nodes?.map(normalizeRollupEntry) ?? [],
+      }),
+    });
+  }
+
+  /**
+   * The repository's default branch — the REST repository object's
+   * `default_branch`, the field `gh repo view --json defaultBranchRef`
+   * reads. A successful answer without a usable string resolves `""` (the
+   * caller's "unable to determine" skip); transport/HTTP failures throw.
+   */
+  async function getDefaultBranch(ownerRepo: string): Promise<string> {
+    splitOwnerRepo(ownerRepo);
+    const url = `${route}/repos/${ownerRepo}`;
+    const response = await withTimeout(
+      () => proxyFetch(url, { method: "GET", signal: AbortSignal.timeout(timeoutMs) }),
+      timeoutMs,
+      route,
+      url,
+      "GET",
+    );
+    if (!response.ok) {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: await describeGitHubHttpStatus("GET", url, response, route),
+      });
+    }
+    let data: { readonly default_branch?: unknown };
+    try {
+      data = (await response.json()) as { readonly default_branch?: unknown };
+    } catch {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: `GET ${url} returned a non-JSON body (HTTP ${response.status})`,
+      });
+    }
+    return typeof data?.default_branch === "string" ? data.default_branch : "";
+  }
+
+  /**
+   * One pull request's diff — `gh pr diff`, fetched as the `.diff` media
+   * type. The body is plain diff text (possibly empty); every non-2xx
+   * answer throws the normal execution error so the caller's failure
+   * policy decides how a failed diff degrades.
+   */
+  async function getPrDiff(ownerRepo: string, number: number): Promise<string> {
+    splitOwnerRepo(ownerRepo);
+    const url = `${route}/repos/${ownerRepo}/pulls/${number}`;
+    const response = await withTimeout(
+      () =>
+        proxyFetch(url, {
+          method: "GET",
+          headers: { Accept: "application/vnd.github.v3.diff" },
+          signal: AbortSignal.timeout(timeoutMs),
+        }),
+      timeoutMs,
+      route,
+      url,
+      "GET",
+    );
+    if (!response.ok) {
+      throw new PreflightHttpError({
+        status: response.status,
+        method: "GET",
+        url,
+        route,
+        message: await describeGitHubHttpStatus("GET", url, response, route),
+      });
+    }
+    return await response.text();
   }
 
   /**
@@ -946,6 +1233,9 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
     getPr,
     getPrComments,
     listMergedPrs,
+    listOpenPrs,
+    getDefaultBranch,
+    getPrDiff,
     listRepoFiles,
     async getFileContents(ownerRepo, path, ref) {
       splitOwnerRepo(ownerRepo);
@@ -1147,15 +1437,16 @@ export interface GitHubPreflightDeps {
   readonly memory: MemoryServerClient;
   readonly github: GitHubClient;
   readonly repos: ProjectReposMap;
+  readonly state: PreflightRunState;
 }
 
 /**
  * Define a GitHub-backed preflight for registration — the shared wrapper of
  * the run-context wiring every GitHub preflight repeats: the GitHub client
  * is built from the run's auth-proxy route (string or config form), the
- * repo map defaults to empty, and the memory-server client is shared per
- * run. An unwired proxy route or a thrown failure surfaces as an
- * id-prefixed `error` result, never a silent skip.
+ * repo map defaults to empty, and the memory-server client and run state
+ * are shared per run. An unwired proxy route or a thrown failure surfaces
+ * as an id-prefixed `error` result, never a silent skip.
  */
 export function defineGitHubPreflight<S extends z.ZodObject>(options: {
   readonly id: string;
@@ -1187,6 +1478,7 @@ export function defineGitHubPreflight<S extends z.ZodObject>(options: {
               typeof ctx.proxy === "string" ? { baseUrl: ctx.proxy } : ctx.proxy,
             ),
             repos: ctx.repos ?? {},
+            state: ctx.state,
           },
           params,
         );

@@ -175,3 +175,113 @@ for (const { branch, status, expected } of [
     assert.deepEqual(branches, expected);
   });
 }
+
+// --- open-PR listing (gh pr list --state open), default branch, PR diff ---
+
+const openPrNode = (number, overrides = {}) => ({
+  number,
+  title: `PR ${number}`,
+  url: `https://github.com/${REPO}/pull/${number}`,
+  headRefName: "branch",
+  baseRefName: "main",
+  isCrossRepository: false,
+  maintainerCanModify: true,
+  body: "",
+  author: { login: "alice" },
+  labels: { nodes: [{ name: "dev-bot" }] },
+  statusCheckRollup: {
+    contexts: { nodes: [{ __typename: "CheckRun", name: "lint", conclusion: "SUCCESS" }] },
+  },
+  ...overrides,
+});
+
+test("open-PR listing composes gh's search qualifiers and maps the node fields", async () => {
+  const queries = [];
+  const client = clientOn(async (url, init) => {
+    assert.equal(new URL(url).pathname, "/devbot-proxy/github/graphql");
+    const { search } = JSON.parse(init.body).variables;
+    queries.push(search);
+    return searchPage([
+      openPrNode(4, {
+        author: { login: null },
+        isCrossRepository: true,
+        maintainerCanModify: false,
+        labels: { nodes: [] },
+        statusCheckRollup: null,
+      }),
+    ]);
+  });
+  const prs = await client.listOpenPrs(REPO, { author: "red-hat-konflux[bot]", label: "dev-bot" });
+  assert.deepEqual(queries, [
+    `repo:"${REPO}" is:pr is:open author:"red-hat-konflux[bot]" label:"dev-bot"`,
+  ]);
+  assert.deepEqual(prs, [
+    {
+      number: 4,
+      title: "PR 4",
+      url: `https://github.com/${REPO}/pull/4`,
+      headRefName: "branch",
+      baseRefName: "main",
+      author: null,
+      isCrossRepository: true,
+      maintainerCanModify: false,
+      labels: [],
+      body: "",
+      statusCheckRollup: [],
+    },
+  ]);
+});
+
+test("open-PR listing pages by cursor and stops at the gh default limit of 30", async () => {
+  const cursors = [];
+  const client = clientOn(async (_url, init) => {
+    const { cursor } = JSON.parse(init.body).variables;
+    cursors.push(cursor);
+    if (cursor === null) {
+      return searchPage(
+        Array.from({ length: 10 }, (_, i) => openPrNode(10 - i)),
+        "next",
+      );
+    }
+    assert.equal(cursor, "next");
+    return searchPage(
+      Array.from({ length: 25 }, (_, i) => openPrNode(35 - i)),
+      "unused",
+    );
+  });
+  const prs = await client.listOpenPrs(REPO);
+  assert.equal(prs.length, 30);
+  assert.equal(prs[0].number, 10);
+  assert.equal(prs[29].number, 16);
+  assert.deepEqual(cursors, [null, "next"]);
+});
+
+test("default-branch lookup reads the REST repo object; failures throw", async () => {
+  const client = clientOn(async (url) => {
+    assert.equal(new URL(url).pathname, `/devbot-proxy/github/repos/${REPO}`);
+    return Response.json({ default_branch: "master" });
+  });
+  assert.equal(await client.getDefaultBranch(REPO), "master");
+
+  const blank = clientOn(async () => Response.json({}));
+  assert.equal(await blank.getDefaultBranch(REPO), "");
+
+  const failing = clientOn(async () => new Response(null, { status: 500 }));
+  await assert.rejects(() => failing.getDefaultBranch(REPO), { status: 500 });
+});
+
+test("PR diff fetches the .diff media type; failures throw", async () => {
+  const client = clientOn(async (url) => {
+    assert.equal(new URL(url).pathname, `/devbot-proxy/github/repos/${REPO}/pulls/7`);
+    return new Response("diff --git a/x b/x\n", {
+      headers: { "Content-Type": "text/x-diff" },
+    });
+  });
+  assert.equal(await client.getPrDiff(REPO, 7), "diff --git a/x b/x\n");
+
+  const empty = clientOn(async () => new Response(""));
+  assert.equal(await empty.getPrDiff(REPO, 7), "");
+
+  const failing = clientOn(async () => new Response(null, { status: 404 }));
+  await assert.rejects(() => failing.getPrDiff(REPO, 7), { status: 404 });
+});
