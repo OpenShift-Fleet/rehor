@@ -1,18 +1,15 @@
 import { z } from "zod";
-import { definePreflight } from "../../core/registry.js";
 import type { PreflightExecutionResult } from "../../core/results.js";
 import {
   appendFetchEvidence,
   FetchTracker,
   totalFetchFailureError,
 } from "../../shared/failure-policy.js";
-import type { GhOpenPr, GitHubClient } from "../../shared/github.js";
-import { createGitHubClient } from "../../shared/github.js";
-import type { MemoryServerClient, MemoryTask } from "../../shared/memory-server.js";
+import type { GhOpenPr, GitHubPreflightDeps } from "../../shared/github.js";
+import { defineGitHubPreflight } from "../../shared/github.js";
+import type { MemoryTask } from "../../shared/memory-server.js";
 import { ACTIVE_TASK_STATUSES } from "../../shared/memory-server.js";
-import type { ProjectReposMap } from "../../shared/repos.js";
 import { upstreamRepo } from "../../shared/repos.js";
-import type { PreflightRunContext, PreflightRunState } from "../../shared/run-context.js";
 
 /**
  * `fabric-pr-label` — the port of the Fabric Access pr-label workflow's
@@ -96,14 +93,6 @@ export interface LabeledPrCandidate {
   readonly task_key: string;
 }
 
-/** Dependencies of the ported `main()` flow, injectable for tests. */
-export interface FabricPrLabelDeps {
-  readonly memory: MemoryServerClient;
-  readonly github: GitHubClient;
-  readonly repos: ProjectReposMap;
-  readonly state: PreflightRunState;
-}
-
 /** The task key of one labeled PR: `pr-label:<owner/repo>#<number>`. */
 export function prLabelTaskKey(ownerRepo: string, number: number): string {
   return `${TASK_KEY_PREFIX}${ownerRepo}#${number}`;
@@ -166,7 +155,7 @@ export function canPush(pr: GhOpenPr): boolean {
  * open labeled PRs, foreign/tracked filtering, then the candidate payload.
  */
 export async function runFabricPrLabel(
-  deps: FabricPrLabelDeps,
+  deps: GitHubPreflightDeps,
   params: FabricPrLabelParams,
 ): Promise<PreflightExecutionResult> {
   // Capacity gate: this workflow's own active tasks versus the shared max.
@@ -293,40 +282,14 @@ export async function runFabricPrLabel(
 }
 
 /**
- * The registered preflight. Wires the run context into the flow: the GitHub
- * client is built from the run's auth-proxy route, the repo map and state
- * come from the instance config, and any failure — including an unwired
- * proxy route — surfaces as an `error` result, never a silent skip.
+ * The registered preflight. `defineGitHubPreflight` wires the run context
+ * into the flow: the GitHub client is built from the run's auth-proxy
+ * route, the repo map and state come from the instance config, and any
+ * failure — including an unwired proxy route — surfaces as an `error`
+ * result, never a silent skip.
  */
-export const fabricPrLabel = definePreflight({
+export const fabricPrLabel = defineGitHubPreflight({
   id: "fabric-pr-label",
   input: FABRIC_PR_LABEL_INPUT,
-  run: async (
-    ctx: PreflightRunContext,
-    params: FabricPrLabelParams,
-  ): Promise<PreflightExecutionResult> => {
-    if (ctx.proxy === undefined) {
-      return {
-        status: "error",
-        content:
-          "fabric-pr-label: auth proxy route is not wired for this run (missing proxy base URL)",
-      };
-    }
-    try {
-      return await runFabricPrLabel(
-        {
-          memory: ctx.memory,
-          state: ctx.state,
-          github: createGitHubClient(
-            typeof ctx.proxy === "string" ? { baseUrl: ctx.proxy } : ctx.proxy,
-          ),
-          repos: ctx.repos ?? {},
-        },
-        params,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { status: "error", content: `fabric-pr-label: ${message}` };
-    }
-  },
+  run: runFabricPrLabel,
 });
