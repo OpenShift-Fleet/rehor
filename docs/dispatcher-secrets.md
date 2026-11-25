@@ -107,5 +107,6 @@ After deployment, check that the `ExternalSecret` reports a successful sync and 
 
 - Secret resolution completes before sandbox creation.
 - Resolved values are not written to prompts, logs, or diagnostics.
+- Rendered values are delivered through the native OpenShell sandbox environment: sandbox-wide, persisted by the gateway for the sandbox lifetime, and readable by any process in the sandbox.
 - The value is available to code running inside the sandbox and can be disclosed by that workload. Use only independently revocable, workload-scoped Tier 2 credentials.
 - Tier 1 credentials remain within platform-owned authentication and secret mechanisms; they must never be mapped into `sandbox.env`.

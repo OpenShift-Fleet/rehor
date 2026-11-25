@@ -296,6 +296,7 @@ async function start(): Promise<void> {
             const work = Promise.resolve().then(() => registry
               ? session.run(profile.image.reference, decision, environment, signal, {
                 runId,
+                sandboxEnv,
                 onProvisioned: async (info) => {
                   await registry.update(runId, {
                     workspaceName: info.workspaceName,
@@ -305,7 +306,7 @@ async function start(): Promise<void> {
                   });
                 },
               })
-              : session.run(profile.image.reference, decision, environment, signal));
+              : session.run(profile.image.reference, decision, environment, signal, { sandboxEnv }));
             sessionRuns.add(work);
             // Session records name their owner: profile, repository, and the
             // opaque agentId. The logger validates and drops malformed values.
