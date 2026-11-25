@@ -16,6 +16,9 @@ envs:
 env:
   BOT_INSTANCE_ID: example-agent
   BOT_EXECUTION_ENGINE: coordinator
+sandbox:
+  env:
+    SLACK_WEBHOOK_URL: ${{ secret('myteam-slack-webhook', 'url') }}
 preflights:
   - gh-pr-status
   - gl-mr-status
@@ -35,7 +38,7 @@ schedule:
 | `image.repository`, `image.tag` | Runner image. Set an explicit reviewed build tag; omission uses `latest`. |
 | `envs` | Environment presets for the runner build; `null` enables all, `[]` disables all. |
 | `env` | Allowed non-secret `BOT_*` profile settings, shared by dispatcher wiring and the sandbox runner. Set a stable, unique `BOT_INSTANCE_ID`; the deployment owns the memory route. |
-| `sandbox.env` | **Planned; not currently supported by deployed dispatchers.** Intended for static sandbox environment values and approved workload-scoped secret references. See [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for the user setup guide and proposed syntax. |
+| `sandbox.env` | Sandbox runner environment values delivered per dispatch. Plain strings pass through; `${{ secret('name','key') }}` placeholders render before sandbox creation from tier-2 Kubernetes Secrets (Vault-synced by ESO, labeled `rehor.dev/secret-tier: "2"`). Secret names are provisioned per the `<team-prefix>-<name>` convention — see [Dispatcher Credentials and Secrets](../dispatcher-secrets.md). Fail-closed: an unresolvable, denied, or malformed reference creates no sandbox, and values never appear in logs or diagnostics. Tier-1 credentials (`devbot-secrets`) and runtime-owned names are rejected. Usable once a dispatcher with rendering support is deployed; see [Dispatcher Credentials and Secrets](../dispatcher-secrets.md). |
 | `preflights` | Registered check IDs and literal parameters. See [Dispatcher Preflights](custom-preflight.md) for defaults and contribution rules, and the [Preflight Reference](preflight-reference.md) for each check's inputs. |
 | `schedule` | Optional KEDA-style cron windows (`triggers` with `timezone`, `start`, `end` five-field crons). Gates only new dispatches; in-flight sessions drain. Malformed declarations fail discovery. See [Agent Scheduling](../scheduling.md). |
 | `cycle_timeout_seconds` | Optional per-instance timeout override. |

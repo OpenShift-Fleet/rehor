@@ -18,6 +18,7 @@ const EVENTS = [
   "preflight.run",
   "sandbox.session",
   "sandbox.cleanup",
+  "sandbox.env",
   "sandbox.retention",
   "sandbox.lock",
   "sandbox.registry",

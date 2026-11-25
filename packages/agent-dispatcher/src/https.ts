@@ -6,6 +6,9 @@ export type HttpRequest = {
   headers?: Record<string, string>;
   body?: string;
   ca?: Buffer;
+  /** Read a GET response body instead of cancelling it after the status is
+   * known; preflight status checks keep the default. POST always reads. */
+  readResponseBody?: boolean;
 };
 
 export type HttpResponse = { status: number; body: string };
@@ -44,7 +47,7 @@ export const httpsRequest: HttpClient = async (options) => {
     } catch {
       throw failure();
     }
-    if (options.method === "GET") {
+    if (options.method === "GET" && !options.readResponseBody) {
       const status = response.status;
       // Preflight needs only the status. Cancel the body to close the
       // connection rather than draining it.

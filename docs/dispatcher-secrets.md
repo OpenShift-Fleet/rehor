@@ -9,9 +9,9 @@
 
 The [dispatcher](agent-dispatcher-deployment.md) mints short-lived credentials for platform services. These platform credentials are not delivered as ordinary sandbox environment values.
 
-## Planned: configure a Tier 2 sandbox secret
+## Configure a Tier 2 sandbox secret
 
-Tier 2 references in `sandbox.env` are a **future capability** and are not available in deployed dispatchers yet. This guide describes the intended setup. It will work only after dispatcher rendering support and the matching namespace configuration are deployed.
+`sandbox.env` secret references need two deployed pieces: a dispatcher image with rendering support, and the named tier-2 Kubernetes Secret the reference points to. The Secret is provisioned once through private platform configuration; instance repositories then reference it by name only.
 
 ### 1. Choose an eligible credential
 
@@ -21,30 +21,73 @@ Confirm the credential is workload-scoped and safe to expose to the agent proces
 
 Use a Vault location owned by the team responsible for the workload. If suitable storage or write permission does not exist, ask the platform/Vault owner to set it up before adding a reference. Store the value through the approved Vault process; never put secret values or Vault paths in a public instance repository.
 
-### 3. Allow the secret in the workload namespace
+### 3. Provision the named Secret in the workload namespace
 
-Coordinate with the namespace owner to:
+`secret(name, key)` takes no Vault path. The `name` is a Kubernetes Secret in the dispatcher's namespace, synced from Vault by ESO from an `ExternalSecret` defined in private app-interface configuration. You cannot invent the name in the instance repository: you reference the name that was provisioned, and you request provisioning when it does not exist yet.
 
-- Configure ESO to read only the approved Vault path.
-- Add an `ExternalSecret` mapping from the Vault property to a target Kubernetes Secret name and key. Map only the properties the workload needs; do not sync an entire Vault object by default.
-- Allow the `ExternalSecret` resource in the namespace.
-- Grant the dispatcher `get` on that target Secret name only. Do not grant `list` or `watch` on Secrets.
-- Mark the target as an approved Tier 2 Secret for dispatcher resolution.
+**Naming convention: `<team-prefix>-<name>`.** All teams provisioning into the shared namespace prefix target Secret names with their team or workload prefix — `ocm-fleet-rehor`, `ui-slack-webhook`. Bare generic names such as `slack-webhook` collide across teams and are not accepted for new provisioning.
 
-This mapping belongs in private platform configuration. It connects the private Vault location/property to the Kubernetes target name/key; instance authors do not need the Vault path.
+Provisioning is one app-interface change per secret, coordinated with the namespace owner:
+
+- An `ExternalSecret` mapping only the approved Vault properties into the target Secret — never sync an entire Vault object by default — and labeling the target `rehor.dev/secret-tier: "2"` so the dispatcher accepts it for resolution.
+- A Role and RoleBinding granting the dispatcher's service account `get` on that one target Secret name only. Do not grant `list` or `watch` on Secrets.
+
+Worked example — the `ocm-fleet-rehor` Secret (live in the stage namespace). The `ExternalSecret` in app-interface:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: ocm-fleet-rehor              # <team-prefix>-<name>: ocm-fleet + rehor
+  namespace: platform-frontend-ai-dev-stage
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: rehor-vault
+    kind: SecretStore
+  target:
+    name: ocm-fleet-rehor            # the Kubernetes Secret name instances reference
+    template:
+      metadata:
+        labels:
+          rehor.dev/secret-tier: "2"  # required — the dispatcher resolves only tier-2 Secrets
+  data:
+  - secretKey: SLACK_WEBHOOK_URL     # the key instances reference
+    remoteRef:
+      key: secrets/<team>/<workload>  # private Vault path — lives only in app-interface
+      property: SLACK_WEBHOOK_URL
+```
+
+The dispatcher RBAC in the same app-interface change:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rehor-agent-dispatcher-ocm-fleet-rehor
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  resourceNames: [ocm-fleet-rehor]   # the same target name
+  verbs: [get]
+```
+
+The RoleBinding binds this Role to the `rehor-agent-dispatcher` ServiceAccount.
+
+The Vault path, policies, and store authentication never leave app-interface. Instance authors work with exactly two public facts: the target Secret name and the key.
 
 ### 4. Reference it from `instance.yaml`
 
-Use `sandbox.env` for values delivered to the sandbox runner:
+Use `sandbox.env` for values delivered to the sandbox runner. This references the Secret provisioned above:
 
 ```yaml
 sandbox:
   env:
-    WEBHOOK_URL: "${{ secret('workload-credentials', 'endpoint') }}"
+    SLACK_WEBHOOK_URL: "${{ secret('ocm-fleet-rehor', 'SLACK_WEBHOOK_URL') }}"
     FEATURE_FLAG: "enabled"
 ```
 
-In `secret(name, key)`, `name` is the approved Kubernetes Secret name and `key` is a key in that Kubernetes Secret. Neither argument is a Vault path or a Vault property name unless the private mapping intentionally uses the same text. Only approved `secret()` references are supported; this is not a general-purpose template language. Plain strings pass through unchanged.
+In `secret(name, key)`, `name` is the target Secret name from step 3 — `spec.target.name` of the `ExternalSecret` — and `key` is one of its `secretKey` entries. Neither argument is a Vault path or a Vault property name unless the private mapping intentionally uses the same text. Only approved `secret()` references are supported; this is not a general-purpose template language. Plain strings pass through unchanged.
 
 Target Secret names are unique within a namespace. Kubernetes RBAC grants access to the whole Secret object, not individual keys, so keep each target object limited to one workload's approved values. If a requested Secret or key is missing or denied, resolution fails closed and the dispatcher does not create a partially configured sandbox.
 
@@ -54,7 +97,7 @@ delivered to the registered TypeScript preflights as one read-only `instanceEnv`
 unit on the run context — never merged with process.env, `sandbox.env`, secret
 references, or resolved credentials. The legacy `preflight.env` form has the
 same behavior. Neither form is a secret store. `envs` selects runner build
-presets and is separate from both `env` and the planned `sandbox.env`.
+presets and is separate from both `env` and `sandbox.env`.
 
 ### 5. Verify without exposing values
 
