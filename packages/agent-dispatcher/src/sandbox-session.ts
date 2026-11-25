@@ -44,6 +44,9 @@ export type SandboxRunOptions = {
   runId?: ReturnType<typeof randomUUID>;
   /** Awaited after the sandbox is created and verified; errors never fail the session. */
   onProvisioned?: (info: SandboxProvisionedInfo) => Promise<void>;
+  /** Rendered tier-2 sandbox.env values (REHOR-272) for the native sandbox
+   * environment; the per-exec runner environment is unchanged. */
+  sandboxEnv?: Record<string, string>;
 };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
@@ -289,8 +292,12 @@ export class SandboxSession {
       record.stage = "sandbox";
       signal?.throwIfAborted();
       sandbox.state = "unknown";
+      // Rendered sandbox.env values ride the native sandbox environment
+      // (REHOR-272): sandbox-wide and persisted by the gateway for the
+      // sandbox lifetime. The runner exec below keeps its merged per-exec
+      // environment, so delivery does not depend on this path alone.
       const createdSandbox = (await this.raw.createSandbox({ workspaceScope: scope, name: sandbox.name, labels, requestId: sandbox.requestId, spec: {
-        template: { image }, environment: {}, providers: [record.provider.name], policy,
+        template: { image }, environment: { ...options?.sandboxEnv }, providers: [record.provider.name], policy,
         command: [...idleCommand], restartPolicy: SandboxRestartPolicy.NEVER,
       } }, callOptions(signal))).sandbox;
       if (!sandboxMatches(createdSandbox?.metadata)) throw new Error();
