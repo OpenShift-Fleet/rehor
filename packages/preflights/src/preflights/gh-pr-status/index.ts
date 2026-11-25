@@ -89,6 +89,11 @@ export interface GhPrTaskEntry {
   readonly host: "github";
   readonly state: string;
   readonly issues: readonly string[];
+  /**
+   * Set on the additional entry a workflow appends for a handoff PR (the
+   * Renovate fix PR); absent on the task's own PRs.
+   */
+  readonly role?: "fix_pr";
 }
 
 /** A task enriched with its GitHub PR data — the Python `enrich_gh` result. */
@@ -97,6 +102,12 @@ export interface EnrichedGhTask {
   readonly prs: readonly GhPrTaskEntry[];
   readonly prComments: readonly CommentRecord[];
   readonly issues: readonly string[];
+  /**
+   * The handoff PR a workflow switched CI/comments to, when one exists —
+   * the Python `apply_fix_pr_handoff` `fix_pr` annotation. Informational;
+   * task metadata remains the source of truth.
+   */
+  readonly fixPr?: { readonly repo: string; readonly num: number; readonly host: "github" };
 }
 
 /** The six action buckets, in output order. */
@@ -136,6 +147,24 @@ export interface GhPrStatusOptions {
    * bot-comment exclusion.
    */
   readonly reviewBotFeedback?: ReviewBotFeedback;
+  /**
+   * Replace the default per-task GitHub enrichment. Workflows that augment
+   * the Renovate/PR data (fix-PR handoff, Renovate-only conflict
+   * suppression) supply their own enricher; the shared failure-policy
+   * trackers and formatting stay in this flow.
+   */
+  readonly enrichTask?: (
+    task: MemoryTask,
+    github: GitHubClient,
+    repos: ProjectReposMap,
+    trackers: GhFetchTrackers,
+  ) => Promise<EnrichedGhTask | null>;
+  /**
+   * Override the addressed-CI rule for the CI-FAILING bucket. Unset keeps
+   * the default {@link ciFailureNeedsSession}; a workflow that always
+   * retries CI (Renovate) supplies a constant `true`.
+   */
+  readonly ciFailureNeedsSession?: (enriched: EnrichedGhTask) => boolean;
 }
 
 /**
@@ -323,6 +352,9 @@ export function classifyBuckets(
   const clean: EnrichedGhTask[] = [];
   const suppress = options.suppressTerminalIfAddressed ?? false;
   const reviewBot = options.reviewBotFeedback;
+  const needsSession =
+    options.ciFailureNeedsSession ??
+    ((enriched: EnrichedGhTask) => ciFailureNeedsSession(enriched, reviewBot));
   for (const enriched of enrichedTasks) {
     const { issues } = enriched;
     if (issues.includes("merged")) {
@@ -341,7 +373,7 @@ export function classifyBuckets(
       const ciOnly = issues.every(
         (issue) => issue.startsWith("ci_fail") || issue.startsWith("konflux_urls"),
       );
-      if (ciOnly && !ciFailureNeedsSession(enriched, reviewBot)) {
+      if (ciOnly && !needsSession(enriched)) {
         clean.push(enriched);
       } else {
         ciFail.push(enriched);
@@ -366,7 +398,7 @@ export function classifyBuckets(
 }
 
 /** Format a task with its GH PR details — the Python `fmt_task`. */
-function fmtTask(enriched: EnrichedGhTask): string {
+export function fmtGhTask(enriched: EnrichedGhTask): string {
   const lines = fmtTaskHeader(enriched.task);
   for (const pr of enriched.prs) {
     const issueStr = pr.issues.length > 0 ? pr.issues.join(",") : "clean";
@@ -424,8 +456,9 @@ export async function runGhPrStatus(
     comments: new FetchTracker(),
   };
   const enrichedTasks: EnrichedGhTask[] = [];
+  const enrichTask = options.enrichTask ?? enrichGh;
   for (const task of active) {
-    const enriched = await enrichGh(task, deps.github, repos, trackers);
+    const enriched = await enrichTask(task, deps.github, repos, trackers);
     if (enriched !== null) {
       enrichedTasks.push(enriched);
     }
@@ -482,7 +515,7 @@ export async function runGhPrStatus(
     }
     lines.push(`### ${label} (${entries.length})`);
     for (const enriched of entries) {
-      lines.push(fmtTask(enriched));
+      lines.push(fmtGhTask(enriched));
       lines.push("");
     }
     actionable += entries.length;

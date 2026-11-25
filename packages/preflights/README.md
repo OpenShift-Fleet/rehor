@@ -85,6 +85,8 @@ The registered ids — one registration line each in `createPopulatedRegistry` (
 | jira-kanban  | active-task triage + kanban candidate search        | `project`, `label`    | `statuses` (`["New", "Backlog", "To Do"]`), `jql_extra` (—), `email` (—), `interrupted_retry_minutes` (30) |
 | jira-triage  | active-task triage only                            | —                     | `interrupted_retry_minutes` (30)                                                 |
 | onboarding   | onboarding candidates + phase advancement          | `label`               | `project` (`"REHOR"`)                                                             |
+| renovate-discover | failing Renovate PRs not yet tracked          | —                     | `task_key_prefix` (`"renovate-fix:"`), `repo_keys` (—), `bot_logins` (`["renovate[bot]", "renovate", "app/renovate"]`), `max_active` (10) |
+| renovate-pr-status | Renovate workflow PR/CI/feedback status      | —                     | `task_key_prefix` (`"renovate-fix:"`)                                             |
 
 ### `gh-pr-status`
 
@@ -201,6 +203,42 @@ Finds new onboarding tickets by label and checks active onboarding tasks for new
 
 - `label` (required) — onboarding label; restricted to `[a-zA-Z0-9:_-]` because it is interpolated into JQL.
 - `project` (default `"REHOR"`, nonblank) — Jira project for the candidate search.
+
+### `renovate-discover`
+
+Port of the Renovate workflow's `01-renovate-discover.py`: scans the instance's GitHub-hosted repositories for open, non-draft Renovate-authored PRs whose check rollup has a `FAILURE` and whose branch is not conflicted, then separates untracked work from tasks already covered by the status preflight. `start` when at least one untracked PR is actionable; `skip` otherwise, so a quiet cycle creates no sandbox.
+
+Tasks are keyed `renovate-fix:<repo-key>#<number>` (`task_key_prefix` configurable). A task with an active status (`in_progress`, `pr_open`, `pr_changes`), or a paused task whose `paused_reason` is neither empty nor `transient:*`, is treated as tracked and stays out of AUTO-FIX. Paused `transient:*` tasks (and tasks with no recorded reason, for backwards compatibility) re-enter AUTO-FIX with `resume:paused`; terminal `done` tasks re-enter with `resume:done` so the agent re-activates the existing task instead of duplicating it. The start content carries the head ref/owner/repo and cross-repository flag the agent stores in task metadata.
+
+The task list is fetched once per run and shared with `renovate-pr-status` (declare discovery first). If the task API is unavailable, discovery `skip`s rather than risk treating tracked or paused work as new; memory authorization rejections remain `error`. Active capacity is counted from that same task list — not a separate capacity call that could fail open — and new work is withheld at `max_active`. Paused retries proceed at capacity because they do not consume a new slot. GitHub listing/detail failures follow the shared failure policy: isolated failures are skipped with UNFETCHABLE evidence, a run where every attempted fetch of a class failed is an `error` naming the required route.
+
+- `task_key_prefix` (default `"renovate-fix:"`, nonblank) — external-key prefix of this workflow's tasks. Both Renovate preflights must use the same value.
+- `repo_keys` (optional, nonempty) — restrict discovery to these keys of the instance `project-repos.json`; unset scans every mapped repo. Non-GitHub and unresolvable entries are skipped.
+- `bot_logins` (default `["renovate[bot]", "renovate", "app/renovate"]`, nonempty) — GitHub logins treated as Renovate authors (case-insensitive exact match).
+- `max_active` (default `10`, positive integer) — active-task capacity for new work.
+
+### `renovate-pr-status`
+
+Port of the Renovate workflow's `02-gh-pr-status.py`, the workflow-specific layer over the shared `gh-pr-status` view. Active tasks are classified into the same six buckets, with four Renovate rules on top:
+
+- CI failures always retry, even when `last_addressed` would suppress them — a partially fixed CI run needs another session.
+- A conflict on the Renovate PR alone is suppressed (Renovate rebases on its own), unless the task also has new human feedback. Once `metadata.fix_pr` exists, a fix-PR conflict stays visible because rebasing it is the bot's job.
+- After `metadata.fix_pr` exists, CI, conflicts, reviews, and comments come from the fix PR; the Renovate PR remains the MERGED/CLOSED lifecycle signal. If the fix PR cannot be read, the task stays in CI FAILING instead of falling through to green Renovate checks.
+- Paused tasks with new human feedback are promoted into a `### BLOCKED FEEDBACK` section (Priority 1), except when the Renovate PR is already merged/closed.
+
+`start` when any active bucket is actionable or any blocked feedback exists; `skip` otherwise. The preflight does not create tasks or start work on its own; the workflow prompt decides which one item to claim.
+
+- `task_key_prefix` (default `"renovate-fix:"`, nonblank) — must match `renovate-discover`.
+
+Activating the workflow requires both ids declared explicitly in the instance profile; the workflow has no central default set. Example:
+
+```yaml
+preflights:
+  - renovate-discover
+  - renovate-pr-status
+```
+
+The order matters: `renovate-discover` populates the shared per-run task cache that `renovate-pr-status` reuses. A profile whose `preflights` list is empty runs no checks and dispatches no session.
 
 ## Differences from the Python implementation
 

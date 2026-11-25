@@ -125,6 +125,10 @@ export interface GhPrData {
   readonly url?: string | null;
   readonly title?: string | null;
   readonly isDraft?: boolean | null;
+  /** Login of the head repository's owner (the fork owner for cross-repo PRs). */
+  readonly headRepositoryOwner?: { readonly login?: string | null } | null;
+  /** Name of the head repository (the fork name for cross-repo PRs). */
+  readonly headRepository?: { readonly name?: string | null } | null;
   readonly reviews?: readonly GhPrReview[] | null;
   readonly statusCheckRollup?: readonly GhStatusCheckEntry[] | null;
 }
@@ -271,7 +275,8 @@ export interface GitHubClient {
 }
 
 // The fields mirror `gh pr view --json state,mergeable,statusCheckRollup,
-// reviewDecision,reviews,url,title,isDraft`. The page sizes match gh: one
+// reviewDecision,reviews,url,title,isDraft` plus the head repository identity
+// the Renovate workflow records in task metadata. The page sizes match gh: one
 // page of reviews and one page of rollup contexts (100 each).
 const PR_STATUS_QUERY = `query PrStatus($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -282,6 +287,12 @@ const PR_STATUS_QUERY = `query PrStatus($owner: String!, $repo: String!, $number
       url
       title
       isDraft
+      headRepositoryOwner {
+        login
+      }
+      headRepository {
+        name
+      }
       reviews(first: 100) {
         nodes {
           state
@@ -332,6 +343,8 @@ interface PrStatusResponse {
       readonly url?: string | null;
       readonly title?: string | null;
       readonly isDraft?: boolean | null;
+      readonly headRepositoryOwner?: { readonly login?: string | null } | null;
+      readonly headRepository?: { readonly name?: string | null } | null;
       readonly reviews?: { readonly nodes?: readonly GhPrReview[] | null } | null;
       readonly statusCheckRollup?: {
         readonly contexts?: { readonly nodes?: readonly RollupNode[] | null } | null;
@@ -745,6 +758,8 @@ export function createGitHubClient(config: GitHubClientConfig): GitHubClient {
       url: pr.url ?? null,
       title: pr.title ?? null,
       isDraft: pr.isDraft ?? null,
+      headRepositoryOwner: pr.headRepositoryOwner ?? null,
+      headRepository: pr.headRepository ?? null,
       reviews: pr.reviews?.nodes ?? [],
       statusCheckRollup: pr.statusCheckRollup?.contexts?.nodes?.map(normalizeRollupEntry) ?? [],
     };

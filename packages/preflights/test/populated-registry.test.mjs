@@ -27,6 +27,8 @@ test("populated registry registers every landed preflight", () => {
     "obsint-mintmaker-prs",
     "obsint-weekly-status-update",
     "onboarding",
+    "renovate-discover",
+    "renovate-pr-status",
   ]);
 });
 
@@ -37,6 +39,8 @@ test("required inputs match the spike doc's parameter mapping", () => {
   assert.deepEqual(requiredInputNames(registry.get("onboarding").input), ["label"]);
   assert.deepEqual(requiredInputNames(registry.get("gl-mr-status").input), []);
   assert.deepEqual(requiredInputNames(registry.get("gh-pr-status").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("renovate-discover").input), []);
+  assert.deepEqual(requiredInputNames(registry.get("renovate-pr-status").input), []);
 });
 
 test("fabric-project-state validates the flattened coordinator inputs", () => {
