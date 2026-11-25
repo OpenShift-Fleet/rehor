@@ -20,6 +20,8 @@ import { obsintJenkinsStatus } from "./obsint-jenkins-status/index.js";
 import { obsintMintmakerPrs } from "./obsint-mintmaker-prs/index.js";
 import { obsintWeeklyStatusUpdate } from "./obsint-weekly-status-update/index.js";
 import { onboarding } from "./onboarding/index.js";
+import { renovateDiscover } from "./renovate-discover/index.js";
+import { renovatePrStatus } from "./renovate-pr-status/index.js";
 
 /**
  * Audit-boundary barrel for preflight implementations. Every preflight gets
@@ -51,5 +53,7 @@ export function createPopulatedRegistry(): PreflightRegistry {
     obsintMintmakerPrs,
     obsintWeeklyStatusUpdate,
     onboarding,
+    renovateDiscover,
+    renovatePrStatus,
   ]);
 }
