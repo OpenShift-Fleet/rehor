@@ -230,7 +230,8 @@ with open(path, encoding="utf-8") as f:
 
 server = config.get("mcpServers", {}).get("bot-memory")
 if server is not None:
-    server.setdefault("headers", {})["X-Bot-Instance-Id"] = os.environ["BOT_INSTANCE_ID"]
+    # Node sends Latin-1 header strings as bytes; the server decodes them as UTF-8.
+    server.setdefault("headers", {})["X-Bot-Instance-Id"] = os.environ["BOT_INSTANCE_ID"].encode("utf-8").decode("latin-1")
 
 with open(path, "w", encoding="utf-8") as f:
     json.dump(config, f, indent=2, ensure_ascii=False)
