@@ -1,6 +1,10 @@
+import { BlockList, isIPv4 } from "node:net";
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { SandboxSpec } from "@nvidia/openshell-sdk";
 import { NetworkEnforcementMode, NetworkPolicyRuleSchema, NetworkTlsMode } from "@nvidia/openshell-sdk/raw";
+import { parseSandboxEgress } from "./profile-egress.js";
+import type { ProfileEgressApproval, ProfileEgressContext } from "./profile-egress-approvals.js";
 
 /** Centrally compiled public-egress policy (REHOR-253).
  *
@@ -13,7 +17,7 @@ import { NetworkEnforcementMode, NetworkPolicyRuleSchema, NetworkTlsMode } from 
  *
  * Ownership is closed: the rule set is a compile-time constant. Teams,
  * agent instance configs, profiles, and `preflightEnv` contribute nothing —
- * there is no per-instance knob by design.
+ * profile requests are handled separately and never modify this rule.
  *
  * Auth-bearing hub destinations are intentionally EXCLUDED: they stay on
  * the HTTP OAuth gateway (vendor credentials are injected there, never via
@@ -142,6 +146,7 @@ const REVIEWED_EGRESS_BINARIES: readonly string[] = [
 ];
 
 const PUBLIC_EGRESS_RULE_KEY = "public_egress";
+const PROFILE_EGRESS_RULE_KEY = "profile_egress";
 const PUBLIC_EGRESS_HTTPS_PORT = 443;
 
 export function publicEgressRuleKey(): string {
@@ -162,16 +167,7 @@ export function createPublicEgressRule() {
       ? [destination.host, `**.${destination.host}`]
       : [destination.host];
     for (const host of hosts) {
-      endpoints.push({
-        host,
-        port: PUBLIC_EGRESS_HTTPS_PORT,
-        // Security invariant: L4-only raw TLS tunnel, no credential
-        // binding. SKIP means no supervisor interception, not disabled
-        // client TLS verification.
-        protocol: "",
-        tls: NetworkTlsMode.SKIP,
-        enforcement: NetworkEnforcementMode.ENFORCE,
-      });
+      endpoints.push(publicEndpoint(host));
     }
   }
   return create(NetworkPolicyRuleSchema, {
@@ -179,6 +175,18 @@ export function createPublicEgressRule() {
     endpoints,
     binaries: REVIEWED_EGRESS_BINARIES.map((path) => ({ path })),
   });
+}
+
+function publicEndpoint(host: string) {
+  return {
+    host,
+    port: PUBLIC_EGRESS_HTTPS_PORT,
+    // L4-only passthrough: never resolve provider credentials or turn off
+    // client TLS verification. Profile grants additionally pin addresses.
+    protocol: "",
+    tls: NetworkTlsMode.SKIP,
+    enforcement: NetworkEnforcementMode.ENFORCE,
+  };
 }
 
 /** Merge the static public-egress rule into a sandbox policy at
@@ -191,4 +199,80 @@ export function withPublicEgress(policy: SandboxPolicy, enabled: boolean): Sandb
     throw new Error("Public egress rule key is reserved");
   }
   return { ...policy, networkPolicies: { ...existing, [PUBLIC_EGRESS_RULE_KEY]: createPublicEgressRule() } };
+}
+
+function conflictsWithBaseHost(host: string, baseHost: string | undefined): boolean {
+  const pattern = baseHost?.toLowerCase().replace(/\.$/, "") ?? "";
+  if (pattern.startsWith("**.") && /^[a-z0-9.-]+$/.test(pattern.slice(3))) {
+    return host.endsWith(pattern.slice(2));
+  }
+  // Do not assume unknown or hostless matchers are disjoint.
+  return !/^[a-z0-9.-]+$/.test(pattern) || pattern === host;
+}
+
+// Conservative exclusions based on the IANA IPv4 Special-Purpose Address
+// Registry plus multicast, deprecated 6to4 relay space and reserved space.
+const nonPublicIpv4 = new BlockList();
+for (const [address, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
+  ["192.88.99.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24],
+  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
+] as const) nonPublicIpv4.addSubnet(address, prefix);
+
+function pinnedCidrs(ips: readonly string[] | undefined): string[] {
+  // Exact hostname grants can otherwise trust a private DNS answer. The
+  // supervisor checks these /32 pins against the addresses it actually dials.
+  if (!Array.isArray(ips) || !ips.length || ips.length > 16) {
+    throw new ConnectError("Profile egress approval requires 1–16 public IPv4 pins", Code.PermissionDenied);
+  }
+  const pins = Array.from(ips, (ip) => {
+    if (typeof ip !== "string" || !isIPv4(ip) || nonPublicIpv4.check(ip)) {
+      throw new ConnectError("Invalid profile egress IPv4 pin", Code.PermissionDenied);
+    }
+    return `${ip}/32`;
+  });
+  return [...new Set(pins)].sort();
+}
+
+/** Profile input can neither replace a rule nor add an alternate L4 path to
+ * an existing policy destination (even when its existing port differs). */
+export function withProfileEgress(
+  policy: SandboxPolicy,
+  enabled: boolean,
+  context: ProfileEgressContext | undefined,
+  approvals: readonly ProfileEgressApproval[],
+): SandboxPolicy {
+  if (context === undefined) return policy;
+  let requests: ReturnType<typeof parseSandboxEgress>;
+  try {
+    if (!Array.isArray(context.requests)) throw new Error();
+    requests = parseSandboxEgress(context.requests);
+  } catch {
+    throw new ConnectError("Invalid sandbox.egress", Code.InvalidArgument);
+  }
+  if (!requests.length) return policy;
+  if (!enabled) throw new ConnectError("Profile egress is disabled", Code.PermissionDenied);
+  const existing = policy.networkPolicies ?? {};
+  if (Object.hasOwn(existing, PROFILE_EGRESS_RULE_KEY)) {
+    throw new ConnectError("Profile egress rule key is reserved", Code.PermissionDenied);
+  }
+  const existingHosts = Object.values(existing).flatMap((rule) => rule.endpoints?.map(({ host }) => host) ?? []);
+  const endpoints = requests.sort((a, b) => a.host < b.host ? -1 : a.host > b.host ? 1 : 0).map(({ host }) => {
+    const approved = approvals.filter((entry) => entry.repository === context.repository
+      && entry.profile === context.profile && entry.host === host);
+    if (approved.length !== 1
+      || GATEWAY_ONLY_DESTINATIONS.some((entry) => entry.host === host
+        || (entry.match === "domain-and-subdomains" && host.endsWith(`.${entry.host}`)))
+      || existingHosts.some((pattern) => conflictsWithBaseHost(host, pattern))) {
+      throw new ConnectError("Profile egress destination is not permitted", Code.PermissionDenied);
+    }
+    return { ...publicEndpoint(host), allowedIps: pinnedCidrs(approved[0].allowedIps) };
+  });
+  const rule = create(NetworkPolicyRuleSchema, {
+    name: "profile-egress",
+    endpoints,
+    binaries: REVIEWED_EGRESS_BINARIES.map((path) => ({ path })),
+  });
+  return { ...policy, networkPolicies: { ...existing, [PROFILE_EGRESS_RULE_KEY]: rule } };
 }

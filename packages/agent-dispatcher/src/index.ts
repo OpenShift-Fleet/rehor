@@ -275,6 +275,13 @@ async function start(): Promise<void> {
             }
           }
           const environment = sandboxEnvironment(hostEnvironment, profile.preflightEnv, serviceGatewayUrl, modelProxyUrl, sandboxEnv);
+          // Approval identity uses the exact configured repository URL, not a value from the profile.
+          const runOptions = {
+            sandboxEnv,
+            ...(profile.sandboxEgress !== undefined ? {
+              profileEgress: { repository, profile: profile.name, requests: profile.sandboxEgress },
+            } : {}),
+          };
           // The run ID is minted here so the registry record can exist before
           // the session starts; the session reuses it for names and labels.
           const runId = randomUUID();
@@ -295,8 +302,8 @@ async function start(): Promise<void> {
             // or a shutdown signal raised during admission.
             const work = Promise.resolve().then(() => registry
               ? session.run(profile.image.reference, decision, environment, signal, {
+                ...runOptions,
                 runId,
-                sandboxEnv,
                 onProvisioned: async (info) => {
                   await registry.update(runId, {
                     workspaceName: info.workspaceName,
@@ -306,7 +313,7 @@ async function start(): Promise<void> {
                   });
                 },
               })
-              : session.run(profile.image.reference, decision, environment, signal, { sandboxEnv }));
+              : session.run(profile.image.reference, decision, environment, signal, runOptions));
             sessionRuns.add(work);
             // Session records name their owner: profile, repository, and the
             // opaque agentId. The logger validates and drops malformed values.

@@ -20,6 +20,12 @@ const token = "synthetic-secret-never-workload";
 const decision = { action: "start", prompt, scripts: [{ name: "one.mjs", status: "start", content: "private script output" }] };
 const image = "registry.example.test/team/runner:latest";
 const absent = () => { throw new ConnectError("private error", Code.NotFound); };
+const profileEgressApproval = { repository: "https://github.com/example/instances.git", profile: "synthetic", host: "api.example.com", allowedIps: ["93.184.215.14"] };
+const profileEgress = {
+  repository: profileEgressApproval.repository,
+  profile: profileEgressApproval.profile,
+  requests: [{ host: profileEgressApproval.host, port: 443 }],
+};
 
 function fixture(options = {}) {
   const calls = [];
@@ -158,7 +164,9 @@ function fixture(options = {}) {
   };
   let minted = 0;
   const memory = { url: new URL("https://memory.example.test/health"), credentialProvider: { async mint() { minted++; return { token, expiresAt: Date.now() + 600_000 }; } } };
-  return { raw, calls, memory, session: new SandboxSession({ raw, memory, ...(options.cleanupBudgetMs !== undefined ? { cleanupBudgetMs: options.cleanupBudgetMs } : {}), ...(options.modelProxyUrl !== undefined ? { modelProxyUrl: options.modelProxyUrl } : {}), ...(options.publicEgress !== undefined ? { publicEgress: options.publicEgress } : {}), ...(options.sandboxRetentionMs !== undefined ? { sandboxRetentionMs: options.sandboxRetentionMs } : {}), ...(options.onRetention !== undefined ? { onRetention: options.onRetention } : {}) }), minted: () => minted, workspace: () => workspace,
+  const { cleanupBudgetMs, modelProxyUrl, publicEgress, profileEgressApprovals, sandboxRetentionMs, onRetention } = options;
+  const session = new SandboxSession({ raw, memory, cleanupBudgetMs, modelProxyUrl, publicEgress, profileEgressApprovals, sandboxRetentionMs, onRetention });
+  return { raw, calls, memory, session, minted: () => minted, workspace: () => workspace,
     resources: () => ({ workspace, sandbox, provider, profile }) };
 }
 
@@ -295,6 +303,98 @@ test("public egress flag merges the static rule into the sandbox policy without 
     Object.keys(combinedPolicy.networkPolicies),
     ["memory_health", "model_proxy", "public_egress"],
   );
+});
+
+test("an approved profile request appends a credential-free rule without changing any core policy", async () => {
+  const runId = randomUUID();
+  const options = {
+    publicEgress: true, profileEgressApprovals: [profileEgressApproval], memoryRuntime: true,
+    modelProxyUrl: new URL("https://model-gateway.example.test/v1"),
+    serviceGatewayUrl: new URL("https://service-gateway.example.test:8454"),
+  };
+  const baseline = fixture(options);
+  const baseSession = new SandboxSession({ raw: baseline.raw, memory: baseline.memory, ...options });
+  assert.equal((await baseSession.run(image, decision, {}, undefined, { runId })).outcome, "passed");
+  const basePolicy = baseline.calls.find(({ name }) => name === "createSandbox").request.spec.policy;
+  const f = fixture(options);
+  const session = new SandboxSession({ raw: f.raw, memory: f.memory, ...options });
+  const result = await session.run(image, decision, {}, undefined, { runId, profileEgress });
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  const { policy, providers } = f.calls.find((call) => call.name === "createSandbox").request.spec;
+  const { profile_egress: profileRule, ...coreRules } = policy.networkPolicies;
+  assert.deepEqual({ ...policy, networkPolicies: coreRules }, basePolicy);
+  assert.deepEqual(Object.keys(policy.networkPolicies), [...Object.keys(basePolicy.networkPolicies), "profile_egress"]);
+  const endpoints = profileRule.endpoints;
+  assert.equal(endpoints.length, 1);
+  const [endpoint] = endpoints;
+  assert.equal(endpoint.host, profileEgressApproval.host);
+  assert.equal(endpoint.port, 443);
+  assert.equal(endpoint.protocol, "");
+  assert.equal(endpoint.tls, NetworkTlsMode.SKIP);
+  assert.deepEqual(endpoint.allowedIps, ["93.184.215.14/32"]);
+  assert.equal(endpoint.credentialBinding, undefined);
+  assert.equal(endpoint.providerCredentialed ?? false, false);
+  assert.deepEqual(providers, [result.provider.name]);
+  assert.ok(f.calls.some((call) => call.name === "execSandbox" && call.request.requestId === result.runnerRequestId));
+});
+
+test("invalid and denied profile requests fail at policy construction before any gateway call", async (t) => {
+  const approvals = [profileEgressApproval];
+  for (const [name, publicEgress, profileEgressApprovals, context, errorCode] of [
+    ["wrong profile", true, approvals, { ...profileEgress, profile: "different" }, "permission_denied"],
+    ["non-exact repository URL", true, approvals, { ...profileEgress, repository: profileEgress.repository.replace(/\.git$/, "") }, "permission_denied"],
+    ["unapproved host", true, approvals, { ...profileEgress, requests: [{ host: "other.example.com", port: 443 }] }, "permission_denied"],
+    ["empty production approvals", true, undefined, profileEgress, "permission_denied"],
+    ["flag off", false, approvals, profileEgress, "permission_denied"],
+    ["malformed request", true, approvals, { ...profileEgress, requests: [{ host: profileEgressApproval.host, port: 80 }] }, "invalid_argument"],
+  ]) {
+    await t.test(name, async () => {
+      const f = fixture({ publicEgress, profileEgressApprovals });
+      const result = await f.session.run(image, decision, {}, undefined, { profileEgress: context });
+      assert.equal(result.stage, "policy");
+      assert.equal(result.errorCode, errorCode);
+      assert.equal(result.completion, "not-created");
+      assert.equal(result.cleanup, "not-needed");
+      assert.equal(f.minted(), 0);
+      assert.deepEqual(f.calls, []);
+    });
+  }
+});
+
+test("a missing or changed effective profile rule prevents input delivery and runner execution", async (t) => {
+  for (const [name, mutate] of [
+    ["missing rule", (rules) => { delete rules.profile_egress; }],
+    ["changed TLS mode", (rules) => { rules.profile_egress.endpoints[0].tls = NetworkTlsMode.UNSPECIFIED; }],
+    ["removed address pin", (rules) => { rules.profile_egress.endpoints[0].allowedIps = []; }],
+  ]) {
+    await t.test(name, async () => {
+      const f = fixture({ publicEgress: true, profileEgressApprovals: [profileEgressApproval], enrichPolicy: (policy) => mutate(policy.networkPolicies) });
+      const result = await f.session.run(image, decision, {}, undefined, { profileEgress });
+      assert.equal(result.stage, "readiness");
+      assert.equal(result.completion, "gone");
+      assert.equal(result.cleanup, "deleted");
+      assert.ok(!f.calls.some((call) => call.name === "execSandbox"));
+    });
+  }
+});
+
+test("only sessions with profile egress reject endpoints in the reserved provider rule", async () => {
+  const enrichPolicy = ({ networkPolicies }) => {
+    const key = Object.keys(networkPolicies).find((name) => name.startsWith("_provider_"));
+    assert.ok(key);
+    networkPolicies[key].endpoints.push(networkPolicies.public_egress.endpoints[0]);
+  };
+  const f = fixture({ publicEgress: true, profileEgressApprovals: [profileEgressApproval], enrichPolicy });
+  const result = await f.session.run(image, decision, {}, undefined, { profileEgress });
+  assert.equal(result.stage, "readiness");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  assert.ok(!f.calls.some((call) => call.name === "execSandbox"));
+
+  const globalOnly = fixture({ publicEgress: true, enrichPolicy });
+  const globalResult = await globalOnly.session.run(image, decision, {});
+  assert.equal(globalResult.outcome, "passed");
 });
 
 test("extra effective network rules fail closed only while public egress is enabled", async () => {

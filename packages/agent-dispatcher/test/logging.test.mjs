@@ -409,7 +409,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
         process.send({ event: 'host', environment: options.env });
         process.send({ event: 'minted', token: await options.memoryCredential() });
         const decision = { action: 'start', prompt: 'sensitive-prompt', scripts: [{ name: '01-work.py', status: 'start', content: 'sensitive-content' }] };
-        const profile = { name: 'fixture-profile', configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' }, sandboxEnv: { SLACK_WEBHOOK_URL: 'wired-plain-value' } };
+        const profile = { name: 'fixture-profile', configPath: '/sensitive/config.yaml', image: { reference: 'registry.example/agent:runner' }, preflightEnv: { BOT_LABEL: 'profile-label', BOT_MEMORY_URL: 'https://untrusted.example/mcp' }, sandboxEnv: { SLACK_WEBHOOK_URL: 'wired-plain-value' }, sandboxEgress: [{ host: 'downloads.example.com', port: 443 }] };
         const completed = options.launch(profile, 'a'.repeat(64), decision.prompt, decision, 'https://github.com/org/fixture-config.git');
         void completed.then(completion => process.send({ event: 'completion', completion }));
         await new Promise(resolve => setImmediate(resolve));
@@ -419,7 +419,7 @@ test("production wiring preserves decision, filters runner env, and drains signa
       export class SandboxSession {
         constructor({ raw, memory, runtime, memoryRuntime, serviceGatewayUrl, sandboxRetentionMs, onRetention, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || !memoryRuntime || serviceGatewayUrl.href !== 'https://services.example/' || sandboxRetentionMs !== 0 || typeof onRetention !== 'function' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
         run(image, decision, environment, signal, options) {
-          process.send({ event: 'run', image, decision, environment, aborted: signal.aborted, sandboxEnv: options?.sandboxEnv });
+          process.send({ event: 'run', image, decision, environment, aborted: signal.aborted, sandboxEnv: options?.sandboxEnv, profileEgress: options?.profileEgress });
           process.exitCode = 7;
           process.kill(process.pid, 'SIGTERM');
           return new Promise(resolve => setTimeout(() => {
@@ -467,6 +467,10 @@ test("production wiring preserves decision, filters runner env, and drains signa
     // Rendered plain sandbox.env values must reach run options for the
     // native sandbox environment, separate from the merged runner env.
     assert.deepEqual(messages[2].sandboxEnv, { SLACK_WEBHOOK_URL: "wired-plain-value" });
+    assert.deepEqual(messages[2].profileEgress, {
+      repository: "https://github.com/org/fixture-config.git", profile: "fixture-profile",
+      requests: [{ host: "downloads.example.com", port: 443 }],
+    });
     assert.equal(messages[3].aborted, true);
     assert.equal(messages[4].completion, "gone");
     const records = stdout.trim().split("\n").map(JSON.parse);
