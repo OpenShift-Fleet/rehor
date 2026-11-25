@@ -49,7 +49,7 @@ There is deliberately no Service, Route, or HTTP listener, and no liveness/readi
 | `AGENT_DISPATCHER_SERVICE_GATEWAY_URL` | Optional authenticated HTTPS origin for services used by preflights and the sandbox. Required when configured checks or runtime services need it. |
 | `AGENT_DISPATCHER_MODEL_PROXY_URL` | Optional exact HTTPS `/v1` model-gateway endpoint. Required for model providers routed through that gateway. |
 | `AGENT_DISPATCHER_SESSION_LOCK_TTL_MS` | Positive lease duration in milliseconds; defaults to `1800000`. `0` disables the per-agent mutex. |
-| `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` | Exact `true` or `false`; defaults to `false`. Enables only centrally reviewed public egress. |
+| `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` | Exact `true` or `false`; defaults to `false`. Single gate for centrally reviewed public egress and platform-approved profile egress; no separate flag exists. The global entries it enables are unchanged, and activation requires independent security signoff. |
 
 The deployment supplies protected credentials and service coordinates; an instance profile cannot override those platform-owned values. Profiles may supply only permitted non-secret runtime settings. See [credentials and secrets](dispatcher-secrets.md) for disclosure-impact tiers. The dispatcher owns sandbox policy and cleanup.
 
@@ -68,6 +68,27 @@ The lock covers graceful shutdown; the session registry covers hard kills. It is
   - **Sandbox still running**: **adopted** — polled every 30 seconds for up to one hour. When it terminates, resources are cleaned up, the record is marked `completed` (`adopted`), and the lock is released. On timeout the record is marked `abandoned` (`adopt-timeout`), resources are left untouched (never delete a possibly-still-running sandbox), and the lock is deliberately left to TTL expiry so a second concurrent session for the agent cannot start.
   - Deletions are guarded by the session's run-ID labels, mirroring the session cleanup path: a resource whose `rehor-run-id` label does not match the record is never deleted.
 - **Failure semantics**: each record is reconciled in isolation. A registry, lock, or gateway failure during one record is logged as a `sandbox.reconcile` failure and the record stays open, so the next restart retries it. Locks are released with the token stored in the record; if the lease already expired and another replica holds it, the release simply fails and is logged.
+
+### Profile-requested sandbox egress
+
+An instance profile may request additional sandbox egress destinations with `sandbox.egress` (REHOR-285); the authoring contract and strict declaration rules are in [Instance Configuration](presets/instance-config.md). The request surface is closed — at most 32 entries of exactly `host` plus `port: 443`, an exact lowercase public DNS hostname — so a profile cannot declare wildcards, IP literals, URLs, arbitrary ports or protocols, or raw policy. The feature adds no deployment setting of its own: it is gated by the existing `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` flag, and the centrally compiled global rules (REHOR-253) and their destination entries are unchanged.
+
+Enforcement is fail-closed at two points before any sandbox exists:
+
+- **Discovery**: a malformed `sandbox.egress` declaration fails the whole repository's profile discovery, naming the instance and entry; entries are never silently dropped.
+- **Session admission**: requests are evaluated at sandbox policy construction, before any OpenShell workspace, sandbox, provider profile, or memory credential is created. Absent or empty requests leave the policy unchanged. With the flag off, or for any destination lacking a valid approval, the session fails with a `permission_denied`-class error and `not-created` completion — no gateway resource is created. A structurally invalid request that reaches the session fails with `invalid_argument` at the same point.
+
+Approvals are platform-owned and never negotiable through the profile:
+
+- The reviewed list is the compile-time constant in [`profile-egress-approvals.ts`](https://github.com/OpenShift-Fleet/rehor/blob/master/packages/agent-dispatcher/src/profile-egress-approvals.ts) and ships empty — no destination is approved by default. Adding or revoking an approval means changing dispatcher source and redeploying.
+- An approval matches the exact configured repository URL (as listed in `AGENT_DISPATCHER_CONFIG_REPOS`), the profile directory name, and the host. Exactly one entry may match a request; ambiguity fails closed. The dispatcher binds this identity itself — a profile cannot present or influence it.
+- Every approval must pin 1–16 stable, exact public IPv4 addresses for the host, which the dispatcher renders as `/32` pins on the egress rule. Profiles cannot supply addresses; IPv6 and CIDR inputs are not accepted. An exact-hostname grant alone would trust whatever address DNS returns at connection time, so the pins act as a positive dial-time allowlist checked against the addresses the supervisor actually dials. Refuse approvals for hosts without stable public IPv4 addressing — there is nothing reviewable to pin, and such requests fail closed.
+- Pinned addresses must be dedicated to the approved non-sensitive origin. The grant is layer-4 and does not inspect the application-layer origin, so shared IP hosting that also serves credentialed or unrelated origins on the same address is not approvable: pinning it would grant reachability to every origin on that address.
+- Approval review must verify the destination's DNS ownership and public resolution and confirm the service carries no credentials and grants no internal access.
+
+The granted access is deliberately narrow: layer-4 TCP 443 with TLS passthrough. The supervisor does not intercept the connection, the sandbox's normal client TLS validation stays in effect, no provider credential is ever bound to these endpoints, and only the reviewed system toolset may open them. It is not HTTPS or protocol enforcement — HTTP methods and paths cannot be restricted — so credential-bearing or protocol-level access must stay on the authenticated services gateway. Gateway-only destinations and hosts overlapping existing policy destinations (memory, model gateway, public egress) are refused even when approved.
+
+Effective policy is verified before the runner executes: session readiness requires the gateway-reported policy to contain the profile rule exactly — endpoints, TLS mode, and `/32` pins — and a missing rule, widened TLS mode, or removed pin prevents input delivery and runner execution. While a profile rule is active, the gateway-attached reserved provider rule must remain endpointless.
 
 ## Deployment semantics
 
@@ -88,6 +109,15 @@ Apply changes in order using the deployment mechanism for your cluster:
 4. **Scale to `1`** and verify startup: `oc logs deployment/rehor-agent-dispatcher` must show `startup` and `ready` lifecycle events — memory credential preflight, Gateway authentication, and config-repo synchronization all pass before the loop starts.
 5. **Enable preflights** by keeping `AGENT_DISPATCHER_CONFIG_REPOS` pointed at the onboarding agent repository; preflight cycles run at most once per agent every five minutes. No sandbox session is created until a preflight returns an actionable `start`.
 6. **Pilot**: rebuild the onboarding runner image with the private-layout `Dockerfile.runner`, switch `AGENT_DISPATCHER_RUNTIME_LAYOUT` to `private`, and validate end-to-end sandbox sessions with confirmed cleanup. Legacy onboarding stays paused/untouched until the pilot is approved.
+7. **Validate profile-requested egress in isolated staging** before approving any real destination. Use a synthetic public endpoint controlled by the platform — no real third-party endpoints and no production probes — and treat nothing as verified until each check has actually run and been observed:
+   - Exercise one approved profile and hostname end to end; confirm an unapproved profile, an unapproved hostname, and a disabled flag each fail at policy construction with no sandbox, workspace, or credential created.
+   - Confirm private and link-local destinations are rejected at connection time from inside the sandbox.
+   - Verify the gateway-reported effective policy matches the requested rule exactly, pins included, and that an invalid request never produces a sandbox.
+   - Validate the actual deployed images — the dispatcher build and the deployed OpenShell supervisor/gateway images — not only the source tree: the running builds must carry the pin enforcement.
+   - Validate the deployed backend, resolver, and proxy mode: confirm the supervisor's enforcement path in that environment applies the `/32` pins to the addresses it actually dials.
+   - Verify exact pin enforcement under a DNS change: an answer outside the pinned addresses must not yield a working connection to the approved hostname.
+   - Ensure the supervisor's opt-in hostname re-resolution at CONNECT time stays off in the deployed configuration.
+   - Enabling `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` — the single existing gate for both central public egress and profile egress — requires independent security signoff. The existing global entries are unchanged by this work.
 
 Existing polling instances are not migrated by deploying the dispatcher. Avoid enrolling an instance in both paths at once.
 
@@ -95,6 +125,7 @@ Existing polling instances are not migrated by deploying the dispatcher. Avoid e
 
 - **Disable dispatching**: set `AGENT_DISPATCHER_REPLICAS: '0'` using the deployment system. The pod terminates with the 22-minute drain.
 - **Full removal**: remove the Deployment and its ServiceAccount using the deployment system.
+- **Profile-requested egress**: remove the `sandbox.egress` request from the profile, revoke the approval in `profile-egress-approvals.ts`, and rebuild and redeploy the dispatcher (approvals are compile-time constants). With `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED=false` — the unchanged default — any non-empty request is rejected before sandbox creation and centrally compiled public egress is disabled too; absent or empty requests keep the sandbox policy unchanged. No defaults change.
 - **After any dispatcher removal/restart with in-flight sessions**: the replacement pod's startup reconciliation adopts or cleans up abandoned sessions and releases their locks automatically. Verify no orphaned Gateway resources remain for records marked `abandoned` with reason `adopt-timeout` (resources intentionally left in place) or after interrupted reconciliations (logged as `sandbox.reconcile` failures; they retry on the next restart). Ambiguous or interrupted cleanups still require manual reconciliation through the Gateway before the agent's in-flight reservation is considered released.
 - **Image regression**: restore the previous known-good image reference.
 

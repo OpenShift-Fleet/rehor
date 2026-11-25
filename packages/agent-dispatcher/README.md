@@ -82,7 +82,7 @@ Sandbox dispatch requires explicit `BOT_EXECUTION_ENGINE=coordinator`; the entry
 
 ### Public egress policy
 
-`AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` is a global dispatcher-deployment opt-in (default `false`, parsed fail-closed: only the exact strings `true`/`false` are accepted) for the centrally compiled public-egress rule. When enabled, the sandbox bootstrap policy gains one additional `public_egress` network rule, merged at policy construction and owned entirely by the dispatcher deployment: teams, instance configs, agent profiles, and `preflightEnv` contribute nothing, and the rule is a compile-time constant with no parameters. Unset or invalid values keep today's memory-only behavior; the flag is a rollout switch for an approved deployment change, never a per-agent knob.
+`AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED` is a deployment-wide opt-in for the centrally compiled `public_egress` rule. Unset or `false` leaves the base policy unchanged; invalid values fail startup. Profiles cannot modify this rule. They can optionally request a separate, platform-approved rule through [`sandbox.egress`](../../docs/presets/instance-config.md), subject to the same deployment opt-in. See the [deployment guide](../../docs/agent-dispatcher-deployment.md) before enabling it.
 
 The classification is migrated from the Squid `allowed_domains` allowlist in `proxy/squid.conf` (which stays byte-for-byte unchanged for legacy deployments) and is enforced by the parity test in `test/egress-policy.test.mjs`:
 
@@ -94,6 +94,10 @@ The rule's binaries are the reviewed system toolset grounded in `Dockerfile.runn
 
 - **Public endpoint shape (enforced by tests):** every public egress endpoint uses L4-only protocol `""` with `NetworkTlsMode.SKIP` and no `credentialBinding` — the supervisor relays a raw client TLS tunnel, and its OPA per-binary host/port/DNS/IP checks still apply. SKIP disables supervisor TLS interception, not the client's own TLS verification. Losing HTTP method/path inspection on these endpoints is parity with Squid's opaque CONNECT. The existing memory and model-gateway endpoint bindings are unchanged. Tests hard-fail on any public endpoint that is not TLS-skip/L4/unbound; the flag remains `false` until the approved rollout.
 - **Browser binary:** the Playwright Chromium executable lives at a version-dynamic path under `/opt/pw-browsers`; rather than grant a wildcard, it receives no network egress. Browser downloads are performed by `node`/`npx` (covered); E2E tests must use local servers.
+
+Profile egress ships with no approvals. Before approving any destination, verify the deployed OpenShell supervisor enforces the configured IPv4 pins at connection time. Use a disposable staging profile and a synthetic endpoint with no credentials or sensitive data. Verify the correct profile reaches the pinned endpoint, unapproved or malformed requests allocate no sandbox, and non-pinned/private addresses remain unreachable. The existing global egress rule is unchanged and requires its own rollout sign-off.
+
+An allowed connection carries the API response back to the sandbox client; it does not admit unsolicited inbound traffic. To keep a URL's path out of an instance repository, use a tier-2 Secret reference in `sandbox.env` for the full URL. `sandbox.egress` still needs a literal hostname and does not resolve secrets. If the hostname is also sensitive, use a platform-owned gateway route. Use the authenticated gateway for credential-bearing services.
 - **Effective-policy verification is strict under the flag:** while `AGENT_DISPATCHER_PUBLIC_EGRESS_ENABLED=true`, the effective network rule set returned by the Gateway must match the requested set exactly — any extra network rule fails the session closed before the writer or runner executes. With the flag off (default), the existing permissive contract is unchanged: additive Gateway baseline rules and safe filesystem additions remain accepted.
 
 ### Dispatch smoke-test scope

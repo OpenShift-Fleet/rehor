@@ -899,6 +899,24 @@ test("malformed preflight declarations log identity and full diagnostics before 
   }
 });
 
+test("malformed sandbox egress prevents preflights and launch", async (t) => {
+  const { root } = await checkoutFixture(t, `workflow: onboarding
+image: { repository: registry.example/team/name }
+sandbox:
+  egress: [{ host: "*.example.com", port: 443 }]
+`);
+  const preflight = t.mock.fn(async () => start());
+  const launch = t.mock.fn(async () => "gone");
+  const opts = options({ repositoriesJson: JSON.stringify([urls[0]]), launch,
+    dependencies: { syncRepositories: async () => [{ name: "one", path: root, revision: "abc" }], preflight },
+  });
+  const result = await runDispatcherCycle(opts);
+  await opts.dispatcher.drain();
+  assert.equal(result.repositories[0].status, "discovery-error");
+  assert.equal(preflight.mock.callCount(), 0);
+  assert.equal(launch.mock.callCount(), 0);
+});
+
 test("semantic parameter failures preserve every engine diagnostic through the real engine", async (t) => {
   const image = "image: { repository: registry.example/team/name }\n";
   const cases = [

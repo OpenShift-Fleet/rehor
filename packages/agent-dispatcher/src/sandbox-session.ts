@@ -7,7 +7,8 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 import { buildInputEnvelope, INPUT_ENVIRONMENT, INPUT_FILE_PATH, MAX_INPUT_BYTES } from "./input-envelope.js";
 import { createMemoryPolicy } from "./memory-policy.js";
-import { withPublicEgress } from "./egress-policy.js";
+import { withProfileEgress, withPublicEgress } from "./egress-policy.js";
+import { PROFILE_EGRESS_APPROVALS, type ProfileEgressApproval, type ProfileEgressContext } from "./profile-egress-approvals.js";
 import { isNormalizedAbsolutePath, pathsOverlap, type RuntimeLayout } from "./runtime-layout.js";
 
 type Raw = Pick<OpenShellClient["raw"], "createWorkspace" | "getWorkspace" | "deleteWorkspace" | "listWorkspaceMembers" | "createSandbox" | "getSandbox" | "listSandboxes" | "deleteSandbox" | "execSandbox" | "importProviderProfiles" | "getProviderProfile" | "deleteProviderProfile" | "listProviderProfiles" | "getProvider" | "createProvider" | "deleteProvider" | "listProviders" | "getSandboxProviderStatus" | "getSandboxConfig">;
@@ -22,6 +23,8 @@ export type SandboxSessionOptions = {
   serviceGatewayUrl?: URL;
   /** Central public-egress rollout flag (REHOR-253); default false. */
   publicEgress?: boolean;
+  /** Trusted dispatcher caller only; never sourced from profiles or environment. */
+  profileEgressApprovals?: readonly ProfileEgressApproval[];
   /** Debug retention (REHOR-245): ms to hold gateway resources after a session
    * before cleanup so failed sandboxes stay inspectable; default 0. */
   sandboxRetentionMs?: number;
@@ -47,6 +50,8 @@ export type SandboxRunOptions = {
   /** Rendered tier-2 sandbox.env values (REHOR-272) for the native sandbox
    * environment; the per-exec runner environment is unchanged. */
   sandboxEnv?: Record<string, string>;
+  /** Untrusted requests bound to the dispatcher's repository and profile identity. */
+  profileEgress?: ProfileEgressContext;
 };
 type ResourceState = "not-attempted" | "unknown" | "created" | "deleted";
 type SessionStage = "input" | "policy" | "workspace" | "provider" | "sandbox" | "readiness" | "write" | "runner" | "complete";
@@ -168,6 +173,7 @@ export class SandboxSession {
   private readonly memoryRuntime: boolean;
   private readonly serviceGatewayUrl: URL | undefined;
   private readonly publicEgress: boolean;
+  private readonly profileEgressApprovals: readonly ProfileEgressApproval[];
   private readonly sandboxRetentionMs: number;
   private readonly onRetention: ((info: SandboxRetentionInfo) => void) | undefined;
 
@@ -180,6 +186,7 @@ export class SandboxSession {
     memoryRuntime = false,
     serviceGatewayUrl,
     publicEgress = false,
+    profileEgressApprovals = PROFILE_EGRESS_APPROVALS,
     sandboxRetentionMs = 0,
     onRetention,
   }: SandboxSessionOptions) {
@@ -191,6 +198,7 @@ export class SandboxSession {
     this.memoryRuntime = memoryRuntime;
     this.serviceGatewayUrl = serviceGatewayUrl;
     this.publicEgress = publicEgress;
+    this.profileEgressApprovals = profileEgressApprovals;
     this.sandboxRetentionMs = sandboxRetentionMs;
     this.onRetention = onRetention;
   }
@@ -243,10 +251,13 @@ export class SandboxSession {
       // The centrally compiled public-egress rule merges here, at sandbox
       // policy construction, and only under the deployment-owned flag; it is
       // never sourced from profiles, preflightEnv, or any per-agent input.
-      const policy = withPublicEgress(
+      const basePolicy = withPublicEgress(
         createMemoryPolicy(this.memory.url, record.provider.name, this.runtime, this.modelProxyUrl, { memoryRuntime: this.memoryRuntime, ...(this.serviceGatewayUrl ? { serviceGatewayUrl: this.serviceGatewayUrl } : {}) }),
         this.publicEgress,
       );
+      const policy = withProfileEgress(basePolicy, this.publicEgress, options?.profileEgress, this.profileEgressApprovals);
+      // The policy builder preserves the original object when it adds no profile rule.
+      const hasProfileEgress = policy !== basePolicy;
       record.stage = "workspace";
       workspace.state = "unknown";
       const createdWorkspace = (await this.raw.createWorkspace({ name: workspace.name, labels, requestId: workspace.requestId }, callOptions(signal))).workspace;
@@ -378,9 +389,11 @@ export class SandboxSession {
               // additive Gateway baselines. The Gateway attaches one
               // reserved `_provider_<name>` rule on provider attachment
               // (credential placeholder resolution); it is gateway-owned,
-              // deterministic, and credential-free, so strict mode ignores
-              // exactly that rule and nothing else.
+              // deterministic. Ignore exactly that key and nothing else.
+              // Profile egress also requires that the rule grants no egress.
               const reservedProviderRule = `_provider_${record.provider.name}`;
+              if (hasProfileEgress && Object.hasOwn(config.policy.networkPolicies, reservedProviderRule)
+                && config.policy.networkPolicies[reservedProviderRule]?.endpoints?.length !== 0) throw new Error();
               const expectedKeys = Object.keys(expected.networkPolicies).sort();
               const actualKeys = Object.keys(config.policy.networkPolicies ?? {}).filter((key) => key !== reservedProviderRule).sort();
               if (expectedKeys.length !== actualKeys.length || expectedKeys.some((key, index) => key !== actualKeys[index])) throw new Error();

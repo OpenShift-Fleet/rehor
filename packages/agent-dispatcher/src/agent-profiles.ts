@@ -9,6 +9,7 @@ import {
   PreflightConfigurationError,
   type PreflightDiagnostic,
 } from "./preflight-diagnostics.js";
+import { parseSandboxEgress, type SandboxEgressRequest } from "./profile-egress.js";
 import { scheduleDiagnostics, type ScheduleConfig, type ScheduleTrigger } from "./schedule.js";
 
 export type AgentImage = { repository: string; tag: string; reference: string };
@@ -31,6 +32,13 @@ export type AgentProfile = {
    * are rendered from tier-2 Kubernetes Secrets before sandbox creation.
    */
   sandboxEnv: Record<string, string>;
+  /**
+   * Parsed `sandbox.egress` destinations: exact public HTTPS requests
+   * (mandatory `host` and `port` keys only, never raw policy fields),
+   * strictly validated at discovery. Omitted when the profile declares
+   * none, so discovery output keeps its former shape.
+   */
+  sandboxEgress?: SandboxEgressRequest[];
   /**
    * Parsed `preflights:` entries for the preflight engine:
    * shorthand strings or `{ id, with }` objects, already shape-validated
@@ -132,22 +140,33 @@ function profileEnvironment(value: unknown, legacy: unknown): Record<string, str
 }
 
 /** Mirrors the `preflight` category shape: the `sandbox` object accepts only
- * the `env` key, and every entry must be an allowed sandbox environment name
- * with a non-empty string value. Placeholder syntax is validated at dispatch
- * time by the renderer; discovery fails closed on shape only. */
-function sandboxEnvironment(value: unknown): Record<string, string> {
-  if (value === undefined) return {};
-  if (!object(value) || Object.keys(value).some((key) => key !== "env") || !object(value.env)) {
-    throw new Error("Invalid sandbox environment");
+ * the `env` and `egress` keys, and either may be the sole key. Every `env`
+ * entry must be an allowed sandbox environment name with a non-empty string
+ * value; placeholder syntax is validated at dispatch time by the renderer.
+ * `egress` destinations are exact host/port requests validated strictly by
+ * `parseSandboxEgress`. Discovery fails closed on shape only: a `null`,
+ * array, empty `{}`, or unknown-key `sandbox` stays invalid exactly as
+ * before, and raw policy fields are never accepted. */
+function sandboxConfiguration(value: unknown): { env: Record<string, string>; egress: SandboxEgressRequest[] | undefined } {
+  if (value === undefined) return { env: {}, egress: undefined };
+  if (!object(value) || Object.keys(value).length === 0
+    || Object.keys(value).some((key) => key !== "env" && key !== "egress")) {
+    throw new Error("Invalid sandbox configuration");
   }
   const env: Record<string, string> = {};
-  for (const [name, setting] of Object.entries(value.env)) {
-    if (!isSandboxEnvironmentVariable(name) || typeof setting !== "string" || !setting) {
-      throw new Error("Invalid sandbox environment");
+  if (value.env !== undefined) {
+    if (!object(value.env)) throw new Error("Invalid sandbox environment");
+    for (const [name, setting] of Object.entries(value.env)) {
+      if (!isSandboxEnvironmentVariable(name) || typeof setting !== "string" || !setting) {
+        throw new Error("Invalid sandbox environment");
+      }
+      env[name] = setting;
     }
-    env[name] = setting;
   }
-  return env;
+  // An absent or empty list omits `sandboxEgress`, so profiles without
+  // destinations keep their exact former discovery output.
+  const requests = parseSandboxEgress(value.egress);
+  return { env, egress: requests.length > 0 ? requests : undefined };
 }
 
 /** Strict `preflights:` parsing: undefined passes through (the
@@ -213,7 +232,7 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
     const workflow = workflowFrom(config.workflow);
     const image = imageFrom(config.image);
     const preflightEnv = profileEnvironment(config.env, config.preflight);
-    const sandboxEnv = sandboxEnvironment(config.sandbox);
+    const { env: sandboxEnv, egress: sandboxEgress } = sandboxConfiguration(config.sandbox);
     const preflights = preflightsFrom(config.preflights, name);
     const schedule = scheduleFrom(config.schedule, name);
     const workflowBoundary = workflow.startsWith("./") ? instanceDir : botRoot;
@@ -221,7 +240,7 @@ export async function discoverAgentProfiles(checkout: string): Promise<AgentProf
       ? join(instanceDir, workflow.slice(2))
       : join(botRoot, "presets", "workflows", workflow);
     const workflowDir = await checkedPath(workflowPath, workflowBoundary, "directory");
-    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, sandboxEnv, ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
+    profiles.push({ name, configPath, botRoot, instanceDir, workflow, workflowDir, image, preflightEnv, sandboxEnv, ...(sandboxEgress === undefined ? {} : { sandboxEgress }), ...(preflights === undefined ? {} : { preflights }), ...(schedule === undefined ? {} : { schedule }) });
   }
   if (!profiles.length) throw new Error("No agent profiles found in checkout");
   return profiles;

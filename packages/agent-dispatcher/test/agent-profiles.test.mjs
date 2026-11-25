@@ -189,6 +189,85 @@ test("sandbox env rejects operational, runtime-owned, and malformed entries", as
   assert.deepEqual((await discoverAgentProfiles(root))[0].sandboxEnv, {});
 });
 
+test("reads sandbox egress as the sole key and omits it when absent or empty", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: { repository: registry.example/team/name }
+sandbox:
+  egress:
+    - host: downloads.example.com
+      port: 443
+`);
+  const [profile] = await discoverAgentProfiles(root);
+  assert.deepEqual(profile.sandboxEnv, {});
+  assert.deepEqual(profile.sandboxEgress, [{ host: "downloads.example.com", port: 443 }]);
+  await writeFile(config, `workflow: onboarding
+image: { repository: registry.example/team/name }
+sandbox:
+  egress: []
+`);
+  const [empty] = await discoverAgentProfiles(root);
+  assert.deepEqual(empty.sandboxEnv, {});
+  assert.equal("sandboxEgress" in empty, false);
+  await writeFile(config, onboarding);
+  assert.equal("sandboxEgress" in (await discoverAgentProfiles(root))[0], false);
+});
+
+test("reads sandbox env and egress together in one declaration", async (t) => {
+  const { root, config } = await fixture(t);
+  await writeFile(config, `workflow: onboarding
+image: { repository: registry.example/team/name }
+sandbox:
+  env:
+    SOME_STATIC_FLAG: plain value
+  egress:
+    - host: downloads.example.com
+      port: 443
+`);
+  const [profile] = await discoverAgentProfiles(root);
+  assert.deepEqual(profile.sandboxEnv, { SOME_STATIC_FLAG: "plain value" });
+  assert.deepEqual(profile.sandboxEgress, [{ host: "downloads.example.com", port: 443 }]);
+});
+
+test("sandbox egress rejects malformed destinations and raw policy fields", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  for (const yaml of [
+    "sandbox:\n  egress: downloads.example.com\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 8443\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 80\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 443\n      protocol: https\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 443\n      tls: SKIP\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 443\n      enforcement: ENFORCE\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 443\n    - host: downloads.example.com\n      port: 443\n",
+    "sandbox:\n  egress:\n    - host: 192.0.2.1\n      port: 443\n",
+    "sandbox:\n  egress:\n    - host: localhost\n      port: 443\n",
+    "sandbox:\n  egress: null\n",
+    "sandbox:\n  egress:\n    - null\n",
+    "sandbox:\n  env:\n    SOME_STATIC_FLAG: plain value\n  egress:\n    - host: downloads.example.com\n      port: 80\n",
+  ]) {
+    await writeFile(config, `workflow: onboarding\n${image}${yaml}`);
+    await assert.rejects(discoverAgentProfiles(root), undefined, `instance sandbox egress must not accept: ${yaml.trim()}`);
+  }
+});
+
+test("sandbox shape still rejects empty, null, raw policy, and unknown keys", async (t) => {
+  const { root, config } = await fixture(t);
+  const image = "image: { repository: registry.example/team/name }\n";
+  for (const yaml of [
+    "sandbox: {}\n",
+    "sandbox:\n",
+    "sandbox: null\n",
+    "sandbox:\n  policy:\n    networkPolicies: {}\n",
+    "sandbox:\n  egress:\n    - host: downloads.example.com\n      port: 443\n  policy: true\n",
+    "sandbox:\n  env:\n    SOME_STATIC_FLAG: plain value\n  extra: true\n",
+  ]) {
+    await writeFile(config, `workflow: onboarding\n${image}${yaml}`);
+    await assert.rejects(discoverAgentProfiles(root), undefined, `instance sandbox must not accept: ${yaml.trim()}`);
+  }
+});
+
 test("parses declared preflights strictly: shorthand, parameterized, empty, omitted", async (t) => {
   const { root, config } = await fixture(t);
   await writeFile(config, `workflow: onboarding
