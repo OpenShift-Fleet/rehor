@@ -418,8 +418,8 @@ test("production wiring preserves decision, filters runner env, and drains signa
     "sandbox-session.js": `
       export class SandboxSession {
         constructor({ raw, memory, runtime, memoryRuntime, serviceGatewayUrl, sandboxRetentionMs, onRetention, ...rest }) { if (!raw || !memory.credentialProvider.mint || memory.url.hostname !== 'memory.example' || runtime.kind !== 'legacy' || !memoryRuntime || serviceGatewayUrl.href !== 'https://services.example/' || sandboxRetentionMs !== 0 || typeof onRetention !== 'function' || Object.keys(rest).length) throw new Error('invalid session wiring'); }
-        run(image, decision, environment, signal) {
-          process.send({ event: 'run', image, decision, environment, aborted: signal.aborted });
+        run(image, decision, environment, signal, options) {
+          process.send({ event: 'run', image, decision, environment, aborted: signal.aborted, sandboxEnv: options?.sandboxEnv });
           process.exitCode = 7;
           process.kill(process.pid, 'SIGTERM');
           return new Promise(resolve => setTimeout(() => {
@@ -464,6 +464,9 @@ test("production wiring preserves decision, filters runner env, and drains signa
     assert.deepEqual(messages[2].decision, { action: "start", prompt: "sensitive-prompt", scripts: [{ name: "01-work.py", status: "start", content: "sensitive-content" }] });
     assert.deepEqual(messages[2].environment, { BOT_LABEL: "profile-label", BOT_INSTANCE_ID: "host-instance", BOT_MEMORY_URL: "https://memory.example/mcp", JIRA_MCP_URL: "https://services.example/jira/mcp", EXECUTOR_ADDR: "executor.internal:9090", EXECUTOR_HTTP_URL: "https://services.example/executor/execute", GH_RELEASE_UPLOAD_URL: "https://services.example/screenshots/upload", SLACK_WEBHOOK_URL: "wired-plain-value" });
     assert.equal(messages[2].aborted, false);
+    // Rendered plain sandbox.env values must reach run options for the
+    // native sandbox environment, separate from the merged runner env.
+    assert.deepEqual(messages[2].sandboxEnv, { SLACK_WEBHOOK_URL: "wired-plain-value" });
     assert.equal(messages[3].aborted, true);
     assert.equal(messages[4].completion, "gone");
     const records = stdout.trim().split("\n").map(JSON.parse);

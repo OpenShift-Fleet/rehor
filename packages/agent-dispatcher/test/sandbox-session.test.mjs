@@ -401,6 +401,33 @@ test("safe stdin writer then exact runner with per-exec pointers, unique request
   }
 });
 
+test("rendered sandbox env is delivered through the sandbox spec environment without widening the exec env", async () => {
+  const f = fixture();
+  const sandboxEnv = { SLACK_WEBHOOK_URL: "https://hooks.example.test/XYZ", FEATURE_FLAG: "enabled" };
+  // The launch path merges rendered values into the runner environment
+  // before the session starts; the per-exec merge must stay exactly that.
+  const environment = { BOT_MEMORY_URL: "http://existing-memory.test/mcp", WORKFLOW: "onboarding", ...sandboxEnv };
+  const result = await f.session.run(image, decision, environment, undefined, { sandboxEnv });
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.completion, "gone");
+  assert.equal(result.cleanup, "deleted");
+  const spec = f.calls.find((call) => call.name === "createSandbox").request.spec;
+  assert.deepEqual(spec.environment, sandboxEnv);
+  assert.equal(spec.template.image, image);
+  const [writer, runner] = f.calls.filter((call) => call.name === "execSandbox");
+  assert.deepEqual(writer.request.environment, {});
+  assert.deepEqual(runner.request.environment, { ...environment, ...INPUT_ENVIRONMENT });
+});
+
+test("absent or undefined sandbox env leaves the sandbox spec environment empty", async () => {
+  for (const options of [undefined, {}, { sandboxEnv: undefined }]) {
+    const f = fixture();
+    const result = await f.session.run(image, decision, {}, undefined, options);
+    assert.equal(result.outcome, "passed");
+    assert.deepEqual(f.calls.find((call) => call.name === "createSandbox").request.spec.environment, {});
+  }
+});
+
 test("onProvisioned reports generated names right after sandbox creation, before any exec", async () => {
   const f = fixture();
   const observed = [];
