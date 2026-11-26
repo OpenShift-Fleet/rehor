@@ -8,12 +8,14 @@ confirmed against FastMCP 3.4.11 / mcp SDK / sse-starlette 3.3.4:
    warning log carries ``errors()`` entries with ``input`` values. Unknown
    argument keys additionally leak through pydantic's ``loc`` (the key is
    caller-controlled, potentially data-derived).
-2. JSON-RPC envelope validation (mcp SDK, ``mcp.shared.session``): malformed
-   requests (e.g. ``arguments`` as an array, invalid JSON-RPC ``id``) are
-   logged to the ROOT logger — ``Failed to validate request: ...`` (WARNING),
-   ``Message that failed validation: ...`` (DEBUG, full message repr with
-   payload) and ``Failed to validate notification: ... . Message was: ...``
-   (WARNING, full message repr).
+2. JSON-RPC envelope validation (mcp SDK): malformed requests are echoed
+   with full payloads in two places — the SDK's HTTP-layer
+   ``JSONRPCMessage`` validation responses (e.g. a wrong ``jsonrpc``
+   version returns ``Validation error: ...`` with pydantic ``input_value``
+   including document data) and the ROOT-logger messages in
+   ``mcp.shared.session`` (``Failed to validate request: ...`` WARNING,
+   ``Message that failed validation: ...`` DEBUG with full message repr,
+   ``Failed to validate notification: ... . Message was: ...`` WARNING).
 3. SSE response transport (sse-starlette): with DEBUG logging enabled,
    ``sse_starlette.sse`` logs every response chunk (``chunk: ...``),
    including successful document read/write bodies.
@@ -35,15 +37,29 @@ preserved for schema-known fields:
   rewriting the three mcp-SDK validation-failure messages to drop their
   payload-bearing detail.
 - ``McpEnvelopeGuard`` is a pure-ASGI middleware around the MCP HTTP app
-  that inspects ``POST /mcp`` bodies before the SDK parses them: JSON-RPC
-  ``tools/call`` envelopes with non-object ``arguments`` or an invalid
-  ``id`` are rejected with a sanitized ``-32602`` error (so the SDK's leaky
-  validation-failure logging never runs), and ``task_document_create`` /
-  ``task_document_update`` calls containing float tokens that do not
-  round-trip exactly through IEEE 754 doubles (``1e400``, ``1e-400``,
-  ``9007199254740993.0``) are rejected instead of silently corrupted.
-  Valid requests pass through byte-for-byte; non-/mcp routes and other
-  methods are untouched.
+  that inspects ``POST /mcp`` bodies (only after mirroring the SDK's
+  Accept/Content-Type pre-body checks) before the SDK parses them:
+  - HTTP-layer envelope validity — non-object messages, ``jsonrpc`` values
+    other than "2.0", non-string methods and invalid request ids are
+    rejected with a sanitized 400 (the SDK's responses echo pydantic
+    ``input_value``, including document data).
+  - Session-layer ``tools/call`` parameters — non-object ``params``/
+    ``arguments`` and non-string tool names are rejected with a sanitized
+    ``-32602`` error (the SDK logs failed messages to the ROOT logger with
+    full payloads).
+  - ``task_document_create``/``task_document_update`` calls whose ``data``
+    contains float tokens that do not round-trip through IEEE 754 doubles
+    (``1e400``, ``1e-400``, ``9007199254740993.0``) are rejected instead of
+    silently corrupted. Parser failures the SDK would turn into 500s
+    (nesting depth beyond the JSON parser's recursion limit, integer
+    literals beyond Python's digit limit) become sanitized parse errors.
+  Valid requests pass through byte-for-byte with the buffered body replayed
+  once and later receive() calls delegated to the original receive (real
+  disconnects propagate); non-/mcp routes, other methods and requests with
+  unacceptable media headers are untouched. The SDK itself reads the full
+  body before session validation, so buffering adds no new unbounded-read
+  exposure; no body-size or read-timeout limits are imposed (none exist
+  elsewhere in the service — see the PR discussion before adding any).
 - The ``sse_starlette.sse`` logger is clamped to INFO: its DEBUG records
   are pure response-body echoes with no operational value.
 
@@ -192,7 +208,7 @@ def _float_token(token: str) -> _FloatToken:
 
 
 def _float_roundtrips(token: str) -> bool:
-    """True when the token survives the double conversion unchanged.
+    """True when the token survives the double conversion with the same value.
 
     The MCP transport delivers JSON numbers as Python floats, so a token is
     safe only when the nearest double converts back to the same numeric
@@ -200,7 +216,11 @@ def _float_roundtrips(token: str) -> bool:
     ordinary doubles (``0.1``, ``1e3``) and rejects over/underflow
     (``1e400``, ``1e-400``) and decimals needing more than double precision
     (``9007199254740993.0``). JSON integers are arbitrary-precision and
-    unaffected.
+    unaffected (up to the Python parser's integer digit limit). Acceptance
+    is decimal round-trip, not exact binary representation: ``1e3`` is
+    accepted and stored as ``1000.0``, and PostgreSQL JSONB normalizes
+    spelling and signed zero (``-0`` becomes ``0``), so neither the textual
+    form nor the zero sign survives storage.
     """
     try:
         value = float(token)
@@ -209,40 +229,71 @@ def _float_roundtrips(token: str) -> bool:
         return False
 
 
-def _check_envelope(raw: bytes) -> tuple[str, object] | None:
-    """Inspect a POST /mcp body; return (sanitized error message, response id)
-    for shapes that must be rejected before SDK handling, else None.
+_INVALID_REQUEST_PARAMS = "Invalid request parameters"
+_NUMBERS_MESSAGE = (
+    "{tool}: numbers in document data must round-trip exactly through IEEE 754 doubles "
+    "as decimal values (values like 1e400, 1e-400 or beyond-double-precision decimals "
+    "would be silently changed); send precision-sensitive values as strings"
+)
 
-    Only JSON-RPC ``tools/call`` envelopes are checked: non-object
-    ``arguments`` and invalid ``id`` would otherwise be logged with full
-    payloads by the mcp SDK; non-roundtrippable float tokens in document
-    ``data`` would otherwise be silently corrupted.
-    """
-    try:
-        message = json.loads(raw, parse_float=_float_token, parse_constant=_float_token)
-    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-        return None  # Malformed JSON: the SDK's own error path has no payload to echo.
-    if not isinstance(message, dict) or message.get("method") != "tools/call":
-        return None
+
+def _request_id(message: dict):
+    """Best-effort valid JSON-RPC id for a guard rejection response."""
     request_id = message.get("id")
-    id_is_valid = request_id is None or (isinstance(request_id, str | int) and not isinstance(request_id, bool))
-    if "id" in message and not id_is_valid:
-        return "Invalid request parameters: JSON-RPC id must be a string or a number", None
+    if isinstance(request_id, str) or (isinstance(request_id, int) and not isinstance(request_id, bool)):
+        return request_id
+    return "server-error" if "method" in message else None
+
+
+def _check_envelope(message) -> tuple[int, int, str, object] | None:
+    """Validate a parsed POST /mcp body; return (http status, JSON-RPC error
+    code, sanitized message, response id) for rejections, else None.
+
+    Two SDK layers are mirrored, minus their payload leaks:
+
+    - HTTP-layer envelope validity: the SDK's ``JSONRPCMessage`` validation
+      echoes pydantic ``input_value`` — including document data — into its
+      400 responses (e.g. a wrong ``jsonrpc`` version). The message must be
+      an object with ``jsonrpc`` "2.0", a non-empty string ``method`` when
+      present, and a string/number ``id`` on requests.
+    - Session-layer ``tools/call`` parameter validity: the SDK logs failed
+      messages to the ROOT logger with full payloads. ``params`` and
+      ``arguments`` must be objects, the tool name a string, and document
+      ``data`` float tokens must round-trip exactly through doubles.
+
+    Messages without ``method`` (client responses) are passed through.
+    """
+    if not isinstance(message, dict):
+        return 400, -32602, "Invalid request: the JSON-RPC message must be an object", "server-error"
+    if message.get("jsonrpc") != "2.0":
+        return 400, -32602, 'Invalid request: jsonrpc must be "2.0"', _request_id(message)
+    method = message.get("method")
+    if "method" in message and (not isinstance(method, str) or not method):
+        return 400, -32602, "Invalid request: method must be a non-empty string", _request_id(message)
+    request_id = message.get("id")
+    id_is_valid = isinstance(request_id, str) or (isinstance(request_id, int) and not isinstance(request_id, bool))
+    if "method" in message and "id" in message and not id_is_valid:
+        return 400, -32602, "Invalid request: id must be a string or a number", "server-error"
+    if "method" not in message or method != "tools/call":
+        return None  # Client responses, notifications and other methods: SDK path.
     params = message.get("params")
     if params is None:
         return None
     if not isinstance(params, dict):
-        return "Invalid request parameters: params must be an object", None
+        return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: params must be an object", _request_id(message)
+    name = params.get("name")
+    if not isinstance(name, str):
+        return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: tool name must be a string", _request_id(message)
     arguments = params.get("arguments")
     if arguments is not None and not isinstance(arguments, dict):
-        return "Invalid request parameters: arguments must be an object", request_id if id_is_valid else None
-    if params.get("name") in DOCUMENT_DATA_TOOLS and isinstance(arguments, dict) and _has_bad_float(arguments):
-        return (
-            f"Invalid request parameters for {params['name']}: numbers in document data must be exactly "
-            "representable as IEEE 754 doubles (values like 1e400, 1e-400 or beyond-double-precision decimals "
-            "would be silently changed); send precision-sensitive values as strings",
-            request_id if id_is_valid else None,
-        )
+        return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: arguments must be an object", _request_id(message)
+    if name in DOCUMENT_DATA_TOOLS and isinstance(arguments, dict):
+        try:
+            has_bad_float = _has_bad_float(arguments)
+        except RecursionError:
+            return 400, -32700, "Parse error: request nesting exceeds supported depth", _request_id(message)
+        if has_bad_float:
+            return 200, -32602, _NUMBERS_MESSAGE.format(tool=name), _request_id(message)
     return None
 
 
@@ -256,19 +307,55 @@ def _has_bad_float(value) -> bool:
     return False
 
 
-class McpEnvelopeGuard:
-    """ASGI middleware rejecting leaky/corrupting tools/call envelopes early.
+def _header(scope: dict, name: bytes) -> bytes:
+    for key, value in scope.get("headers") or []:
+        if key.lower() == name:
+            return value
+    return b""
 
-    Wraps the MCP HTTP app: only ``POST /mcp`` bodies are inspected; valid
-    requests are forwarded byte-for-byte with replayed bodies, and everything
-    else (other methods, other paths) passes through untouched.
+
+def _passes_sdk_media_checks(scope: dict) -> bool:
+    """Mirror the SDK's pre-body POST checks (Accept and Content-Type).
+
+    Requests the SDK would reject with 406/415 without reading the body are
+    passed through untouched so the guard never reads them either and the
+    SDK responses stay authoritative.
+    """
+    accept_types = [entry.strip() for entry in _header(scope, b"accept").split(b",")]
+    has_json = any(entry.startswith(b"application/json") for entry in accept_types)
+    has_sse = any(entry.startswith(b"text/event-stream") for entry in accept_types)
+    if not (has_json and has_sse):
+        return False
+    return _header(scope, b"content-type").split(b";")[0].strip() == b"application/json"
+
+
+class McpEnvelopeGuard:
+    """ASGI middleware rejecting leaky/corrupting JSON-RPC envelopes early.
+
+    Wraps the MCP HTTP app. Only ``POST /mcp`` requests whose Accept and
+    Content-Type headers would pass the SDK's own pre-body checks are
+    inspected; the body is replayed once and later receive() calls delegate
+    to the original ASGI receive, so real client disconnects propagate.
+    Everything else (other methods, other paths, unacceptable media headers)
+    passes through untouched.
+
+    The SDK itself reads the full request body before session validation,
+    so buffering here adds no new unbounded-read exposure. No body-size or
+    read-timeout limits are imposed: none exist elsewhere in the service,
+    and a new global MCP/document cap would change behavior for unrelated
+    clients (see the module docs and PR discussion).
     """
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("method") != "POST" or str(scope.get("path", "")).rstrip("/") != "/mcp":
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or str(scope.get("path", "")).rstrip("/") != "/mcp"
+            or not _passes_sdk_media_checks(scope)
+        ):
             await self.app(scope, receive, send)
             return
         body = bytearray()
@@ -278,36 +365,51 @@ class McpEnvelopeGuard:
             if not message.get("more_body"):
                 break
         raw = bytes(body)
-        rejection = _check_envelope(raw)
-        if rejection is not None:
-            error_message, request_id = rejection
-            payload = json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32602, "message": error_message},
-                }
-            ).encode("utf-8")
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"content-length", str(len(payload)).encode()),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": payload})
+        try:
+            message = json.loads(raw, parse_float=_float_token, parse_constant=_float_token)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # The SDK's own parse-error path echoes no payload.
+            await self.app(scope, _replay_body(raw, receive), send)
             return
-        await self.app(scope, _replay_body(raw), send)
+        except RecursionError:
+            rejection = (400, -32700, "Parse error: request nesting exceeds supported depth", "server-error")
+        except ValueError:
+            # e.g. integer literals beyond Python's digit limit; the SDK
+            # turns these into a 500 instead of a clean client error.
+            rejection = (
+                400,
+                -32700,
+                "Parse error: request contains an unsupported numeric literal "
+                "(e.g. an integer beyond the parser digit limit)",
+                "server-error",
+            )
+        else:
+            rejection = _check_envelope(message)
+        if rejection is None:
+            await self.app(scope, _replay_body(raw, receive), send)
+            return
+        await _send_rejection(send, scope, *rejection)
 
 
-def _replay_body(raw: bytes):
-    """Return an ASGI receive() callable yielding the buffered body once.
+async def _send_rejection(send, scope, status: int, code: int, error_message: str, request_id) -> None:
+    payload = json.dumps(
+        {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": error_message}}
+    ).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(payload)).encode()),
+    ]
+    session_id = _header(scope, b"mcp-session-id")
+    if session_id:
+        headers.append((b"mcp-session-id", session_id))
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": payload})
 
-    Mirrors httpx's ASGITransport: after the body, no further messages arrive
-    (the pending wait is simply cancelled when the response completes)."""
+
+def _replay_body(raw: bytes, original_receive):
+    """Return an ASGI receive() callable that replays the buffered body once,
+    then delegates to the original receive so real disconnects propagate."""
+
     sent = False
 
     async def receive():
@@ -315,10 +417,7 @@ def _replay_body(raw: bytes):
         if not sent:
             sent = True
             return {"type": "http.request", "body": raw, "more_body": False}
-        import asyncio
-
-        await asyncio.Event().wait()  # block until cancelled
-        return {"type": "http.disconnect"}
+        return await original_receive()
 
     return receive
 

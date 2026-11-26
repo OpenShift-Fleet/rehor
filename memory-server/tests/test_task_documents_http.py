@@ -217,10 +217,13 @@ class McpHttpClient:
         return message.get("result", {})
 
     async def request_raw(self, body: str) -> dict:
-        """Returns the full JSON-RPC response message (result or error)."""
+        """Returns the full JSON-RPC response message (result or error).
+
+        400 is expected alongside 200: guard rejections of HTTP-layer
+        envelope problems mirror the SDK's 400 responses (sanitized)."""
         self._id += 1
         response = await self._client.post("/mcp", content=body, headers=self._headers())
-        assert response.status_code == 200, response.text
+        assert response.status_code in (200, 400), response.text
         return _parse_response(response.text)
 
 
@@ -408,10 +411,192 @@ async def test_invalid_jsonrpc_id_is_rejected_by_envelope_guard_without_sdk_leak
             message = await client.request_raw(body)
     assert message["error"]["code"] == -32602
     assert "id must be a string or a number" in message["error"]["message"]
-    assert message["id"] is None
+    assert message["id"] == "server-error"
     assert LEAK_MARKER not in _log_text(root_logs)
     assert LEAK_MARKER not in _log_text(fastmcp_logs)
     assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool", ["task_document_create", "task_document_update"])
+async def test_wrong_jsonrpc_version_is_rejected_without_sdk_input_leak(tool):
+    """P2: a wrong jsonrpc version previously reached the SDK HTTP layer,
+    whose 400 response embeds pydantic input_value (full document payload).
+    The guard rejects it first, sanitized, preserving the request id."""
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    body = (
+        '{"jsonrpc": "1.0", "id": 7, "method": "tools/call", '
+        '"params": {"name": "'
+        + tool
+        + '", "arguments": {"external_key": "'
+        + LEAK_MARKER
+        + '", "name": "n", "data": {"secret": "payload-must-not-leak"}}}}'
+    )
+    with _patch_pool(pool), capture_root_logs() as root_logs, capture_logs() as fastmcp_logs:
+        async with McpHttpClient(app, lifespan_app) as client:
+            message = await client.request_raw(body)
+    assert message["error"]["code"] == -32602
+    assert 'jsonrpc must be "2.0"' in message["error"]["message"]
+    assert message["id"] == 7
+    assert LEAK_MARKER not in message["error"]["message"]
+    assert "payload-must-not-leak" not in message["error"]["message"]
+    assert LEAK_MARKER not in _log_text(root_logs)
+    assert "payload-must-not-leak" not in _log_text(root_logs)
+    assert LEAK_MARKER not in _log_text(fastmcp_logs)
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_array_tool_name_is_rejected_not_a_500():
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    body = (
+        '{"jsonrpc": "2.0", "id": 8, "method": "tools/call", '
+        '"params": {"name": ["x"], "arguments": {"external_key": "K", "name": "n", "data": {}}}}'
+    )
+    with _patch_pool(pool):
+        async with McpHttpClient(app, lifespan_app) as client:
+            message = await client.request_raw(body)
+    assert message["error"]["code"] == -32602
+    assert "tool name must be a string" in message["error"]["message"]
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_deep_nesting_is_a_sanitized_parse_error_not_a_500():
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    body = (
+        '{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": '
+        '{"name": "task_document_create", "arguments": {"external_key": "K", "name": "n", "data": '
+        + "[" * 600
+        + "]" * 600
+        + "}}}"
+    )
+    with _patch_pool(pool):
+        async with McpHttpClient(app, lifespan_app) as client:
+            message = await client.request_raw(body)
+    assert message["error"]["code"] == -32700
+    assert "nesting exceeds supported depth" in message["error"]["message"]
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_beyond_digit_limit_integer_is_a_sanitized_parse_error_not_a_500():
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    body = (
+        '{"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": '
+        '{"name": "task_document_create", "arguments": {"external_key": "K", "name": "n", "data": ' + "9" * 5000 + "}}}"
+    )
+    with _patch_pool(pool):
+        async with McpHttpClient(app, lifespan_app) as client:
+            message = await client.request_raw(body)
+    assert message["error"]["code"] == -32700
+    assert "unsupported numeric literal" in message["error"]["message"]
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_rejects_unacceptable_accept_header_unchanged():
+    """The guard passes through requests the SDK would reject on Accept
+    before reading the body — the SDK 406 stays authoritative."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/mcp",
+            content='{"jsonrpc": "2.0", "id": 1, "method": "ping"}',
+            headers={"accept": "text/plain", "content-type": "application/json"},
+        )
+    assert response.status_code == 406
+
+
+@pytest.mark.asyncio
+async def test_sdk_rejects_invalid_session_unchanged():
+    """Guard pass-through keeps the SDK's session rejection authoritative for
+    valid envelopes."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/mcp",
+            content='{"jsonrpc": "2.0", "id": 1, "method": "tools/call", '
+            '"params": {"name": "task_document_list", "arguments": {"external_key": "K"}}}',
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": "bogus-session-id",
+            },
+        )
+    assert response.status_code == 404
+    assert "Session not found" in response.text
+
+
+@pytest.mark.asyncio
+async def test_valid_ping_works_through_the_guard():
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        result = await client.request({"jsonrpc": "2.0", "id": 99, "method": "ping"})
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_guard_replays_streamed_body_and_delegates_disconnect():
+    """Synthetic ASGI: a body delivered in multiple chunks is reassembled and
+    replayed as one message; later receive() calls delegate to the original
+    receive so real disconnects propagate."""
+
+    app_calls = []
+
+    async def fake_app(scope, receive, send):
+        app_calls.extend([await receive(), await receive()])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    original_messages = [
+        {"type": "http.request", "body": b'{"method": "ping", ', "more_body": True},
+        {"type": "http.request", "body": b'"id": 1, "jsonrpc": "2.0"}', "more_body": False},
+        {"type": "http.disconnect"},
+    ]
+    consumed = []
+
+    async def original_receive():
+        message = original_messages[len(consumed)]
+        consumed.append(message)
+        return message
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    guard = McpEnvelopeGuard(fake_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-type", b"application/json"),
+        ],
+    }
+    await guard(scope, original_receive, send)
+    # The app received the complete body as a single replayed message...
+    assert app_calls[0] == {
+        "type": "http.request",
+        "body": b'{"method": "ping", "id": 1, "jsonrpc": "2.0"}',
+        "more_body": False,
+    }
+    # ...and its next receive() was delegated to the original receive.
+    assert app_calls[1] == {"type": "http.disconnect"}
+    assert len(consumed) == 3  # guard consumed both body chunks, app consumed the disconnect
+    assert sent[-1] == {"type": "http.response.body", "body": b"ok"}
 
 
 @pytest.mark.asyncio
@@ -610,6 +795,9 @@ async def test_number_semantics_through_real_database(db):
             for name, literal, expected in [
                 ("ordinary-double", "0.1", 0.1),
                 ("exact-int", "9007199254740993", 9007199254740993),
+                # PostgreSQL JSONB normalizes signed zero: -0.0 reads back as 0.0
+                # (sign dropped, numeric scale kept — value-equal, sign not preserved).
+                ("signed-zero", "-0.0", 0.0),
             ]:
                 body = (
                     '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
@@ -632,4 +820,4 @@ async def test_number_semantics_through_real_database(db):
             rejected = await client.request_raw(body)
             assert rejected["error"]["code"] == -32602
     count = await db.fetchval("SELECT COUNT(*) FROM task_documents")
-    assert count == 2  # only the two accepted documents were stored
+    assert count == 3  # only the accepted documents were stored

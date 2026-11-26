@@ -29,14 +29,21 @@ version, not its identity across delete/recreate. Classic CRUD keeps no
 history, so this is guarded rather than prevented with tombstones.
 
 Number semantics: JSON numbers travel the MCP transport as Python values —
-integers keep arbitrary precision, but floats are IEEE 754 doubles. The
-transport-level envelope guard (``mcp_validation_sanitizer.McpEnvelopeGuard``)
-rejects ``task_document_create``/``task_document_update`` calls whose ``data``
-contains float tokens that would not survive the double conversion unchanged
-(``1e400``, ``1e-400``, beyond-double-precision decimals like
-``9007199254740993.0``) with a sanitized error, so no silent numeric
-corruption occurs. Accepted numbers are value-exact within these limits;
-send precision-sensitive values as strings.
+integers keep arbitrary precision up to the Python parser's integer digit
+limit (4300 digits by default; larger literals are rejected as parse
+errors), and floats are IEEE 754 doubles. The transport-level envelope
+guard (``mcp_validation_sanitizer.McpEnvelopeGuard``) rejects
+``task_document_create``/``task_document_update`` calls whose ``data``
+contains float tokens that would not survive the double conversion with
+the same decimal value (``1e400``, ``1e-400``, beyond-double-precision
+decimals like ``9007199254740993.0``) with a sanitized error, so no silent
+numeric corruption occurs. Acceptance is decimal round-trip, not exact
+binary representation: ``1e3`` is accepted and stored as ``1000.0``.
+PostgreSQL JSONB additionally normalizes spelling and signed zero (``-0``
+is stored and returned as ``0``) and never preserves byte representation,
+so documents are value-exact only within these limits. Send
+precision-sensitive values — exact spelling, sign of zero, or precision
+beyond doubles — as strings.
 """
 
 import json
