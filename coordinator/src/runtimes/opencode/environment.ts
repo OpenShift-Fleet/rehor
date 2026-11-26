@@ -214,9 +214,7 @@ function isDeclaredProtectedName(name: string): boolean {
  */
 function assertForwardableDeclaration(source: string, name: string): void {
   if (!DECLARED_NAME_PATTERN.test(name)) {
-    throw new Error(
-      `${source} declares '${name}', which is not a valid environment variable name`,
-    );
+    throw new Error(`${source} declares '${name}', which is not a valid environment variable name`);
   }
   if (isDeclaredProtectedName(name)) {
     throw new Error(
