@@ -18,6 +18,7 @@ from starlette.websockets import WebSocket
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
+from .mcp_validation_sanitizer import install_sanitized_validation
 from .metrics import PrometheusMiddleware, db_gauge_refresh_loop
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,9 @@ async def lifespan(app):
 def build_app() -> tuple[Starlette, Starlette]:
     """Construct FastMCP, register tools and routes, and return (app, metrics_app)."""
     mcp = FastMCP(name="Bot Memory")
+    # Malformed tool calls must not echo argument payloads into MCP error
+    # responses or FastMCP warning logs (task_document data is arbitrary JSONB).
+    install_sanitized_validation(mcp)
 
     # Register MCP tools
     from .tools.cycles import register_cycle_tools

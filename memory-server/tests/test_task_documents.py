@@ -24,7 +24,6 @@ Concurrency contract under test:
 
 import asyncio
 import json
-import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -33,20 +32,12 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from bot_memory_server.tools.task_documents import _dump_data, register_task_document_tools
-from conftest import DB_CONFIG, SCHEMA_PATH
+from conftest import DB_CONFIG, SCHEMA_PATH, SingleConnectionPool, requires_real_database
 from fastmcp import Client, FastMCP
 
 NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
 
-# The db fixture is destructive (drops all public tables). Real-database tests
-# are strictly opt-in: they run only with REHOR_REAL_DATABASE_TESTS=1 and
-# PGSQL_* pointing at a disposable database (CI sets both). The skip is
-# evaluated before fixture initialization, so a default run never connects.
-requires_real_database = pytest.mark.skipif(
-    os.environ.get("REHOR_REAL_DATABASE_TESTS") != "1",
-    reason="opt-in: set REHOR_REAL_DATABASE_TESTS=1 and point PGSQL_* at a disposable database "
-    "(the db fixture drops all public tables)",
-)
+
 TASK_ROW = {"id": 42}
 
 
@@ -493,12 +484,34 @@ def no_write_queries(pool) -> bool:
 
 @pytest.mark.asyncio
 async def test_document_operations_publish_no_bus_events():
-    """Document content must never reach dashboard event broadcasts."""
+    """Document content must never reach dashboard event broadcasts.
+
+    Every operation must first succeed (scripted pool); a silently failing
+    call would make the no-event assertion vacuous.
+    """
     from unittest.mock import AsyncMock
 
     from bot_memory_server import events
 
-    pool = FakePool(TASK_ROW, document_row())
+    row = document_row()
+    pool = FakePool(
+        # create: lock task, insert
+        TASK_ROW,
+        row,
+        # get: select
+        row,
+        # list: task check (rows come from fetch_results)
+        TASK_ROW,
+        # update: lock task, select for update, update returning
+        TASK_ROW,
+        row,
+        row,
+        # delete: lock task, select for update, delete returning
+        TASK_ROW,
+        row,
+        row,
+        fetch_results=[[row]],
+    )
     mcp = FastMCP(name="documents-no-events")
     register_task_document_tools(mcp)
     with (
@@ -509,10 +522,12 @@ async def test_document_operations_publish_no_bus_events():
             for tool, args in (
                 ("task_document_create", {"external_key": "ART-1", "name": "b", "data": {"k": "v"}}),
                 ("task_document_get", {"external_key": "ART-1", "name": "b"}),
+                ("task_document_list", {"external_key": "ART-1"}),
                 ("task_document_update", {"external_key": "ART-1", "name": "b", "data": {"k": 2}}),
                 ("task_document_delete", {"external_key": "ART-1", "name": "b"}),
             ):
-                await client.call_tool(tool, args, raise_on_error=False)
+                result = await client.call_tool(tool, args)
+                assert not result.is_error, f"{tool} failed: {result.content}"
     assert publish.await_count == 0
 
 
@@ -562,7 +577,7 @@ async def test_task_get_and_list_never_touch_task_documents_table():
         "external_key": "ART-1",
         "source_type": "jira",
         "source_url": None,
-        "documents": "[]",
+        "artifacts": "[]",
         "status": "in_progress",
         "repo": "org/repo",
         "branch": "bot/x",
@@ -602,23 +617,6 @@ async def test_error_messages_never_contain_document_data():
 
 
 # --- Real-database integration (db fixture drops public tables — disposable DB only) ---
-
-
-class SingleConnectionPool:
-    """Pool-shaped adapter over one asyncpg connection, mirroring test_task_outcomes."""
-
-    def __init__(self, conn):
-        self.conn = conn
-
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
-
-    async def fetchrow(self, query, *args):
-        return await self.conn.fetchrow(query, *args)
-
-    async def fetch(self, query, *args):
-        return await self.conn.fetch(query, *args)
 
 
 async def seed_task(db, key, source_type="jira") -> int:

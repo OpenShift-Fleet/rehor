@@ -27,6 +27,14 @@ record. For full protection pass both ``expected_id`` and ``expected_revision``
 from your last read; ``expected_revision`` alone guards the record's data
 version, not its identity across delete/recreate. Classic CRUD keeps no
 history, so this is guarded rather than prevented with tombstones.
+
+Number semantics: JSON numbers travel the MCP transport and Python handlers
+as IEEE 754 double-precision floats (Python ``float``). Values outside that
+representation change before the handler runs — e.g. ``9007199254740993.0``
+rounds to ``9007199254740992.0`` and ``1e-400`` underflows to ``0.0`` — so
+documents are value-exact only within double precision, never
+arbitrary-precision. Send precision-sensitive values (integers beyond 2^53,
+exact decimals) as strings.
 """
 
 import json
@@ -168,6 +176,19 @@ async def _lock_task(conn, external_key: str, source_type: str) -> int:
     return row["id"]
 
 
+async def _locked_document(conn, task_id: int, name: str, external_key: str, source_type: str):
+    """Lock the document row for mutation; metadata only, the full JSONB
+    payload is read by the mutating statement's RETURNING clause."""
+    row = await conn.fetchrow(
+        f"SELECT {_META_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
+        task_id,
+        name,
+    )
+    if not row:
+        raise _document_not_found(name, external_key, source_type)
+    return row
+
+
 def register_task_document_tools(mcp: FastMCP):
     @mcp.tool()
     async def task_document_create(
@@ -181,6 +202,8 @@ def register_task_document_tools(mcp: FastMCP):
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name, unique per task (max 200 chars).
         data: Arbitrary valid JSON — object, array, string, number, boolean or null.
+            Numbers are IEEE 754 doubles end to end (9007199254740993.0 rounds, 1e-400
+            underflows to 0.0); send precision-sensitive values as strings.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
         Never store credentials, tokens or secrets in documents."""
         name = _validate_name(name)
@@ -280,6 +303,7 @@ def register_task_document_tools(mcp: FastMCP):
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name.
         data: Arbitrary valid JSON replacing the previous content.
+            Numbers are IEEE 754 doubles end to end; send precision-sensitive values as strings.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
         expected_revision: Optional revision you last read; update fails on mismatch.
         expected_id: Optional record id you last read; update fails if the record was recreated.
@@ -292,13 +316,7 @@ def register_task_document_tools(mcp: FastMCP):
         pool = get_pool()
         async with pool.acquire() as conn, conn.transaction():
             task_id = await _lock_task(conn, external_key, source_type)
-            row = await conn.fetchrow(
-                f"SELECT {_META_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
-                task_id,
-                name,
-            )
-            if not row:
-                raise _document_not_found(name, external_key, source_type)
+            row = await _locked_document(conn, task_id, name, external_key, source_type)
             _check_expected(row, name, external_key, source_type, expected_revision, expected_id)
             updated = await conn.fetchrow(
                 f"UPDATE task_documents SET data = $3::jsonb, revision = revision + 1, updated_at = NOW() "
@@ -337,13 +355,7 @@ def register_task_document_tools(mcp: FastMCP):
         pool = get_pool()
         async with pool.acquire() as conn, conn.transaction():
             task_id = await _lock_task(conn, external_key, source_type)
-            row = await conn.fetchrow(
-                f"SELECT {_META_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
-                task_id,
-                name,
-            )
-            if not row:
-                raise _document_not_found(name, external_key, source_type)
+            row = await _locked_document(conn, task_id, name, external_key, source_type)
             _check_expected(row, name, external_key, source_type, expected_revision, expected_id)
             deleted = await conn.fetchrow(
                 "DELETE FROM task_documents WHERE task_id = $1 AND name = $2 "
