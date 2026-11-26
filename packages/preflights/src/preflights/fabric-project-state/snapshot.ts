@@ -31,11 +31,27 @@ export const COORD_STATES = new Set(
   ["needs-plan", "active", "blocked", "complete"].map((state) => `dev-bot-coordinator:${state}`),
 );
 
+// Preserve Python's distinction between integer and float before JSON.parse
+// discards numeric spelling. Unknown/ambiguous number formats fail closed.
+export function parsePythonCompatibleJson(source: string): unknown {
+  return JSON.parse(source, (_key: string, value: unknown, context?: { source?: string }) => {
+    if (
+      typeof value === "number" &&
+      (!Number.isSafeInteger(value) ||
+        !context?.source ||
+        !/^-?(?:0|[1-9]\d*)$/.test(context.source))
+    )
+      throw new Error("Unsupported Jira number representation");
+    return value;
+  });
+}
+
 function decodedContainer(value: string): unknown {
   if (!/^[{[]/.test(value.trimStart())) return undefined;
   try {
-    return JSON.parse(value);
-  } catch {
+    return parsePythonCompatibleJson(value);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     return undefined;
   }
 }
@@ -105,6 +121,8 @@ export function pythonJson(value: unknown, spaced = false): string {
     return `{${sorted(Object.keys(obj))
       .map((key) => `${pythonJson(key)}${colon}${pythonJson(obj[key], spaced)}`)
       .join(comma)}}`;
+  if (typeof value === "number" && !Number.isSafeInteger(value))
+    throw new Error("Unsupported number in Jira snapshot");
   return JSON.stringify(value ?? null);
 }
 
@@ -133,10 +151,16 @@ export function pythonString(value: unknown): string {
     if (typeof item === "boolean") return item ? "True" : "False";
     if (Array.isArray(item)) return `[${item.map(repr).join(", ")}]`;
     const obj = record(item);
-    if (obj)
+    if (obj) {
+      // JavaScript reorders array-index keys, whereas Python preserves input order.
+      if (Object.keys(obj).some((key) => /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < 0xffffffff))
+        throw new Error("Unsupported numeric object key in Jira description");
       return `{${Object.entries(obj)
         .map(([key, val]) => `${repr(key)}: ${repr(val)}`)
         .join(", ")}}`;
+    }
+    if (typeof item === "number" && !Number.isSafeInteger(item))
+      throw new Error("Unsupported number in Jira description");
     return String(item);
   }
   return typeof value === "string" ? value : repr(value);
@@ -216,9 +240,7 @@ export function humanComments(comments: readonly RecordData[]) {
       .map((line) => line.trim())
       .filter(Boolean);
     if (
-      /^(?:coordinator update)(?:$| -)/i.test(
-        lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() ?? "",
-      ) ||
+      /^(?:coordinator update)(?:$| -)/i.test(lines[0]?.replace(/^#+/, "").trim() ?? "") ||
       lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
     )
       return [];

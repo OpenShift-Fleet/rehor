@@ -40,6 +40,14 @@ const repoLabels = (items: string[]) => items.filter((label) => label.startsWith
 const repoNames = (items: string[]) => new Set(repoLabels(items).map((label) => label.slice(5)));
 const baseFields = ["summary", "description", "status"];
 
+function requireFields(issue: RecordData, names: readonly string[]): void {
+  const fields = record(issue.fields);
+  for (const name of names) {
+    if (!fields || !Object.hasOwn(fields, name))
+      throw new Error(`Missing Jira field ${name} on ${issueKey(issue)}`);
+  }
+}
+
 function summarizeChild(issue: RecordData, implementationLabel: string) {
   const items = labels(issue);
   const key = issueKey(issue);
@@ -205,6 +213,7 @@ export const fabricProjectState = definePreflight({
         ]);
         // The search index can lag a removed label. Do not enroll that issue.
         if (!labels(control).includes(controlLabel)) continue;
+        requireFields(control, ["description"]);
         const team = teamId(control, teamFieldId);
         const parent = parentKey(control);
         const comments = humanComments(await reads.comments(controlKey));
@@ -238,6 +247,7 @@ export const fabricProjectState = definePreflight({
           throw new Error("Project repository map is unavailable");
         issueKey(parent);
         const parentIssue = await reads.issue(parent, baseFields);
+        requireFields(parentIssue, ["description"]);
         const siblings = await reads.search(`parent = "${parent}" ORDER BY key ASC`, [
           ...baseFields,
           "parent",
@@ -257,6 +267,8 @@ export const fabricProjectState = definePreflight({
             throw new Error(`Missing parent field on Jira search result ${issueKey(issue)}`);
           return actualParent === parent;
         });
+        for (const child of children)
+          requireFields(child, ["updated", "description", "priority", "issuetype"]);
         const assessment = assess(control, children, ctx.repos, params, team);
         operation = `read GitHub PR snapshot for ${controlKey}`;
         const pullRequests = await reads.prSnapshot(children, implementationLabel, ctx.repos);

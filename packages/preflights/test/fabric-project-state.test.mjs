@@ -20,6 +20,9 @@ const ticket = (number, extra = {}) => ({
     [teamFieldId]: { id: "team-1" },
     summary: `Ticket ${number}`,
     description: null,
+    updated: null,
+    priority: null,
+    issuetype: null,
     status: { name: "New" },
     labels: ["phase:01"],
     issuelinks: [],
@@ -99,12 +102,18 @@ async function run(options = {}) {
           assert.ok(query.fields.includes(teamFieldId));
           for (const field of ["updated", "priority", "issuetype"])
             assert.ok(query.fields.includes(field));
-          if (!query.nextPageToken)
-            return Response.json({
+          if (!query.nextPageToken) {
+            const page = {
               issues: [controlIssue, ...children.slice(0, 1)],
               nextPageToken: "next",
               isLast: false,
-            });
+            };
+            if (options.floatLexeme)
+              return new Response(
+                JSON.stringify(page).replace('"FLOAT_LEXEME"', options.floatLexeme),
+              );
+            return Response.json(page);
+          }
           assert.equal(query.nextPageToken, "next");
           return Response.json({ issues: children.slice(1), isLast: true });
         }
@@ -118,7 +127,8 @@ async function run(options = {}) {
           );
         }
         if (pathname.endsWith(`/issue/${control.key}`)) return Response.json(controlIssue);
-        if (pathname.endsWith(`/issue/${parentKey}`)) return Response.json(parent);
+        if (pathname.endsWith(`/issue/${parentKey}`))
+          return Response.json(options.parent ?? parent);
         assert.equal(pathname, "/service/github/repos/org/demo/pulls");
         assert.equal(searchParams.get("state"), "open");
         if (options.githubFailure)
@@ -337,13 +347,14 @@ test("coordinator comments normalize case and dynamic headings without hiding hu
     { id: "13", body: "## Coordinator update - Plan\nbody" },
     { id: "14", body: "Report\nCoordinator action: continue" },
     { id: "15", body: "Coordinator update from user" },
+    { id: "16", body: "h1. Coordinator update - approved" },
   ];
   const result = project(await run({ comments }));
   assert.deepEqual(
     result.new_comments.map(({ id }) => id),
-    ["10", "15"],
+    ["10", "15", "16"],
   );
-  const noOwn = project(await run({ comments: [approval, comments[4]] }));
+  const noOwn = project(await run({ comments: [approval, comments[4], comments[5]] }));
   assert.equal(result.snapshot_hash, noOwn.snapshot_hash);
 });
 
@@ -382,4 +393,40 @@ test("unavailable or partial reads never produce actionable payloads", async () 
   const missingMap = await run({ repos: {} });
   assert.equal(missingMap.status, "error");
   assert.match(missingMap.content, /repository map/);
+});
+
+test("missing requested planning fields fail closed while explicit null is valid", async () => {
+  assert.equal((await run({ children: [ticket(4)] })).status, "start");
+  for (const name of ["updated", "description", "priority", "issuetype"]) {
+    const child = ticket(4);
+    delete child.fields[name];
+    const result = await run({ children: [child] });
+    assert.equal(result.status, "error", name);
+    assert.match(result.content, new RegExp(`Missing Jira field ${name}`));
+  }
+  const controlWithoutDescription = structuredClone(control);
+  delete controlWithoutDescription.fields.description;
+  assert.equal((await run({ control: controlWithoutDescription })).status, "error");
+  const parentWithoutDescription = structuredClone(parent);
+  delete parentWithoutDescription.fields.description;
+  assert.equal((await run({ parent: parentWithoutDescription })).status, "error");
+});
+
+test("ambiguous Python numeric and object representations fail closed", async () => {
+  // Python json.loads preserves 1.0 and 1e0 as floats; JavaScript normally loses that distinction.
+  for (const floatLexeme of ["1.0", "1e0", "9007199254740992"]) {
+    const result = await run({
+      children: [ticket(4, { priority: { id: "FLOAT_LEXEME" } })],
+      floatLexeme,
+    });
+    assert.equal(result.status, "error", floatLexeme);
+  }
+  const reorderedKeys = ticket(4, { description: { 2: "two", 1: "one" } });
+  const result = await run({ children: [reorderedKeys] });
+  assert.equal(result.status, "error");
+  assert.match(result.content, /numeric object key/);
+  const encodedTeam = ticket(4, { [teamFieldId]: '{"id":1.0}' });
+  assert.equal((await run({ children: [encodedTeam] })).status, "error");
+  const encodedComment = { id: "12", body: '{"version":1.0,"type":"doc"}' };
+  assert.equal((await run({ comments: [encodedComment] })).status, "error");
 });
