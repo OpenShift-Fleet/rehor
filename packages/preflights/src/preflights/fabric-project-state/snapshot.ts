@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { pyTruthy } from "../jira-common/shapes.js";
 
 export type RecordData = Record<string, unknown>;
 export const record = (value: unknown): RecordData | undefined =>
@@ -89,7 +90,7 @@ export const sorted = (items: Iterable<string>): string[] => [...items].sort(cod
 
 // Python json.dumps(..., sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 // for JSON data. JS numbers have already lost Python's int/float distinction.
-function pythonJson(value: unknown, spaced = false): string {
+export function pythonJson(value: unknown, spaced = false): string {
   const comma = spaced ? ", " : ",";
   const colon = spaced ? ": " : ":";
   if (typeof value === "string") {
@@ -105,6 +106,68 @@ function pythonJson(value: unknown, spaced = false): string {
       .map((key) => `${pythonJson(key)}${colon}${pythonJson(obj[key], spaced)}`)
       .join(comma)}}`;
   return JSON.stringify(value ?? null);
+}
+
+// Python str() is used by the legacy plan snapshot, including for ADF objects.
+export function pythonString(value: unknown): string {
+  function repr(item: unknown): string {
+    if (typeof item === "string") {
+      const quote = item.includes("'") && !item.includes('"') ? '"' : "'";
+      const escaped = [...item]
+        .map((char) => {
+          if (char === "\\" || char === quote) return `\\${char}`;
+          if (char === "\n") return "\\n";
+          if (char === "\r") return "\\r";
+          if (char === "\t") return "\\t";
+          if (char !== " " && /[\p{C}\p{Z}]/u.test(char)) {
+            const code = char.codePointAt(0) ?? 0;
+            const width = code <= 0xff ? 2 : code <= 0xffff ? 4 : 8;
+            return `\\${width === 2 ? "x" : width === 4 ? "u" : "U"}${code.toString(16).padStart(width, "0")}`;
+          }
+          return char;
+        })
+        .join("");
+      return quote + escaped + quote;
+    }
+    if (item === null || item === undefined) return "None";
+    if (typeof item === "boolean") return item ? "True" : "False";
+    if (Array.isArray(item)) return `[${item.map(repr).join(", ")}]`;
+    const obj = record(item);
+    if (obj)
+      return `{${Object.entries(obj)
+        .map(([key, val]) => `${repr(key)}: ${repr(val)}`)
+        .join(", ")}}`;
+    return String(item);
+  }
+  return typeof value === "string" ? value : repr(value);
+}
+
+const unassigned = new Set(["", "unassigned", "unassigned user"]);
+export function isAssigned(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return !unassigned.has(value.trim().toLowerCase());
+  if (Array.isArray(value)) return value.some(isAssigned);
+  const obj = record(value);
+  if (obj) {
+    const identifiers = ["accountId", "account_id", "name", "key", "username", "emailAddress", "id"]
+      .map((key) => obj[key])
+      .filter(
+        (item) => (typeof item === "string" || typeof item === "number") && String(item).trim(),
+      );
+    if (identifiers.length)
+      return identifiers.some((item) => !unassigned.has(String(item).trim().toLowerCase()));
+    if (
+      ["displayName", "display_name"].some(
+        (key) =>
+          typeof obj[key] === "string" && unassigned.has((obj[key] as string).trim().toLowerCase()),
+      )
+    )
+      return false;
+    for (const key of ["value", "user", "assignee"])
+      if (obj[key] != null) return isAssigned(obj[key]);
+    return pyTruthy(obj);
+  }
+  return pyTruthy(value);
 }
 
 function commentBody(raw: unknown): string {
@@ -153,7 +216,9 @@ export function humanComments(comments: readonly RecordData[]) {
       .map((line) => line.trim())
       .filter(Boolean);
     if (
-      lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() === "Coordinator update" ||
+      /^(?:coordinator update)(?:$| -)/i.test(
+        lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() ?? "",
+      ) ||
       lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
     )
       return [];
@@ -191,12 +256,16 @@ export function fingerprint(
         key: keyOf(child),
         summary: field(child, "summary"),
         description: field(child, "description"),
+        updated: field(child, "updated"),
         status: statusName(child),
         team: teamId(child, teamFieldId),
+        priority: field(child, "priority"),
+        issue_type: pyTruthy(field(child, "issuetype"))
+          ? field(child, "issuetype")
+          : field(child, "issue_type"),
         labels: sorted(labels(child)),
         links: field(child, "issuelinks") ?? [],
-        assignee: field(child, "assignee"),
-        sprint: field(child, "customfield_10020"),
+        assignee: isAssigned(field(child, "assignee")),
       })),
     open_pull_requests: pullRequests,
   };

@@ -2,15 +2,18 @@ import { z } from "zod";
 import { definePreflight } from "../../core/registry.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { pyTruthy } from "../jira-common/shapes.js";
+import { linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
   COORD_STATES,
   field,
   fingerprint,
   humanComments,
+  isAssigned,
   keyOf,
   labels,
   parentKey,
+  pythonString,
   type RecordData,
   record,
   sorted,
@@ -26,6 +29,7 @@ const input = z.strictObject({
   controlLabel: jqlValue,
   implementationLabel: jqlValue,
   teamFieldId: z.string().regex(/^customfield_\d+$/),
+  // Retained for existing profiles; coordinator handoff no longer requires a sprint.
   includeBacklog: z.boolean().default(false),
 });
 
@@ -35,24 +39,6 @@ const NOT_STARTED = new Set(["new", "backlog", "refinement", "to do"]);
 const repoLabels = (items: string[]) => items.filter((label) => label.startsWith("repo:"));
 const repoNames = (items: string[]) => new Set(repoLabels(items).map((label) => label.slice(5)));
 const baseFields = ["summary", "description", "status"];
-
-function blockers(issue: RecordData): string[] {
-  const links = field(issue, "issuelinks");
-  if (!Array.isArray(links)) throw new Error(`Missing or invalid Jira links on ${issueKey(issue)}`);
-  const keys = new Set<string>();
-  for (const item of links) {
-    const link = record(item);
-    const type = record(link?.type);
-    if (!link || !type) throw new Error(`Invalid Jira link on ${issueKey(issue)}`);
-    if (
-      link.inwardIssue &&
-      [type.name, type.inward].some((value) => text(value).toLowerCase().includes("block"))
-    ) {
-      keys.add(issueKey(link.inwardIssue));
-    }
-  }
-  return sorted(keys);
-}
 
 function summarizeChild(issue: RecordData, implementationLabel: string) {
   const items = labels(issue);
@@ -69,12 +55,9 @@ function summarizeChild(issue: RecordData, implementationLabel: string) {
     phase_labels: sorted(items.filter((label) => PHASE.test(label))),
     repo_labels: sorted(repoLabels(items)),
     implementation_labeled: items.includes(implementationLabel),
-    blockers: blockers(issue),
-    assignee: pyTruthy(assignee),
-    sprint: pyTruthy(field(issue, "customfield_10020")),
-    description: [
-      ...(typeof description === "string" ? description : JSON.stringify(description ?? "")),
-    ]
+    blockers: linkedIssues(issue).blockers,
+    assignee: isAssigned(assignee),
+    description: [...(pyTruthy(description) ? pythonString(description) : "")]
       .slice(0, 2000)
       .join(""),
   };
@@ -151,6 +134,7 @@ function assess(
   );
 
   const waiting: string[] = [];
+  const blocked_tickets: { key: string; reasons: string[] }[] = [];
   const ready: { key: string; repo_candidates: string[] }[] = [];
   if (current && !gaps.length) {
     for (const ticket of phases.get(current) ?? []) {
@@ -165,13 +149,15 @@ function assess(
         continue;
       }
       const repos = repoNames(ticket.repo_labels);
+      const reasons: string[] = [];
       if ([...repos].some((name) => !allowed.has(name) || !Object.hasOwn(repoMap, name))) {
-        gaps.push(`${ticket.key} has a repo outside the control ticket's allowed repos`);
-      } else if (ticket.assignee || !NOT_STARTED.has(ticket.status.toLowerCase())) {
-        gaps.push(`${ticket.key} is not unassigned in a not-started status`);
-      } else if (!ticket.sprint && !params.includeBacklog) {
-        gaps.push(`${ticket.key} is outside the active sprint and backlog intake is disabled`);
-      } else {
+        reasons.push("repo label is outside the control ticket's allowlist");
+      }
+      if (!NOT_STARTED.has(ticket.status.toLowerCase()))
+        reasons.push(`status ${ticket.status} is not not-started`);
+      if (ticket.assignee) reasons.push("ticket is not unassigned");
+      if (reasons.length) blocked_tickets.push({ key: ticket.key, reasons });
+      else {
         ready.push({ key: ticket.key, repo_candidates: sorted(repos.size ? repos : allowed) });
       }
     }
@@ -187,6 +173,7 @@ function assess(
     gaps,
     ready: gaps.length ? [] : ready,
     waiting,
+    blocked_tickets,
     tickets,
   };
 }
@@ -257,7 +244,9 @@ export const fabricProjectState = definePreflight({
           "labels",
           "issuelinks",
           "assignee",
-          "customfield_10020",
+          "updated",
+          "priority",
+          "issuetype",
           teamFieldId,
         ]);
         const children = siblings.filter((issue) => {
@@ -275,6 +264,21 @@ export const fabricProjectState = definePreflight({
           tickets: pullRequests,
           errors: {},
         });
+        const plan_snapshot = planSnapshot(children, teamFieldId);
+        const plan_snapshot_hash = planDigest(plan_snapshot);
+        const ticket_changes = planChanges(metadata?.plan_snapshot, plan_snapshot);
+        const approved = metadata?.approved_plan_snapshot_hash;
+        if (approved != null && typeof approved !== "string")
+          throw new Error(`Invalid approved plan hash on task for ${controlKey}`);
+        const approved_plan_snapshot_changed =
+          typeof approved === "string" && approved !== plan_snapshot_hash;
+        const plan_approval_pending = pyTruthy(metadata?.pending_plan_approval);
+        const plan_change_required =
+          plan_approval_pending ||
+          approved_plan_snapshot_changed ||
+          [ticket_changes.added, ticket_changes.removed, ticket_changes.changed].some(
+            (items) => items.length > 0,
+          );
         if (previous !== snapshot_hash || !assessment.state) {
           const processed = metadata?.processed_comment_ids;
           if (
@@ -289,6 +293,13 @@ export const fabricProjectState = definePreflight({
             ...identity,
             parent_key: parent,
             snapshot_hash,
+            plan_snapshot,
+            plan_snapshot_hash,
+            approved_plan_snapshot_hash: approved ?? null,
+            ticket_changes,
+            approved_plan_snapshot_changed,
+            plan_change_required,
+            plan_approval_pending,
             first_run: !previous,
             new_comments: comments.filter(({ id }) => !processedIds.has(id)),
             open_pull_requests: pullRequests,

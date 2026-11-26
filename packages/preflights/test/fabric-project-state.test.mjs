@@ -97,6 +97,8 @@ async function run(options = {}) {
           }
           assert.equal(query.jql, `parent = "${parentKey}" ORDER BY key ASC`);
           assert.ok(query.fields.includes(teamFieldId));
+          for (const field of ["updated", "priority", "issuetype"])
+            assert.ok(query.fields.includes(field));
           if (!query.nextPageToken)
             return Response.json({
               issues: [controlIssue, ...children.slice(0, 1)],
@@ -167,8 +169,14 @@ test("selects direct same-Team scope, waits on external blockers, and observes P
   // Golden digest from the Python fingerprint on identical Jira/PR data.
   assert.equal(
     first.snapshot_hash,
-    "ca45e7408e57f33c07474da21b0673ee492ecf7602507f90e0f5c5bb6ae417d7",
+    "780416a2901c9f01ff04f6c089bf7ce2505be7fd742f3d26b6327bddd3a69222",
   );
+  assert.equal(
+    first.plan_snapshot_hash,
+    "2a2b0702878e5003989796314f878fc7b721330096348f7e4f32f7b82881bacc",
+  );
+  assert.equal(first.ticket_changes.baseline_missing, true);
+  assert.equal(first.plan_change_required, false);
   assert.deepEqual(first.open_pull_requests, {
     "RHCLOUD-3": [
       {
@@ -201,18 +209,18 @@ test("selects direct same-Team scope, waits on external blockers, and observes P
   assert.notEqual(changed.snapshot_hash, first.snapshot_hash);
 });
 
-test("ownership and plan checks suppress runnable work; orphan control has its own stable gate", async () => {
+test("ticket blockers do not suppress unrelated ready work; orphan control has its own stable gate", async () => {
   const owned = ticket(4, { assignee: { accountId: "owner" } });
   const outside = ticket(5, { labels: ["phase:01", "repo:foreign"] });
   const backlog = ticket(6);
   const gated = project(
     await run({ children: [owned, outside, backlog], params: { includeBacklog: false } }),
   );
-  assert.deepEqual(gated.ready, []);
-  assert.deepEqual(gated.gaps, [
-    "RHCLOUD-4 is not unassigned in a not-started status",
-    "RHCLOUD-5 has a repo outside the control ticket's allowed repos",
-    "RHCLOUD-6 is outside the active sprint and backlog intake is disabled",
+  assert.deepEqual(gated.ready, [{ key: "RHCLOUD-6", repo_candidates: ["demo"] }]);
+  assert.deepEqual(gated.gaps, []);
+  assert.deepEqual(gated.blocked_tickets, [
+    { key: "RHCLOUD-4", reasons: ["ticket is not unassigned"] },
+    { key: "RHCLOUD-5", reasons: ["repo label is outside the control ticket's allowlist"] },
   ]);
   const duplicate = project(
     await run({ children: [ticket(4, { labels: [controlLabel, "phase:01"] })] }),
@@ -226,6 +234,143 @@ test("ownership and plan checks suppress runnable work; orphan control has its o
     (await run({ control: orphan, tasks: [task(report.snapshot_hash)] })).status,
     "skip",
   );
+});
+
+test("plan changes and pending approvals are reported against stored plan metadata", async () => {
+  const first = project(await run({ children: [ticket(4)] }));
+  const changedTicket = ticket(4, {
+    summary: "Changed",
+    updated: "2026-11-22",
+    priority: { name: "High" },
+    issuetype: { name: "Task" },
+    issuelinks: [{ type: { name: "Relates" }, outwardIssue: { key: "RHCLOUD-7" } }],
+  });
+  const saved = task(first.snapshot_hash, {
+    metadata: {
+      snapshot_hash: first.snapshot_hash,
+      plan_snapshot: first.plan_snapshot,
+      approved_plan_snapshot_hash: first.plan_snapshot_hash,
+      pending_plan_approval: true,
+    },
+  });
+  const changed = project(await run({ children: [changedTicket, ticket(6)], tasks: [saved] }));
+  assert.equal(changed.approved_plan_snapshot_changed, true);
+  assert.equal(changed.plan_approval_pending, true);
+  assert.equal(changed.plan_change_required, true);
+  assert.deepEqual(
+    changed.ticket_changes.added.map(({ key }) => key),
+    ["RHCLOUD-6"],
+  );
+  assert.deepEqual(Object.keys(changed.ticket_changes.changed[0].fields), [
+    "issue_type",
+    "priority",
+    "related",
+    "summary",
+    "updated",
+  ]);
+  assert.deepEqual(changed.ticket_changes.changed[0].fields.related, {
+    before: [],
+    after: ["RHCLOUD-7"],
+  });
+  assert.equal(changed.approved_plan_snapshot_hash, first.plan_snapshot_hash);
+  const noBaseline = project(
+    await run({
+      children: [changedTicket],
+      tasks: [
+        task(first.snapshot_hash, {
+          metadata: {
+            snapshot_hash: first.snapshot_hash,
+            approved_plan_snapshot_hash: first.plan_snapshot_hash,
+          },
+        }),
+      ],
+    }),
+  );
+  assert.equal(noBaseline.ticket_changes.baseline_missing, true);
+  assert.equal(noBaseline.plan_change_required, true);
+  const pending = project(
+    await run({
+      children: [ticket(4)],
+      comments: [approval, { id: "16", body: "approve" }],
+      tasks: [saved],
+    }),
+  );
+  assert.deepEqual(pending.ticket_changes.changed, []);
+  assert.equal(pending.approved_plan_snapshot_changed, false);
+  assert.equal(pending.plan_approval_pending, true);
+  assert.equal(pending.plan_change_required, true);
+  const removed = project(await run({ children: [], tasks: [saved] }));
+  assert.deepEqual(
+    removed.ticket_changes.removed.map(({ key }) => key),
+    ["RHCLOUD-4"],
+  );
+});
+
+test("no-sprint unassigned placeholders can hand off while owned/status tickets remain blocked", async () => {
+  const children = [
+    ticket(4, { assignee: { display_name: "Unassigned" } }),
+    ticket(5, {
+      assignee: { displayName: "Unassigned", accountId: "real-id" },
+      status: { name: "In Progress" },
+      labels: ["phase:01", "repo:foreign"],
+    }),
+  ];
+  const result = project(await run({ children, params: { includeBacklog: false } }));
+  assert.deepEqual(result.ready, [{ key: "RHCLOUD-4", repo_candidates: ["demo"] }]);
+  assert.deepEqual(result.blocked_tickets, [
+    {
+      key: "RHCLOUD-5",
+      reasons: [
+        "repo label is outside the control ticket's allowlist",
+        "status In Progress is not not-started",
+        "ticket is not unassigned",
+      ],
+    },
+  ]);
+  assert.equal(result.plan_snapshot["RHCLOUD-4"].assignee, false);
+});
+
+test("coordinator comments normalize case and dynamic headings without hiding human comments", async () => {
+  const comments = [
+    approval,
+    { id: "12", body: adf("heading", "coordinator UPDATE - Next steps") },
+    { id: "13", body: "## Coordinator update - Plan\nbody" },
+    { id: "14", body: "Report\nCoordinator action: continue" },
+    { id: "15", body: "Coordinator update from user" },
+  ];
+  const result = project(await run({ comments }));
+  assert.deepEqual(
+    result.new_comments.map(({ id }) => id),
+    ["10", "15"],
+  );
+  const noOwn = project(await run({ comments: [approval, comments[4]] }));
+  assert.equal(result.snapshot_hash, noOwn.snapshot_hash);
+});
+
+test("Python latest snapshot and fingerprint match ADF, normalized assignee and planning fields", async () => {
+  const description = adf("paragraph", "café's 🧶\nworks");
+  const child = ticket(4, {
+    description,
+    updated: "2026-11-23T12:00:00.000+0000",
+    priority: { id: "1", name: "High" },
+    issuetype: { name: "Task" },
+    assignee: { display_name: "Unassigned" },
+    issuelinks: [{ type: { name: "Relates" }, outwardIssue: { key: "RHCLOUD-8" } }],
+  });
+  const result = project(await run({ children: [child] }));
+  // Generated using project_coordinator.py from Fabric main 5208712bd167.
+  assert.equal(
+    result.plan_snapshot_hash,
+    "9744b7200d47e03959ea2d7df947763aba024fe7fc5bdd92bf442f75978c8e88",
+  );
+  assert.equal(
+    result.snapshot_hash,
+    "c548b23fce722c03f4167b809836cdc7d27e7f957a7435c61b0aaf6e4ae9accf",
+  );
+  assert.deepEqual(result.plan_snapshot[child.key].related, ["RHCLOUD-8"]);
+  assert.equal(result.plan_snapshot[child.key].priority, "High");
+  const sprintOnly = ticket(4, { ...child.fields, customfield_10020: [{ id: 123 }] });
+  assert.equal(project(await run({ children: [sprintOnly] })).snapshot_hash, result.snapshot_hash);
 });
 
 test("unavailable or partial reads never produce actionable payloads", async () => {
