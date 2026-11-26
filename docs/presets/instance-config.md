@@ -83,3 +83,22 @@ an existing profile. Only nonempty string `BOT_*` entries without secret-bearing
 names are accepted; `BOT_MEMORY_URL` remains deployment-owned. Preflight `with`
 values are explicit literals, not interpolated from `env`. `envs` selects build
 presets and is unrelated to `env`.
+
+## OpenCode environment forwarding
+
+With `runtime: opencode`, variable names declared by the selected workflow
+manifest, the active env preset manifests, and this profile's `env` (or
+`preflight.env`) category are forwarded to the OpenCode child when present in
+the runner environment. A declared name that looks like a credential
+(`TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, or `API_KEY` in the name) is not
+copied from ambient values; declare it under `sandbox.env` instead. Values set
+in `env` are a fallback only — a deployment-provided value always wins — and
+`BOT_MEMORY_URL` is never supplied by a profile. `sandbox.env` names forward
+values only on dispatched sandbox runs, where the dispatcher has rendered any
+tier-2 secret references into the runner environment. A declared name that is not
+a valid environment variable name, or that names a protected platform
+runtime, loader, or security control, fails the cycle with the variable named
+(never its value) instead of being silently dropped. The whole ambient
+environment is never forwarded. See the
+[operational child environment](../migrations/opencode-migration.md#operational-child-environment)
+section of the OpenCode migration guide for the full rules.
