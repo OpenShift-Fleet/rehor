@@ -254,6 +254,9 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
             "config.declaredSandboxEnvVars",
           ),
         }),
+    ...(object.declaredEnvLiterals === undefined
+      ? {}
+      : { declaredEnvLiterals: declaredLiteralRecord(object.declaredEnvLiterals) }),
   };
 }
 
@@ -266,6 +269,35 @@ function declaredNameArray(value: unknown, path: string): string[] {
     }
     return name;
   });
+}
+
+/**
+ * Profile env literals follow the dispatcher's instance-variable contract:
+ * nonsecret BOT_* names with non-empty string values. The deployment-owned
+ * memory route is refused so a profile can never supply or redirect it.
+ */
+function declaredLiteralRecord(value: unknown): Record<string, string> {
+  const object = record(value, "config.declaredEnvLiterals");
+  const literals: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(object)) {
+    if (!/^BOT_[A-Z0-9_]+$/.test(name)) {
+      throw new PythonBridgeError(
+        `config.declaredEnvLiterals.${name} is not a nonsecret BOT_* profile variable name`,
+      );
+    }
+    if (/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(name)) {
+      throw new PythonBridgeError(
+        `config.declaredEnvLiterals.${name} is secret-bearing; sandbox.env is the authorized channel`,
+      );
+    }
+    if (name === "BOT_MEMORY_URL") {
+      throw new PythonBridgeError(
+        "config.declaredEnvLiterals.BOT_MEMORY_URL is deployment-owned and never supplied by a profile",
+      );
+    }
+    literals[name] = stringValue(entry, `config.declaredEnvLiterals.${name}`);
+  }
+  return literals;
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {

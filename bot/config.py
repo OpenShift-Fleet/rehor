@@ -212,14 +212,22 @@ def resolve_active_envs(script_dir: Path, instance_config: InstanceConfig) -> li
 
 
 _ENV_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The profile `env`/`preflight.env` category contract, mirroring the
+# dispatcher's instance-variable validation: nonsecret BOT_* names only.
+_PROFILE_ENV_NAME = re.compile(r"^BOT_[A-Z0-9_]+$")
+_SECRET_NAME = re.compile(r"(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)")
+# Deployment-owned memory route: the dispatcher forces its own value and
+# never lets a profile redirect it; literal delivery mirrors that.
+_PROFILE_LITERAL_EXCLUDED = frozenset({"BOT_MEMORY_URL"})
 
 
-def _manifest_env_names(requires: object) -> set[str]:
+def _manifest_env_names(requires: object, origin: str) -> set[str]:
     """Collect requires.env_vars and optional_env_vars names from a manifest.
 
     Names only — values are never read here; the coordinator reads values from
-    its own process environment. Malformed entries are skipped with a warning
-    so an unrelated manifest typo cannot break preparation.
+    its own process environment. An entry that is not a valid environment
+    variable name can never be set or forwarded, so it fails loudly instead
+    of being quietly omitted.
     """
     names: set[str] = set()
     if not isinstance(requires, dict):
@@ -232,7 +240,7 @@ def _manifest_env_names(requires: object) -> set[str]:
             if isinstance(var, str) and _ENV_VAR_NAME.fullmatch(var):
                 names.add(var)
             else:
-                logger.warning("Skipping invalid declared env var name %r in manifest %s", var, key)
+                raise ValueError(f"{origin} declares invalid env var name {var!r} in {key}")
     return names
 
 
@@ -245,7 +253,7 @@ def workflow_declared_env_names(
     manifest = load_manifest(script_dir, instance_config.workflow, remote_agent_dir)
     if not isinstance(manifest, dict):
         return set()
-    return _manifest_env_names(manifest.get("requires"))
+    return _manifest_env_names(manifest.get("requires"), f"workflow '{instance_config.workflow}'")
 
 
 def active_env_declared_env_names(script_dir: Path, active_envs: list[str]) -> set[str]:
@@ -258,84 +266,106 @@ def active_env_declared_env_names(script_dir: Path, active_envs: list[str]) -> s
         with open(manifest_path) as f:
             manifest = yaml.safe_load(f) or {}
         if isinstance(manifest, dict):
-            names |= _manifest_env_names(manifest.get("requires"))
+            names |= _manifest_env_names(manifest.get("requires"), f"env preset '{env_name}'")
     return names
 
 
-def profile_declared_env_names(remote_agent_dir: Path | None) -> tuple[set[str], set[str]]:
-    """Env var names the selected profile's instance.yaml declares.
+def profile_declared_env_names(
+    remote_agent_dir: Path | None,
+) -> tuple[set[str], set[str], dict[str, str]]:
+    """Env var names and nonsecret literals the selected profile declares.
 
-    Returns ``(env_names, sandbox_env_names)`` where env_names covers the ``env``
-    category (or legacy ``preflight.env``) and sandbox_env_names covers ``sandbox.env``
-    (the dispatcher's tier-2 render channel). Names only — values are never
-    returned. Malformed or conflicting declarations are skipped with a warning,
-    preserving the previous behavior of ignoring unknown categories.
+    Returns ``(env_names, sandbox_env_names, env_literals)``: env_names covers
+    the ``env`` category (or legacy ``preflight.env``), sandbox_env_names covers
+    ``sandbox.env`` (the dispatcher's tier-2 render channel, names only), and
+    env_literals carries the env category's validated nonsecret BOT_* literal
+    values for fallback delivery when the runner environment lacks them.
+
+    The env/preflight.env category follows the dispatcher's instance-variable
+    contract (nonsecret BOT_* names with non-empty string values); violations
+    fail loudly instead of being quietly dropped, as do malformed categories
+    and the env/preflight.env combination. Sandbox secret references never
+    enter env_literals.
     """
     if remote_agent_dir is None:
-        return set(), set()
+        return set(), set(), {}
     path = remote_agent_dir / "instance.yaml"
     if not path.is_file():
-        return set(), set()
+        return set(), set(), {}
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
-        return set(), set()
-
-    def collect(mapping: object, origin: str) -> set[str]:
-        names: set[str] = set()
-        if not isinstance(mapping, dict):
-            if mapping is not None:
-                logger.warning("Ignoring non-mapping %s declarations in instance.yaml", origin)
-            return names
-        for key in mapping:
-            if isinstance(key, str) and _ENV_VAR_NAME.fullmatch(key):
-                names.add(key)
-            else:
-                logger.warning("Skipping invalid declared env var name %r in %s", key, origin)
-        return names
+        return set(), set(), {}
 
     env_category = data.get("env")
     legacy = data.get("preflight")
     if env_category is not None and legacy is not None:
-        logger.warning("Ignoring env declarations: instance.yaml uses both env and preflight.env")
-        env_names: set[str] = set()
-    else:
-        source = env_category
-        if legacy is not None:
-            if isinstance(legacy, dict) and set(legacy) == {"env"}:
-                source = legacy["env"]
+        raise ValueError("instance.yaml uses both env and preflight.env; use one")
+    source: object = env_category
+    if legacy is not None:
+        if not isinstance(legacy, dict) or set(legacy) != {"env"}:
+            raise ValueError("instance.yaml preflight category must contain only env")
+        source = legacy["env"]
+
+    env_names: set[str] = set()
+    env_literals: dict[str, str] = {}
+    if source is not None:
+        if not isinstance(source, dict):
+            raise ValueError("instance.yaml env category must be a mapping")
+        for name, value in source.items():
+            if not isinstance(name, str) or not _PROFILE_ENV_NAME.fullmatch(name):
+                raise ValueError(
+                    f"instance.yaml env declares invalid name {name!r}; the category allows nonsecret BOT_* names only"
+                )
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"instance.yaml env declares empty value for {name}")
+            if _SECRET_NAME.search(name):
+                raise ValueError(
+                    f"instance.yaml env declares secret-bearing name {name}; "
+                    "use sandbox.env for explicitly authorized secret delivery"
+                )
+            env_names.add(name)
+            if name in _PROFILE_LITERAL_EXCLUDED:
+                # Mirrors the dispatcher: the deployment owns this route and
+                # a profile value never overrides or supplies it.
+                logger.info("Not delivering profile literal for deployment-owned %s", name)
             else:
-                logger.warning("Ignoring malformed preflight category in instance.yaml")
-                source = None
-        env_names = collect(source, "env")
+                env_literals[name] = value
 
     sandbox_names: set[str] = set()
     sandbox = data.get("sandbox")
-    if isinstance(sandbox, dict):
-        sandbox_names = collect(sandbox.get("env"), "sandbox.env")
-    elif sandbox is not None:
-        logger.warning("Ignoring malformed sandbox category in instance.yaml")
-    return env_names, sandbox_names
+    if sandbox is not None:
+        if not isinstance(sandbox, dict):
+            raise ValueError("instance.yaml sandbox category must be a mapping")
+        sandbox_env = sandbox.get("env")
+        if sandbox_env is not None:
+            if not isinstance(sandbox_env, dict):
+                raise ValueError("instance.yaml sandbox.env must be a mapping")
+            for name in sandbox_env:
+                if not isinstance(name, str) or not _ENV_VAR_NAME.fullmatch(name):
+                    raise ValueError(f"instance.yaml sandbox.env declares invalid name {name!r}")
+                sandbox_names.add(name)
+    return env_names, sandbox_names, env_literals
 
 
 def declared_environment_names(
     script_dir: Path,
     instance_config: InstanceConfig,
     remote_agent_dir: Path | None = None,
-) -> tuple[list[str], list[str]]:
-    """Names the selected agent's configuration declares for the runtime child.
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Names and nonsecret literals the selected agent's configuration declares.
 
-    Returns ``(declared, declared_sandbox)`` as sorted, deduplicated name lists:
-    ``declared`` unions the workflow manifest, active env preset manifests, and
-    the profile ``env``/``preflight.env`` category; ``declared_sandbox`` holds the
-    profile's ``sandbox.env`` declarations (tier-2 channel). Only names cross
-    this boundary — never values.
+    Returns ``(declared, declared_sandbox, declared_literals)``: sorted,
+    deduplicated name lists for the manifest/profile declarations and the
+    sandbox.env tier-2 channel, plus the env category's validated nonsecret
+    literal values for fallback delivery. Apart from those nonsecret
+    literals, only names cross this boundary — never values.
     """
     declared = workflow_declared_env_names(script_dir, instance_config, remote_agent_dir)
     declared |= active_env_declared_env_names(script_dir, resolve_active_envs(script_dir, instance_config))
-    env_names, sandbox_names = profile_declared_env_names(remote_agent_dir)
+    env_names, sandbox_names, env_literals = profile_declared_env_names(remote_agent_dir)
     declared |= env_names
-    return sorted(declared), sorted(sandbox_names)
+    return sorted(declared), sorted(sandbox_names), env_literals
 
 
 def validate_runtime_provider_selection(runtime: str, provider: str) -> list[str]:

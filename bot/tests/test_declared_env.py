@@ -1,8 +1,8 @@
 """Declared environment-name collection for OpenCode child forwarding.
 
-The bridge must carry NAMES only — never values — from the selected agent's
-workflow/env-preset manifests and profile instance.yaml to the coordinator,
-which reads values from its own process environment.
+The bridge carries NAMES for manifest/sandbox declarations — never values —
+plus the env category's validated NONSECRET literal values for fallback
+delivery. The coordinator reads ambient values from its own environment.
 """
 
 from __future__ import annotations
@@ -59,21 +59,12 @@ class TestWorkflowManifestDeclarations:
         names = workflow_declared_env_names(tmp_path, _instance_config())
         assert names == {"BOT_LABEL", "ACME_WIDGET_BOARD", "WIDGET_CACHE_DIR", "SLACK_DIGEST_HOUR"}
 
-    def test_skips_invalid_manifest_entries_without_failing(self, tmp_path, caplog):
+    def test_fails_closed_on_invalid_manifest_entries(self, tmp_path):
         workflow_dir = tmp_path / "presets" / "workflows" / "test-workflow"
         workflow_dir.mkdir(parents=True)
-        (workflow_dir / "manifest.yaml").write_text(
-            "requires:\n"
-            "  env_vars:\n"
-            "    - GOOD_NAME\n"
-            "    - not-a-name!\n"
-            "    - 42\n"
-            "  optional_env_vars:\n"
-            "    - ALSO_GOOD\n"
-        )
-        names = workflow_declared_env_names(tmp_path, _instance_config())
-        assert names == {"GOOD_NAME", "ALSO_GOOD"}
-        assert "Skipping invalid declared env var name" in caplog.text
+        (workflow_dir / "manifest.yaml").write_text("requires:\n  env_vars:\n    - GOOD_NAME\n    - not-a-name!\n")
+        with pytest.raises(ValueError, match="invalid env var name"):
+            workflow_declared_env_names(tmp_path, _instance_config())
 
     def test_missing_manifest_yields_nothing(self, tmp_path):
         assert workflow_declared_env_names(tmp_path, _instance_config()) == set()
@@ -105,15 +96,22 @@ class TestEnvPresetDeclarations:
 
 
 class TestProfileDeclarations:
-    def test_collects_env_category_names_without_values(self, tmp_path):
+    def test_collects_env_category_names_and_nonsecret_literals(self, tmp_path):
         profile = tmp_path / "agent"
         profile.mkdir()
         (profile / "instance.yaml").write_text(
-            "workflow: test-workflow\nenv:\n  BOT_ACME_QUEUE_DEPTH: '7'\n  ACME_TEAM_UUID: team-uuid-value\n"
+            "workflow: test-workflow\n"
+            "env:\n"
+            "  BOT_ACME_QUEUE_DEPTH: queue-depth-value\n"
+            "  BOT_TEAM_UUID: team-uuid-value\n"
         )
-        env_names, sandbox_names = profile_declared_env_names(profile)
-        assert env_names == {"BOT_ACME_QUEUE_DEPTH", "ACME_TEAM_UUID"}
+        env_names, sandbox_names, literals = profile_declared_env_names(profile)
+        assert env_names == {"BOT_ACME_QUEUE_DEPTH", "BOT_TEAM_UUID"}
         assert sandbox_names == set()
+        assert literals == {
+            "BOT_ACME_QUEUE_DEPTH": "queue-depth-value",
+            "BOT_TEAM_UUID": "team-uuid-value",
+        }
 
     def test_collects_legacy_preflight_env_category(self, tmp_path):
         profile = tmp_path / "agent"
@@ -121,8 +119,9 @@ class TestProfileDeclarations:
         (profile / "instance.yaml").write_text(
             "workflow: test-workflow\npreflight:\n  env:\n    BOT_LEGACY_SETTING: legacy-value\n"
         )
-        env_names, _ = profile_declared_env_names(profile)
+        env_names, _, literals = profile_declared_env_names(profile)
         assert env_names == {"BOT_LEGACY_SETTING"}
+        assert literals == {"BOT_LEGACY_SETTING": "legacy-value"}
 
     def test_collects_sandbox_env_names_in_a_separate_provenance(self, tmp_path):
         profile = tmp_path / "agent"
@@ -134,49 +133,80 @@ class TestProfileDeclarations:
             "    TEAM_SERVICE_TOKEN: secret-render-placeholder\n"
             "    FABRIC_JIRA_PROJECT: PROJ\n"
         )
-        env_names, sandbox_names = profile_declared_env_names(profile)
+        env_names, sandbox_names, literals = profile_declared_env_names(profile)
         assert env_names == set()
         assert sandbox_names == {"TEAM_SERVICE_TOKEN", "FABRIC_JIRA_PROJECT"}
+        # Sandbox values never enter the literal map.
+        assert literals == {}
 
-    def test_conflicting_env_and_preflight_categories_are_skipped(self, tmp_path, caplog):
+    def test_never_delivers_deployment_owned_memory_route_literal(self, tmp_path):
+        profile = tmp_path / "agent"
+        profile.mkdir()
+        (profile / "instance.yaml").write_text(
+            "workflow: test-workflow\nenv:\n  BOT_MEMORY_URL: https://untrusted.example/mcp\n  BOT_BOARD_ID: '42'\n"
+        )
+        env_names, _, literals = profile_declared_env_names(profile)
+        assert env_names == {"BOT_MEMORY_URL", "BOT_BOARD_ID"}
+        assert literals == {"BOT_BOARD_ID": "42"}
+
+    def test_fails_closed_on_env_and_preflight_conflict(self, tmp_path):
         profile = tmp_path / "agent"
         profile.mkdir()
         (profile / "instance.yaml").write_text(
             "workflow: test-workflow\nenv:\n  BOT_ONE: one\npreflight:\n  env:\n    BOT_TWO: two\n"
         )
-        env_names, _ = profile_declared_env_names(profile)
-        assert env_names == set()
-        assert "both env and preflight.env" in caplog.text
+        with pytest.raises(ValueError, match=r"both env and preflight\.env"):
+            profile_declared_env_names(profile)
 
-    def test_malformed_categories_are_skipped(self, tmp_path, caplog):
+    def test_fails_closed_on_malformed_categories(self, tmp_path):
         profile = tmp_path / "agent"
         profile.mkdir()
-        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv: not-a-mapping\nsandbox: not-a-mapping\n")
-        env_names, sandbox_names = profile_declared_env_names(profile)
-        assert env_names == set()
-        assert sandbox_names == set()
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv: not-a-mapping\n")
+        with pytest.raises(ValueError, match="env category must be a mapping"):
+            profile_declared_env_names(profile)
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nsandbox: not-a-mapping\n")
+        with pytest.raises(ValueError, match="sandbox category must be a mapping"):
+            profile_declared_env_names(profile)
+        (profile / "instance.yaml").write_text("workflow: test-workflow\npreflight:\n  env: {}\n  other: 1\n")
+        with pytest.raises(ValueError, match="preflight category must contain only env"):
+            profile_declared_env_names(profile)
+
+    def test_fails_closed_on_invalid_env_category_names_and_values(self, tmp_path):
+        profile = tmp_path / "agent"
+        profile.mkdir()
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv:\n  ACME_TEAM_UUID: value\n")
+        with pytest.raises(ValueError, match="nonsecret BOT_"):
+            profile_declared_env_names(profile)
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv:\n  BOT_SERVICE_TOKEN: value\n")
+        with pytest.raises(ValueError, match="secret-bearing name"):
+            profile_declared_env_names(profile)
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv:\n  BOT_EMPTY: ''\n")
+        with pytest.raises(ValueError, match="empty value"):
+            profile_declared_env_names(profile)
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv:\n  ? 42\n  : x\n")
+        with pytest.raises(ValueError, match="invalid name"):
+            profile_declared_env_names(profile)
+
+    def test_fails_closed_on_invalid_sandbox_env_names(self, tmp_path):
+        profile = tmp_path / "agent"
+        profile.mkdir()
+        (profile / "instance.yaml").write_text("workflow: test-workflow\nsandbox:\n  env:\n    ? 42\n    : value\n")
+        with pytest.raises(ValueError, match=r"sandbox\.env declares invalid name"):
+            profile_declared_env_names(profile)
 
     def test_missing_profile_yields_nothing(self, tmp_path):
-        assert profile_declared_env_names(None) == (set(), set())
-        assert profile_declared_env_names(tmp_path) == (set(), set())
-
-    def test_invalid_names_are_skipped(self, tmp_path, caplog):
-        profile = tmp_path / "agent"
-        profile.mkdir()
-        (profile / "instance.yaml").write_text("workflow: test-workflow\nenv:\n  ? 42\n  : value\n")
-        env_names, _ = profile_declared_env_names(profile)
-        assert env_names == set()
-        assert "Skipping invalid declared env var name" in caplog.text
+        assert profile_declared_env_names(None) == (set(), set(), {})
+        assert profile_declared_env_names(tmp_path) == (set(), set(), {})
 
     def test_profile_specific_isolation(self, tmp_path):
         first = tmp_path / "first" / "agent"
         second = tmp_path / "second" / "agent"
         first.mkdir(parents=True)
         second.mkdir(parents=True)
-        (first / "instance.yaml").write_text("workflow: w\nenv:\n  FIRST_ONLY: a\n")
-        (second / "instance.yaml").write_text("workflow: w\nenv:\n  SECOND_ONLY: b\n")
-        assert profile_declared_env_names(first)[0] == {"FIRST_ONLY"}
-        assert profile_declared_env_names(second)[0] == {"SECOND_ONLY"}
+        (first / "instance.yaml").write_text("workflow: w\nenv:\n  BOT_FIRST_ONLY: a\n")
+        (second / "instance.yaml").write_text("workflow: w\nenv:\n  BOT_SECOND_ONLY: b\n")
+        assert profile_declared_env_names(first)[0] == {"BOT_FIRST_ONLY"}
+        assert profile_declared_env_names(second)[0] == {"BOT_SECOND_ONLY"}
 
 
 class TestDeclaredEnvironmentNames:
@@ -198,7 +228,9 @@ class TestDeclaredEnvironmentNames:
             "  env:\n"
             "    TEAM_SERVICE_TOKEN: secret-render\n"
         )
-        declared, declared_sandbox = declared_environment_names(tmp_path, _instance_config(envs=["slackish"]), profile)
+        declared, declared_sandbox, literals = declared_environment_names(
+            tmp_path, _instance_config(envs=["slackish"]), profile
+        )
         assert declared == [
             "BOT_ACME_QUEUE_DEPTH",
             "BOT_LABEL",
@@ -206,6 +238,7 @@ class TestDeclaredEnvironmentNames:
             "SLACK_DIGEST_HOUR",
         ]
         assert declared_sandbox == ["TEAM_SERVICE_TOKEN"]
+        assert literals == {"BOT_ACME_QUEUE_DEPTH": "7"}
 
     def test_inactive_env_preset_names_are_not_declared(self, tmp_path):
         _write_workflow(tmp_path, "test-workflow", {"optional_env_vars": ["BOT_LABEL"]})
@@ -213,7 +246,7 @@ class TestDeclaredEnvironmentNames:
         profile = tmp_path / "agent"
         profile.mkdir()
         (profile / "instance.yaml").write_text("workflow: test-workflow\nenvs: []\n")
-        declared, _ = declared_environment_names(tmp_path, _instance_config(envs=[]), profile)
+        declared, _, _ = declared_environment_names(tmp_path, _instance_config(envs=[]), profile)
         assert declared == ["BOT_LABEL"]
 
     def test_per_cycle_change_and_removal(self, tmp_path):
@@ -221,16 +254,25 @@ class TestDeclaredEnvironmentNames:
         profile = tmp_path / "agent"
         profile.mkdir()
         instance = profile / "instance.yaml"
-        instance.write_text("workflow: test-workflow\nenv:\n  FIRST_SETTING: a\n")
+        instance.write_text("workflow: test-workflow\nenv:\n  BOT_FIRST_SETTING: first\n")
         config = _instance_config()
-        assert declared_environment_names(tmp_path, config, profile)[0] == ["FIRST_SETTING"]
-        instance.write_text("workflow: test-workflow\nenv:\n  FIRST_SETTING: a\n  SECOND_SETTING: b\n")
-        assert declared_environment_names(tmp_path, config, profile)[0] == [
-            "FIRST_SETTING",
-            "SECOND_SETTING",
-        ]
-        instance.write_text("workflow: test-workflow\nenv:\n  SECOND_SETTING: b\n")
-        assert declared_environment_names(tmp_path, config, profile)[0] == ["SECOND_SETTING"]
+        assert declared_environment_names(tmp_path, config, profile) == (
+            ["BOT_FIRST_SETTING"],
+            [],
+            {"BOT_FIRST_SETTING": "first"},
+        )
+        instance.write_text("workflow: test-workflow\nenv:\n  BOT_FIRST_SETTING: first\n  BOT_SECOND_SETTING: second\n")
+        assert declared_environment_names(tmp_path, config, profile) == (
+            ["BOT_FIRST_SETTING", "BOT_SECOND_SETTING"],
+            [],
+            {"BOT_FIRST_SETTING": "first", "BOT_SECOND_SETTING": "second"},
+        )
+        instance.write_text("workflow: test-workflow\nenv:\n  BOT_SECOND_SETTING: second\n")
+        assert declared_environment_names(tmp_path, config, profile) == (
+            ["BOT_SECOND_SETTING"],
+            [],
+            {"BOT_SECOND_SETTING": "second"},
+        )
 
 
 @pytest.fixture
@@ -287,7 +329,7 @@ def prepare_environment(tmp_path, monkeypatch):
 
 
 class TestBridgePreparation:
-    def test_prepare_returns_declared_names_without_values(self, prepare_environment):
+    def test_prepare_returns_declared_names_and_nonsecret_literals(self, prepare_environment):
         from bot.coordinator_bridge import handle
 
         tmp_path, _ = prepare_environment
@@ -308,10 +350,12 @@ class TestBridgePreparation:
             "SLACK_WEBHOOK_URL",
         ]
         assert result["declaredSandboxEnvVars"] == ["FABRIC_JIRA_PROJECT", "TEAM_SERVICE_TOKEN"]
-        # Names only: no declared or tier-2 value may cross the bridge boundary.
+        assert result["declaredEnvLiterals"] == {"BOT_ACME_QUEUE_DEPTH": "queue-depth-sentinel"}
+        # Only the validated nonsecret literal crosses the boundary; sandbox
+        # tier-2 values never do.
         serialized = json.dumps(result)
-        for value in ("queue-depth-sentinel", "tier-2-sentinel", "project-name-sentinel"):
-            assert value not in serialized
+        assert "tier-2-sentinel" not in serialized
+        assert "project-name-sentinel" not in serialized
 
     def test_prepare_tracks_per_cycle_profile_changes(self, prepare_environment):
         from bot.coordinator_bridge import handle
@@ -325,6 +369,7 @@ class TestBridgePreparation:
         }
         first = handle(request)
         assert first["declaredSandboxEnvVars"] == ["FABRIC_JIRA_PROJECT", "TEAM_SERVICE_TOKEN"]
+        assert first["declaredEnvLiterals"] == {"BOT_ACME_QUEUE_DEPTH": "queue-depth-sentinel"}
         (profile_dir / "instance.yaml").write_text(
             "workflow: test-workflow\n"
             "source: github\n"
@@ -333,8 +378,35 @@ class TestBridgePreparation:
             "provider: rehor-openai\n"
             "sandbox:\n"
             "  env:\n"
-            "    FABRIC_JIRA_PROJECT: PROJ\n"
+            "    FABRIC_JIRA_PROJECT: project-name-sentinel\n"
         )
         second = handle(request)
         assert second["declaredSandboxEnvVars"] == ["FABRIC_JIRA_PROJECT"]
         assert "BOT_ACME_QUEUE_DEPTH" not in second["declaredEnvVars"]
+        assert second["declaredEnvLiterals"] == {}
+
+    def test_prepare_fails_closed_on_incompatible_profile_declarations(self, prepare_environment):
+        from bot.coordinator_bridge import BridgeError, handle
+
+        tmp_path, profile_dir = prepare_environment
+        (profile_dir / "instance.yaml").write_text(
+            "workflow: test-workflow\n"
+            "source: github\n"
+            "envs: [slackish]\n"
+            "runtime: opencode\n"
+            "provider: rehor-openai\n"
+            "env:\n"
+            "  BOT_SERVICE_TOKEN: value\n"
+        )
+        with pytest.raises(Exception) as excinfo:
+            handle(
+                {
+                    "protocolVersion": 1,
+                    "operation": "prepare",
+                    "scriptDir": str(tmp_path),
+                    "label": "test-label",
+                }
+            )
+        # The bridge surfaces incompatible declarations as a hard failure, not
+        # a quiet omission; the failing name appears, its value does not.
+        assert not isinstance(excinfo.value, BridgeError) or "BOT_SERVICE_TOKEN" in str(excinfo.value)

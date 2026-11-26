@@ -379,6 +379,9 @@ export function createRuntimeRegistryForCycle(
       ...(prepared.config.declaredSandboxEnvVars === undefined
         ? {}
         : { declaredSandbox: prepared.config.declaredSandboxEnvVars }),
+      ...(prepared.config.declaredEnvLiterals === undefined
+        ? {}
+        : { declaredLiterals: prepared.config.declaredEnvLiterals }),
       server,
       logger: options.logger,
     }),

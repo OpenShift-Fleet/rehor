@@ -141,6 +141,9 @@ export async function prepareCycleInput(
       optionalMcpServers: config.optionalMcpServers ?? [],
       declaredEnvVars: config.declaredEnvVars ?? [],
       declaredSandboxEnvVars: config.declaredSandboxEnvVars ?? [],
+      declaredEnvLiterals: Object.fromEntries(
+        Object.entries(config.declaredEnvLiterals ?? {}).sort(([a], [b]) => (a < b ? -1 : 1)),
+      ),
       instructionHash: instructionHash.value,
     }),
   );

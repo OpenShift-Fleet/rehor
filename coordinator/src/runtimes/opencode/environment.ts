@@ -114,28 +114,77 @@ export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
  *   forwarded only in sandbox mode, where the value's provenance is the
  *   trusted render, and secret-looking names are allowed because that is
  *   the channel's purpose.
+ * - `declaredLiterals`: validated nonsecret literal values from the
+ *   profile's `env`/`preflight.env` category, applied as a fallback when a
+ *   declared name is absent from the runner environment so legacy host
+ *   deployments (no dispatcher profile merge) still deliver config-specified
+ *   values. Deployment-provided values always win; sandbox secret
+ *   references never appear here.
  *
- * Both classes are additionally subject to the protected platform name
- * policy below: deployment credentials, runtime controls, and reserved
- * namespaces never pass, regardless of declaration.
+ * All classes are additionally subject to the protected platform name
+ * policy below: deployment credentials, runtime/loader/security controls,
+ * and reserved namespaces never pass, regardless of declaration. A declared
+ * name that can never be forwarded fails closed instead of being quietly
+ * omitted.
  */
 
-/** Platform-owned or dangerous names never forwarded from declarations. */
+/**
+ * Platform runtime, loader, and security controls never forwarded from
+ * declarations. These are generic categories, not per-agent lists:
+ *
+ * - Interpreter/loader injection: NODE_PATH, PYTHONPATH/PYTHONHOME/
+ *   PYTHONSTARTUP, PERL5OPT, RUBYOPT, BASH_ENV/ENV, LD_*, and DYLD_* would
+ *   change how the OpenCode server and its shell/Python tooling execute.
+ * - Git execution and credential interception: GIT_SSH_COMMAND, GIT_ASKPASS,
+ *   and the GIT_CONFIG_COUNT/KEY/VALUE mechanism would redirect git
+ *   transport or credential prompts away from the runner-owned
+ *   GIT_CONFIG_GLOBAL setup.
+ * - Proxy rerouting: ALL_PROXY/all_proxy bypass the runner-owned, normalized
+ *   HTTP_PROXY/HTTPS_PROXY/NO_PROXY aliases.
+ * - Interception CA paths: NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, SSL_CERT_DIR,
+ *   CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, GIT_SSL_CAINFO follow the
+ *   sandbox-only OpenShell contract above.
+ * - Runtime/loader control: NODE_OPTIONS and NODE_USE_ENV_PROXY change how
+ *   the server process itself executes.
+ *
+ * Ordinary agent configuration names are unaffected: any non-protected name
+ * declared by the selected agent's manifests or profile forwards when
+ * present, and explicitly declared tier-2 sandbox values (including
+ * secret-looking custom names) still flow through declaredSandbox.
+ */
 const DECLARED_PROTECTED_NAMES: ReadonlySet<string> = new Set([
   ...OPENCODE_BLOCKED_PASSTHROUGH,
   // The EXECUTOR_TOKEN sandbox placeholder contract below is the only path;
   // a declared raw value must never override it.
   "EXECUTOR_TOKEN",
-  // Runtime/loader control: forwarding ambient values would let a declared
-  // name change how the OpenCode server itself executes.
+  // Interpreter and loader injection.
   "NODE_OPTIONS",
   "NODE_USE_ENV_PROXY",
+  "NODE_PATH",
+  "PYTHONPATH",
+  "PYTHONHOME",
+  "PYTHONSTARTUP",
+  "PERL5OPT",
+  "RUBYOPT",
+  "BASH_ENV",
+  "ENV",
   "LD_PRELOAD",
   "LD_LIBRARY_PATH",
+  "LD_AUDIT",
   "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "DYLD_FRAMEWORK_PATH",
+  // Git execution and credential interception.
+  "GIT_SSH_COMMAND",
+  "GIT_ASKPASS",
+  "GIT_CONFIG_COUNT",
+  // Proxy rerouting outside the runner-owned normalized aliases.
+  "ALL_PROXY",
+  "all_proxy",
   // Interception CA paths follow the sandbox-only OpenShell contract above.
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
   "CURL_CA_BUNDLE",
   "REQUESTS_CA_BUNDLE",
   "GIT_SSL_CAINFO",
@@ -146,6 +195,8 @@ const DECLARED_PROTECTED_PREFIXES = [
   "npm_config_",
   "REHOR_",
   "rehor_",
+  "GIT_CONFIG_KEY_",
+  "GIT_CONFIG_VALUE_",
 ] as const;
 const DECLARED_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Mirrors the dispatcher's forwarded-variable secret heuristic. */
@@ -156,6 +207,24 @@ function isDeclaredProtectedName(name: string): boolean {
     DECLARED_PROTECTED_NAMES.has(name) ||
     DECLARED_PROTECTED_PREFIXES.some((prefix) => name.startsWith(prefix))
   );
+}
+
+/**
+ * A declared name that can never be forwarded is an explicit incompatibility,
+ * not a quiet omission: fail closed with the name (never a value) so the
+ * configuration error surfaces instead of silently diverging.
+ */
+function assertForwardableDeclaration(source: string, name: string): void {
+  if (!DECLARED_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `${source} declares '${name}', which is not a valid environment variable name`,
+    );
+  }
+  if (isDeclaredProtectedName(name)) {
+    throw new Error(
+      `${source} declares '${name}', a protected platform runtime, loader, or security control that is never forwarded to the OpenCode child`,
+    );
+  }
 }
 
 const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
@@ -217,6 +286,15 @@ export interface OpenCodeEnvironmentOptions {
    * explicitly authorized secret delivery.
    */
   declaredSandbox?: readonly string[];
+  /**
+   * Validated nonsecret literal values from the selected profile's `env`
+   * (or legacy `preflight.env`) category. Applied as a fallback only when a
+   * declared name is absent from the runner environment, so legacy host
+   * deployments without the dispatcher's profile merge still deliver
+   * config-specified values. Deployment-provided values always win;
+   * sandbox secret references never appear here.
+   */
+  declaredLiterals?: Readonly<Record<string, string>>;
   noProxyHosts?: readonly string[];
   /** Per-cycle OpenCode global config directory. Ambient user config is excluded. */
   configDirectory?: string;
@@ -270,25 +348,30 @@ export function buildOpenCodeEnvironment(
     }
   }
   for (const name of options.declared ?? []) {
+    assertForwardableDeclaration("manifest or profile environment", name);
     // Manifest/profile declarations describe ordinary settings; secret-looking
-    // names stay out so an ambient credential cannot ride a declaration.
-    if (
-      DECLARED_NAME_PATTERN.test(name) &&
-      !isDeclaredProtectedName(name) &&
-      !DECLARED_SECRET_PATTERN.test(name)
-    ) {
-      copyIfPresent(environment, base, name);
-    }
+    // names stay out so an ambient credential cannot ride a declaration. The
+    // same name may still flow through declaredSandbox below.
+    if (!DECLARED_SECRET_PATTERN.test(name)) copyIfPresent(environment, base, name);
+  }
+  // Validation is mode-independent: an incompatible declaration is a config
+  // error even when the sandbox render path is not active this cycle.
+  for (const name of options.declaredSandbox ?? []) {
+    assertForwardableDeclaration("sandbox environment", name);
   }
   if (base.REHOR_INPUT_SOURCE === "sandbox") {
     for (const name of options.declaredSandbox ?? []) {
       // Explicit sandbox.env declarations are the authorized tier-2 channel;
       // in sandbox mode the value's provenance is the dispatcher's render.
       // Secret-looking names are permitted; protected platform names are not.
-      if (DECLARED_NAME_PATTERN.test(name) && !isDeclaredProtectedName(name)) {
-        copyIfPresent(environment, base, name);
-      }
+      copyIfPresent(environment, base, name);
     }
+  }
+  for (const [name, value] of Object.entries(options.declaredLiterals ?? {})) {
+    assertForwardableDeclaration("profile environment literals", name);
+    // Fallback only: a value already in the runner environment (deployment
+    // ambient or the dispatcher's profile merge) always wins.
+    if (environment[name] === undefined) environment[name] = value;
   }
   for (const name of options.passthrough ?? []) {
     if (

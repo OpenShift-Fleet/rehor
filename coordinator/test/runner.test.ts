@@ -174,6 +174,7 @@ describe("production runner boundary", () => {
         ...prepared.config,
         declaredEnvVars: ["BOT_LABEL", "ACME_TEAM_UUID"],
         declaredSandboxEnvVars: ["TEAM_SERVICE_TOKEN"],
+        declaredEnvLiterals: { BOT_LABEL: "project-coordinator" },
       },
     };
     const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
@@ -194,6 +195,7 @@ describe("production runner boundary", () => {
         config: deployment,
         declared: ["BOT_LABEL", "ACME_TEAM_UUID"],
         declaredSandbox: ["TEAM_SERVICE_TOKEN"],
+        declaredLiterals: { BOT_LABEL: "project-coordinator" },
       }),
     );
   });
@@ -208,6 +210,7 @@ describe("production runner boundary", () => {
     const options = factory.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(options.declared).toBeUndefined();
     expect(options.declaredSandbox).toBeUndefined();
+    expect(options.declaredLiterals).toBeUndefined();
   });
 
   it("keeps the legacy Claude registry Claude-only", () => {

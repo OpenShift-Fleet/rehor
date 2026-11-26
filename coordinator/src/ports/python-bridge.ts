@@ -110,6 +110,13 @@ export interface ConfigPreparationResult {
    * dispatcher's tier-2 render channel). Names only, like declaredEnvVars.
    */
   declaredSandboxEnvVars?: readonly string[];
+  /**
+   * Validated nonsecret literal values from the selected profile's `env`
+   * (or legacy `preflight.env`) category, applied as a fallback when a
+   * declared name is absent from the runner environment. Sandbox secret
+   * references never appear here.
+   */
+  declaredEnvLiterals?: Readonly<Record<string, string>>;
 }
 
 /** Stable boundary for the existing Python preflight/config implementation. */

@@ -413,10 +413,17 @@ describe("cycle preparation", () => {
       }),
       options,
     );
+    const literalsChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        declaredEnvLiterals: { BOT_LABEL: "project-coordinator" },
+      }),
+      options,
+    );
 
     expect(declaredChanged.configHash.value).not.toBe(baseline.configHash.value);
     expect(declaredRemoved.configHash.value).not.toBe(declaredChanged.configHash.value);
     expect(sandboxDeclared.configHash.value).not.toBe(baseline.configHash.value);
+    expect(literalsChanged.configHash.value).not.toBe(baseline.configHash.value);
   });
 
   it("keeps the current no-preflight triage prompt", () => {

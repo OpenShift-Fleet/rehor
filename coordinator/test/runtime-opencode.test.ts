@@ -661,12 +661,35 @@ describe("OpenCode environment", () => {
     expect(environment.ACME_TEAM_UUID).toBeUndefined();
     expect(environment.BOT_LABEL).toBeUndefined();
   });
-  it("rejects secret-looking and protected names in manifest/profile declarations", () => {
-    const declared = [
-      "TEAM_SERVICE_TOKEN",
-      "ACME_PASSWORD",
-      "WIDGET_API_KEY",
-      "STORE_CREDENTIAL",
+  it("keeps secret-looking manifest declarations out while ordinary names flow", () => {
+    const declared = ["TEAM_SERVICE_TOKEN", "ACME_PASSWORD", "WIDGET_API_KEY", "STORE_CREDENTIAL"];
+    const base = Object.freeze({
+      PATH: "/bin",
+      ...Object.fromEntries(declared.map((name) => [name, "must-not-forward"])),
+    });
+    const environment = buildOpenCodeEnvironment({ base, declared });
+    for (const name of declared) expect(environment[name]).toBeUndefined();
+  });
+  it("fails closed when declarations name protected platform controls", () => {
+    const controls = [
+      "NODE_PATH",
+      "PYTHONPATH",
+      "PYTHONHOME",
+      "PYTHONSTARTUP",
+      "PERL5OPT",
+      "RUBYOPT",
+      "BASH_ENV",
+      "ENV",
+      "LD_AUDIT",
+      "DYLD_LIBRARY_PATH",
+      "GIT_SSH_COMMAND",
+      "GIT_ASKPASS",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
+      "ALL_PROXY",
+      "all_proxy",
+      "SSL_CERT_DIR",
       "GH_TOKEN",
       "OPENAI_API_KEY",
       "JIRA_MCP_TOKEN",
@@ -680,10 +703,42 @@ describe("OpenCode environment", () => {
     ];
     const base = Object.freeze({
       PATH: "/bin",
-      ...Object.fromEntries(declared.map((name) => [name, "must-not-forward"])),
+      ...Object.fromEntries(controls.map((name) => [name, "must-not-forward"])),
     });
-    const environment = buildOpenCodeEnvironment({ base, declared });
-    for (const name of declared) expect(environment[name]).toBeUndefined();
+    // Manifest/profile declarations reject protected controls loudly.
+    for (const name of controls) {
+      expect(() => buildOpenCodeEnvironment({ base, declared: [name] })).toThrow(
+        /protected platform runtime, loader, or security control/,
+      );
+    }
+    // Sandbox.env declarations reject the same controls loudly, even in
+    // sandbox mode where tier-2 delivery is authorized.
+    for (const name of controls) {
+      expect(() =>
+        buildOpenCodeEnvironment({
+          base: { ...base, REHOR_INPUT_SOURCE: "sandbox" },
+          declaredSandbox: [name],
+        }),
+      ).toThrow(/protected platform runtime, loader, or security control/);
+    }
+    // Literal delivery rejects them too.
+    for (const name of ["NODE_OPTIONS", "PYTHONPATH", "GIT_SSH_COMMAND"]) {
+      expect(() =>
+        buildOpenCodeEnvironment({ base, declaredLiterals: { [name]: "value" } }),
+      ).toThrow(/protected platform runtime, loader, or security control/);
+    }
+    // Ordinary names that merely resemble controls stay forwardable.
+    for (const name of ["NODE_PATH_EXTRA", "PYTHONPATHS", "ENVIRONMENT_NAME"]) {
+      expect(() => buildOpenCodeEnvironment({ base, declared: [name] })).not.toThrow();
+    }
+  });
+  it("rejects declared names that are not valid environment variable names", () => {
+    expect(() => buildOpenCodeEnvironment({ declared: ["not-a-name!"] })).toThrow(
+      /not a valid environment variable name/,
+    );
+    expect(() => buildOpenCodeEnvironment({ declaredSandbox: ["also bad"] })).toThrow(
+      /not a valid environment variable name/,
+    );
   });
   it("forwards declared sandbox tier-2 values only in sandbox mode, including secret-looking names", () => {
     const declaredSandbox = ["TEAM_SERVICE_TOKEN", "FABRIC_JIRA_PROJECT", "SLACK_DIGEST_HOUR"];
@@ -692,26 +747,44 @@ describe("OpenCode environment", () => {
       FABRIC_JIRA_PROJECT: "synthetic-project",
       SLACK_DIGEST_HOUR: "9",
     };
-    const protectedNames = [
-      "GH_TOKEN",
-      "EXECUTOR_TOKEN",
-      "NODE_OPTIONS",
-      "OPENCODE_CONFIG",
-      "REHOR_INPUT_FILE",
-    ];
     const base = Object.freeze({
       PATH: "/bin",
       ...values,
-      ...Object.fromEntries(protectedNames.map((name) => [name, "blocked"])),
     });
     const sandbox = buildOpenCodeEnvironment({
       base: { ...base, REHOR_INPUT_SOURCE: "sandbox" },
       declaredSandbox,
     });
     for (const [name, value] of Object.entries(values)) expect(sandbox[name]).toBe(value);
-    for (const name of protectedNames) expect(sandbox[name]).toBeUndefined();
     const legacy = buildOpenCodeEnvironment({ base, declaredSandbox });
     for (const name of Object.keys(values)) expect(legacy[name]).toBeUndefined();
+  });
+  it("applies profile env literals as a fallback without overriding the runner environment", () => {
+    const base = Object.freeze({
+      PATH: "/bin",
+      BOT_BOARD_ID: "deployment-value",
+    });
+    const environment = buildOpenCodeEnvironment({
+      base,
+      declared: ["BOT_BOARD_ID", "BOT_ACME_QUEUE_DEPTH", "BOT_LABEL"],
+      declaredLiterals: {
+        BOT_BOARD_ID: "profile-value-never-wins",
+        BOT_ACME_QUEUE_DEPTH: "profile-literal",
+        BOT_LABEL: "project-coordinator",
+      },
+    });
+    // Deployment-provided value wins over the profile literal.
+    expect(environment.BOT_BOARD_ID).toBe("deployment-value");
+    // Absent from the environment: the config-specified literal is delivered.
+    expect(environment.BOT_ACME_QUEUE_DEPTH).toBe("profile-literal");
+    expect(environment.BOT_LABEL).toBe("project-coordinator");
+  });
+  it("keeps absent declared literals absent when none are supplied", () => {
+    const environment = buildOpenCodeEnvironment({
+      base: { PATH: "/bin" },
+      declared: ["BOT_LABEL"],
+    });
+    expect(environment.BOT_LABEL).toBeUndefined();
   });
   it("distinguishes provenance: a manifest declaration cannot forward an ambient secret-looking value", () => {
     const base = Object.freeze({ PATH: "/bin", TEAM_SERVICE_TOKEN: "ambient-deployment-secret" });
@@ -2014,19 +2087,11 @@ describe("OpenCode process supervisor", () => {
       const declared = [
         "ACME_TEAM_UUID",
         "SLACK_DIGEST_HOUR",
-        // Secret-looking and protected names stay rejected even when declared.
-        "GH_TOKEN",
-        "OPENAI_API_KEY",
-        "JIRA_API_TOKEN",
-        "JIRA_MCP_TOKEN",
-        "JIRA_USERNAME",
-        "SLACK_OTHER_CREDENTIAL",
+        // Secret-looking declared names stay out of the manifest class.
+        "TEAM_SERVICE_TOKEN",
         "BOT_SECRET_TOKEN",
-        "EXECUTOR_TOKEN",
-        "EXECUTOR_TOKEN_FILE",
-        "EXECUTOR_CA_FILE",
       ];
-      const declaredSandbox = ["TEAM_SERVICE_TOKEN", "GH_TOKEN", "EXECUTOR_TOKEN"];
+      const declaredSandbox = ["TEAM_SERVICE_TOKEN"];
       const snapshot = { ...base };
       const source = `const http = require("node:http"); const server = http.createServer((request, response) => { const url = new URL(request.url, "http://localhost"); response.setHeader("content-type", "application/json"); response.end(JSON.stringify(url.pathname === "/api/info" ? ${JSON.stringify(infoBody())} : url.pathname === "/api/location" ? {directory: process.cwd()} : process.env)); }); server.listen(0,"127.0.0.1",()=>console.log(JSON.stringify({url:"http://127.0.0.1:"+server.address().port})));`;
       const { supervisor } = nodeScriptSupervisor(source, {
