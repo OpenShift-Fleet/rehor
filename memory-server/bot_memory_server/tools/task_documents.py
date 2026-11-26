@@ -21,13 +21,15 @@ UNIQUE(task_id, name) constraint enforces this even under race.
 Known ABA limitation: deleting a document and recreating the same name starts
 a fresh record — new server-issued ``id``, ``revision`` restarts at 1. A stale
 ``expected_revision`` from the deleted record can therefore match the recreated
-one. ``expected_revision`` guards the record, not the name; when delete/recreate
-is in play, compare the record ``id`` (returned by every response) as well.
-Classic CRUD keeps no history, so this is documented rather than prevented.
+one. ``expected_id`` is the atomic generation guard: it is checked against the
+locked row before any mutation, so a stale id can never touch a recreated
+record. For full protection pass both ``expected_id`` and ``expected_revision``
+from your last read; ``expected_revision`` alone guards the record's data
+version, not its identity across delete/recreate. Classic CRUD keeps no
+history, so this is guarded rather than prevented with tombstones.
 """
 
 import json
-import re
 from typing import Any
 
 import asyncpg
@@ -39,14 +41,6 @@ MAX_NAME_LENGTH = 200
 
 # Any valid JSON document: object, array, string, number, boolean or null.
 DocumentData = dict[str, Any] | list[Any] | str | int | float | bool | None
-
-# PostgreSQL jsonb rejects NUL (U+0000) and unpaired UTF-16 surrogate escapes.
-# json.dumps escapes them as literal \uXXXX sequences in the serialized text, so
-# scan that text: strip valid surrogate pairs first, then any remaining
-# \ud8xx-\udfxx escape is unpaired. Errors never echo the rejected data.
-_NUL_ESCAPE = "\\u0000"
-_SURROGATE_PAIR_RE = re.compile(r"\\ud[89ab][0-9a-f]{2}\\ud[c-f][0-9a-f]{2}")
-_SURROGATE_RE = re.compile(r"\\ud[89a-f][0-9a-f]{2}")
 
 _COLUMNS = "id, name, data, revision, created_at, updated_at"
 
@@ -67,22 +61,41 @@ def _validate_identity(external_key: str, source_type: str) -> None:
         raise ValueError("source_type must not be empty")
 
 
+def _reject_invalid_strings(value: Any) -> None:
+    """Reject decoded string values (and object keys) PostgreSQL jsonb cannot store.
+
+    PostgreSQL jsonb refuses NUL (U+0000) and unpaired UTF-16 surrogates, and
+    its native error echoes the offending payload — so reject them here first.
+    Validation runs on the decoded Python values, never on serialized JSON
+    text: a literal backslash-u sequence (e.g. the six characters ``\\u0000``)
+    is ordinary text and must pass. Astral characters are single code points
+    in Python, so any char in the surrogate range is unpaired by definition.
+    """
+    if isinstance(value, str):
+        if "\x00" in value:
+            raise ValueError("document data contains a NUL character (U+0000), which cannot be stored")
+        if any("\ud800" <= ch <= "\udfff" for ch in value):
+            raise ValueError("document data contains an unpaired Unicode surrogate, which cannot be stored")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_invalid_strings(key)
+            _reject_invalid_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            _reject_invalid_strings(item)
+
+
 def _dump_data(data: DocumentData) -> str:
     """Serialize document data to JSON text, rejecting values PostgreSQL cannot store.
 
-    allow_nan=False rejects float NaN/Infinity. NUL characters and unpaired
-    Unicode surrogates are rejected before any database access — PostgreSQL
-    jsonb refuses them and its native error would echo the payload.
+    allow_nan=False rejects float NaN/Infinity; _reject_invalid_strings rejects
+    NUL characters and unpaired surrogates in any string value or key.
     """
+    _reject_invalid_strings(data)
     try:
-        payload = json.dumps(data, allow_nan=False)
+        return json.dumps(data, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"document data must be valid JSON ({exc})") from exc
-    if _NUL_ESCAPE in payload:
-        raise ValueError("document data contains a NUL character (U+0000), which cannot be stored")
-    if _SURROGATE_RE.search(_SURROGATE_PAIR_RE.sub("", payload)):
-        raise ValueError("document data contains an unpaired Unicode surrogate, which cannot be stored")
-    return payload
 
 
 def _load_data(value) -> Any:
@@ -108,6 +121,36 @@ def _task_not_found(external_key: str, source_type: str) -> ValueError:
 
 def _document_not_found(name: str, external_key: str, source_type: str) -> ValueError:
     return ValueError(f"Task document '{name}' not found for task {external_key} (source_type={source_type})")
+
+
+def _validate_expected(value: int | None, param: str) -> int | None:
+    if value is not None and value < 1:
+        raise ValueError(f"{param} must be a positive integer")
+    return value
+
+
+def _check_expected(
+    row, name: str, external_key: str, source_type: str, expected_revision: int | None, expected_id: int | None
+) -> None:
+    """Atomically guard a locked document row before any mutation.
+
+    ``expected_id`` is the generation guard: a recreated record (delete +
+    recreate of the same name) gets a new id, so a stale id can never mutate
+    it even when the revision matches. ``expected_revision`` guards the data
+    version. Errors never echo document content.
+    """
+    if expected_id is not None and row["id"] != expected_id:
+        raise ValueError(
+            f"Document conflict on task document '{name}' for task {external_key} "
+            f"(source_type={source_type}): expected id {expected_id}, current id is {row['id']} "
+            "(the document was deleted and recreated); re-read with task_document_get and retry"
+        )
+    if expected_revision is not None and row["revision"] != expected_revision:
+        raise ValueError(
+            f"Revision conflict on task document '{name}' for task {external_key} "
+            f"(source_type={source_type}): expected revision {expected_revision}, "
+            f"current revision is {row['revision']}; re-read with task_document_get and retry"
+        )
 
 
 async def _lock_task(conn, external_key: str, source_type: str) -> int:
@@ -223,21 +266,23 @@ def register_task_document_tools(mcp: FastMCP):
         data: DocumentData,
         source_type: str = "jira",
         expected_revision: int | None = None,
+        expected_id: int | None = None,
     ) -> dict:
         """Replace a task document's data wholesale (no merge). Revision increments on every update.
-        Omit expected_revision for plain last-writer-wins update; pass the revision from your last
-        read to fail instead of silently overwriting a concurrent writer's change.
-        expected_revision guards the record, not the name: delete + recreate of the same name starts
-        a new record (new id, revision restarts at 1), so a stale expected_revision can match it —
-        compare the returned record id as well when delete/recreate is in play.
+        Omit expected_revision/expected_id for plain last-writer-wins update; pass both from your
+        last read to fail instead of silently overwriting a concurrent writer's change.
+        expected_revision guards the data version; expected_id guards the record generation —
+        delete + recreate of the same name starts a new record (new id, revision restarts at 1),
+        which expected_revision alone cannot detect but expected_id rejects atomically.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name.
         data: Arbitrary valid JSON replacing the previous content.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
         expected_revision: Optional revision you last read; update fails on mismatch.
+        expected_id: Optional record id you last read; update fails if the record was recreated.
         Never store credentials, tokens or secrets in documents."""
-        if expected_revision is not None and expected_revision < 1:
-            raise ValueError("expected_revision must be a positive integer")
+        expected_id = _validate_expected(expected_id, "expected_id")
+        expected_revision = _validate_expected(expected_revision, "expected_revision")
         name = _validate_name(name)
         _validate_identity(external_key, source_type)
         payload = _dump_data(data)
@@ -251,12 +296,7 @@ def register_task_document_tools(mcp: FastMCP):
             )
             if not row:
                 raise _document_not_found(name, external_key, source_type)
-            if expected_revision is not None and row["revision"] != expected_revision:
-                raise ValueError(
-                    f"Revision conflict on task document '{name}' for task {external_key} "
-                    f"(source_type={source_type}): expected revision {expected_revision}, "
-                    f"current revision is {row['revision']}; re-read with task_document_get and retry"
-                )
+            _check_expected(row, name, external_key, source_type, expected_revision, expected_id)
             updated = await conn.fetchrow(
                 f"UPDATE task_documents SET data = $3::jsonb, revision = revision + 1, updated_at = NOW() "
                 f"WHERE task_id = $1 AND name = $2 RETURNING {_COLUMNS}",
@@ -274,19 +314,21 @@ def register_task_document_tools(mcp: FastMCP):
         name: str,
         source_type: str = "jira",
         expected_revision: int | None = None,
+        expected_id: int | None = None,
     ) -> dict:
         """Explicitly delete a task document. Not performed automatically on archival.
-        Omit expected_revision for plain delete; pass the revision from your last read to fail
+        Omit expected_revision/expected_id for plain delete; pass both from your last read to fail
         instead of deleting data changed by a concurrent writer.
-        expected_revision guards the record, not the name: delete + recreate of the same name starts
-        a new record (new id, revision restarts at 1), so a stale expected_revision can match it —
-        compare the returned record id as well when delete/recreate is in play.
+        expected_revision guards the data version; expected_id guards the record generation —
+        delete + recreate of the same name starts a new record (new id, revision restarts at 1),
+        which expected_revision alone cannot detect but expected_id rejects atomically.
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
-        expected_revision: Optional revision you last read; delete fails on mismatch."""
-        if expected_revision is not None and expected_revision < 1:
-            raise ValueError("expected_revision must be a positive integer")
+        expected_revision: Optional revision you last read; delete fails on mismatch.
+        expected_id: Optional record id you last read; delete fails if the record was recreated."""
+        expected_id = _validate_expected(expected_id, "expected_id")
+        expected_revision = _validate_expected(expected_revision, "expected_revision")
         name = _validate_name(name)
         _validate_identity(external_key, source_type)
         pool = get_pool()
@@ -300,12 +342,7 @@ def register_task_document_tools(mcp: FastMCP):
             )
             if not row:
                 raise _document_not_found(name, external_key, source_type)
-            if expected_revision is not None and row["revision"] != expected_revision:
-                raise ValueError(
-                    f"Revision conflict on task document '{name}' for task {external_key} "
-                    f"(source_type={source_type}): expected revision {expected_revision}, "
-                    f"current revision is {row['revision']}; re-read with task_document_get and retry"
-                )
+            _check_expected(row, name, external_key, source_type, expected_revision, expected_id)
             deleted = await conn.fetchrow(
                 "DELETE FROM task_documents WHERE task_id = $1 AND name = $2 "
                 "RETURNING id, name, revision, created_at, updated_at",

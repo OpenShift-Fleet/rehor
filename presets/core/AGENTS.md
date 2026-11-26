@@ -102,8 +102,8 @@ MCP server `bot-memory` provides task tracking (cap 10 active) + RAG memory (vec
 | `task_document_create` | Store durable JSON doc on task (`name` unique per task; duplicate fails → use update). Params: `external_key, name, data (any JSON), source_type?` |
 | `task_document_get` | Read one document incl. `data`. Params: `external_key, name, source_type?` |
 | `task_document_list` | Document names + metadata only, no content. Params: `external_key, source_type?` |
-| `task_document_update` | Replace document `data`; `revision` increments. Params: `external_key, name, data, source_type?, expected_revision?` — pass revision from last read to fail on concurrent change instead of silently overwriting |
-| `task_document_delete` | Explicit delete by name. Params: `external_key, name, source_type?, expected_revision?` |
+| `task_document_update` | Replace document `data`; `revision` increments. Params: `external_key, name, data, source_type?, expected_revision?, expected_id?` — pass id+revision from last read to fail on concurrent change or delete/recreate instead of silently overwriting |
+| `task_document_delete` | Explicit delete by name. Params: `external_key, name, source_type?, expected_revision?, expected_id?` |
 | `task_check_capacity` | `{active, max: 10, has_capacity}`. Params: `instance_id?` |
 | `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`. Instance identity comes from the MCP connection, not a parameter |
 
@@ -129,7 +129,7 @@ If recovery needs a new report for an already archived task, use `task_outcome_r
 
 **Multi-repo**: One task per Jira ticket. Primary repo in `repo`, all in `metadata.repos`. PRs in `metadata.prs` as `[{"repo", "number", "url", "host"}]`.
 
-**Task documents (durable data)**: `task_document_*` tools store arbitrary JSON documents attached to a task — exact retry bundles, working state that must survive sandbox loss. NOT `task_outcome_report.artifacts` (those are PR/MR evidence links for outcome reporting). Archiving a task (`task_remove`) does NOT delete saved documents — they persist long-term, stay readable and writable after archival; only explicit `task_document_delete` removes one. Content returned only by explicit create/get/update calls — never in `task_list`, `task_get`, or `task_document_list`. Same `external_key` + `source_type` identity rules as other task tools; same shared Bot Memory trust boundary (no per-instance privacy). NEVER store credentials, tokens, secrets, or keys in documents. Concurrent writers: pass `expected_revision` from your last read to fail cleanly on mismatch; omit it for plain last-writer-wins update.
+**Task documents (durable data)**: `task_document_*` tools store arbitrary JSON documents attached to a task — exact retry bundles, working state that must survive sandbox loss. NOT `task_outcome_report.artifacts` (those are PR/MR evidence links for outcome reporting). Archiving a task (`task_remove`) does NOT delete saved documents — they persist long-term, stay readable and writable after archival; only explicit `task_document_delete` removes one. Content returned only by explicit create/get/update calls — never in `task_list`, `task_get`, or `task_document_list`. Same `external_key` + `source_type` identity rules as other task tools; same shared Bot Memory trust boundary (no per-instance privacy). NEVER store credentials, tokens, secrets, or keys in documents. Concurrent writers: pass `expected_id` + `expected_revision` from your last read to fail cleanly on mismatch, including delete+recreate of the same name (revision alone restarts at 1 after recreate); omit both for plain last-writer-wins update.
 
 ### Cycle Progress Tools
 

@@ -265,8 +265,8 @@ CREATE TABLE IF NOT EXISTS task_documents (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(task_id, name)
 );
-
-CREATE INDEX IF NOT EXISTS idx_task_documents_task ON task_documents (task_id);
+-- No separate task_id index: the UNIQUE(task_id, name) btree serves every
+-- current query (task_id lookups, name ordering within a task).
 
 CREATE TABLE IF NOT EXISTS memories (
     id              SERIAL PRIMARY KEY,

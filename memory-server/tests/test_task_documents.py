@@ -8,9 +8,11 @@ Two tiers:
   archival persistence, source_type isolation, and concurrent writers.
 
 Concurrency contract under test:
-- Without ``expected_revision``: update/delete are atomic last-writer-wins.
+- Without ``expected_revision``/``expected_id``: update/delete are atomic last-writer-wins.
 - With ``expected_revision``: optimistic check fails with the current revision
   instead of silently replacing a concurrent writer's change.
+- With ``expected_id``: generation guard fails when the record was deleted and
+  recreated under the same name, even when the revision matches (ABA).
 - Concurrent creates of the same (task, name): exactly one winner, the loser
   gets a clear duplicate error (UNIQUE(task_id, name) enforced by PostgreSQL).
 """
@@ -32,8 +34,8 @@ NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
 TASK_ROW = {"id": 42}
 
 
-def document_row(name="bundle", revision=1, data='{"k": "v"}'):
-    return {"id": 7, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
+def document_row(name="bundle", revision=1, data='{"k": "v"}', id=7):
+    return {"id": id, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
 
 
 class FakePool:
@@ -114,9 +116,9 @@ async def test_five_tools_registered_with_expected_parameters():
     for tool in ("task_document_update", "task_document_delete"):
         props = tools[tool].inputSchema["properties"]
         assert (
-            set(props) == {"external_key", "name", "data", "source_type", "expected_revision"}
+            set(props) == {"external_key", "name", "data", "source_type", "expected_revision", "expected_id"}
             if tool.endswith("update")
-            else set(props) == {"external_key", "name", "source_type", "expected_revision"}
+            else set(props) == {"external_key", "name", "source_type", "expected_revision", "expected_id"}
         )
     assert tools["task_document_get"].inputSchema["properties"]["source_type"]["default"] == "jira"
     assert tools["task_document_list"].inputSchema["required"] == ["external_key"]
@@ -220,6 +222,8 @@ def test_json_serializer_rejects_postgresql_invalid_strings_without_echoing_them
         _dump_data({"payload": "bo\x00ot"})
     with pytest.raises(ValueError, match="NUL character"):
         _dump_data(["\x00"])
+    with pytest.raises(ValueError, match="NUL character"):
+        _dump_data({"\x00key": "value"})
     with pytest.raises(ValueError, match="unpaired Unicode surrogate"):
         _dump_data({"s": "\ud800"})
     with pytest.raises(ValueError, match="unpaired Unicode surrogate"):
@@ -228,6 +232,11 @@ def test_json_serializer_rejects_postgresql_invalid_strings_without_echoing_them
         _dump_data({"nested": ["pair-then-lone \U0001f600", "\udfff"]})
     # Valid surrogate pairs (astral characters) pass through.
     assert _dump_data("emoji \U0001f600 safe") == '"emoji \\ud83d\\ude00 safe"'
+    # Literal backslash-u sequences are ordinary text, not escape sequences:
+    # validation must inspect decoded values, never serialized JSON text.
+    assert _dump_data(r"\u0000") == '"\\\\u0000"'
+    assert _dump_data(r"\ud800") == '"\\\\ud800"'
+    assert _dump_data({"note": r"contains \ud83d\ude00 literally"}) is not None
     # Rejection messages never contain the offending data.
     for bad in ({"payload": "bo\x00ot"}, {"s": "\ud800"}):
         try:
@@ -355,19 +364,6 @@ async def test_update_with_matching_expected_revision_succeeds():
     assert payload(result)["revision"] == 2
 
 
-@pytest.mark.asyncio
-async def test_update_rejects_invalid_expected_revision_before_database_access():
-    pool = FakePool()
-    result = await call_tool(
-        pool,
-        "task_document_update",
-        {"external_key": "ART-1", "name": "bundle", "data": {}, "expected_revision": 0},
-    )
-    assert result.is_error
-    assert "expected_revision must be a positive integer" in error_text(result)
-    assert pool.calls == []
-
-
 # --- Delete ---
 
 
@@ -406,6 +402,70 @@ async def test_delete_revision_conflict_reports_current_revision():
     assert "Revision conflict" in text
     assert "current revision is 5" in text
     assert no_write_queries(pool)
+
+
+@pytest.mark.asyncio
+async def test_update_stale_expected_id_fails_even_with_matching_revision():
+    """Generation guard: a recreated record has a new id, so a stale id can
+    never mutate it — even when the revision happens to match."""
+    row = document_row(id=99, revision=1)
+    pool = FakePool(TASK_ROW, row)
+    result = await call_tool(
+        pool,
+        "task_document_update",
+        {
+            "external_key": "ART-1",
+            "name": "bundle",
+            "data": {"stale": True},
+            "expected_revision": 1,
+            "expected_id": 7,
+        },
+    )
+    assert result.is_error
+    text = error_text(result)
+    assert "Document conflict" in text
+    assert "expected id 7, current id is 99" in text
+    assert "deleted and recreated" in text
+    assert no_write_queries(pool)
+
+
+@pytest.mark.asyncio
+async def test_delete_stale_expected_id_fails_even_with_matching_revision():
+    row = document_row(id=99, revision=1)
+    pool = FakePool(TASK_ROW, row)
+    result = await call_tool(
+        pool,
+        "task_document_delete",
+        {"external_key": "ART-1", "name": "bundle", "expected_revision": 1, "expected_id": 7},
+    )
+    assert result.is_error
+    assert "Document conflict" in error_text(result)
+    assert no_write_queries(pool)
+
+
+@pytest.mark.asyncio
+async def test_matching_expected_id_and_revision_succeed():
+    row = document_row(id=7, revision=1)
+    pool = FakePool(TASK_ROW, row, document_row(id=7, revision=2, data='{"k": 2}'))
+    result = await call_tool(
+        pool,
+        "task_document_update",
+        {"external_key": "ART-1", "name": "bundle", "data": {"k": 2}, "expected_revision": 1, "expected_id": 7},
+    )
+    assert not result.is_error
+    assert payload(result)["revision"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("param", ["expected_revision", "expected_id"])
+async def test_update_rejects_invalid_expected_values_before_database_access(param):
+    pool = FakePool()
+    args = {"external_key": "ART-1", "name": "bundle", "data": {}}
+    args[param] = 0
+    result = await call_tool(pool, "task_document_update", args)
+    assert result.is_error
+    assert f"{param} must be a positive integer" in error_text(result)
+    assert pool.calls == []
 
 
 def no_write_queries(pool) -> bool:
@@ -750,12 +810,13 @@ async def test_source_type_isolation_for_same_external_key(db, document_client):
 
 
 @pytest.mark.asyncio
-async def test_recreate_same_name_starts_new_record_aba_documented(db, document_client):
+async def test_recreate_same_name_new_id_blocks_stale_generation_guard(db, document_client):
     """Delete + recreate starts a fresh record: new id, revision restarts at 1.
 
-    Documented ABA limitation of expected_revision: it guards the record, not
-    the name. A stale expected_revision=1 from the deleted record matches the
-    recreated one; the record id is the generation discriminator.
+    expected_revision alone cannot detect the recreate (revision 1 matches
+    again — documented limitation). expected_id is the atomic generation
+    guard: a stale id can never mutate the recreated record, even when the
+    revision matches exactly.
     """
     await seed_task(db, "ART-ABA")
     first = await document_client.call_tool(
@@ -778,18 +839,86 @@ async def test_recreate_same_name_starts_new_record_aba_documented(db, document_
         "task_document_create", {"external_key": "ART-ABA", "name": "bundle", "data": {"gen": 2}}
     )
     assert not recreated.is_error
-    assert recreated.data["id"] != old_id  # new server-issued record
+    new_id = recreated.data["id"]
+    assert new_id != old_id  # new server-issued record
     assert recreated.data["revision"] == 1  # revision restarts
 
-    # ABA: stale expected_revision=1 (from the deleted record's original read)
-    # matches the recreated row. Clients must compare record id to detect this.
-    stale = await document_client.call_tool(
+    # Stale generation with matching revision must not mutate (update).
+    stale_update = await document_client.call_tool(
         "task_document_update",
-        {"external_key": "ART-ABA", "name": "bundle", "data": {"gen": 2, "stale": True}, "expected_revision": 1},
+        {
+            "external_key": "ART-ABA",
+            "name": "bundle",
+            "data": {"gen": 2, "stale": True},
+            "expected_revision": 1,
+            "expected_id": old_id,
+        },
+        raise_on_error=False,
     )
-    assert not stale.is_error
-    assert stale.data["id"] == recreated.data["id"]
-    assert stale.data["revision"] == 2
+    assert stale_update.is_error
+    assert "Document conflict" in stale_update.content[0].text
+    assert f"expected id {old_id}, current id is {new_id}" in stale_update.content[0].text
+
+    # Stale generation with matching revision must not mutate (delete).
+    stale_delete = await document_client.call_tool(
+        "task_document_delete",
+        {"external_key": "ART-ABA", "name": "bundle", "expected_revision": 1, "expected_id": old_id},
+        raise_on_error=False,
+    )
+    assert stale_delete.is_error
+    assert "Document conflict" in stale_delete.content[0].text
+
+    # The recreated record is untouched by both stale attempts.
+    survived = await document_client.call_tool("task_document_get", {"external_key": "ART-ABA", "name": "bundle"})
+    assert survived.data["id"] == new_id
+    assert survived.data["revision"] == 1
+    assert survived.data["data"] == {"gen": 2}
+
+    # Documented limitation: expected_revision alone still matches (ABA on the
+    # version number). Clients wanting full protection pass expected_id too.
+    revision_only = await document_client.call_tool(
+        "task_document_update",
+        {"external_key": "ART-ABA", "name": "bundle", "data": {"gen": 2, "bump": True}, "expected_revision": 1},
+    )
+    assert not revision_only.is_error
+    assert revision_only.data["revision"] == 2
+
+    # Correct id + revision from the latest read succeeds.
+    guarded = await document_client.call_tool(
+        "task_document_update",
+        {
+            "external_key": "ART-ABA",
+            "name": "bundle",
+            "data": {"gen": 3},
+            "expected_revision": 2,
+            "expected_id": new_id,
+        },
+    )
+    assert not guarded.is_error
+    assert guarded.data["revision"] == 3
+    assert guarded.data["data"] == {"gen": 3}
+
+
+@pytest.mark.asyncio
+async def test_literal_backslash_u_strings_round_trip_through_postgres(db, document_client):
+    """Literal backslash-u sequences are ordinary text, not JSON escapes:
+    they must be stored and returned verbatim (validation checks decoded
+    values, never serialized JSON text)."""
+    await seed_task(db, "ART-LITERAL")
+    literals = {
+        "nul-lookalike": r"\u0000",
+        "surrogate-lookalike": r"\ud800",
+        "pair-lookalike": r"contains \ud83d\ude00 literally",
+    }
+    for doc_name, value in literals.items():
+        created = await document_client.call_tool(
+            "task_document_create", {"external_key": "ART-LITERAL", "name": doc_name, "data": value}
+        )
+        assert not created.is_error
+        fetched = await document_client.call_tool(
+            "task_document_get", {"external_key": "ART-LITERAL", "name": doc_name}
+        )
+        assert fetched.data["data"] == value
 
 
 @pytest.mark.asyncio
