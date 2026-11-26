@@ -62,6 +62,11 @@ export const OPENCODE_ENVIRONMENT_ALLOWLIST = [
  * opt-in, and absent values stay absent. This is an exact-name allowlist;
  * it does not widen the provider allowlist or admit prefix matches.
  *
+ * Agent-specific settings do NOT belong here: they travel through the
+ * declared/declaredSandbox options above, driven by the selected agent's
+ * own configuration, so this list stays limited to platform-shared
+ * operational names.
+ *
  * EXECUTOR_HTTP_URL and EXECUTOR_TRANSPORT are nonsecret thin-client HTTP
  * coordinates (explicit gateway endpoint and transport selection). The
  * EXECUTOR_TOKEN sandbox placeholder is handled separately below: it is
@@ -73,25 +78,9 @@ export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
   "BOT_BOARD_ID",
   "BOT_BOARD_NAME",
   "BOT_CONFIG_PATH",
-  "BOT_IMPLEMENTATION_LABEL",
   "BOT_INSTANCE_ID",
-  "BOT_JIRA_COMPONENT_ID_INSIGHTS_CHROME",
   "BOT_JIRA_EMAIL",
-  "BOT_JIRA_LABELS_INSIGHTS_CHROME",
-  "BOT_JIRA_LABELS_INSIGHTS_RBAC",
-  "BOT_JIRA_LABELS_INVENTORY_API",
-  "BOT_JIRA_PROJECT_INSIGHTS_CHROME",
-  "BOT_JIRA_PROJECT_INSIGHTS_RBAC",
-  "BOT_JIRA_PROJECT_INVENTORY_API",
-  "BOT_JIRA_TEAM_ID_INSIGHTS_CHROME",
-  "BOT_JIRA_TEAM_ID_INSIGHTS_RBAC",
-  "BOT_JIRA_TEAM_ID_INVENTORY_API",
-  "BOT_JIRA_TEAM_NAME_INSIGHTS_CHROME",
-  "BOT_JIRA_TEAM_NAME_INSIGHTS_RBAC",
-  "BOT_JIRA_TEAM_NAME_INVENTORY_API",
-  "BOT_LABEL",
   "BOT_MEMORY_URL",
-  "BOT_TEAM_FIELD_ID",
   "EXECUTOR_ADDR",
   "EXECUTOR_HTTP_URL",
   "EXECUTOR_TRANSPORT",
@@ -101,6 +90,73 @@ export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
   "SLACK_NOTIFY_MODE",
   "SLACK_WEBHOOK_URL",
 ] as const;
+
+/**
+ * Names the selected agent's configuration declares for the OpenCode child.
+ * The list carries names only — never values — from the authoritative
+ * selected profile and environment/workflow manifests (the Python bridge
+ * collects them per cycle). Values are read exclusively from the sanitized
+ * runner environment, so agent-specific settings travel without hardcoding
+ * any per-agent name here and without copying undeclared deployment ambient
+ * values merely because they exist.
+ *
+ * Two provenance classes exist:
+ *
+ * - `declared`: workflow/env-preset manifest `requires.env_vars` /
+ *   `optional_env_vars` plus the profile's `env` (or legacy `preflight.env`)
+ *   category. These names describe settings whose values normally come from
+ *   deployment ambient or profile configuration, so secret-looking names are
+ *   rejected exactly like the dispatcher's forwarded-variable policy.
+ * - `declaredSandbox`: the profile's explicit `sandbox.env` declarations.
+ *   These are the dispatcher's tier-2 secret delivery channel: values are
+ *   rendered from Kubernetes Secrets (or literal config values) and merged
+ *   into the sandbox runner environment by the dispatcher only. They are
+ *   forwarded only in sandbox mode, where the value's provenance is the
+ *   trusted render, and secret-looking names are allowed because that is
+ *   the channel's purpose.
+ *
+ * Both classes are additionally subject to the protected platform name
+ * policy below: deployment credentials, runtime controls, and reserved
+ * namespaces never pass, regardless of declaration.
+ */
+
+/** Platform-owned or dangerous names never forwarded from declarations. */
+const DECLARED_PROTECTED_NAMES: ReadonlySet<string> = new Set([
+  ...OPENCODE_BLOCKED_PASSTHROUGH,
+  // The EXECUTOR_TOKEN sandbox placeholder contract below is the only path;
+  // a declared raw value must never override it.
+  "EXECUTOR_TOKEN",
+  // Runtime/loader control: forwarding ambient values would let a declared
+  // name change how the OpenCode server itself executes.
+  "NODE_OPTIONS",
+  "NODE_USE_ENV_PROXY",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
+  "DYLD_INSERT_LIBRARIES",
+  // Interception CA paths follow the sandbox-only OpenShell contract above.
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "CURL_CA_BUNDLE",
+  "REQUESTS_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+]);
+const DECLARED_PROTECTED_PREFIXES = [
+  "OPENCODE_",
+  "NPM_CONFIG_",
+  "npm_config_",
+  "REHOR_",
+  "rehor_",
+] as const;
+const DECLARED_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** Mirrors the dispatcher's forwarded-variable secret heuristic. */
+const DECLARED_SECRET_PATTERN = /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/;
+
+function isDeclaredProtectedName(name: string): boolean {
+  return (
+    DECLARED_PROTECTED_NAMES.has(name) ||
+    DECLARED_PROTECTED_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
 
 const BLOCKED_PASSTHROUGH: ReadonlySet<string> = new Set(OPENCODE_BLOCKED_PASSTHROUGH);
 const BLOCKED_PASSTHROUGH_PREFIXES = OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES;
@@ -148,6 +204,19 @@ export interface OpenCodeEnvironmentOptions {
   proxy?: ProxyEnvironment;
   /** Explicitly permitted variables needed by trusted provider configuration. */
   passthrough?: readonly string[];
+  /**
+   * Manifest/profile-declared variable names (provenance: workflow and env
+   * preset manifests plus the profile `env` category). Names only; values are
+   * read from `base`. Secret-looking names are rejected.
+   */
+  declared?: readonly string[];
+  /**
+   * Profile `sandbox.env` declarations (dispatcher tier-2 render channel).
+   * Names only; values are read from `base` and forwarded only in sandbox
+   * mode. Secret-looking names are allowed because the channel exists for
+   * explicitly authorized secret delivery.
+   */
+  declaredSandbox?: readonly string[];
   noProxyHosts?: readonly string[];
   /** Per-cycle OpenCode global config directory. Ambient user config is excluded. */
   configDirectory?: string;
@@ -198,6 +267,27 @@ export function buildOpenCodeEnvironment(
       isValidHttpsRoute(base.EXECUTOR_HTTP_URL)
     ) {
       environment.EXECUTOR_TOKEN = executorToken;
+    }
+  }
+  for (const name of options.declared ?? []) {
+    // Manifest/profile declarations describe ordinary settings; secret-looking
+    // names stay out so an ambient credential cannot ride a declaration.
+    if (
+      DECLARED_NAME_PATTERN.test(name) &&
+      !isDeclaredProtectedName(name) &&
+      !DECLARED_SECRET_PATTERN.test(name)
+    ) {
+      copyIfPresent(environment, base, name);
+    }
+  }
+  if (base.REHOR_INPUT_SOURCE === "sandbox") {
+    for (const name of options.declaredSandbox ?? []) {
+      // Explicit sandbox.env declarations are the authorized tier-2 channel;
+      // in sandbox mode the value's provenance is the dispatcher's render.
+      // Secret-looking names are permitted; protected platform names are not.
+      if (DECLARED_NAME_PATTERN.test(name) && !isDeclaredProtectedName(name)) {
+        copyIfPresent(environment, base, name);
+      }
     }
   }
   for (const name of options.passthrough ?? []) {

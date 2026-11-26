@@ -384,6 +384,41 @@ describe("cycle preparation", () => {
     expect(providerChanged.configHash.value).not.toBe(baseline.configHash.value);
   });
 
+  it("includes declared environment names in configHash", async () => {
+    const root = await createCycleRoot();
+    const options = {
+      scriptDir: root,
+      label: "hcc-ai-framework",
+      instanceId: "instance-1",
+    };
+    const baseline = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start)),
+      options,
+    );
+    const declaredChanged = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        declaredEnvVars: ["ACME_TEAM_UUID", "BOT_LABEL"],
+      }),
+      options,
+    );
+    const declaredRemoved = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        declaredEnvVars: ["ACME_TEAM_UUID"],
+      }),
+      options,
+    );
+    const sandboxDeclared = await prepareCycleInput(
+      new FakeBridge(preflight(PreflightAction.Start), {
+        declaredSandboxEnvVars: ["TEAM_SERVICE_TOKEN"],
+      }),
+      options,
+    );
+
+    expect(declaredChanged.configHash.value).not.toBe(baseline.configHash.value);
+    expect(declaredRemoved.configHash.value).not.toBe(declaredChanged.configHash.value);
+    expect(sandboxDeclared.configHash.value).not.toBe(baseline.configHash.value);
+  });
+
   it("keeps the current no-preflight triage prompt", () => {
     expect(buildCyclePrompt({ label: "hcc-ai-framework" })).toContain(
       "Start by invoking the /triage skill",

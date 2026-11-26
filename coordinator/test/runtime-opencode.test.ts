@@ -499,25 +499,9 @@ const operational = {
   BOT_BOARD_ID: "42",
   BOT_BOARD_NAME: "Synthetic board",
   BOT_CONFIG_PATH: "/synthetic/config",
-  BOT_IMPLEMENTATION_LABEL: "implementation-bot",
   BOT_INSTANCE_ID: "instance-7",
-  BOT_JIRA_COMPONENT_ID_INSIGHTS_CHROME: "component-chrome",
   BOT_JIRA_EMAIL: "bot@example.invalid",
-  BOT_JIRA_LABELS_INSIGHTS_CHROME: '["chrome"]',
-  BOT_JIRA_LABELS_INSIGHTS_RBAC: '["rbac"]',
-  BOT_JIRA_LABELS_INVENTORY_API: '["inventory"]',
-  BOT_JIRA_PROJECT_INSIGHTS_CHROME: "CHROME",
-  BOT_JIRA_PROJECT_INSIGHTS_RBAC: "RBAC",
-  BOT_JIRA_PROJECT_INVENTORY_API: "INVENTORY",
-  BOT_JIRA_TEAM_ID_INSIGHTS_CHROME: "team-chrome",
-  BOT_JIRA_TEAM_ID_INSIGHTS_RBAC: "team-rbac",
-  BOT_JIRA_TEAM_ID_INVENTORY_API: "team-inventory",
-  BOT_JIRA_TEAM_NAME_INSIGHTS_CHROME: "Chrome team",
-  BOT_JIRA_TEAM_NAME_INSIGHTS_RBAC: "RBAC team",
-  BOT_JIRA_TEAM_NAME_INVENTORY_API: "Inventory team",
-  BOT_LABEL: "project-coordinator",
   BOT_MEMORY_URL: "http://memory-server:8080",
-  BOT_TEAM_FIELD_ID: "customfield_10001",
   EXECUTOR_ADDR: "127.0.0.1:50551",
   EXECUTOR_HTTP_URL: "https://executor.example.invalid/executor/execute",
   EXECUTOR_TRANSPORT: "http",
@@ -648,6 +632,119 @@ describe("OpenCode environment", () => {
     expect(environment).toMatchObject(operational);
     expect(base).toEqual(snapshot);
     for (const name of blocked) expect(environment[name]).toBeUndefined();
+  });
+  it("forwards exactly the agent-declared variables, including arbitrary invented names", () => {
+    const declared = [
+      "BOT_LABEL",
+      "BOT_TEAM_FIELD_ID",
+      "BOT_JIRA_PROJECT_INSIGHTS_RBAC",
+      "ACME_TEAM_UUID",
+      "WIDGET_CACHE_DIR",
+      "SLACK_DIGEST_HOUR",
+    ];
+    const base = Object.freeze({
+      PATH: "/bin",
+      ...Object.fromEntries(declared.map((name) => [name, `value-${name}`])),
+      UNDECLARED_AMBIENT_SETTING: "ambient-value",
+    });
+    const snapshot = { ...base };
+    const environment = buildOpenCodeEnvironment({ base, declared });
+    for (const name of declared) expect(environment[name]).toBe(`value-${name}`);
+    expect(environment.UNDECLARED_AMBIENT_SETTING).toBeUndefined();
+    expect(base).toEqual(snapshot);
+  });
+  it("keeps absent declared values absent", () => {
+    const environment = buildOpenCodeEnvironment({
+      base: { PATH: "/bin" },
+      declared: ["ACME_TEAM_UUID", "BOT_LABEL"],
+    });
+    expect(environment.ACME_TEAM_UUID).toBeUndefined();
+    expect(environment.BOT_LABEL).toBeUndefined();
+  });
+  it("rejects secret-looking and protected names in manifest/profile declarations", () => {
+    const declared = [
+      "TEAM_SERVICE_TOKEN",
+      "ACME_PASSWORD",
+      "WIDGET_API_KEY",
+      "STORE_CREDENTIAL",
+      "GH_TOKEN",
+      "OPENAI_API_KEY",
+      "JIRA_MCP_TOKEN",
+      "EXECUTOR_TOKEN",
+      "NODE_OPTIONS",
+      "LD_PRELOAD",
+      "SSL_CERT_FILE",
+      "OPENCODE_CONFIG",
+      "REHOR_MODEL_PROXY_URL",
+      "NPM_CONFIG_REGISTRY",
+    ];
+    const base = Object.freeze({
+      PATH: "/bin",
+      ...Object.fromEntries(declared.map((name) => [name, "must-not-forward"])),
+    });
+    const environment = buildOpenCodeEnvironment({ base, declared });
+    for (const name of declared) expect(environment[name]).toBeUndefined();
+  });
+  it("forwards declared sandbox tier-2 values only in sandbox mode, including secret-looking names", () => {
+    const declaredSandbox = ["TEAM_SERVICE_TOKEN", "FABRIC_JIRA_PROJECT", "SLACK_DIGEST_HOUR"];
+    const values = {
+      TEAM_SERVICE_TOKEN: "tier-2-rendered-secret",
+      FABRIC_JIRA_PROJECT: "synthetic-project",
+      SLACK_DIGEST_HOUR: "9",
+    };
+    const protectedNames = [
+      "GH_TOKEN",
+      "EXECUTOR_TOKEN",
+      "NODE_OPTIONS",
+      "OPENCODE_CONFIG",
+      "REHOR_INPUT_FILE",
+    ];
+    const base = Object.freeze({
+      PATH: "/bin",
+      ...values,
+      ...Object.fromEntries(protectedNames.map((name) => [name, "blocked"])),
+    });
+    const sandbox = buildOpenCodeEnvironment({
+      base: { ...base, REHOR_INPUT_SOURCE: "sandbox" },
+      declaredSandbox,
+    });
+    for (const [name, value] of Object.entries(values)) expect(sandbox[name]).toBe(value);
+    for (const name of protectedNames) expect(sandbox[name]).toBeUndefined();
+    const legacy = buildOpenCodeEnvironment({ base, declaredSandbox });
+    for (const name of Object.keys(values)) expect(legacy[name]).toBeUndefined();
+  });
+  it("distinguishes provenance: a manifest declaration cannot forward an ambient secret-looking value", () => {
+    const base = Object.freeze({ PATH: "/bin", TEAM_SERVICE_TOKEN: "ambient-deployment-secret" });
+    expect(
+      buildOpenCodeEnvironment({ base, declared: ["TEAM_SERVICE_TOKEN"] }).TEAM_SERVICE_TOKEN,
+    ).toBeUndefined();
+    expect(
+      buildOpenCodeEnvironment({
+        base: { ...base, REHOR_INPUT_SOURCE: "sandbox" },
+        declaredSandbox: ["TEAM_SERVICE_TOKEN"],
+      }).TEAM_SERVICE_TOKEN,
+    ).toBe("ambient-deployment-secret");
+  });
+  it("applies declared names without changing the baseline and provider paths", () => {
+    const base = Object.freeze({
+      PATH: "/bin",
+      HOME: "/home/bot",
+      HTTP_PROXY: "http://proxy:3128",
+      BOT_INSTANCE_ID: "instance-7",
+      REHOR_MODEL_PROXY_TOKEN: "provider-token",
+      ACME_TEAM_UUID: "declared-value",
+    });
+    const environment = buildOpenCodeEnvironment({
+      base,
+      declared: ["ACME_TEAM_UUID"],
+      passthrough: ["REHOR_MODEL_PROXY_TOKEN"],
+    });
+    expect(environment.PATH).toBe("/bin");
+    expect(environment.HOME).toBe("/home/bot");
+    expect(environment.http_proxy).toBe(base.HTTP_PROXY);
+    expect(environment.BOT_INSTANCE_ID).toBe("instance-7");
+    expect(environment.REHOR_MODEL_PROXY_TOKEN).toBe("provider-token");
+    expect(environment.ACME_TEAM_UUID).toBe("declared-value");
   });
   it("forwards the sandbox EXECUTOR_TOKEN placeholder only in sandbox mode and only as the exact marker", () => {
     const placeholder = "openshell:resolve:env:executor";
@@ -1910,11 +2007,32 @@ describe("OpenCode process supervisor", () => {
         OPENCODE_PERMISSION: "ambient",
         OPENCODE_AUTH_CONTENT: "ambient",
         NPM_CONFIG_REGISTRY: "https://example.invalid",
+        ACME_TEAM_UUID: "declared-manifest-value",
+        SLACK_DIGEST_HOUR: "9",
+        TEAM_SERVICE_TOKEN: "declared-tier-2-value",
       });
+      const declared = [
+        "ACME_TEAM_UUID",
+        "SLACK_DIGEST_HOUR",
+        // Secret-looking and protected names stay rejected even when declared.
+        "GH_TOKEN",
+        "OPENAI_API_KEY",
+        "JIRA_API_TOKEN",
+        "JIRA_MCP_TOKEN",
+        "JIRA_USERNAME",
+        "SLACK_OTHER_CREDENTIAL",
+        "BOT_SECRET_TOKEN",
+        "EXECUTOR_TOKEN",
+        "EXECUTOR_TOKEN_FILE",
+        "EXECUTOR_CA_FILE",
+      ];
+      const declaredSandbox = ["TEAM_SERVICE_TOKEN", "GH_TOKEN", "EXECUTOR_TOKEN"];
       const snapshot = { ...base };
       const source = `const http = require("node:http"); const server = http.createServer((request, response) => { const url = new URL(request.url, "http://localhost"); response.setHeader("content-type", "application/json"); response.end(JSON.stringify(url.pathname === "/api/info" ? ${JSON.stringify(infoBody())} : url.pathname === "/api/location" ? {directory: process.cwd()} : process.env)); }); server.listen(0,"127.0.0.1",()=>console.log(JSON.stringify({url:"http://127.0.0.1:"+server.address().port})));`;
       const { supervisor } = nodeScriptSupervisor(source, {
         base,
+        declared,
+        declaredSandbox,
         passthrough: [
           "REHOR_MODEL_PROXY_TOKEN",
           ...blocked,
@@ -1937,6 +2055,12 @@ describe("OpenCode process supervisor", () => {
           expect(env[name]).toBeUndefined();
         expect(env.REHOR_MODEL_PROXY_TOKEN).toBe("synthetic-provider-token");
         expect(env.NPM_CONFIG_OFFLINE).toBe("true");
+        // Declared manifest names reach the real child; declared names that
+        // are secret-looking or protected do not, and tier-2 sandbox
+        // declarations pass only the non-protected ones.
+        expect(env.ACME_TEAM_UUID).toBe("declared-manifest-value");
+        expect(env.SLACK_DIGEST_HOUR).toBe("9");
+        expect(env.TEAM_SERVICE_TOKEN).toBe("declared-tier-2-value");
         expect(base).toEqual(snapshot);
       } finally {
         await supervisor.stop();

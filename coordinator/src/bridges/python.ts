@@ -243,7 +243,29 @@ function parseConfigPreparationResult(value: unknown): ConfigPreparationResult {
     openCodeMcpServers: parseRequiredOpenCodeMcpServers(object.openCodeMcpServers),
     allowedTools: stringArray(object.allowedTools ?? [], "config.allowedTools"),
     optionalMcpServers: stringArray(object.optionalMcpServers ?? [], "config.optionalMcpServers"),
+    ...(object.declaredEnvVars === undefined
+      ? {}
+      : { declaredEnvVars: declaredNameArray(object.declaredEnvVars, "config.declaredEnvVars") }),
+    ...(object.declaredSandboxEnvVars === undefined
+      ? {}
+      : {
+          declaredSandboxEnvVars: declaredNameArray(
+            object.declaredSandboxEnvVars,
+            "config.declaredSandboxEnvVars",
+          ),
+        }),
   };
+}
+
+/** Declared environment names are names only: valid identifiers, never values. */
+function declaredNameArray(value: unknown, path: string): string[] {
+  return arrayValue(value, path).map((entry, index) => {
+    const name = stringValue(entry, `${path}[${index}]`);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+      throw new PythonBridgeError(`${path}[${index}] is not a valid environment variable name`);
+    }
+    return name;
+  });
 }
 
 function record(value: unknown, path: string): Record<string, unknown> {

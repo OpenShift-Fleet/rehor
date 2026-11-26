@@ -153,6 +153,10 @@ export class OpenCodeRuntime implements AgentRuntime {
         ...(options.base === undefined ? {} : { base: options.base }),
         ...(options.proxy === undefined ? {} : { proxy: options.proxy }),
         ...(options.passthrough === undefined ? {} : { passthrough: options.passthrough }),
+        ...(options.declared === undefined ? {} : { declared: options.declared }),
+        ...(options.declaredSandbox === undefined
+          ? {}
+          : { declaredSandbox: options.declaredSandbox }),
         ...(options.noProxyHosts === undefined ? {} : { noProxyHosts: options.noProxyHosts }),
         ...(options.renderedConfig === undefined ? {} : { renderedConfig: options.renderedConfig }),
       });

@@ -118,6 +118,7 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     from .config import (
         OPENCODE_RUNTIME_ID,
         apply_cycle_timeout_override,
+        declared_environment_names,
         discover_optional_mcp_servers,
         load_config,
         load_instance_config,
@@ -180,6 +181,10 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
     if instance_config.runtime != OPENCODE_RUNTIME_ID:
         runner.assemble_claude_md(script_dir, instance_config, profile_dir, shared_dir)
     cycle_model = resolve_cycle_model(script_dir, instance_config, runtime_config, profile_dir)
+    # Names the selected agent's configuration declares for the runtime child.
+    # Names only: values are read by the coordinator from its own environment,
+    # so no secret or configuration value crosses the bridge boundary.
+    declared_env_vars, declared_sandbox_env_vars = declared_environment_names(script_dir, instance_config, profile_dir)
     # Keep a separate reference-only view for OpenCode. It owns project-server
     # discovery; the TypeScript renderer validates its untrusted references.
     opencode_mcp_servers = load_mcp_servers(
@@ -211,6 +216,8 @@ def _prepare_config(request: dict[str, Any]) -> dict[str, Any]:
         "openCodeMcpServers": opencode_mcp_servers,
         "allowedTools": _allowed_tools_for_runtime(instance_config.runtime),
         "optionalMcpServers": discover_optional_mcp_servers(script_dir),
+        "declaredEnvVars": declared_env_vars,
+        "declaredSandboxEnvVars": declared_sandbox_env_vars,
     }
 
 

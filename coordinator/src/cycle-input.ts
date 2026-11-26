@@ -139,6 +139,8 @@ export async function prepareCycleInput(
       mcpServers: config.openCodeMcpServers,
       allowedTools: config.allowedTools ?? [],
       optionalMcpServers: config.optionalMcpServers ?? [],
+      declaredEnvVars: config.declaredEnvVars ?? [],
+      declaredSandboxEnvVars: config.declaredSandboxEnvVars ?? [],
       instructionHash: instructionHash.value,
     }),
   );

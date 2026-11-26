@@ -165,11 +165,19 @@ describe("production runner boundary", () => {
       PATH: "/usr/bin",
       ...proxyEnvironment,
       BOT_LABEL: "project-coordinator",
-      BOT_TEAM_FIELD_ID: "customfield_10001",
-      BOT_IMPLEMENTATION_LABEL: "implementation-bot",
+      ACME_TEAM_UUID: "declared-value",
+      TEAM_SERVICE_TOKEN: "tier-2-value",
+    };
+    const declaredPrepared = {
+      ...prepared,
+      config: {
+        ...prepared.config,
+        declaredEnvVars: ["BOT_LABEL", "ACME_TEAM_UUID"],
+        declaredSandboxEnvVars: ["TEAM_SERVICE_TOKEN"],
+      },
     };
     const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
-    const registry = createRuntimeRegistryForCycle(prepared, {
+    const registry = createRuntimeRegistryForCycle(declaredPrepared, {
       workspaceRoot: "/work",
       openCodeDeployment: deployment,
       openCodeCommand: "/usr/local/bin/opencode",
@@ -181,8 +189,25 @@ describe("production runner boundary", () => {
     expect(registry.has("opencode-v1")).toBe(false);
     expect(registry.has("opencode-v2")).toBe(false);
     expect(factory).toHaveBeenCalledWith(
-      expect.objectContaining({ base: environment, config: deployment }),
+      expect.objectContaining({
+        base: environment,
+        config: deployment,
+        declared: ["BOT_LABEL", "ACME_TEAM_UUID"],
+        declaredSandbox: ["TEAM_SERVICE_TOKEN"],
+      }),
     );
+  });
+
+  it("omits declaration options when the prepared config carries none", () => {
+    const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
+    createRuntimeRegistryForCycle(prepared, {
+      workspaceRoot: "/work",
+      openCodeDeployment: deployment,
+      environment: { PATH: "/usr/bin", ...proxyEnvironment },
+    });
+    const options = factory.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(options.declared).toBeUndefined();
+    expect(options.declaredSandbox).toBeUndefined();
   });
 
   it("keeps the legacy Claude registry Claude-only", () => {
