@@ -200,12 +200,7 @@ export function preflightConfigurationDiagnostics(
     // entry — deferred entries included, mirroring the validator's unknown
     // parameter messages.
     const reportedKeys = new Set<string>();
-    if (deferValue !== undefined && deferred) {
-      // Deferred (placeholder-bearing) entries never invoke the input schema
-      // on the declaration — mirroring the validator, not parsing it — so
-      // schema callbacks never run during diagnostics either. Their
-      // structural issues are mirrored from the same deferred-parameter
-      // checks the validator uses.
+    if (deferred) {
       for (const issue of deferredParameterIssues(preflight, supplied, deferValue)) {
         diagnostics.push(configurationDiagnostic(
           `preflights[${index}].with.${issue.parameter}`,

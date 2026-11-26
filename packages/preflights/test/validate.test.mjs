@@ -3,8 +3,8 @@ import test from "node:test";
 import { z } from "zod";
 import {
   createPreflightRegistry,
-  definePreflight,
   deferredParameterIssues,
+  definePreflight,
   validateConfig,
   validateResolvedParams,
 } from "../dist/index.js";
@@ -459,17 +459,19 @@ test("deferred entries never invoke schema callbacks on declarations; the single
   const refineInputs = [];
   const counted = definePreflight({
     id: "counted",
-    input: z.strictObject({
-      teamFieldId: z.string().regex(/^customfield_\d+$/),
-      label: z.string().transform((value) => {
-        transforms += 1;
-        return `[${value}]`;
+    input: z
+      .strictObject({
+        teamFieldId: z.string().regex(/^customfield_\d+$/),
+        label: z.string().transform((value) => {
+          transforms += 1;
+          return `[${value}]`;
+        }),
+      })
+      .refine((value) => {
+        refines += 1;
+        refineInputs.push(value);
+        return true;
       }),
-    }).refine((value) => {
-      refines += 1;
-      refineInputs.push(value);
-      return true;
-    }),
   });
   const registry = createPreflightRegistry([counted]);
   const result = validateConfig(
@@ -485,8 +487,14 @@ test("deferred entries never invoke schema callbacks on declarations; the single
   assert.equal(refines, 0, "refinement ran on the declaration");
   // The single invocation happens post-render, on the rendered map; the
   // refinement observes rendered values only, never the placeholder.
-  const resolved = validateResolvedParams(counted, { teamFieldId: "customfield_5", label: "plain" });
-  assert.deepEqual(resolved, { ok: true, params: { teamFieldId: "customfield_5", label: "[plain]" } });
+  const resolved = validateResolvedParams(counted, {
+    teamFieldId: "customfield_5",
+    label: "plain",
+  });
+  assert.deepEqual(resolved, {
+    ok: true,
+    params: { teamFieldId: "customfield_5", label: "[plain]" },
+  });
   assert.equal(transforms, 1);
   assert.equal(refines, 1);
   assert.deepEqual(refineInputs, [{ teamFieldId: "customfield_5", label: "[plain]" }]);
@@ -496,9 +504,17 @@ test("literal-only entries still parse exactly once, in validateConfig", () => {
   let parses = 0;
   const counted = definePreflight({
     id: "counted",
-    input: z.strictObject({ label: z.string().transform((value) => { parses += 1; return value; }) }),
+    input: z.strictObject({
+      label: z.string().transform((value) => {
+        parses += 1;
+        return value;
+      }),
+    }),
   });
-  const result = validateConfig([{ id: "counted", with: { label: "x" } }], createPreflightRegistry([counted]));
+  const result = validateConfig(
+    [{ id: "counted", with: { label: "x" } }],
+    createPreflightRegistry([counted]),
+  );
   assert.deepEqual(result, { ok: true, entries: [{ id: "counted", params: { label: "x" } }] });
   assert.equal(parses, 1);
 });
@@ -507,14 +523,24 @@ test("whole-map refinements apply to rendered values, not declarations", () => {
   const seen = [];
   const refined = definePreflight({
     id: "refined",
-    input: z.strictObject({ teamFieldId: z.string() }).refine((value) => {
-      seen.push(value.teamFieldId);
-      return /^customfield_\d+$/.test(value.teamFieldId);
-    }, { message: "team field must be a customfield id" }),
+    input: z.strictObject({ teamFieldId: z.string() }).refine(
+      (value) => {
+        seen.push(value.teamFieldId);
+        return /^customfield_\d+$/.test(value.teamFieldId);
+      },
+      { message: "team field must be a customfield id" },
+    ),
   });
   const registry = createPreflightRegistry([refined]);
-  const deferred = validateConfig([{ id: "refined", with: { teamFieldId: placeholder } }], registry, { deferValue: isPlaceholder });
-  assert.deepEqual(deferred, { ok: true, entries: [{ id: "refined", params: { teamFieldId: placeholder } }] });
+  const deferred = validateConfig(
+    [{ id: "refined", with: { teamFieldId: placeholder } }],
+    registry,
+    { deferValue: isPlaceholder },
+  );
+  assert.deepEqual(deferred, {
+    ok: true,
+    entries: [{ id: "refined", params: { teamFieldId: placeholder } }],
+  });
   assert.deepEqual(seen, [], "refinement observed the declaration");
   const good = validateResolvedParams(refined, { teamFieldId: "customfield_9" });
   assert.deepEqual(good, { ok: true, params: { teamFieldId: "customfield_9" } });
@@ -534,8 +560,15 @@ test("structurally optional parameters may be absent from deferred entries; defa
     }),
   });
   const registry = createPreflightRegistry([defaulted]);
-  const result = validateConfig([{ id: "defaulted", with: { teamFieldId: placeholder } }], registry, { deferValue: isPlaceholder });
-  assert.deepEqual(result, { ok: true, entries: [{ id: "defaulted", params: { teamFieldId: placeholder } }] });
+  const result = validateConfig(
+    [{ id: "defaulted", with: { teamFieldId: placeholder } }],
+    registry,
+    { deferValue: isPlaceholder },
+  );
+  assert.deepEqual(result, {
+    ok: true,
+    entries: [{ id: "defaulted", params: { teamFieldId: placeholder } }],
+  });
   const resolved = validateResolvedParams(defaulted, { teamFieldId: "customfield_1" });
   assert.equal(resolved.ok, true);
   assert.deepEqual(
@@ -545,19 +578,35 @@ test("structurally optional parameters may be absent from deferred entries; defa
 });
 
 test("placeholders defer in fields that can accept strings, including unions and enums", () => {
-  const unioned = definePreflight({ id: "unioned", input: z.strictObject({ value: z.union([z.string(), z.number()]) }) });
-  const enumerated = definePreflight({ id: "enumerated", input: z.strictObject({ mode: z.enum(["a", "b"]) }) });
+  const unioned = definePreflight({
+    id: "unioned",
+    input: z.strictObject({ value: z.union([z.string(), z.number()]) }),
+  });
+  const enumerated = definePreflight({
+    id: "enumerated",
+    input: z.strictObject({ mode: z.enum(["a", "b"]) }),
+  });
   const registry = createPreflightRegistry([unioned, enumerated]);
   assert.deepEqual(
-    validateConfig([{ id: "unioned", with: { value: placeholder } }], registry, { deferValue: isPlaceholder }),
+    validateConfig([{ id: "unioned", with: { value: placeholder } }], registry, {
+      deferValue: isPlaceholder,
+    }),
     { ok: true, entries: [{ id: "unioned", params: { value: placeholder } }] },
   );
   assert.deepEqual(
-    validateConfig([{ id: "enumerated", with: { mode: placeholder } }], registry, { deferValue: isPlaceholder }),
+    validateConfig([{ id: "enumerated", with: { mode: placeholder } }], registry, {
+      deferValue: isPlaceholder,
+    }),
     { ok: true, entries: [{ id: "enumerated", params: { mode: placeholder } }] },
   );
-  assert.deepEqual(validateResolvedParams(unioned, { value: "rendered" }), { ok: true, params: { value: "rendered" } });
-  assert.deepEqual(validateResolvedParams(enumerated, { mode: "a" }), { ok: true, params: { mode: "a" } });
+  assert.deepEqual(validateResolvedParams(unioned, { value: "rendered" }), {
+    ok: true,
+    params: { value: "rendered" },
+  });
+  assert.deepEqual(validateResolvedParams(enumerated, { mode: "a" }), {
+    ok: true,
+    params: { mode: "a" },
+  });
   assert.equal(validateResolvedParams(enumerated, { mode: "z" }).ok, false);
 });
 
@@ -578,18 +627,25 @@ test("opaque wrappers (preprocess, lazy) defer to the single post-render parse",
   });
   const registry = createPreflightRegistry([opaque, lazy]);
   assert.equal(
-    validateConfig([{ id: "opaque", with: { value: placeholder } }], registry, { deferValue: isPlaceholder }).ok,
+    validateConfig([{ id: "opaque", with: { value: placeholder } }], registry, {
+      deferValue: isPlaceholder,
+    }).ok,
     true,
   );
   assert.equal(preprocessed, 0, "preprocessor ran on the declaration");
   assert.equal(
-    validateConfig([{ id: "lazy", with: { value: placeholder } }], registry, { deferValue: isPlaceholder }).ok,
+    validateConfig([{ id: "lazy", with: { value: placeholder } }], registry, {
+      deferValue: isPlaceholder,
+    }).ok,
     true,
   );
   const resolved = validateResolvedParams(opaque, { value: "  rendered  " });
   assert.deepEqual(resolved, { ok: true, params: { value: "rendered" } });
   assert.equal(preprocessed, 1);
-  assert.deepEqual(validateResolvedParams(lazy, { value: "rendered" }), { ok: true, params: { value: "rendered" } });
+  assert.deepEqual(validateResolvedParams(lazy, { value: "rendered" }), {
+    ok: true,
+    params: { value: "rendered" },
+  });
 });
 
 // --- coercing, intersection, and unknown-definition deferral ---
@@ -602,18 +658,22 @@ test("coercing schemas defer: a rendered string may coerce, and absent coercion 
   const registry = createPreflightRegistry([coercing]);
   // A placeholder in a coercing field defers instead of failing closed...
   assert.deepEqual(
-    validateConfig([{ id: "coercing", with: { limit: placeholder, name: "x" } }], registry, { deferValue: isPlaceholder }),
+    validateConfig([{ id: "coercing", with: { limit: placeholder, name: "x" } }], registry, {
+      deferValue: isPlaceholder,
+    }),
     { ok: true, entries: [{ id: "coercing", params: { limit: placeholder, name: "x" } }] },
   );
   // ...and the single post-render parse performs the actual Zod coercion.
-  assert.deepEqual(
-    validateResolvedParams(coercing, { limit: "5", name: "x" }),
-    { ok: true, params: { limit: 5, name: "x" } },
-  );
+  assert.deepEqual(validateResolvedParams(coercing, { limit: "5", name: "x" }), {
+    ok: true,
+    params: { limit: 5, name: "x" },
+  });
   assert.equal(validateResolvedParams(coercing, { limit: "not-a-number", name: "x" }).ok, false);
   // An absent coercing field defers when the entry carries a placeholder and
   // fails in the single post-render parse (coerced undefined is NaN).
-  const absent = validateConfig([{ id: "coercing", with: { name: placeholder } }], registry, { deferValue: isPlaceholder });
+  const absent = validateConfig([{ id: "coercing", with: { name: placeholder } }], registry, {
+    deferValue: isPlaceholder,
+  });
   assert.equal(absent.ok, true);
   assert.equal(validateResolvedParams(coercing, { name: "x" }).ok, false);
 });
@@ -639,8 +699,13 @@ test("intersection optionality requires every side to accept absence", () => {
     input: z.strictObject({ value: z.intersection(z.string().optional(), z.string().optional()) }),
   });
   const bothRegistry = createPreflightRegistry([both]);
-  const deferred = validateConfig([{ id: "both", with: { value: placeholder } }], bothRegistry, { deferValue: isPlaceholder });
-  assert.deepEqual(deferred, { ok: true, entries: [{ id: "both", params: { value: placeholder } }] });
+  const deferred = validateConfig([{ id: "both", with: { value: placeholder } }], bothRegistry, {
+    deferValue: isPlaceholder,
+  });
+  assert.deepEqual(deferred, {
+    ok: true,
+    entries: [{ id: "both", params: { value: placeholder } }],
+  });
   assert.equal(validateResolvedParams(both, { value: "rendered" }).ok, true);
   assert.equal(validateResolvedParams(both, {}).ok, false);
 
@@ -650,7 +715,11 @@ test("intersection optionality requires every side to accept absence", () => {
     input: z.strictObject({ value: z.intersection(z.string(), z.number()) }),
   });
   assert.deepEqual(
-    validateConfig([{ id: "never", with: { value: placeholder } }], createPreflightRegistry([never]), { deferValue: isPlaceholder }),
+    validateConfig(
+      [{ id: "never", with: { value: placeholder } }],
+      createPreflightRegistry([never]),
+      { deferValue: isPlaceholder },
+    ),
     { ok: false, invalid: [{ id: "never", messages: ['never: invalid parameter "value"'] }] },
   );
 });
@@ -665,8 +734,5 @@ test("unknown definition types defer conservatively in both directions", () => {
   exotic.input.shape.value._zod.def.type = "mystery";
   const issues = deferredParameterIssues(exotic, {}, isPlaceholder);
   assert.deepEqual(issues, []);
-  assert.deepEqual(
-    deferredParameterIssues(exotic, { value: placeholder }, isPlaceholder),
-    [],
-  );
+  assert.deepEqual(deferredParameterIssues(exotic, { value: placeholder }, isPlaceholder), []);
 });

@@ -142,7 +142,7 @@ type ZodDefView = {
 };
 
 const definitionOf = (schema: unknown): ZodDefView | undefined =>
-  ((schema as { _zod?: { def?: ZodDefView } } | undefined)?._zod)?.def;
+  (schema as { _zod?: { def?: ZodDefView } } | undefined)?._zod?.def;
 
 /** Wrapper types that just carry another schema on `innerType`. */
 const INNER_WRAPPERS = new Set(["nullable", "readonly"]);
@@ -157,16 +157,43 @@ const OPAQUE_TYPES = new Set(["lazy", "transform", "custom"]);
  * preprocessors and lazy schemas to decide. Unknown definition types are NOT
  * in this set — they defer to the post-render parse. */
 const REQUIRED_VALUE_TYPES = new Set([
-  "string", "number", "boolean", "bigint", "symbol", "nan", "date", "null",
-  "array", "tuple", "record", "map", "set", "enum", "literal", "template_literal",
-  "union", "any", "unknown", "undefined",
+  "string",
+  "number",
+  "boolean",
+  "bigint",
+  "symbol",
+  "nan",
+  "date",
+  "null",
+  "array",
+  "tuple",
+  "record",
+  "map",
+  "set",
+  "enum",
+  "literal",
+  "template_literal",
+  "union",
+  "any",
+  "unknown",
+  "undefined",
 ]);
 /** Value types that definitely never accept a string: a rendered string can
  * never satisfy them (absent coercion). Unknown definition types are NOT in
  * this set — they defer to the post-render parse. */
 const NON_STRING_VALUE_TYPES = new Set([
-  "number", "boolean", "bigint", "symbol", "nan", "date", "null",
-  "array", "tuple", "record", "map", "set",
+  "number",
+  "boolean",
+  "bigint",
+  "symbol",
+  "nan",
+  "date",
+  "null",
+  "array",
+  "tuple",
+  "record",
+  "map",
+  "set",
 ]);
 
 /** Whether a field value may be absent: `optional`, `default`, and `catch`
@@ -205,7 +232,13 @@ function acceptsAbsentInput(schema: unknown, depth = 0): boolean {
 function acceptsStringInput(schema: unknown, depth = 0): boolean {
   if (depth > INTROSPECTION_DEPTH) return true;
   const def = definitionOf(schema);
-  if (def === undefined || def.type === undefined || OPAQUE_TYPES.has(def.type) || def.coerce === true) return true;
+  if (
+    def === undefined ||
+    def.type === undefined ||
+    OPAQUE_TYPES.has(def.type) ||
+    def.coerce === true
+  )
+    return true;
   switch (def.type) {
     case "string":
     case "template_literal":
@@ -230,7 +263,10 @@ function acceptsStringInput(schema: unknown, depth = 0): boolean {
 }
 
 const isLiteralValue = (value: unknown): value is LiteralValue =>
-  typeof value === "string" || typeof value === "number" || typeof value === "boolean" || Array.isArray(value);
+  typeof value === "string" ||
+  typeof value === "number" ||
+  typeof value === "boolean" ||
+  Array.isArray(value);
 
 /** Whether an entry's `with:` map carries any deferred placeholder value. */
 function carriesDeferredValue(
@@ -266,7 +302,12 @@ export function deferredParameterIssues(
     // incompatible: placeholders inside a list value are string elements,
     // and the post-render parse validates each rendered element against the
     // field's element schema.
-    if (field !== undefined && typeof value === "string" && deferValue(value) && !acceptsStringInput(field)) {
+    if (
+      field !== undefined &&
+      typeof value === "string" &&
+      deferValue(value) &&
+      !acceptsStringInput(field)
+    ) {
       issues.push({ parameter, kind: "incompatible" });
     }
   }

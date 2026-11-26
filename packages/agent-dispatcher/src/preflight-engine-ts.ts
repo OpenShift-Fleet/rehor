@@ -186,18 +186,16 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   const registry = options.registry ?? populatedRegistry;
   const profile = options.profile;
   const identity = options.repositoryUrl ? `${profile.name} (${options.repositoryUrl})` : profile.name;
-  const failure = (transcript: string, reason: "configuration" | "execution"): Extract<WorkPreflightResult, { transcript: string }> =>
-    ({ action: "error", transcript: `${identity}: ${transcript}`, scripts: [], reason });
-
-  const wiring = validateRequiredPreflightWiring(options.wiring?.instanceId, options.wiring?.memory?.baseUrl, options.wiring?.memory?.token);
-  if (!wiring.ok) return failure(wiring.message, "configuration");
   // A secret-rendering or post-render-validation failure must prevent the
   // whole dispatch even when earlier entries already executed: their results
   // stay in the cycle report, but the aggregate decision is an error. The
   // optional scripts argument carries those accumulated results plus the
   // failing entry's stable message.
-  const failureWithScripts = (transcript: string, reason: "configuration" | "execution", scripts: WorkPreflightScriptResult[]): Extract<WorkPreflightResult, { transcript: string }> =>
+  const failure = (transcript: string, reason: "configuration" | "execution", scripts: WorkPreflightScriptResult[] = []): Extract<WorkPreflightResult, { transcript: string }> =>
     ({ action: "error", transcript: `${identity}: ${transcript}`, scripts, reason });
+
+  const wiring = validateRequiredPreflightWiring(options.wiring?.instanceId, options.wiring?.memory?.baseUrl, options.wiring?.memory?.token);
+  if (!wiring.ok) return failure(wiring.message, "configuration");
 
   // Entry resolution: an explicit `preflights:` list replaces the default
   // set; an omitted field inherits the workflow's central default. Neither
@@ -288,7 +286,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
     let params: Readonly<Record<string, unknown>> = entry.params;
     if (containsSecretTemplate(declaredWith)) {
       const renderFailure = (transcript: string, reason: "configuration" | "execution") =>
-        failureWithScripts(transcript, reason, [...results, { name: entry.id, status: "error" as const, content: transcript }]);
+        failure(transcript, reason, [...results, { name: entry.id, status: "error" as const, content: transcript }]);
       if (options.readSecret === undefined) {
         return renderFailure("Preflight secret rendering is not configured", "configuration");
       }
@@ -357,7 +355,7 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
         options.secretLedger.bindStartEntries(results.flatMap((result, position) => (result.status === "start" ? [position] : [])));
       } catch (error) {
         const message = error instanceof SecretRenderError ? error.message : "Preflight secret values changed during the run";
-        return failureWithScripts(message, "execution", results);
+        return failure(message, "execution", results);
       }
     }
     // The prompt carries start content only; skip and error content stays in
