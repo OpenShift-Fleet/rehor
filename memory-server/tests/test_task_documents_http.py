@@ -796,7 +796,8 @@ async def test_number_semantics_through_real_database(db):
                 ("ordinary-double", "0.1", 0.1),
                 ("exact-int", "9007199254740993", 9007199254740993),
                 # PostgreSQL JSONB normalizes signed zero: -0.0 reads back as 0.0
-                # (sign dropped, numeric scale kept — value-equal, sign not preserved).
+                # (sign dropped, numeric scale kept — the sign is asserted
+                # explicitly via copysign below, == alone cannot detect it).
                 ("signed-zero", "-0.0", 0.0),
             ]:
                 body = (
@@ -811,6 +812,10 @@ async def test_number_semantics_through_real_database(db):
                 data = json.loads(fetched["content"][0]["text"])["data"]
                 assert data == expected
                 assert data.__class__ is expected.__class__
+                if name == "signed-zero":
+                    import math
+
+                    assert math.copysign(1.0, data) == 1.0  # positive zero, sign dropped
 
             body = (
                 '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
@@ -821,3 +826,315 @@ async def test_number_semantics_through_real_database(db):
             assert rejected["error"]["code"] == -32602
     count = await db.fetchval("SELECT COUNT(*) FROM task_documents")
     assert count == 3  # only the accepted documents were stored
+
+
+# --- Fourth Sol re-review: SDK-parity regressions ---
+
+
+@pytest.mark.asyncio
+async def test_body_size_cap_matches_the_sdk_413():
+    """The guard enforces the SDK's own 4 MiB cap (declared size) while
+    buffering; the status matches the unwrapped SDK exactly."""
+    oversized = b"x" * (4 * 1024 * 1024 + 1)
+    body = b'{"jsonrpc": "2.0", "id": 1, "method": "ping"}' + b" " + oversized
+    guard_app, guard_lifespan = _http_app(sanitized=True)
+    sdk_app, sdk_lifespan = _http_app(sanitized=True, guarded=False)
+    async with (
+        guard_lifespan.router.lifespan_context(guard_lifespan),
+        sdk_lifespan.router.lifespan_context(sdk_lifespan),
+        AsyncClient(transport=ASGITransport(app=guard_app), base_url="http://test") as guarded,
+        AsyncClient(transport=ASGITransport(app=sdk_app), base_url="http://test") as unwrapped,
+    ):
+        headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+        guarded_response = await guarded.post("/mcp", content=body, headers=headers)
+        unwrapped_response = await unwrapped.post("/mcp", content=body, headers=headers)
+    assert guarded_response.status_code == 413
+    assert unwrapped_response.status_code == 413
+    assert guarded_response.text == "Request body too large"
+
+
+@pytest.mark.asyncio
+async def test_streamed_oversize_is_413_mid_upload():
+    """Chunked uploads exceeding the cap are answered 413 while streaming,
+    mirroring the SDK's RequestBodyLimitMiddleware."""
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    called = []
+
+    async def fake_app(scope, receive, send):
+        called.append(True)
+
+    messages = [
+        {"type": "http.request", "body": b"x" * (3 * 1024 * 1024), "more_body": True},
+        {"type": "http.request", "body": b"x" * (2 * 1024 * 1024), "more_body": False},
+    ]
+
+    async def receive():
+        return messages.pop(0)
+
+    guard = McpEnvelopeGuard(fake_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-type", b"application/json"),
+        ],
+    }
+    await guard(scope, receive, send)
+    assert called == []  # never dispatched downstream
+    assert sent[0]["status"] == 413
+    assert sent[1]["body"] == b"Request body too large"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_upload_returns_without_replay_or_response():
+    """A disconnect mid-upload (more_body never completes) returns silently:
+    no replay, no response, no downstream dispatch."""
+
+    sent = []
+    called = []
+
+    async def fake_app(scope, receive, send):
+        called.append(True)
+
+    messages = [
+        {"type": "http.request", "body": b'{"jsonrpc": "2.0", ', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive():
+        return messages.pop(0)
+
+    async def send(message):
+        sent.append(message)
+
+    guard = McpEnvelopeGuard(fake_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-type", b"application/json"),
+        ],
+    }
+    await guard(scope, receive, send)
+    assert called == []
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_sdk_accepted_content_type_list_is_guarded():
+    """Content-Type 'application/json, text/plain' is accepted by the SDK;
+    the guard must parse it too, or a nested 1e400 would silently corrupt
+    document data on the pass-through path."""
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    with _patch_pool(pool):
+        async with McpHttpClient(app, lifespan_app) as client:
+            headers = {
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json, text/plain",
+                "mcp-session-id": client._session,
+            }
+            response = await client._client.post(
+                "/mcp",
+                content=(
+                    '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                    '{"name": "task_document_create", "arguments": '
+                    '{"external_key": "ART-1", "name": "n", "data": 1e400}}}'
+                ),
+                headers=headers,
+            )
+            assert response.status_code == 200
+            message = _parse_response(response.text)
+            assert message["error"]["code"] == -32602
+            assert "IEEE 754" in message["error"]["message"]
+            # The same content type still carries valid requests.
+            ok = await client._client.post(
+                "/mcp",
+                content=(
+                    '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": '
+                    '{"name": "task_document_create", "arguments": '
+                    '{"external_key": "ART-1", "name": "n", "data": {"k": 1}}}}'
+                ),
+                headers=headers,
+            )
+            assert ok.status_code == 200
+    assert pool.insert_payloads == ['{"k": 1}']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cas_key", ["expected_revision", "expected_id"])
+async def test_cas_float_tokens_are_rejected_not_silently_unguarded(cas_key):
+    """1e400 in expected_id/expected_revision would arrive as null (guard
+    disabled) or rounded (wrong token); the guard rejects float tokens for
+    CAS parameters before SDK coercion."""
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/mcp",
+            content=(
+                '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                '{"name": "task_document_update", "arguments": '
+                '{"external_key": "ART-1", "name": "n", "data": {}, "' + cas_key + '": 1e400}}}'
+            ),
+            headers={"accept": "application/json, text/event-stream", "content-type": "application/json"},
+        )
+        message = _parse_response(response.text)
+    assert message["error"]["code"] == -32602
+    assert f"{cas_key} must be an integer" in message["error"]["message"]
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ('{"jsonrpc": "2.0", "id": "r1", "result": ["RES-SENTINEL"]}', "result must be an object"),
+        ('{"jsonrpc": "2.0", "id": "r1", "error": "ERR-SENTINEL"}', "error must be an object"),
+        (
+            '{"jsonrpc": "2.0", "id": "r1", "error": {"code": true, "message": "m"}}',
+            "integer code and a string message",
+        ),
+        ('{"jsonrpc": "2.0", "id": "r1", "error": {"code": 1, "message": 5}}', "integer code and a string message"),
+        ('{"jsonrpc": "2.0", "id": "r1"}', "must contain result or error"),
+        ('{"jsonrpc": "2.0", "id": {"bad": 1}, "result": {}}', "response id must be a string or a number"),
+    ],
+)
+async def test_malformed_response_envelopes_are_sanitized(body, fragment):
+    """Method-less malformed response/error envelopes would leak their
+    payload through the SDK's JSONRPCMessage validation; valid responses
+    still pass through."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        headers = {
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+            "mcp-session-id": client._session,
+        }
+        response = await client._client.post("/mcp", content=body, headers=headers)
+        assert response.status_code == 400
+        message = _parse_response(response.text)
+        assert message["error"]["code"] == -32602
+        assert fragment in message["error"]["message"]
+        assert "SENTINEL" not in response.text
+        # Valid client responses still pass through to the SDK.
+        ok = await client._client.post("/mcp", content='{"jsonrpc": "2.0", "id": "r2", "result": {}}', headers=headers)
+        assert ok.status_code in (200, 202)
+
+
+@pytest.mark.asyncio
+async def test_unknown_session_defers_to_the_sdk_404():
+    """Malformed arguments (and even malformed envelopes) on an unknown
+    session behave like the SDK: 404 before parsing, no guard response and
+    no untrusted session id echoed."""
+    app, lifespan_app = _http_app(sanitized=True)
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": "totally-unknown-session",
+    }
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        for body in (
+            # Session-layer malformed arguments.
+            '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+            '{"name": "task_document_create", "arguments": ["ARR-SENTINEL"]}}',
+            # HTTP-layer malformed envelope.
+            '{"jsonrpc": "1.0", "id": 2, "method": "tools/call", "params": '
+            '{"name": "task_document_create", "arguments": {"external_key": "VER-SENTINEL"}}}',
+        ):
+            response = await client.post("/mcp", content=body, headers=headers)
+            assert response.status_code == 404
+            assert "Session not found" in response.text
+            assert "SENTINEL" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_guard_rejection_echoes_only_known_sessions():
+    """With a valid session, guard rejections echo the session id (like the
+    SDK); with an unknown session the guard never answers itself."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        session_id = client._session
+        wrong_version = (
+            '{"jsonrpc": "1.0", "id": 3, "method": "tools/call", '
+            '"params": {"name": "task_document_create", "arguments": {"external_key": "K"}}}'
+        )
+        response = await client._client.post(
+            "/mcp",
+            content=wrong_version,
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": session_id,
+            },
+        )
+        assert response.status_code == 400
+        assert response.headers.get("mcp-session-id") == session_id
+        message = _parse_response(response.text)
+        assert message["error"]["code"] == -32602
+
+
+@pytest.mark.asyncio
+async def test_non_object_params_mirrors_sdk_400_status():
+    """Non-object params fail the SDK's JSONRPCMessage validation with a
+    leaking 400; the guard answers the same status, sanitized, and the
+    request id is preserved."""
+    body = '{"jsonrpc": "2.0", "id": 42, "method": "tools/call", "params": ["PARAMS-SENTINEL"]}'
+    guard_app, guard_lifespan = _http_app(sanitized=True)
+    sdk_app, sdk_lifespan = _http_app(sanitized=True, guarded=False)
+    headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+    async with (
+        guard_lifespan.router.lifespan_context(guard_lifespan),
+        AsyncClient(transport=ASGITransport(app=guard_app), base_url="http://test") as guarded,
+    ):
+        response = await guarded.post("/mcp", content=body, headers=headers)
+        assert response.status_code == 400
+        message = _parse_response(response.text)
+        assert message["error"]["code"] == -32602
+        assert "params must be an object" in message["error"]["message"]
+        assert message["id"] == 42
+        assert "SENTINEL" not in response.text
+    async with (
+        sdk_lifespan.router.lifespan_context(sdk_lifespan),
+        AsyncClient(transport=ASGITransport(app=sdk_app), base_url="http://test") as unwrapped,
+    ):
+        sdk_response = await unwrapped.post("/mcp", content=body, headers=headers)
+        assert sdk_response.status_code == 400  # same status as the SDK
+
+
+@pytest.mark.asyncio
+async def test_invalid_utf8_is_a_sanitized_400_not_a_500():
+    guard_app, guard_lifespan = _http_app(sanitized=True)
+    sdk_app, sdk_lifespan = _http_app(sanitized=True, guarded=False)
+    headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+    raw = b'{"jsonrpc": "2.0", "id": 1, "method": "ping"} \xff\xfe'
+    async with (
+        guard_lifespan.router.lifespan_context(guard_lifespan),
+        AsyncClient(transport=ASGITransport(app=guard_app), base_url="http://test") as guarded,
+    ):
+        response = await guarded.post("/mcp", content=raw, headers=headers)
+        assert response.status_code == 400
+        message = _parse_response(response.text)
+        assert message["error"]["code"] == -32700
+        assert "not valid UTF-8" in message["error"]["message"]
+    async with (
+        sdk_lifespan.router.lifespan_context(sdk_lifespan),
+        AsyncClient(transport=ASGITransport(app=sdk_app), base_url="http://test") as unwrapped,
+    ):
+        sdk_response = await unwrapped.post("/mcp", content=raw, headers=headers)
+        assert sdk_response.status_code == 500  # the SDK 500s; the guard improves it to a clean 400

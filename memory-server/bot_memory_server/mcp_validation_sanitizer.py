@@ -75,6 +75,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastmcp.exceptions import ToolError, ValidationError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
 from pydantic import ValidationError as PydanticValidationError
 
 FASTMCP_SERVER_LOGGER = "fastmcp.server.server"
@@ -192,6 +193,12 @@ def _clamp_sse_body_logging() -> None:
 
 # --- Raw-envelope guard (runs before the SDK parses the request) ---
 
+# The SDK's own cap (mcp.server.transport_security.DEFAULT_MAX_REQUEST_BODY_SIZE,
+# 4 MiB) is enforced by RequestBodyLimitMiddleware *inside* the session manager;
+# the guard applies the identical limit while buffering so it never holds more
+# than the SDK would accept. This mirrors existing behavior — no new cap.
+_MAX_BODY_BYTES = DEFAULT_MAX_REQUEST_BODY_SIZE
+
 
 class _FloatToken:
     """Placeholder marking a JSON float token during envelope inspection."""
@@ -237,50 +244,91 @@ _NUMBERS_MESSAGE = (
 )
 
 
+def _id_is_valid(request_id) -> bool:
+    return isinstance(request_id, str) or (isinstance(request_id, int) and not isinstance(request_id, bool))
+
+
 def _request_id(message: dict):
     """Best-effort valid JSON-RPC id for a guard rejection response."""
     request_id = message.get("id")
-    if isinstance(request_id, str) or (isinstance(request_id, int) and not isinstance(request_id, bool)):
+    if _id_is_valid(request_id):
         return request_id
     return "server-error" if "method" in message else None
+
+
+def _check_response_envelope(message: dict) -> tuple[int, int, str, object] | None:
+    """Validate method-less client response/error envelopes.
+
+    The SDK's ``JSONRPCMessage`` validation of these echoes pydantic
+    ``input_value`` (the response payload) into its 400 responses; the guard
+    rejects malformed shapes sanitized. Valid responses pass through.
+    Mirrors mcp.types: ``id`` must be a strict string/integer, ``result``
+    must be an object, ``error`` an object with integer ``code`` and string
+    ``message``.
+    """
+    if not _id_is_valid(message.get("id")):
+        return 400, -32602, "Invalid request: response id must be a string or a number", "server-error"
+    if "error" in message:
+        error = message["error"]
+        if not isinstance(error, dict):
+            return 400, -32602, "Invalid request: response error must be an object", "server-error"
+        code = error.get("code")
+        if not (isinstance(code, int) and not isinstance(code, bool)) or not isinstance(error.get("message"), str):
+            return (
+                400,
+                -32602,
+                "Invalid request: response error must contain an integer code and a string message",
+                "server-error",
+            )
+    elif "result" in message:
+        if not isinstance(message["result"], dict):
+            return 400, -32602, "Invalid request: response result must be an object", "server-error"
+    else:
+        return 400, -32602, "Invalid request: a response must contain result or error", "server-error"
+    return None
 
 
 def _check_envelope(message) -> tuple[int, int, str, object] | None:
     """Validate a parsed POST /mcp body; return (http status, JSON-RPC error
     code, sanitized message, response id) for rejections, else None.
 
-    Two SDK layers are mirrored, minus their payload leaks:
+    SDK layers are mirrored, minus the payload leaks:
 
-    - HTTP-layer envelope validity: the SDK's ``JSONRPCMessage`` validation
+    - HTTP-layer envelope validity (the SDK's ``JSONRPCMessage`` validation
       echoes pydantic ``input_value`` — including document data — into its
-      400 responses (e.g. a wrong ``jsonrpc`` version). The message must be
-      an object with ``jsonrpc`` "2.0", a non-empty string ``method`` when
-      present, and a string/number ``id`` on requests.
-    - Session-layer ``tools/call`` parameter validity: the SDK logs failed
-      messages to the ROOT logger with full payloads. ``params`` and
-      ``arguments`` must be objects, the tool name a string, and document
-      ``data`` float tokens must round-trip exactly through doubles.
-
-    Messages without ``method`` (client responses) are passed through.
+      400 responses): the message must be an object with ``jsonrpc`` "2.0",
+      a non-empty string ``method`` when present, a string/number ``id`` on
+      requests, object ``params`` on requests/notifications (mcp.types
+      ``dict[str, Any] | None``), and a well-formed response/error envelope
+      on method-less messages.
+    - Session-layer ``tools/call`` parameter validity (the SDK logs failed
+      messages to the ROOT logger with full payloads): ``arguments`` must be
+      an object, the tool name a string, document ``data`` float tokens must
+      round-trip exactly through doubles, and CAS tokens
+      (``expected_id``/``expected_revision``) must be integers — a float
+      token like ``1e400`` would arrive as ``null`` and silently disable the
+      guard.
     """
     if not isinstance(message, dict):
         return 400, -32602, "Invalid request: the JSON-RPC message must be an object", "server-error"
+    if "method" not in message:
+        return _check_response_envelope(message)
     if message.get("jsonrpc") != "2.0":
         return 400, -32602, 'Invalid request: jsonrpc must be "2.0"', _request_id(message)
     method = message.get("method")
-    if "method" in message and (not isinstance(method, str) or not method):
+    if not isinstance(method, str) or not method:
         return 400, -32602, "Invalid request: method must be a non-empty string", _request_id(message)
-    request_id = message.get("id")
-    id_is_valid = isinstance(request_id, str) or (isinstance(request_id, int) and not isinstance(request_id, bool))
-    if "method" in message and "id" in message and not id_is_valid:
+    if "id" in message and not _id_is_valid(message.get("id")):
         return 400, -32602, "Invalid request: id must be a string or a number", "server-error"
-    if "method" not in message or method != "tools/call":
-        return None  # Client responses, notifications and other methods: SDK path.
     params = message.get("params")
+    if params is not None and not isinstance(params, dict):
+        # mcp.types: params is dict[str, Any] | None — the SDK's JSONRPCMessage
+        # validation rejects non-object params with a leaking 400.
+        return 400, -32602, "Invalid request: params must be an object", _request_id(message)
+    if method != "tools/call":
+        return None  # Notifications and other methods: SDK path.
     if params is None:
         return None
-    if not isinstance(params, dict):
-        return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: params must be an object", _request_id(message)
     name = params.get("name")
     if not isinstance(name, str):
         return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: tool name must be a string", _request_id(message)
@@ -288,12 +336,27 @@ def _check_envelope(message) -> tuple[int, int, str, object] | None:
     if arguments is not None and not isinstance(arguments, dict):
         return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: arguments must be an object", _request_id(message)
     if name in DOCUMENT_DATA_TOOLS and isinstance(arguments, dict):
+        for key in ("expected_id", "expected_revision"):
+            if isinstance(arguments.get(key), _FloatToken):
+                # A float token over/underflows to null/rounded before the
+                # handler runs, silently disabling the CAS guard.
+                return (
+                    200,
+                    -32602,
+                    f"{_INVALID_REQUEST_PARAMS} for {name}: {key} must be an integer",
+                    _request_id(message),
+                )
         try:
             has_bad_float = _has_bad_float(arguments)
         except RecursionError:
             return 400, -32700, "Parse error: request nesting exceeds supported depth", _request_id(message)
         if has_bad_float:
-            return 200, -32602, _NUMBERS_MESSAGE.format(tool=name), _request_id(message)
+            return (
+                200,
+                -32602,
+                f"{_INVALID_REQUEST_PARAMS} for {name}: " + _NUMBERS_MESSAGE.format(tool=name),
+                _request_id(message),
+            )
     return None
 
 
@@ -319,14 +382,37 @@ def _passes_sdk_media_checks(scope: dict) -> bool:
 
     Requests the SDK would reject with 406/415 without reading the body are
     passed through untouched so the guard never reads them either and the
-    SDK responses stay authoritative.
+    SDK responses stay authoritative. Content-Type handling mirrors both SDK
+    checks: it must start with ``application/json`` (case-insensitive,
+    ``TransportSecurity._validate_content_type``) and contain an exact
+    ``application/json`` entry in the comma-separated list of the first
+    semicolon segment (``_check_content_type``) — so
+    ``application/json, text/plain`` is accepted, like the SDK accepts it.
     """
     accept_types = [entry.strip() for entry in _header(scope, b"accept").split(b",")]
     has_json = any(entry.startswith(b"application/json") for entry in accept_types)
     has_sse = any(entry.startswith(b"text/event-stream") for entry in accept_types)
     if not (has_json and has_sse):
         return False
-    return _header(scope, b"content-type").split(b";")[0].strip() == b"application/json"
+    content_type = _header(scope, b"content-type").decode("latin-1", "replace")
+    if not content_type.lower().startswith("application/json"):
+        return False
+    parts = [part.strip() for part in content_type.split(";")[0].split(",")]
+    return any(part == "application/json" for part in parts)
+
+
+def _default_session_manager_getter(app):
+    """Locate the streamable-http session manager inside a FastMCP app."""
+
+    def getter():
+        for route in getattr(app, "routes", []):
+            endpoint = getattr(route, "endpoint", None)
+            manager = getattr(endpoint, "session_manager", None)
+            if manager is not None:
+                return manager
+        return None
+
+    return getter
 
 
 class McpEnvelopeGuard:
@@ -334,20 +420,42 @@ class McpEnvelopeGuard:
 
     Wraps the MCP HTTP app. Only ``POST /mcp`` requests whose Accept and
     Content-Type headers would pass the SDK's own pre-body checks are
-    inspected; the body is replayed once and later receive() calls delegate
-    to the original ASGI receive, so real client disconnects propagate.
-    Everything else (other methods, other paths, unacceptable media headers)
-    passes through untouched.
+    inspected. The SDK's body-size cap
+    (``mcp.server.transport_security.DEFAULT_MAX_REQUEST_BODY_SIZE``, 4 MiB)
+    is enforced identically while buffering — declared Content-Length and
+    streamed chunks both answer 413 like the SDK's
+    ``RequestBodyLimitMiddleware``, so the guard never holds more than the
+    SDK would accept and no new limit is introduced. An upload interrupted
+    by a client disconnect returns without replay or response. The parsed
+    tree is released before downstream dispatch; the buffered body is
+    replayed once and later receive() calls delegate to the original ASGI
+    receive so real disconnects propagate.
 
-    The SDK itself reads the full request body before session validation,
-    so buffering here adds no new unbounded-read exposure. No body-size or
-    read-timeout limits are imposed: none exist elsewhere in the service,
-    and a new global MCP/document cap would change behavior for unrelated
-    clients (see the module docs and PR discussion).
+    Session semantics mirror the SDK's routing: the session manager answers
+    404 for unknown session ids *before* parsing the body, so when the
+    request carries an unknown session the guard defers entirely (the SDK
+    404 stays authoritative) and never echoes the untrusted session id on
+    its own responses.
     """
 
-    def __init__(self, app):
+    def __init__(self, app, session_manager_getter=None):
         self.app = app
+        self._session_manager_getter = session_manager_getter or _default_session_manager_getter(app)
+
+    def _session_is_known(self, scope: dict) -> bool:
+        """True when the guard may answer (absent session id, or a known one).
+
+        The SDK routes unknown session ids to a 404 without parsing the
+        body; requests without a session id open a new session and are
+        parsed, so they stay guardable.
+        """
+        manager = self._session_manager_getter()
+        if manager is None:
+            return False  # Manager unavailable (not running): defer to the SDK.
+        session_id = _header(scope, b"mcp-session-id").decode("latin-1", "replace") or None
+        if session_id is None:
+            return True
+        return session_id in getattr(manager, "_server_instances", {})
 
     async def __call__(self, scope, receive, send):
         if (
@@ -358,16 +466,44 @@ class McpEnvelopeGuard:
         ):
             await self.app(scope, receive, send)
             return
+        # Declared-size 413 before reading, mirroring the SDK middleware.
+        content_length = _header(scope, b"content-length").decode("latin-1", "replace")
+        if content_length:
+            try:
+                if int(content_length) > _MAX_BODY_BYTES:
+                    await _send_plain(send, 413, b"Request body too large")
+                    return
+            except ValueError:
+                pass
         body = bytearray()
         while True:
             message = await receive()
+            if message.get("type") != "http.request":
+                # Interrupted upload (client disconnect): no replay, no response.
+                return
             body += message.get("body", b"")
+            if len(body) > _MAX_BODY_BYTES:
+                await _send_plain(send, 413, b"Request body too large")
+                return
             if not message.get("more_body"):
                 break
         raw = bytes(body)
+        body = None  # Release the mutable buffer; only the replay copy remains.
         try:
             message = json.loads(raw, parse_float=_float_token, parse_constant=_float_token)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except UnicodeDecodeError:
+            # The SDK's parse path answers invalid UTF-8 with a 500.
+            await _send_rejection(
+                send,
+                scope,
+                400,
+                -32700,
+                "Parse error: request body is not valid UTF-8",
+                "server-error",
+                echo_session=False,
+            )
+            return
+        except json.JSONDecodeError:
             # The SDK's own parse-error path echoes no payload.
             await self.app(scope, _replay_body(raw, receive), send)
             return
@@ -385,13 +521,33 @@ class McpEnvelopeGuard:
             )
         else:
             rejection = _check_envelope(message)
-        if rejection is None:
+        message = None  # Release the parsed tree before downstream dispatch.
+        session_is_known = self._session_is_known(scope)
+        if rejection is None or not session_is_known:
+            # Clean pass-through, or an unknown session where the SDK's own
+            # 404 (issued before body parsing) stays authoritative.
             await self.app(scope, _replay_body(raw, receive), send)
             return
-        await _send_rejection(send, scope, *rejection)
+        await _send_rejection(send, scope, *rejection, echo_session=session_is_known)
 
 
-async def _send_rejection(send, scope, status: int, code: int, error_message: str, request_id) -> None:
+async def _send_plain(send, status: int, payload: bytes) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(payload)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
+
+
+async def _send_rejection(
+    send, scope, status: int, code: int, error_message: str, request_id, echo_session: bool
+) -> None:
     payload = json.dumps(
         {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": error_message}}
     ).encode("utf-8")
@@ -399,9 +555,11 @@ async def _send_rejection(send, scope, status: int, code: int, error_message: st
         (b"content-type", b"application/json"),
         (b"content-length", str(len(payload)).encode()),
     ]
-    session_id = _header(scope, b"mcp-session-id")
-    if session_id:
-        headers.append((b"mcp-session-id", session_id))
+    if echo_session:
+        session_id = _header(scope, b"mcp-session-id")
+        if session_id:
+            # Echoed only for known sessions (see McpEnvelopeGuard).
+            headers.append((b"mcp-session-id", session_id))
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": payload})
 
