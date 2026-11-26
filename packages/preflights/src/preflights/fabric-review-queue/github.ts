@@ -151,6 +151,9 @@ export function reviewGitHub(proxy: ProxyRouteConfig) {
     async postRequest(repo: string, number: number, body: string): Promise<void> {
       requireOk(await send(`${issue(repo, number)}/comments`, "POST", { body }));
     },
+    async updateRequest(repo: string, commentId: number, body: string): Promise<void> {
+      requireOk(await send(`${repoPath(repo)}/issues/comments/${commentId}`, "PATCH", { body }));
+    },
     async waitingLabel(repo: string, number: number, present: boolean): Promise<void> {
       const path = `${issue(repo, number)}/labels`;
       if (present) {

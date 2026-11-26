@@ -135,6 +135,7 @@ interface Comment {
   body: string;
   created: number;
   updated: number;
+  hasUpdatedTimestamp: boolean;
   original: boolean;
 }
 function comments(rows: RecordData[], source: Source): Comment[] {
@@ -160,6 +161,7 @@ function comments(rows: RecordData[], source: Source): Comment[] {
         body: row.body,
         created,
         updated,
+        hasUpdatedTimestamp: Number.isFinite(timestamp(row.updated_at)),
         original:
           source === "review" ? row.state !== "DISMISSED" : row.created_at === row.updated_at,
       },
@@ -291,12 +293,10 @@ async function scanFeedback(
 function decisionId(candidate: Candidate, mode: "RA" | "LR"): string {
   const { work, meta } = candidate;
   const ids = work.rereview_comment_ids;
-  const previous = [meta.last_reviewed_sha, meta.last_reviewed_base_sha];
   const parts = [
     work.repo,
     work.number,
-    ...(mode === "LR" ? [meta.review_id] : []),
-    ...previous,
+    ...(mode === "LR" ? [meta.review_id, meta.last_reviewed_sha, meta.last_reviewed_base_sha] : []),
     work.head_sha,
     work.base_sha,
     ...(mode === "RA"
@@ -317,21 +317,65 @@ async function decision(
   bot: string,
   member: Member,
   guard: () => Promise<void>,
+  verifyOnly = false,
 ): Promise<boolean> {
   const { work } = candidate;
   const key = decisionId(candidate, mode);
   const marker = `<!-- dev-review-bot:${mode === "RA" ? "review-approval" : "ledger-recovery"}:${key} -->`;
-  const request = issue
-    .filter((c) => c.login === bot && Number.isFinite(c.created) && c.body.includes(marker))
-    .sort(chronological)[0];
+  // Approval IDs intentionally omit prior review state. Bind the comment itself
+  // to that state so a label-authorized intervening review invalidates old replies.
+  const contextMarker = `<!-- dev-review-bot:review-approval-context:v1:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        work.task_exists,
+        work.task_status ?? null,
+        ...[
+          "last_reviewed_sha",
+          "last_reviewed_base_sha",
+          "last_reviewed_at",
+          "active_head_sha",
+          "active_base_sha",
+          "review_id",
+          "update_count",
+        ].map((field) => candidate.meta[field] ?? null),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 16)} -->`;
+  const requests = issue
+    .filter(
+      (c) =>
+        c.login === bot &&
+        Number.isFinite(c.created) &&
+        (mode === "RA"
+          ? /<!-- dev-review-bot:review-approval:RA-[0-9a-f]{12} -->/.test(c.body)
+          : c.body.includes(marker)),
+    )
+    .sort(chronological);
+  // Always use the earliest bot request, including when old duplicate comments exist.
+  const request = requests[0];
+  if (mode === "RA" && requests.some((c) => !c.hasUpdatedTimestamp || c.updated < c.created))
+    throw new Error("Cannot verify approval request update time");
+  const rebind =
+    mode === "RA" &&
+    request &&
+    (!request.body.includes(marker) ||
+      !request.body.includes(contextMarker) ||
+      requests.slice(1).some((c) => c.updated >= request.updated));
   let reply: Comment | undefined;
   let yes = false;
-  if (request) {
+  if (request && !rebind) {
+    // Request IDs can recur after a revision reverts. GitHub timestamps have
+    // second precision, so only replies strictly later than the latest edit
+    // can prove they belong to this incarnation of the request.
     const pattern = new RegExp(`Review bot:\\s*(yes|no)\\s+${key}(?![A-Za-z0-9_-])`, "gi");
     for (const c of issue
       .filter(
         (c) =>
-          c.user && c.login !== bot && Number.isFinite(c.created) && chronological(c, request) > 0,
+          c.user &&
+          c.login !== bot &&
+          Number.isFinite(c.created) &&
+          (mode === "RA" ? c.created > request.updated : chronological(c, request) > 0),
       )
       .sort(chronological)) {
       const matches = new Set([...c.body.matchAll(pattern)].map((match) => match[1].toLowerCase()));
@@ -342,25 +386,32 @@ async function decision(
     }
   }
   const waiting = !reply;
-  if (mode === "RA" || !request) {
+  if (!verifyOnly && (mode === "RA" || !request)) {
     await guard();
     if (mode === "RA") await github.waitingLabel(work.repo, work.number, waiting);
   }
-  if (!request) {
+  if (!request || rebind) {
+    if (verifyOnly) return false;
     const link = work.status_review_id
       ? `[View review status](https://github.com/${work.repo}/pull/${work.number}#pullrequestreview-${work.status_review_id})`
       : "Pending the first review.";
-    const reason =
+    const requestBody =
       mode === "RA"
-        ? `Approval is required for this exact revision: head \`${work.head_sha.slice(0, 12)}\`, base \`${work.base_sha.slice(0, 12)}\`.`
-        : "The previous review ledger is unavailable. Starting over will reset the finding history and may assign new finding IDs.";
+        ? `### Review approval required\n\n**Request:** \`${key}\`\n\n` +
+          `**Reason:** ${work.rereview_comment_ids?.length ? "A re-review was requested without a new review-label event." : candidate.meta.last_reviewed_sha ? "The PR head or base changed since the last review." : "The configured review label has no new label-add event."}\n\n` +
+          `**Target revision**\n- **Head:** \`${work.head_sha.slice(0, 12)}\`\n- **Base:** \`${work.base_sha.slice(0, 12)}\`\n\n` +
+          "No review will run until an organization member approves this exact revision.\n\n" +
+          `**Reply with one option:**\n- \`Review bot: yes ${key}\` — approve and start the review.\n- \`Review bot: no ${key}\` — decline the review.`
+        : `### Review history needs recovery (${key})\n\n` +
+          "The previous review ledger is unavailable. Starting over will reset the finding history and may assign new finding IDs.\n\n" +
+          `An organization member can reply with \`Review bot: yes ${key}\` to approve or \`Review bot: no ${key}\` to decline.`;
     const body =
-      `### ${mode === "RA" ? "Review approval required" : "Review history needs recovery"} (${key})\n\n${reason}\n\n` +
-      `An organization member can reply with \`Review bot: yes ${key}\` to approve or \`Review bot: no ${key}\` to decline.\n\n${marker}\n\n` +
+      `${requestBody}\n\n${marker}${mode === "RA" ? `\n${contextMarker}` : ""}\n\n` +
       `<!-- dev-review-bot:comment-footer:start -->\n---\n\n**Status Comment:** ${link}\n\n**Next steps:**\n` +
       "- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.\n" +
       "<!-- dev-review-bot:comment-footer:end -->";
-    await github.postRequest(work.repo, work.number, body);
+    if (rebind) await github.updateRequest(work.repo, request.id, body);
+    else await github.postRequest(work.repo, work.number, body);
   }
   if (!reply || !yes) return false;
   if (mode === "RA") {
@@ -752,7 +803,26 @@ async function select(
           work.update_count = 0;
           if (restore === "older-draft") work.ignore_review_id = true;
         }
-        if (work.kind === "review") await guard();
+        if (work.kind === "review") {
+          await guard();
+          if (
+            work.review_authorization === "organization_member_approved" &&
+            !(await decision(
+              candidate,
+              "RA",
+              github,
+              comments(await github.issueComments(work.repo, work.number), "issue"),
+              bot,
+              member,
+              guard,
+              true,
+            ))
+          ) {
+            waiting += 1;
+            continue;
+          }
+          await guard();
+        }
         return { status: "start", content: JSON.stringify({ work, discovery_errors: errors }) };
       } catch {
         errors.push(
