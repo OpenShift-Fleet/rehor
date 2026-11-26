@@ -161,17 +161,28 @@ describe("production runner boundary", () => {
   });
 
   it("registers both runtime adapters without changing the Claude default", () => {
+    const environment = {
+      PATH: "/usr/bin",
+      ...proxyEnvironment,
+      BOT_LABEL: "project-coordinator",
+      BOT_TEAM_FIELD_ID: "customfield_10001",
+      BOT_IMPLEMENTATION_LABEL: "implementation-bot",
+    };
+    const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
     const registry = createRuntimeRegistryForCycle(prepared, {
       workspaceRoot: "/work",
       openCodeDeployment: deployment,
       openCodeCommand: "/usr/local/bin/opencode",
       openCodeExpectedVersion: "2.1.2",
-      environment: { PATH: "/usr/bin", ...proxyEnvironment },
+      environment,
     });
 
     expect(registry.runtimeIds).toEqual(["claude", "opencode"]);
     expect(registry.has("opencode-v1")).toBe(false);
     expect(registry.has("opencode-v2")).toBe(false);
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({ base: environment, config: deployment }),
+    );
   });
 
   it("keeps the legacy Claude registry Claude-only", () => {
