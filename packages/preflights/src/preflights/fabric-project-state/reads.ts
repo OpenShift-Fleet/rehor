@@ -1,4 +1,4 @@
-import { createHttpClient, type FetchLike, isPreflightHttpError } from "../../shared/http.js";
+import { createHttpClient, isPreflightHttpError } from "../../shared/http.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import type { ProxyWiring } from "../../shared/run-context.js";
 import {
@@ -32,18 +32,9 @@ export function issueKey(value: unknown): string {
 // arrays as empty. This workflow needs raw fields and complete pages to hash.
 export function createProjectReads(proxy: ProxyWiring) {
   const config = typeof proxy === "string" ? { baseUrl: proxy } : proxy;
-  const fetchJira: FetchLike = async (url, init) => {
-    const response = await (config.fetch ?? fetch)(url, init);
-    if (response.ok) {
-      // JSON.parse normally loses whether Jira supplied 1, 1.0 or 1e0, but
-      // Python preserves float values when computing its approval hashes.
-      parsePythonCompatibleJson(await response.clone().text());
-    }
-    return response;
-  };
   const jira = createHttpClient({
     ...config,
-    fetch: fetchJira,
+    parseJson: parsePythonCompatibleJson,
     pathPrefix: "/jira",
     timeoutMs: 30_000,
   });

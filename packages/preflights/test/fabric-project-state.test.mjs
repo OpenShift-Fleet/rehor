@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fabricProjectState } from "../dist/preflights/fabric-project-state/index.js";
 import { createPreflightRunContext } from "../dist/shared/run-context.js";
@@ -67,6 +68,12 @@ async function run(options = {}) {
     ticket(9, { [teamFieldId]: { id: "other-team" }, status: { name: "Done" } }),
     ticket(10, { parent: { key: "RHCLOUD-20" } }),
   ];
+  const jiraResponse = (value) => {
+    let body = JSON.stringify(value);
+    for (const [marker, lexeme] of Object.entries(options.lexemes ?? {}))
+      body = body.replaceAll(JSON.stringify(marker), lexeme);
+    return new Response(body, { headers: { "content-type": "application/json" } });
+  };
   const ctx = createPreflightRunContext({
     instanceId,
     repos: options.repos ?? repos,
@@ -92,7 +99,7 @@ async function run(options = {}) {
           assert.equal(init.method, "POST");
           const query = JSON.parse(init.body);
           if (query.jql === `project = "RHCLOUD" AND labels = "${controlLabel}" ORDER BY key ASC`) {
-            return Response.json(
+            return jiraResponse(
               options.searchFailure
                 ? { isLast: true }
                 : { issues: [{ key: control.key }], isLast: true },
@@ -107,28 +114,28 @@ async function run(options = {}) {
               issues: [controlIssue, ...children.slice(0, 1)],
               nextPageToken: "next",
               isLast: false,
+              ...(options.extraPageFields ?? {}),
             };
-            if (options.floatLexeme)
-              return new Response(
-                JSON.stringify(page).replace('"FLOAT_LEXEME"', options.floatLexeme),
-              );
-            return Response.json(page);
+            return jiraResponse(page);
           }
           assert.equal(query.nextPageToken, "next");
-          return Response.json({ issues: children.slice(1), isLast: true });
+          return jiraResponse({ issues: children.slice(1), isLast: true });
         }
         assert.equal(init.method, "GET");
         if (pathname.endsWith(`/issue/${control.key}/comment`)) {
           const startAt = Number(searchParams.get("startAt"));
-          return Response.json(
+          return jiraResponse(
             options.truncateComments
               ? { comments: [], total: 1, startAt }
-              : { comments: comments.slice(startAt, startAt + 1), total: comments.length, startAt },
+              : {
+                  comments: comments.slice(startAt, startAt + 1),
+                  total: options.commentTotal ?? comments.length,
+                  startAt,
+                },
           );
         }
-        if (pathname.endsWith(`/issue/${control.key}`)) return Response.json(controlIssue);
-        if (pathname.endsWith(`/issue/${parentKey}`))
-          return Response.json(options.parent ?? parent);
+        if (pathname.endsWith(`/issue/${control.key}`)) return jiraResponse(controlIssue);
+        if (pathname.endsWith(`/issue/${parentKey}`)) return jiraResponse(options.parent ?? parent);
         assert.equal(pathname, "/service/github/repos/org/demo/pulls");
         assert.equal(searchParams.get("state"), "open");
         if (options.githubFailure)
@@ -410,6 +417,68 @@ test("missing requested planning fields fail closed while explicit null is valid
   const parentWithoutDescription = structuredClone(parent);
   delete parentWithoutDescription.fields.description;
   assert.equal((await run({ parent: parentWithoutDescription })).status, "error");
+  for (const name of ["summary", "status", "parent", teamFieldId]) {
+    const issue = structuredClone(control);
+    delete issue.fields[name];
+    assert.match((await run({ control: issue })).content, new RegExp(`Missing Jira field ${name}`));
+  }
+  for (const name of ["summary", "status"]) {
+    const issue = structuredClone(parent);
+    delete issue.fields[name];
+    assert.match((await run({ parent: issue })).content, new RegExp(`Missing Jira field ${name}`));
+  }
+  const omittedTeam = ticket(4);
+  delete omittedTeam.fields[teamFieldId];
+  assert.match(
+    (await run({ children: [omittedTeam] })).content,
+    new RegExp(`Missing Jira field ${teamFieldId}`),
+  );
+  const nullTeam = ticket(4, { [teamFieldId]: null });
+  assert.equal((await run({ children: [nullTeam] })).status, "start");
+  const nullParent = { ...parent, fields: { summary: null, description: null, status: null } };
+  assert.equal((await run({ parent: nullParent, children: [ticket(4)] })).status, "start");
+  assert.match(
+    (await run({ parent: { ...parent, fields: { ...parent.fields, status: {} } } })).content,
+    /Invalid Jira status/,
+  );
+});
+
+test("unrelated decimals do not affect snapshot validation", async () => {
+  const child = ticket(4, { [teamFieldId]: '{"id":"team-1","score":1.0}' });
+  const human = {
+    id: "20",
+    body: { ...adf("paragraph", "approve"), version: "DECIMAL" },
+    created: "DECIMAL",
+  };
+  const result = project(
+    await run({
+      children: [child],
+      comments: [human],
+      extraPageFields: { timing: "DECIMAL" },
+      commentTotal: "DECIMAL",
+      lexemes: { DECIMAL: "1.0" },
+    }),
+  );
+  assert.equal(result.team_id, "team-1");
+  assert.equal(result.new_comments[0].body, "approve");
+});
+
+test("missing JSON reviver source fails closed only for numbers used in snapshot", () => {
+  const moduleUrl = new URL("../dist/preflights/fabric-project-state/snapshot.js", import.meta.url)
+    .href;
+  const script = `
+    const {parsePythonCompatibleJson, teamId, assertSnapshotField} = await import(${JSON.stringify(moduleUrl)});
+    const original = JSON.parse;
+    JSON.parse = (raw, reviver) => original(raw, function(key, value) { return reviver.call(this, key, value); });
+    const issue = parsePythonCompatibleJson('{"fields":{"team":{"id":"42","ignored":1.0},"description":{"version":1}}}');
+    if (teamId(issue, "team") !== "42") throw Error("unrelated number rejected");
+    try { assertSnapshotField(issue, "description"); throw Error("expected rejection"); }
+    catch (error) { if (!error.message.includes("Unsupported Jira number representation")) throw error; }
+  `;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("ambiguous Python numeric and object representations fail closed", async () => {
@@ -417,9 +486,11 @@ test("ambiguous Python numeric and object representations fail closed", async ()
   for (const floatLexeme of ["1.0", "1e0", "9007199254740992"]) {
     const result = await run({
       children: [ticket(4, { priority: { id: "FLOAT_LEXEME" } })],
-      floatLexeme,
+      lexemes: { FLOAT_LEXEME: floatLexeme },
     });
     assert.equal(result.status, "error", floatLexeme);
+    assert.match(result.content, /Unsupported Jira number representation in snapshot/);
+    assert.doesNotMatch(result.content, /upstream request failed/);
   }
   const reorderedKeys = ticket(4, { description: { 2: "two", 1: "one" } });
   const result = await run({ children: [reorderedKeys] });
@@ -429,4 +500,14 @@ test("ambiguous Python numeric and object representations fail closed", async ()
   assert.equal((await run({ children: [encodedTeam] })).status, "error");
   const encodedComment = { id: "12", body: '{"version":1.0,"type":"doc"}' };
   assert.equal((await run({ comments: [encodedComment] })).status, "error");
+  const rawParent = { ...parent, fields: { ...parent.fields, summary: "FLOAT_LEXEME" } };
+  assert.match(
+    (await run({ parent: rawParent, lexemes: { FLOAT_LEXEME: "1.0" } })).content,
+    /Unsupported Jira number representation in snapshot/,
+  );
+  const rawDescription = ticket(4, { description: { version: "FLOAT_LEXEME" } });
+  assert.match(
+    (await run({ children: [rawDescription], lexemes: { FLOAT_LEXEME: "1e0" } })).content,
+    /Unsupported Jira number representation in snapshot/,
+  );
 });

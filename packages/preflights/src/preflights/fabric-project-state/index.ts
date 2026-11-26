@@ -5,6 +5,7 @@ import { pyTruthy } from "../jira-common/shapes.js";
 import { linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
+  assertSnapshotField,
   COORD_STATES,
   field,
   fingerprint,
@@ -213,7 +214,8 @@ export const fabricProjectState = definePreflight({
         ]);
         // The search index can lag a removed label. Do not enroll that issue.
         if (!labels(control).includes(controlLabel)) continue;
-        requireFields(control, ["description"]);
+        requireFields(control, ["summary", "description", "status", "parent", teamFieldId]);
+        for (const name of ["summary", "description"]) assertSnapshotField(control, name);
         const team = teamId(control, teamFieldId);
         const parent = parentKey(control);
         const comments = humanComments(await reads.comments(controlKey));
@@ -247,7 +249,8 @@ export const fabricProjectState = definePreflight({
           throw new Error("Project repository map is unavailable");
         issueKey(parent);
         const parentIssue = await reads.issue(parent, baseFields);
-        requireFields(parentIssue, ["description"]);
+        requireFields(parentIssue, baseFields);
+        for (const name of ["summary", "description"]) assertSnapshotField(parentIssue, name);
         const siblings = await reads.search(`parent = "${parent}" ORDER BY key ASC`, [
           ...baseFields,
           "parent",
@@ -259,6 +262,7 @@ export const fabricProjectState = definePreflight({
           "issuetype",
           teamFieldId,
         ]);
+        for (const issue of siblings) requireFields(issue, [teamFieldId]);
         const children = siblings.filter((issue) => {
           if (!team || keyOf(issue) === controlKey || teamId(issue, teamFieldId) !== team)
             return false;
@@ -267,8 +271,25 @@ export const fabricProjectState = definePreflight({
             throw new Error(`Missing parent field on Jira search result ${issueKey(issue)}`);
           return actualParent === parent;
         });
-        for (const child of children)
-          requireFields(child, ["updated", "description", "priority", "issuetype"]);
+        for (const child of children) {
+          requireFields(child, [
+            "summary",
+            "status",
+            "updated",
+            "description",
+            "priority",
+            "issuetype",
+          ]);
+          for (const name of [
+            "summary",
+            "description",
+            "updated",
+            "priority",
+            "issuetype",
+            "issuelinks",
+          ])
+            assertSnapshotField(child, name);
+        }
         const assessment = assess(control, children, ctx.repos, params, team);
         operation = `read GitHub PR snapshot for ${controlKey}`;
         const pullRequests = await reads.prSnapshot(children, implementationLabel, ctx.repos);

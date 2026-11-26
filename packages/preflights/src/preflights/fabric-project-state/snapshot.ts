@@ -17,7 +17,10 @@ export const parentKey = (issue: RecordData): string =>
   keyOf(field(issue, "parent")) || keyOf(field(issue, "epic_key"));
 export const statusName = (issue: RecordData): string => {
   const status = field(issue, "status");
-  return text(record(status)?.name ?? status);
+  if (status == null) return "";
+  const name = record(status) ? record(status)?.name : status;
+  if (typeof name !== "string") throw new Error("Invalid Jira status");
+  return name;
 };
 export const labels = (issue: RecordData): string[] => {
   const value = field(issue, "labels");
@@ -31,19 +34,51 @@ export const COORD_STATES = new Set(
   ["needs-plan", "active", "blocked", "complete"].map((state) => `dev-bot-coordinator:${state}`),
 );
 
-// Preserve Python's distinction between integer and float before JSON.parse
-// discards numeric spelling. Unknown/ambiguous number formats fail closed.
+// Node 22.0 lacks reviver source context. Record unknown sources and reject
+// them only if a number actually contributes to a Python-compatible value.
+const numberSources = new WeakMap<object, Map<string, string | undefined>>();
 export function parsePythonCompatibleJson(source: string): unknown {
-  return JSON.parse(source, (_key: string, value: unknown, context?: { source?: string }) => {
-    if (
-      typeof value === "number" &&
-      (!Number.isSafeInteger(value) ||
-        !context?.source ||
-        !/^-?(?:0|[1-9]\d*)$/.test(context.source))
-    )
-      throw new Error("Unsupported Jira number representation");
-    return value;
-  });
+  return JSON.parse(
+    source,
+    function (this: object, key: string, value: unknown, context?: { source?: string }) {
+      if (typeof value === "number") {
+        let sources = numberSources.get(this);
+        if (!sources) {
+          sources = new Map();
+          numberSources.set(this, sources);
+        }
+        sources.set(key, context?.source);
+      }
+      return value;
+    },
+  );
+}
+
+function assertNumber(holder: object, key: string, value: unknown): void {
+  if (typeof value !== "number") return;
+  const sources = numberSources.get(holder);
+  const source = sources?.get(key);
+  if (
+    !Number.isSafeInteger(value) ||
+    (sources?.has(key) && (!source || !/^-?(?:0|[1-9]\d*)$/.test(source)))
+  )
+    throw new Error("Unsupported Jira number representation in snapshot");
+}
+
+function assertNumberTree(value: unknown): void {
+  if (value === null || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    assertNumber(value, key, item);
+    assertNumberTree(item);
+  }
+}
+
+export function assertSnapshotField(issue: RecordData, name: string): void {
+  const fields = record(issue.fields);
+  const holder = fields && Object.hasOwn(fields, name) ? fields : issue;
+  const value = holder[name];
+  assertNumber(holder, name, value);
+  assertNumberTree(value);
 }
 
 function decodedContainer(value: string): unknown {
@@ -58,7 +93,14 @@ function decodedContainer(value: string): unknown {
 
 function extractTeam(raw: unknown, allowScalar = true): string {
   if (Array.isArray(raw)) {
-    const ids = new Set(raw.map((item) => extractTeam(item, false)).filter(Boolean));
+    const ids = new Set(
+      raw
+        .map((item, index) => {
+          assertNumber(raw, String(index), item);
+          return extractTeam(item, false);
+        })
+        .filter(Boolean),
+    );
     return ids.size === 1 ? [...ids][0] : "";
   }
   const obj = record(raw);
@@ -66,12 +108,14 @@ function extractTeam(raw: unknown, allowScalar = true): string {
     for (const name of ["id", "teamId", "team_id", "teamID"]) {
       const item = obj[name];
       if (typeof item === "number" || typeof item === "string") {
+        assertNumber(obj, name, item);
         const id = String(item).trim();
         if (id) return id;
       }
     }
     for (const name of ["team", "option", "value", "data"]) {
       const item = obj[name];
+      if (typeof item === "number") assertNumber(obj, name, item);
       const id =
         record(item) || Array.isArray(item)
           ? extractTeam(item, false)
@@ -89,8 +133,12 @@ function extractTeam(raw: unknown, allowScalar = true): string {
   return allowScalar ? raw.trim() : "";
 }
 
-export const teamId = (issue: RecordData, fieldId: string): string =>
-  extractTeam(field(issue, fieldId));
+export const teamId = (issue: RecordData, fieldId: string): string => {
+  const fields = record(issue.fields);
+  const holder = fields && Object.hasOwn(fields, fieldId) ? fields : issue;
+  assertNumber(holder, fieldId, holder[fieldId]);
+  return extractTeam(holder[fieldId]);
+};
 
 function codePointCompare(a: string, b: string): number {
   const left = [...a],
@@ -195,6 +243,8 @@ export function isAssigned(value: unknown): boolean {
 }
 
 function commentBody(raw: unknown): string {
+  if (raw != null && typeof raw !== "string" && typeof raw !== "object")
+    throw new Error("Invalid Jira comment body");
   const decoded = typeof raw === "string" ? decodedContainer(raw) : undefined;
   if (typeof raw === "string" && !record(decoded) && !Array.isArray(decoded)) return raw;
   const body = decoded ?? raw ?? "";
@@ -228,7 +278,10 @@ function commentBody(raw: unknown): string {
       parts.push("\n");
   }
   collect(body);
-  return parts.join("").trim() || pythonJson(body, true);
+  const flattened = parts.join("").trim();
+  if (flattened) return flattened;
+  assertNumberTree(body);
+  return pythonJson(body, true);
 }
 
 export function humanComments(comments: readonly RecordData[]) {
@@ -244,6 +297,7 @@ export function humanComments(comments: readonly RecordData[]) {
       lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
     )
       return [];
+    assertNumber(comment, "id", comment.id);
     return [{ id: String(comment.id || ""), body, created: comment.created ?? null }];
   });
 }
