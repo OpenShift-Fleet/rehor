@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   createPreflightRunContext,
   validateConfig,
+  validateResolvedParams,
   workflowDefaults,
   type JenkinsInstances,
   type PreflightExecutionResult,
@@ -14,6 +15,13 @@ import { createPopulatedRegistry } from "@rehor/preflights/preflights";
 import type { AgentProfile } from "./agent-profiles.js";
 import { preflightConfigurationDiagnostics, type PreflightDiagnostic } from "./preflight-diagnostics.js";
 import { createPreflightTransport, PreflightDeadlineError } from "./preflight-transport.js";
+import {
+  containsSecretTemplate,
+  renderSecretTemplates,
+  SecretRenderError,
+  type SecretReader,
+  type SecretValueLedger,
+} from "./secret-rendering.js";
 
 /**
  * A start carries the agent prompt; skip/error carry a transcript. Per-entry
@@ -123,6 +131,22 @@ export type TsPreflightOptions = {
   signal?: AbortSignal;
   /** Per-entry execution budget; defaults to 120 seconds. */
   entryTimeoutMs?: number;
+  /**
+   * Tier-2 Kubernetes Secret reader for `with:` parameters carrying
+   * `${{ secret('name','key') }}` references. Read freshly per entry,
+   * immediately before that entry executes — never cached across entries,
+   * cycles, or the process lifetime. Entries without references never touch
+   * it; a referencing entry without a reader fails closed.
+   */
+  readSecret?: SecretReader;
+  /**
+   * Private per-dispatch ledger recording the values rendered for preflight
+   * entries; the launch path compares sandbox-bound values against it to
+   * detect rotation between the preflight reads and sandbox creation. Holds
+   * rendered values in dispatcher memory only — it never enters results,
+   * logs, diagnostics, or the sandbox envelope.
+   */
+  secretLedger?: SecretValueLedger;
 };
 
 /**
@@ -167,6 +191,13 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
 
   const wiring = validateRequiredPreflightWiring(options.wiring?.instanceId, options.wiring?.memory?.baseUrl, options.wiring?.memory?.token);
   if (!wiring.ok) return failure(wiring.message, "configuration");
+  // A secret-rendering or post-render-validation failure must prevent the
+  // whole dispatch even when earlier entries already executed: their results
+  // stay in the cycle report, but the aggregate decision is an error. The
+  // optional scripts argument carries those accumulated results plus the
+  // failing entry's stable message.
+  const failureWithScripts = (transcript: string, reason: "configuration" | "execution", scripts: WorkPreflightScriptResult[]): Extract<WorkPreflightResult, { transcript: string }> =>
+    ({ action: "error", transcript: `${identity}: ${transcript}`, scripts, reason });
 
   // Entry resolution: an explicit `preflights:` list replaces the default
   // set; an omitted field inherits the workflow's central default. Neither
@@ -185,12 +216,19 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   }
 
   // Fail-closed configuration validation before anything executes: no entry
-  // runs unless every entry validates, and the stable per-entry messages are
-  // the owner-facing feedback.
-  const validation = validateConfig(declared, registry);
+  // runs — and no Secret is read — unless every entry validates, and the
+  // stable per-entry messages are the owner-facing feedback. Entries whose
+  // `with:` values carry secret placeholders (deep detection, matching the
+  // renderer) never have their input schema invoked on the declaration: the
+  // schema runs exactly once, on the rendered map, so transforms and
+  // refinements never observe declaration literals. Phase one still fails
+  // closed on entry shape, preflight ids, unknown and missing parameters,
+  // reserved keys, and placeholders in fields that can never accept a
+  // rendered string.
+  const validation = validateConfig(declared, registry, { deferValue: containsSecretTemplate });
   if (!validation.ok) {
     const transcript = validation.invalid.map((entry) => entry.messages.join("\n")).join("\n");
-    return { ...failure(transcript, "configuration"), diagnostics: preflightConfigurationDiagnostics(declared, registry) };
+    return { ...failure(transcript, "configuration"), diagnostics: preflightConfigurationDiagnostics(declared, registry, containsSecretTemplate) };
   }
 
   const entryTimeoutMs = options.entryTimeoutMs ?? 120_000;
@@ -232,15 +270,60 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
   }
 
   const results: WorkPreflightScriptResult[] = [];
-  for (const entry of validation.entries) {
+  for (const [index, entry] of validation.entries.entries()) {
     if (options.signal?.aborted) break;
     const preflight = registry.get(entry.id);
     if (preflight === undefined) {
       return failure(`${entry.id}: unknown preflight id`, "configuration");
     }
+    // The raw declaration literals, aligned with the validated entries: the
+    // rendered map is built from them, so schema transforms and defaults run
+    // exactly once — on the rendered values, in post-render validation.
+    const declaration = declared[index];
+    const declaredWith = typeof declaration === "string" ? {} : (declaration as { with?: Record<string, unknown> }).with ?? {};
+    // Per-entry secret rendering: read the entry's referenced Secrets
+    // immediately before it executes — values may rotate at any time, so
+    // nothing is cached across entries, cycles, or the process lifetime, and
+    // the per-entry prefetch deduplicates only within this entry.
+    let params: Readonly<Record<string, unknown>> = entry.params;
+    if (containsSecretTemplate(declaredWith)) {
+      const renderFailure = (transcript: string, reason: "configuration" | "execution") =>
+        failureWithScripts(transcript, reason, [...results, { name: entry.id, status: "error" as const, content: transcript }]);
+      if (options.readSecret === undefined) {
+        return renderFailure("Preflight secret rendering is not configured", "configuration");
+      }
+      let rendered: unknown;
+      try {
+        // The production reader bounds every request (five-second hard
+        // timeout, one parallel request per distinct Secret name), so this
+        // await cannot hang; an abort during a pending read resolves here
+        // and the guard below fails fast — runEntry's own throwIfAborted
+        // is the backstop that keeps the script from ever executing.
+        rendered = await renderSecretTemplates(declaredWith, options.readSecret, options.secretLedger === undefined ? undefined : {
+          onResolved: (reference, value) => { options.secretLedger!.observe(index, reference, value); },
+        });
+      } catch (error) {
+        // Fixed-message SecretRenderError only: rendered values, transport
+        // detail, and exception text never enter the result.
+        const message = error instanceof SecretRenderError ? error.message : "Preflight secret rendering failed";
+        const reason = error instanceof SecretRenderError && error.failure === "transport" ? "execution" : "configuration";
+        return renderFailure(message, reason);
+      }
+      // Abort while the reader was pending: never validate or execute the
+      // entry; the cancelled result below carries the run's outcome.
+      if (options.signal?.aborted) break;
+      // Validate the rendered parameter map against the preflight's actual
+      // schema before the entry executes; stable per-parameter messages
+      // never carry the rendered values.
+      const resolved = validateResolvedParams(preflight, rendered as Readonly<Record<string, unknown>>);
+      if (!resolved.ok) {
+        return renderFailure(resolved.messages.join("\n"), "configuration");
+      }
+      params = resolved.params;
+    }
     let outcome: PreflightExecutionResult;
     try {
-      outcome = await transport.runEntry(() => preflight.run(context, entry.params), options.signal, entryTimeoutMs);
+      outcome = await transport.runEntry(() => preflight.run(context, params), options.signal, entryTimeoutMs);
     } catch (error) {
       // A thrown preflight is an execution error of that entry only; the
       // exception detail (URLs, upstream messages) never enters the result.
@@ -263,6 +346,20 @@ export async function runTsPreflight(options: TsPreflightOptions): Promise<WorkP
     return { action: "error", transcript: `${identity}: ${transcript}`, scripts: results, reason: "execution" };
   }
   if (ok.some((result) => result.status === "start")) {
+    // Rotation guard, engine side: bind the start-outcome entries' observed
+    // values. Two starts that saw different values for one reference mean a
+    // mixed prompt — the dispatch fails closed (execution: transient, the
+    // next cycle re-reads fresh). Skip and error observations never bind:
+    // their content stays out of the prompt and the input envelope carries
+    // script names and statuses only, so they cannot reach the sandbox.
+    if (options.secretLedger !== undefined) {
+      try {
+        options.secretLedger.bindStartEntries(results.flatMap((result, position) => (result.status === "start" ? [position] : [])));
+      } catch (error) {
+        const message = error instanceof SecretRenderError ? error.message : "Preflight secret values changed during the run";
+        return failureWithScripts(message, "execution", results);
+      }
+    }
     // The prompt carries start content only; skip and error content stays in
     // the per-entry script results for the cycle report.
     const prompt = ok.filter((result) => result.status === "start").map((result) => result.content).filter(Boolean).join("\n\n");

@@ -256,18 +256,26 @@ async function start(): Promise<void> {
         ...(preflightStateDir ? { preflightStateDir } : {}),
         ...(slackWebhooks ? { slackWebhooks } : {}),
         ...(jenkinsInstances ? { jenkins: { instances: jenkinsInstances, ...(jenkinsIdpJobs ? { idpJobs: jenkinsIdpJobs } : {}) } } : {}),
+        secretReader: readKubernetesSecret,
         // Preflight memory requests authenticate with a short-lived minted
         // credential; it is forwarded per cycle, never via the process env.
         memoryCredential: async () => (await provider!.mint()).token,
-        launch: async (profile, agentId, _prompt, decision, repository) => {
+        launch: async (profile, agentId, _prompt, decision, repository, secretLedger) => {
           if (signal.aborted) return "not-created";
           // Render before sandbox creation: one unresolvable reference
-          // creates nothing. Failures log a fixed category only.
+          // creates nothing. Failures log a fixed category only. The
+          // rotation guard compares values against the preflight ledger
+          // in memory — a value that changed since this dispatch's
+          // preflight reads prevents the launch, without a second fetch.
           let sandboxEnv: Record<string, string> | undefined;
           if (Object.keys(profile.sandboxEnv).length > 0) {
             const rendering = logger.start("sandbox.env");
             try {
-              sandboxEnv = await renderSandboxEnvironment(profile.sandboxEnv, readKubernetesSecret);
+              sandboxEnv = await renderSandboxEnvironment(
+                profile.sandboxEnv,
+                readKubernetesSecret,
+                secretLedger === undefined ? undefined : { onResolved: (reference, value) => { secretLedger.verify(reference, value); } },
+              );
               rendering.success();
             } catch (error) {
               rendering.failure(error instanceof SecretRenderError ? error.category : "internal");

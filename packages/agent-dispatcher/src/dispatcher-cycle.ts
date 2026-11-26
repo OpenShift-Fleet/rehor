@@ -10,6 +10,7 @@ import { loadInstanceRepos, runTsPreflight, validateRequiredPreflightWiring } fr
 import type { PreflightWiringField, TsPreflightWiring, WorkPreflightResult } from "./preflight-engine-ts.js";
 import { mergeProfileEnvironment } from "./runtime-environment.js";
 import { isScheduleActive } from "./schedule.js";
+import { createSecretValueLedger, type SecretReader, type SecretValueLedger } from "./secret-rendering.js";
 export type DispatcherCycleDependencies = {
   parseRepositories: typeof parseConfigRepositories;
   syncRepositories: typeof syncConfigRepositories;
@@ -24,8 +25,11 @@ export type DispatcherCycleOptions = {
   env: NodeJS.ProcessEnv | ((profile: AgentProfile) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>);
   dispatcher: SessionDispatcher;
   /** Sandbox launch for a start decision; agentId identifies the session mutex.
-   * The repository URL arrives last so session records can name the owner. */
-  launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>, repository: string) => Promise<SessionCompletion>;
+   * The repository URL arrives last so session records can name the owner.
+   * The secret ledger carries the values this dispatch's preflight entries
+   * rendered, in memory only, so the launch path can detect rotation between
+   * the preflight reads and sandbox creation. */
+  launch: (profile: AgentProfile, agentId: string, prompt: string, decision: Extract<WorkPreflightResult, { action: "start" }>, repository: string, secretLedger?: SecretValueLedger) => Promise<SessionCompletion>;
   /**
    * Mints the short-lived memory credential the preflight engine uses for
    * memory-server task fetches. Called once per cycle; a minting failure
@@ -51,6 +55,13 @@ export type DispatcherCycleOptions = {
   slackWebhooks?: SlackWebhookConfig;
   /** Jenkins endpoints and idp job overrides; see {@link TsPreflightWiring.jenkins}. */
   jenkins?: { instances: JenkinsInstances; idpJobs?: readonly string[] };
+  /**
+   * Tier-2 Kubernetes Secret reader for preflight `with:` parameters carrying
+   * `${{ secret('name','key') }}` references; see
+   * {@link TsPreflightOptions.readSecret}. Profiles whose entries declare no
+   * references never touch it.
+   */
+  secretReader?: SecretReader;
   dependencies?: Partial<DispatcherCycleDependencies>;
   /** Monotonic milliseconds; injectable for tests. */
   now?: () => number;
@@ -291,6 +302,10 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           if (last !== undefined && now - last < intervalMs) return "throttled" as const;
           checks.set(id, now);
           const repos = await loadInstanceRepos(profile.instanceDir);
+          // One ledger per dispatch decision: the values this run's preflight
+          // entries render, held in memory only for the launch-time rotation
+          // guard, then discarded with the decision.
+          const secretLedger = createSecretValueLedger();
           const wiring: TsPreflightWiring = {
             ...required.wiring,
             ...(options.serviceGatewayUrl ? { proxyBaseUrl: options.serviceGatewayUrl.href } : {}),
@@ -304,7 +319,14 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
             // name before this point.
             instanceEnv: profile.preflightEnv,
           };
-          const decision = await deps.preflight({ profile, wiring, signal: options.signal, repositoryUrl: repository.url });
+          const decision = await deps.preflight({
+            profile,
+            wiring,
+            signal: options.signal,
+            repositoryUrl: repository.url,
+            ...(options.secretReader ? { readSecret: options.secretReader } : {}),
+            secretLedger,
+          });
           if (decision.action === "error") errorReason = decision.reason ?? "execution";
           // One record per preflight entry: id, outcome, and the owner
           // identity. Entry content and transcripts never enter the record;
@@ -333,7 +355,7 @@ export async function runDispatcherCycle(options: DispatcherCycleOptions): Promi
           if (options.signal?.aborted) return "shutdown" as const;
           const dispatched = options.dispatcher.dispatch(id, decision, (prompt) => {
             if (decision.action !== "start") return "not-created";
-            return options.launch(profile, id, prompt, decision, repository.url);
+            return options.launch(profile, id, prompt, decision, repository.url, secretLedger);
           });
           if (dispatched.status === "started") {
             // Defensive even if a future dispatcher implementation rejects completion.

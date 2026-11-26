@@ -36,8 +36,14 @@ export type {
   PreflightStartResult,
 } from "./core/results.js";
 
-export type { ConfigValidationResult, ResolvedPreflightEntry } from "./core/validate.js";
-export { validateConfig } from "./core/validate.js";
+export type {
+  ConfigValidationResult,
+  DeferredParameterIssue,
+  ResolvedParamsValidation,
+  ResolvedPreflightEntry,
+  ValidateConfigOptions,
+} from "./core/validate.js";
+export { deferredParameterIssues, validateConfig, validateResolvedParams } from "./core/validate.js";
 
 // --- run context (the one shared type re-exported; dispatcher-facing) ---
 

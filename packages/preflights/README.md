@@ -18,7 +18,7 @@ src/
   - `preflight.ts` — `PreflightDefinition`: `id`, Zod input schema, `run(ctx, params)`.
  - `registry.ts` — `definePreflight` and `createPreflightRegistry`; unknown lookups return `undefined` (fail closed), duplicate ids throw at construction.
   - `entry.ts` — the Zod shape of one `preflights:` entry: a shorthand string or `{ id, with }`.
- - `validate.ts` — `validateConfig`: whole-list validation before execution, stable per-entry messages.
+ - `validate.ts` — `validateConfig`: whole-list validation before execution, stable per-entry messages; optional `deferValue` defers placeholder value checks to `validateResolvedParams` after rendering.
   - `results.ts` — the `start` / `skip` / `error` execution results plus the pre-execution `invalid` representation.
   - `defaults.ts` — `workflowDefaults` and `validateWorkflowDefaults`.
 - **`src/shared/`** — internal modules the preflight implementations import directly: the HTTP client factory, the memory-server client, the Jira REST client, the GitHub client with its `defineGitHubPreflight` factory, the run context (`createPreflightRunContext`), the failure-evidence and deterministic task-key helpers, and the repos/time/format/strings helpers.

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { runDispatcherCycle } from "../dist/dispatcher-cycle.js";
 import { SessionDispatcher } from "../dist/dispatch-sessions.js";
 import { createLifecycleLogger } from "../dist/logging.js";
+import { renderSecretTemplates } from "../dist/secret-rendering.js";
 
 const urls = ["https://example.test/one.git", "https://example.test/two.git"];
 const start = (prompt = "secret-prompt") => ({ action: "start", prompt, scripts: [] });
@@ -1188,4 +1189,70 @@ test("logger failures stay isolated while per-entry errors are reported", async 
   await opts.dispatcher.drain();
   assert.equal(result.repositories[0].profiles[0].status, "started");
   assert.ok(calls >= 1);
+});
+
+test("the per-dispatch secret ledger threads from preflight rendering to launch", async () => {
+  const value = "customfield_42";
+  const payload = () => new Map([["team", Buffer.from(value)]]);
+  const reads = [];
+  const read = async (name) => {
+    reads.push(name);
+    return payload();
+  };
+  const seen = {};
+  const opts = options({
+    repositoriesJson: JSON.stringify([urls[0]]),
+    secretReader: read,
+    launch: async (_profile, _agentId, _prompt, _decision, _repository, ledger) => {
+      seen.ledger = ledger;
+      seen.rendered = await renderSecretTemplates(
+        { teamFieldId: "${{ secret('settings', 'team') }}" },
+        read,
+        ledger === undefined ? undefined : { onResolved: (reference, resolved) => ledger.verify(reference, resolved) },
+      );
+      return "gone";
+    },
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("agent", "one")],
+      preflight: async (engineOptions) => {
+        // The engine path: per-entry rendering observes into the ledger.
+        seen.engineOptions = { hasReader: engineOptions.readSecret === read, hasLedger: engineOptions.secretLedger !== undefined };
+        seen.engineLedger = engineOptions.secretLedger;
+        seen.params = await renderSecretTemplates(
+          { teamFieldId: "${{ secret('settings', 'team') }}" },
+          engineOptions.readSecret,
+          { onResolved: (reference, resolved) => engineOptions.secretLedger.observe(0, reference, resolved) },
+        );
+        engineOptions.secretLedger.bindStartEntries([0]);
+        return { action: "start", prompt: "work", scripts: [] };
+      },
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  await opts.dispatcher.drain();
+  assert.equal(result.repositories[0].profiles[0].status, "started");
+  assert.deepEqual(seen.engineOptions, { hasReader: true, hasLedger: true });
+  assert.strictEqual(seen.engineLedger, seen.ledger);
+  assert.deepEqual(seen.params, { teamFieldId: value });
+  // The launch-side render reuses the same value and the ledger verifies it.
+  assert.deepEqual(seen.rendered, { teamFieldId: value });
+  assert.deepEqual(reads, ["settings", "settings"]);
+});
+
+test("profiles without secret references never touch the secret reader", async () => {
+  const fail = async () => { throw new Error("no Secret may be read without references"); };
+  const opts = options({
+    repositoriesJson: JSON.stringify([urls[0]]),
+    secretReader: fail,
+    launch: async () => "gone",
+    dependencies: {
+      syncRepositories: async () => [{ name: "one", path: "one", revision: "abc" }],
+      discoverProfiles: async () => [profile("agent", "one")],
+      preflight: async () => ({ action: "start", prompt: "work", scripts: [] }),
+    },
+  });
+  const result = await runDispatcherCycle(opts);
+  await opts.dispatcher.drain();
+  assert.equal(result.repositories[0].profiles[0].status, "started");
 });

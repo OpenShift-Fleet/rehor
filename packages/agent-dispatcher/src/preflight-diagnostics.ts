@@ -1,8 +1,10 @@
 import { z, type ZodIssue } from "zod";
 import {
+  deferredParameterIssues,
   objectEntrySchema,
   preflightEntrySchema,
   shorthandEntrySchema,
+  type LiteralValue,
   type PreflightRegistry,
 } from "@rehor/preflights";
 
@@ -154,8 +156,15 @@ export function preflightEntryDiagnostics(entries: unknown): PreflightDiagnostic
  * Zod issue from each known preflight's input schema. All failing entries
  * are reported, not just the first. This powers the engine's structured
  * error results; the stable transcript text stays with `validateConfig`.
+ * `deferValue` matches the engine's validation pass: value-level issues on
+ * deferred placeholder parameters are omitted (they are re-validated after
+ * rendering), so diagnostics stay consistent with the validation result.
  */
-export function preflightConfigurationDiagnostics(entries: unknown, registry: PreflightRegistry): PreflightDiagnostic[] {
+export function preflightConfigurationDiagnostics(
+  entries: unknown,
+  registry: PreflightRegistry,
+  deferValue?: (value: LiteralValue) => boolean,
+): PreflightDiagnostic[] {
   const diagnostics = [...preflightEntryDiagnostics(entries)];
   if (!Array.isArray(entries)) return diagnostics;
   entries.forEach((raw, index) => {
@@ -180,22 +189,50 @@ export function preflightConfigurationDiagnostics(entries: unknown, registry: Pr
       diagnostics.push(configurationDiagnostic(`preflights[${index}].id`, "unknown_preflight", `${id}: unknown preflight id`, id));
       return;
     }
-    const parsed = preflight.input.safeParse(supplied);
-    // Strict schemas report unknown keys as parse issues; permissive object
-    // schemas strip them silently, so every stripped key is reported here
-    // too — the package validator rejects unknown keys either way.
+    // Deferred (placeholder-bearing) entries never invoke the input schema on
+    // the declaration — mirroring the validator, not parsing it — so schema
+    // callbacks never run during diagnostics either. Their structural issues
+    // are mirrored from the same deferred-parameter checks the validator uses.
+    const literal = (value: unknown): value is LiteralValue =>
+      typeof value === "string" || typeof value === "number" || typeof value === "boolean" || Array.isArray(value);
+    const deferred = deferValue !== undefined && Object.values(supplied).some((value) => literal(value) && deferValue(value));
+    // Keys stripped by permissive object schemas are reported for every
+    // entry — deferred entries included, mirroring the validator's unknown
+    // parameter messages.
     const reportedKeys = new Set<string>();
-    if (!parsed.success) {
-      for (const issue of parsed.error.issues) {
-        if (issue.code === "unrecognized_keys") {
-          for (const key of issue.keys ?? []) reportedKeys.add(String(key));
-        }
+    if (deferValue !== undefined && deferred) {
+      // Deferred (placeholder-bearing) entries never invoke the input schema
+      // on the declaration — mirroring the validator, not parsing it — so
+      // schema callbacks never run during diagnostics either. Their
+      // structural issues are mirrored from the same deferred-parameter
+      // checks the validator uses.
+      for (const issue of deferredParameterIssues(preflight, supplied, deferValue)) {
         diagnostics.push(configurationDiagnostic(
-          issue.path.length > 0 ? `preflights[${index}].with.${issue.path.map(String).join(".")}` : `preflights[${index}].with`,
-          issue.code,
-          issueDetail(issue),
-          receivedAt(supplied, issue.path),
+          `preflights[${index}].with.${issue.parameter}`,
+          issue.kind === "missing" ? "missing_required_parameter" : "incompatible_placeholder",
+          issue.kind === "missing"
+            ? `${id}: missing required parameter "${issue.parameter}"`
+            : `${id}: invalid parameter "${issue.parameter}"`,
+          issue.kind === "missing" ? undefined : supplied[issue.parameter],
         ));
+      }
+    } else {
+      const parsed = preflight.input.safeParse(supplied);
+      // Strict schemas report unknown keys as parse issues; permissive object
+      // schemas strip them silently, so every stripped key is reported here
+      // too — the package validator rejects unknown keys either way.
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          if (issue.code === "unrecognized_keys") {
+            for (const key of issue.keys ?? []) reportedKeys.add(String(key));
+          }
+          diagnostics.push(configurationDiagnostic(
+            issue.path.length > 0 ? `preflights[${index}].with.${issue.path.map(String).join(".")}` : `preflights[${index}].with`,
+            issue.code,
+            issueDetail(issue),
+            receivedAt(supplied, issue.path),
+          ));
+        }
       }
     }
     if (preflight.input instanceof z.ZodObject) {
