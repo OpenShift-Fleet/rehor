@@ -1,5 +1,6 @@
 import os
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncpg
@@ -41,6 +42,15 @@ class SingleConnectionPool:
 
     async def fetch(self, query, *args):
         return await self.conn.fetch(query, *args)
+
+
+# Shared task-document test fixtures (mocked pool fakes build on these).
+NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+TASK_ROW = {"id": 42}
+
+
+def document_row(name="bundle", revision=1, data='{"k": "v"}', id=7):
+    return {"id": id, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
 
 
 @pytest_asyncio.fixture

@@ -25,24 +25,22 @@ Concurrency contract under test:
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 from unittest.mock import patch
 
 import asyncpg
 import pytest
 import pytest_asyncio
 from bot_memory_server.tools.task_documents import _dump_data, register_task_document_tools
-from conftest import DB_CONFIG, SCHEMA_PATH, SingleConnectionPool, requires_real_database
+from conftest import (
+    DB_CONFIG,
+    NOW,
+    SCHEMA_PATH,
+    TASK_ROW,
+    SingleConnectionPool,
+    document_row,
+    requires_real_database,
+)
 from fastmcp import Client, FastMCP
-
-NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
-
-
-TASK_ROW = {"id": 42}
-
-
-def document_row(name="bundle", revision=1, data='{"k": "v"}', id=7):
-    return {"id": id, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
 
 
 class FakePool:

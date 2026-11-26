@@ -18,7 +18,7 @@ from starlette.websockets import WebSocket
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
-from .mcp_validation_sanitizer import install_sanitized_validation
+from .mcp_validation_sanitizer import McpEnvelopeGuard, install_sanitized_validation
 from .metrics import PrometheusMiddleware, db_gauge_refresh_loop
 
 logger = logging.getLogger(__name__)
@@ -185,7 +185,10 @@ def build_app() -> tuple[Starlette, Starlette]:
         middleware=[Middleware(PrometheusMiddleware)],
         routes=[
             WebSocketRoute("/ws", ws_events),
-            Mount("/", app=mcp_app),
+            # The envelope guard inspects POST /mcp bodies before the MCP SDK
+            # parses them (malformed-envelope payload leaks, silent number
+            # corruption in document data); everything else passes through.
+            Mount("/", app=McpEnvelopeGuard(mcp_app)),
         ],
     )
     return app, metrics_app

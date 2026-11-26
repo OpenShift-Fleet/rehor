@@ -28,13 +28,15 @@ from your last read; ``expected_revision`` alone guards the record's data
 version, not its identity across delete/recreate. Classic CRUD keeps no
 history, so this is guarded rather than prevented with tombstones.
 
-Number semantics: JSON numbers travel the MCP transport and Python handlers
-as IEEE 754 double-precision floats (Python ``float``). Values outside that
-representation change before the handler runs — e.g. ``9007199254740993.0``
-rounds to ``9007199254740992.0`` and ``1e-400`` underflows to ``0.0`` — so
-documents are value-exact only within double precision, never
-arbitrary-precision. Send precision-sensitive values (integers beyond 2^53,
-exact decimals) as strings.
+Number semantics: JSON numbers travel the MCP transport as Python values —
+integers keep arbitrary precision, but floats are IEEE 754 doubles. The
+transport-level envelope guard (``mcp_validation_sanitizer.McpEnvelopeGuard``)
+rejects ``task_document_create``/``task_document_update`` calls whose ``data``
+contains float tokens that would not survive the double conversion unchanged
+(``1e400``, ``1e-400``, beyond-double-precision decimals like
+``9007199254740993.0``) with a sanitized error, so no silent numeric
+corruption occurs. Accepted numbers are value-exact within these limits;
+send precision-sensitive values as strings.
 """
 
 import json
@@ -202,8 +204,9 @@ def register_task_document_tools(mcp: FastMCP):
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name, unique per task (max 200 chars).
         data: Arbitrary valid JSON — object, array, string, number, boolean or null.
-            Numbers are IEEE 754 doubles end to end (9007199254740993.0 rounds, 1e-400
-            underflows to 0.0); send precision-sensitive values as strings.
+            Integers are exact (arbitrary precision); floats must be exactly representable
+            as IEEE 754 doubles — others (1e400, 1e-400, beyond-double-precision decimals)
+            are rejected at the transport boundary. Send precision-sensitive values as strings.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
         Never store credentials, tokens or secrets in documents."""
         name = _validate_name(name)
@@ -303,7 +306,8 @@ def register_task_document_tools(mcp: FastMCP):
         external_key: The external identifier (e.g. Jira key 'RHCLOUD-12345').
         name: Document name.
         data: Arbitrary valid JSON replacing the previous content.
-            Numbers are IEEE 754 doubles end to end; send precision-sensitive values as strings.
+            Integers exact; floats must be exactly representable IEEE 754 doubles (others
+            rejected at the transport boundary); send precision-sensitive values as strings.
         source_type: Source system — 'jira', 'github', 'gitlab', 'manual'. Defaults to 'jira'.
         expected_revision: Optional revision you last read; update fails on mismatch.
         expected_id: Optional record id you last read; update fails if the record was recreated.
