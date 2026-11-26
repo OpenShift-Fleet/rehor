@@ -43,6 +43,9 @@ MAX_NAME_LENGTH = 200
 DocumentData = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 _COLUMNS = "id, name, data, revision, created_at, updated_at"
+# Update/delete pre-checks need identity and revision only — fetching the full
+# JSONB payload just to compare a revision would read large documents for nothing.
+_META_COLUMNS = "id, name, revision, created_at, updated_at"
 
 
 def _validate_name(name: str) -> str:
@@ -290,7 +293,7 @@ def register_task_document_tools(mcp: FastMCP):
         async with pool.acquire() as conn, conn.transaction():
             task_id = await _lock_task(conn, external_key, source_type)
             row = await conn.fetchrow(
-                f"SELECT {_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
+                f"SELECT {_META_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
                 task_id,
                 name,
             )
@@ -335,8 +338,7 @@ def register_task_document_tools(mcp: FastMCP):
         async with pool.acquire() as conn, conn.transaction():
             task_id = await _lock_task(conn, external_key, source_type)
             row = await conn.fetchrow(
-                "SELECT id, name, revision, created_at, updated_at FROM task_documents "
-                "WHERE task_id = $1 AND name = $2 FOR UPDATE",
+                f"SELECT {_META_COLUMNS} FROM task_documents WHERE task_id = $1 AND name = $2 FOR UPDATE",
                 task_id,
                 name,
             )

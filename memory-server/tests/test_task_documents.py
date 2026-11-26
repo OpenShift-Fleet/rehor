@@ -3,9 +3,14 @@
 Two tiers:
 - Protocol tests against an in-memory FastMCP server with a scripted pool fake
   (no database): tool schemas, parameterized SQL, clear error translation.
-- Real-database integration tests (``db`` fixture — destructive, drops public
-  tables; only ever point PGSQL_* at a disposable database): JSONB fidelity,
-  archival persistence, source_type isolation, and concurrent writers.
+- Real-database integration tests, suffixed ``_real_database`` and strictly
+  opt-in via REHOR_REAL_DATABASE_TESTS=1 (CI sets it with a disposable
+  pgvector service). The ``db`` fixture is destructive — it drops all public
+  tables — so point PGSQL_* at a disposable database and never at real data.
+  Deselect with ``-k 'not real_database'`` or simply omit the opt-in variable;
+  the skip is evaluated before fixture initialization, so a default run never
+  connects. Covered: JSONB fidelity, archival persistence, source_type
+  isolation, concurrent writers, and literal vs. escaped Unicode strings.
 
 Concurrency contract under test:
 - Without ``expected_revision``/``expected_id``: update/delete are atomic last-writer-wins.
@@ -19,6 +24,7 @@ Concurrency contract under test:
 
 import asyncio
 import json
+import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import patch
@@ -31,6 +37,16 @@ from conftest import DB_CONFIG, SCHEMA_PATH
 from fastmcp import Client, FastMCP
 
 NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+
+# The db fixture is destructive (drops all public tables). Real-database tests
+# are strictly opt-in: they run only with REHOR_REAL_DATABASE_TESTS=1 and
+# PGSQL_* pointing at a disposable database (CI sets both). The skip is
+# evaluated before fixture initialization, so a default run never connects.
+requires_real_database = pytest.mark.skipif(
+    os.environ.get("REHOR_REAL_DATABASE_TESTS") != "1",
+    reason="opt-in: set REHOR_REAL_DATABASE_TESTS=1 and point PGSQL_* at a disposable database "
+    "(the db fixture drops all public tables)",
+)
 TASK_ROW = {"id": 42}
 
 
@@ -636,7 +652,8 @@ FIDELITY_PAYLOAD = {
 
 
 @pytest.mark.asyncio
-async def test_crud_roundtrip_preserves_nested_json(db, document_client):
+@requires_real_database
+async def test_crud_roundtrip_preserves_nested_json_through_real_database(db, document_client):
     task_id = await seed_task(db, "ART-1")
     created = await document_client.call_tool(
         "task_document_create",
@@ -691,7 +708,8 @@ async def test_get_does_not_double_decode_pre_parsed_jsonb():
 
 
 @pytest.mark.asyncio
-async def test_json_null_data_round_trip(db, document_client):
+@requires_real_database
+async def test_json_null_data_round_trip_through_real_database(db, document_client):
     await seed_task(db, "ART-NULL")
     created = await document_client.call_tool(
         "task_document_create", {"external_key": "ART-NULL", "name": "maybe", "data": None}
@@ -704,7 +722,8 @@ async def test_json_null_data_round_trip(db, document_client):
 
 
 @pytest.mark.asyncio
-async def test_scalar_and_astral_data_round_trip(db, document_client):
+@requires_real_database
+async def test_scalar_and_astral_data_round_trip_through_real_database(db, document_client):
     """Top-level JSON scalars keep their exact type (no double decode) and
     astral characters (valid surrogate pairs) survive PostgreSQL JSONB."""
     await seed_task(db, "ART-SCALAR")
@@ -726,7 +745,8 @@ async def test_scalar_and_astral_data_round_trip(db, document_client):
 
 
 @pytest.mark.asyncio
-async def test_documents_persist_through_archival_and_stay_writable(db, document_client):
+@requires_real_database
+async def test_documents_persist_through_archival_and_stay_writable_through_real_database(db, document_client):
     task_id = await seed_task(db, "ART-ARCH")
     created = await document_client.call_tool(
         "task_document_create", {"external_key": "ART-ARCH", "name": "bundle", "data": {"v": 1}}
@@ -754,7 +774,8 @@ async def test_documents_persist_through_archival_and_stay_writable(db, document
 
 
 @pytest.mark.asyncio
-async def test_duplicate_create_fails_on_unique_constraint(db, document_client):
+@requires_real_database
+async def test_duplicate_create_fails_on_unique_constraint_through_real_database(db, document_client):
     await seed_task(db, "ART-DUP")
     first = await document_client.call_tool(
         "task_document_create", {"external_key": "ART-DUP", "name": "bundle", "data": {"w": 1}}
@@ -771,6 +792,7 @@ async def test_duplicate_create_fails_on_unique_constraint(db, document_client):
 
 
 @pytest.mark.asyncio
+@requires_real_database
 async def test_missing_task_and_document_errors_through_real_database(db, document_client):
     await seed_task(db, "ART-ERR")
     missing_task = await document_client.call_tool(
@@ -787,7 +809,8 @@ async def test_missing_task_and_document_errors_through_real_database(db, docume
 
 
 @pytest.mark.asyncio
-async def test_source_type_isolation_for_same_external_key(db, document_client):
+@requires_real_database
+async def test_source_type_isolation_for_same_external_key_through_real_database(db, document_client):
     await seed_task(db, "ART-SAME", "jira")
     await seed_task(db, "ART-SAME", "github")
     created = await document_client.call_tool(
@@ -810,7 +833,8 @@ async def test_source_type_isolation_for_same_external_key(db, document_client):
 
 
 @pytest.mark.asyncio
-async def test_recreate_same_name_new_id_blocks_stale_generation_guard(db, document_client):
+@requires_real_database
+async def test_recreate_same_name_new_id_blocks_stale_generation_guard_through_real_database(db, document_client):
     """Delete + recreate starts a fresh record: new id, revision restarts at 1.
 
     expected_revision alone cannot detect the recreate (revision 1 matches
@@ -900,7 +924,8 @@ async def test_recreate_same_name_new_id_blocks_stale_generation_guard(db, docum
 
 
 @pytest.mark.asyncio
-async def test_literal_backslash_u_strings_round_trip_through_postgres(db, document_client):
+@requires_real_database
+async def test_literal_backslash_u_strings_round_trip_through_real_database(db, document_client):
     """Literal backslash-u sequences are ordinary text, not JSON escapes:
     they must be stored and returned verbatim (validation checks decoded
     values, never serialized JSON text)."""
@@ -922,7 +947,8 @@ async def test_literal_backslash_u_strings_round_trip_through_postgres(db, docum
 
 
 @pytest.mark.asyncio
-async def test_concurrent_create_has_exactly_one_winner(db):
+@requires_real_database
+async def test_concurrent_create_has_exactly_one_winner_through_real_database(db):
     await db.execute(SCHEMA_PATH.read_text())
     await seed_task(db, "RACE-CREATE")
     pool = await asyncpg.create_pool(**DB_CONFIG, min_size=2, max_size=4)
@@ -955,7 +981,8 @@ async def test_concurrent_create_has_exactly_one_winner(db):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_update_with_same_expected_revision_single_winner(db):
+@requires_real_database
+async def test_concurrent_update_with_same_expected_revision_single_winner_through_real_database(db):
     await db.execute(SCHEMA_PATH.read_text())
     await seed_task(db, "RACE-UPDATE")
     mcp = FastMCP(name="documents-race-update")
