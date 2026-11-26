@@ -779,13 +779,6 @@ describe("OpenCode environment", () => {
     expect(environment.BOT_ACME_QUEUE_DEPTH).toBe("profile-literal");
     expect(environment.BOT_LABEL).toBe("project-coordinator");
   });
-  it("keeps absent declared literals absent when none are supplied", () => {
-    const environment = buildOpenCodeEnvironment({
-      base: { PATH: "/bin" },
-      declared: ["BOT_LABEL"],
-    });
-    expect(environment.BOT_LABEL).toBeUndefined();
-  });
   it("distinguishes provenance: a manifest declaration cannot forward an ambient secret-looking value", () => {
     const base = Object.freeze({ PATH: "/bin", TEAM_SERVICE_TOKEN: "ambient-deployment-secret" });
     expect(

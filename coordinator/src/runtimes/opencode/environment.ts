@@ -133,8 +133,8 @@ export const OPENCODE_OPERATIONAL_ENVIRONMENT_ALLOWLIST = [
  * declarations. These are generic categories, not per-agent lists:
  *
  * - Interpreter/loader injection: NODE_PATH, PYTHONPATH/PYTHONHOME/
- *   PYTHONSTARTUP, PERL5OPT, RUBYOPT, BASH_ENV/ENV, LD_*, and DYLD_* would
- *   change how the OpenCode server and its shell/Python tooling execute.
+ *   PYTHONSTARTUP, PERL5OPT, RUBYOPT, BASH_ENV/ENV, and the listed LD_ and
+ *   DYLD_ loader variables change how the server and its tooling execute.
  * - Git execution and credential interception: GIT_SSH_COMMAND, GIT_ASKPASS,
  *   and the GIT_CONFIG_COUNT/KEY/VALUE mechanism would redirect git
  *   transport or credential prompts away from the runner-owned
@@ -190,9 +190,7 @@ const DECLARED_PROTECTED_NAMES: ReadonlySet<string> = new Set([
   "GIT_SSL_CAINFO",
 ]);
 const DECLARED_PROTECTED_PREFIXES = [
-  "OPENCODE_",
-  "NPM_CONFIG_",
-  "npm_config_",
+  ...OPENCODE_BLOCKED_PASSTHROUGH_PREFIXES,
   "REHOR_",
   "rehor_",
   "GIT_CONFIG_KEY_",
