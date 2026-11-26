@@ -24,6 +24,8 @@ const ACTIVE = new Set(ACTIVE_TASK_STATUSES);
 const COMMANDABLE = new Set([...ACTIVE, "done"]);
 const RESUMABLE = new Set(["in_progress", "pr_changes"]);
 const LEDGER_PREFIX = "<!-- dev-review-bot:review-ledger:v1:";
+const APPROVAL_NOTICE =
+  "Approval is necessary but cannot start a review until revision continuity can be verified.";
 const input = z.strictObject({
   review_label: z
     .string()
@@ -377,10 +379,12 @@ async function decision(
     request &&
     (!request.body.includes(marker) ||
       !request.body.includes(contextMarker) ||
+      !request.body.includes(APPROVAL_NOTICE) ||
       requests.slice(1).some((c) => c.updated >= request.updated));
   let reply: Comment | undefined;
   let yes = false;
   let ambiguous = false;
+  let latestAt = Number.NEGATIVE_INFINITY;
   if (request && !rebind) {
     // Request IDs can recur after a revision reverts. GitHub timestamps have
     // second precision, so only replies strictly later than the latest edit
@@ -390,18 +394,14 @@ async function decision(
       const matches = new Set([...c.body.matchAll(pattern)].map((match) => match[1].toLowerCase()));
       if (!matches.size) continue;
       const boundary = mode === "RA" ? request.updated : request.created;
-      // An edited decision can supersede an earlier answer regardless of its
-      // creation order. Without edit history, it cannot safely be ordered.
-      if (!c.original && c.updated >= boundary && (await member(work.repo, c.login))) return false;
-      if (
-        c.original &&
-        (mode === "RA" ? c.created > boundary : chronological(c, request) > 0) &&
-        (await member(work.repo, c.login))
-      ) {
-        const simultaneous = reply?.created === c.created;
+      const at = c.original ? c.created : c.updated;
+      if ((c.original ? at > boundary : at >= boundary) && (await member(work.repo, c.login))) {
+        if (at < latestAt) continue;
+        const simultaneous = at === latestAt;
+        latestAt = at;
         reply = c;
-        // Same-second creation and edits cannot be ordered reliably.
-        ambiguous = simultaneous || matches.size !== 1;
+        // An edited answer blocks consent until a strictly later clean answer.
+        ambiguous = simultaneous || !c.original || matches.size !== 1;
         yes = !ambiguous && matches.has("yes");
       }
     }
@@ -422,10 +422,11 @@ async function decision(
         ? `### Review approval required\n\n**Request:** \`${key}\`\n\n` +
           `**Reason:** ${work.rereview_comment_ids?.length ? "A re-review was requested without a new review-label event." : candidate.meta.last_reviewed_sha ? "The PR head or base changed since the last review." : "The configured review label has no new label-add event."}\n\n` +
           `**Target revision**\n- **Head:** \`${work.head_sha.slice(0, 12)}\`\n- **Base:** \`${work.base_sha.slice(0, 12)}\`\n\n` +
-          "No review will run until an organization member approves this exact revision.\n\n" +
-          `**Reply with one option:**\n- \`Review bot: yes ${key}\` — approve and start the review.\n- \`Review bot: no ${key}\` — decline the review.`
+          `${APPROVAL_NOTICE}\n\n` +
+          `**Reply with one option:**\n- \`Review bot: yes ${key}\` — approve this revision.\n- \`Review bot: no ${key}\` — decline the review.`
         : `### Review history needs recovery (${key})\n\n` +
           "The previous review ledger is unavailable. Starting over will reset the finding history and may assign new finding IDs.\n\n" +
+          "Recovery cannot start until revision continuity can be verified.\n\n" +
           `An organization member can reply with \`Review bot: yes ${key}\` to approve or \`Review bot: no ${key}\` to decline.`;
     const body =
       `${requestBody}\n\n${marker}${mode === "RA" ? `\n${contextMarker}` : ""}\n\n` +
@@ -775,11 +776,19 @@ async function select(
     a.work.repo.localeCompare(b.work.repo) ||
     a.work.number - b.work.number;
   let waiting = 0;
+  let capacityReached = false;
   async function choose(items: Candidate[]): Promise<PreflightExecutionResult | undefined> {
     for (const candidate of items.sort(order)) {
       const { work, pull } = candidate;
       if (work.kind === "review" && !work.task_active && active >= 10) {
-        return { status: "skip", content: `${ID}: review task capacity reached (${active}/10)` };
+        capacityReached = true;
+        continue;
+      }
+      if (work.kind === "resume") {
+        // Legacy task metadata cannot prove whether the active pass was
+        // authorized by a label, approval, or recovery for this incarnation.
+        errors.push(`${work.repo}#${work.number}: cannot verify revision continuity for resume`);
+        continue;
       }
       try {
         const guard = async () => {
@@ -802,6 +811,18 @@ async function select(
           continue;
         }
         const restore = await restoration(candidate, github, bot);
+        if (
+          work.ledger_restore_pending &&
+          object(candidate.meta.pending_publication) &&
+          candidate.meta.pending_publication.operation === "review"
+        ) {
+          // A pending review may have been prepared after recovery consent;
+          // legacy publication metadata does not identify its authorization.
+          errors.push(
+            `${work.repo}#${work.number}: cannot verify revision continuity for pending review`,
+          );
+          continue;
+        }
         if (restore !== "ready") {
           // Recovery consent resets history, but a current full-review grant
           // is still required before converting feedback/resume into a review.
@@ -849,8 +870,8 @@ async function select(
             }
             // Neither PR snapshots nor the currently available REST events prove
             // that head and base never changed and returned between polls.
-            if (approval)
-              return { status: "error", content: `${ID}: cannot verify revision continuity` };
+            errors.push(`${work.repo}#${work.number}: cannot verify revision continuity`);
+            continue;
           }
           await guard();
         }
@@ -877,6 +898,8 @@ async function select(
     }
   }
   if (errors.length) return { status: "error", content: `${ID}: ${errors.join("; ")}` };
+  if (capacityReached)
+    return { status: "skip", content: `${ID}: review task capacity reached (${active}/10)` };
   return {
     status: "skip",
     content: waiting

@@ -27,6 +27,9 @@ function run({
   memberStatuses = [],
   reviewBody = marker,
   headSha = head,
+  numbers = [1],
+  labelEvents = {},
+  commentsByNumber = {},
 } = {}) {
   const writes = [];
   let issueReads = 0;
@@ -56,10 +59,11 @@ function run({
         }
         if (path === "/user") return Response.json({ login: bot });
         if (path === `/repos/${repo}/issues`)
-          return Response.json([{ number: 1, pull_request: {} }]);
-        if (path === `/repos/${repo}/pulls/1`) {
+          return Response.json(numbers.map((number) => ({ number, pull_request: {} })));
+        const pullMatch = new RegExp(`^/repos/${repo}/pulls/(\\d+)$`).exec(path);
+        if (pullMatch) {
           return Response.json({
-            number: 1,
+            number: Number(pullMatch[1]),
             state: "open",
             draft: false,
             user: { login: "author" },
@@ -71,8 +75,9 @@ function run({
           });
         }
         if (path.endsWith("/events")) {
+          const number = Number(path.split("/")[5]);
           return Response.json(
-            labelEvent
+            (labelEvents[number] ?? labelEvent)
               ? [{ id: 2, event: "labeled", label: { name: label }, created_at: time }]
               : [],
           );
@@ -91,10 +96,14 @@ function run({
               (memberError ? 503 : members.includes(path.split("/").pop()) ? 204 : 404),
           });
         if (path.endsWith("/labels/dev-bot-review-waiting-for-approval")) return Response.json({});
-        if (path === `/repos/${repo}/issues/1/comments`)
+        const issueMatch = new RegExp(`^/repos/${repo}/issues/(\\d+)/comments$`).exec(path);
+        if (issueMatch) {
+          const number = Number(issueMatch[1]);
+          if (commentsByNumber[number]) return Response.json(commentsByNumber[number]);
           return Response.json(
             issueReads++ > 0 ? (refreshedComments ?? issueComments) : issueComments,
           );
+        }
         if (path.endsWith("/comments") || path.endsWith("/reviews")) return Response.json([]);
         throw new Error(`unexpected request: ${path}`);
       },
@@ -112,12 +121,22 @@ const tracked = {
   status: "in_progress",
   metadata: { review_id: 42, active_head_sha: head, active_base_sha: base },
 };
+const labelTracked = {
+  ...tracked,
+  status: "pr_open",
+  metadata: {
+    review_id: 42,
+    last_reviewed_sha: "c".repeat(40),
+    last_reviewed_base_sha: base,
+    review_label_event_id: 1,
+  },
+};
 
-test("resuming a tracked review sends only the sandbox restore reference", async () => {
-  const result = await run({ task: tracked });
+test("a label-authorized tracked review sends only the sandbox restore reference", async () => {
+  const result = await run({ task: labelTracked });
   assert.equal(result.status, "start");
   const { work } = JSON.parse(result.content);
-  assert.equal(work.kind, "resume");
+  assert.equal(work.kind, "review");
   assert.equal(work.task_key, taskKey);
   assert.equal(work.status_review_id, 42);
   assert.equal(work.ledger_restore, "runner");
@@ -135,9 +154,9 @@ test("the instance scan finds tracked work behind a full first page", async () =
     instance_id: instanceId,
     status: "done",
   }));
-  const result = await run({ tasks: [...finished, tracked] });
+  const result = await run({ tasks: [...finished, labelTracked] });
   assert.equal(result.status, "start");
-  assert.equal(JSON.parse(result.content).work.kind, "resume");
+  assert.equal(JSON.parse(result.content).work.kind, "review");
 });
 
 test("only a fresh label event dispatches a new review without approval", async () => {
@@ -179,6 +198,17 @@ const task = {
   status: "pr_open",
   metadata: { review_id: 42, last_reviewed_sha: "c".repeat(40), last_reviewed_base_sha: base },
 };
+const recoveryTask = { ...task, metadata: { ...task.metadata, review_label_event_id: 1 } };
+const recoveryId = `LR-${createHash("sha256")
+  .update([repo, 1, 42, "c".repeat(40), base, head, base].join("|"))
+  .digest("hex")
+  .slice(0, 12)}`;
+const recoveryRequest = comment(
+  10,
+  bot,
+  `<!-- dev-review-bot:ledger-recovery:${recoveryId} -->`,
+  before,
+);
 const approvalBody = (approval, reviewTask = task) => {
   const meta = reviewTask.metadata;
   const context = [
@@ -195,7 +225,7 @@ const approvalBody = (approval, reviewTask = task) => {
     ].map((field) => meta[field] ?? null),
   ];
   const digest = createHash("sha256").update(JSON.stringify(context)).digest("hex").slice(0, 16);
-  return `${requestMarker(approval)}\n<!-- dev-review-bot:review-approval-context:v1:${digest} -->`;
+  return `Approval is necessary but cannot start a review until revision continuity can be verified.\n${requestMarker(approval)}\n<!-- dev-review-bot:review-approval-context:v1:${digest} -->`;
 };
 
 test("new approval request uses revision-scoped ID and posts once", async () => {
@@ -206,6 +236,71 @@ test("new approval request uses revision-scoped ID and posts once", async () => 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].method, "POST");
   assert.ok(requests[0].body.body.includes(requestMarker(key)));
+  assert.doesNotMatch(requests[0].body.body, /approve and start/i);
+  assert.match(requests[0].body.body, /continuity/i);
+});
+
+test("approval-authorized or unproven same-SHA resumes fail closed", async () => {
+  for (const metadata of [
+    tracked.metadata,
+    { ...tracked.metadata, review_authorization: "organization_member_approved" },
+    { ...tracked.metadata, review_authorization: "label_added", ledger_recovery_approved: true },
+  ]) {
+    const result = await run({ task: { ...tracked, metadata } });
+    assert.equal(result.status, "error");
+    assert.match(result.content, /revision continuity/);
+  }
+});
+
+test("a pending review with unknown recovery provenance cannot bypass continuity", async () => {
+  const pending = {
+    repo,
+    pr: 1,
+    head_sha: head,
+    base_sha: base,
+    operation: "review",
+    publication_body: marker,
+  };
+  const result = await run({
+    task: { ...labelTracked, metadata: { ...labelTracked.metadata, pending_publication: pending } },
+  });
+  assert.equal(result.status, "error");
+  assert.match(result.content, /revision continuity.*pending review/);
+  assert.ok(!result.content.includes(marker));
+});
+
+test("a continuity-blocked candidate does not starve an independent fresh-label review", async () => {
+  const second = {
+    ...task,
+    external_key: `review-only:github:${repo}#2`,
+    metadata: { ...task.metadata, review_label_event_id: 1 },
+  };
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const result = await run({
+    tasks: [task, second],
+    numbers: [1, 2],
+    labelEvents: { 1: false, 2: true },
+    commentsByNumber: { 1: [request, yes], 2: [] },
+    members: ["member"],
+  });
+  assert.equal(result.status, "start");
+  const payload = JSON.parse(result.content);
+  assert.equal(payload.work.number, 2);
+  assert.equal(payload.work.review_authorization, "label_added");
+  assert.ok(
+    payload.discovery_errors.some(
+      (error) => error.includes("#1") && error.includes("revision continuity"),
+    ),
+  );
+  const blocked = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    members: ["member"],
+  });
+  assert.equal(blocked.status, "error");
+  assert.match(blocked.content, /#1.*revision continuity/);
 });
 
 test("existing bot request is rebound with PATCH, never duplicated or immediately authorized", async () => {
@@ -224,6 +319,8 @@ test("existing bot request is rebound with PATCH, never duplicated or immediatel
     [[`/repos/${repo}/issues/comments/10`, "PATCH"]],
   );
   assert.ok(requests[0].body.body.includes(requestMarker(key)));
+  assert.doesNotMatch(requests[0].body.body, /approve and start/i);
+  assert.match(requests[0].body.body, /continuity/i);
   assert.equal(
     (await run({ task, labelEvent: false, issueComments: [old], failPatch: true })).status,
     "error",
@@ -298,8 +395,15 @@ test("changed review history or legacy unbound requests invalidate old approvals
   const oldTask = { ...task, metadata: { ...task.metadata, last_reviewed_sha: "d".repeat(40) } };
   const prior = comment(10, bot, approvalBody(key, oldTask), before);
   const legacy = { ...prior, body: requestMarker(key) };
+  const outdatedCopy = {
+    ...prior,
+    body: approvalBody(key).replace(
+      "Approval is necessary but cannot start a review until revision continuity can be verified.",
+      "Approve and start the review.",
+    ),
+  };
   const answer = comment(11, "member", `Review bot: yes ${key}`, after);
-  for (const request of [prior, legacy]) {
+  for (const request of [prior, legacy, outdatedCopy]) {
     const result = await run({
       task,
       labelEvent: false,
@@ -441,36 +545,70 @@ test("explicit re-review IDs bind the approval to the request trigger", async ()
   assert.ok(request.body.body.includes("A re-review was requested"));
 });
 
-test("ledger recovery retains its existing identity and restoration contract", async () => {
-  const recoveryId = `LR-${createHash("sha256")
-    .update([repo, 1, 42, "c".repeat(40), base, head, base].join("|"))
-    .digest("hex")
-    .slice(0, 12)}`;
-  const recoveryRequest = comment(
-    10,
-    bot,
-    `<!-- dev-review-bot:ledger-recovery:${recoveryId} -->`,
-    before,
-  );
+test("ledger recovery consent is rechecked and cannot bypass the continuity gate", async () => {
   const answer = comment(11, "member", `Review bot: yes ${recoveryId}`, after);
   const result = await run({
-    task: { ...task, metadata: { ...task.metadata, review_label_event_id: 1 } },
+    task: recoveryTask,
     reviewBody: "legacy review without ledger",
     issueComments: [recoveryRequest, answer],
     members: ["member"],
   });
-  assert.equal(result.status, "start");
-  const { work } = JSON.parse(result.content);
-  assert.equal(work.ledger_recovery_approved, true);
-  assert.equal(work.ledger_recovery_response_comment_id, 11);
-  assert.equal(work.update_count, 0);
-  assert.equal(work.ledger_restore, undefined);
+  assert.equal(result.status, "error");
+  assert.match(result.content, /revision continuity/);
+  assert.equal(result.memberReads, 2);
   const revoked = await run({
-    task: { ...task, metadata: { ...task.metadata, review_label_event_id: 1 } },
+    task: recoveryTask,
     reviewBody: "legacy review without ledger",
     issueComments: [recoveryRequest, answer],
     memberStatuses: [204, 404],
   });
   assert.equal(revoked.status, "skip");
   assert.equal(revoked.memberReads, 2);
+});
+
+test("recovery consent cannot authorize a reused revision without continuity proof", async () => {
+  const answer = comment(11, "member", `Review bot: yes ${recoveryId}`, after);
+  const input = {
+    task: recoveryTask,
+    reviewBody: "legacy review without ledger",
+    issueComments: [recoveryRequest, answer],
+    members: ["member"],
+  };
+  let revision = head;
+  const first = await run({ ...input, headSha: revision });
+  revision = "d".repeat(40);
+  assert.notEqual(revision, head);
+  revision = head;
+  const second = await run({ ...input, headSha: revision });
+  for (const result of [first, second]) {
+    assert.equal(result.status, "error");
+    assert.match(result.content, /revision continuity/);
+  }
+  const waiting = await run({ ...input, issueComments: [] });
+  const posted = waiting.writes.find((write) => write.path.endsWith("/comments"));
+  assert.match(posted.body.body, /continuity/i);
+});
+
+test("later clean recovery consent supersedes earlier edited answers only when strictly later", async () => {
+  const edited = comment(11, "member", `Review bot: no ${recoveryId}`, oldReplyAt, rebindAt);
+  const input = {
+    task: recoveryTask,
+    reviewBody: "legacy review without ledger",
+    members: ["member"],
+  };
+  const later = comment(12, "member", `Review bot: yes ${recoveryId}`, after);
+  const result = await run({ ...input, issueComments: [recoveryRequest, edited, later] });
+  assert.equal(result.status, "error");
+  assert.match(result.content, /revision continuity/);
+  assert.equal(result.memberReads, 2);
+  for (const answer of [
+    comment(12, "member", `Review bot: yes ${recoveryId}`, rebindAt),
+    comment(12, "member", `Review bot: yes ${recoveryId}`, oldReplyAt),
+    comment(12, "member", `Review bot: no ${recoveryId}`, after),
+  ]) {
+    assert.equal(
+      (await run({ ...input, issueComments: [recoveryRequest, edited, answer] })).status,
+      "skip",
+    );
+  }
 });
