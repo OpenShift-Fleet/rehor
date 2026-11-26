@@ -135,10 +135,29 @@ interface Comment {
   body: string;
   created: number;
   updated: number;
-  hasUpdatedTimestamp: boolean;
   original: boolean;
 }
 function comments(rows: RecordData[], source: Source): Comment[] {
+  if (source === "issue") {
+    const ids = new Set<number>();
+    for (const row of rows) {
+      const created = timestamp(row.created_at);
+      const updated = timestamp(row.updated_at);
+      if (
+        !id(row.id) ||
+        ids.has(row.id) ||
+        !object(row.user) ||
+        !login(row.user.login) ||
+        !["User", "Bot"].includes(String(row.user.type)) ||
+        typeof row.body !== "string" ||
+        !Number.isFinite(created) ||
+        !Number.isFinite(updated) ||
+        updated < created
+      )
+        throw new Error("Incomplete GitHub issue comment feed");
+      ids.add(row.id);
+    }
+  }
   return rows.flatMap((row) => {
     if (
       !id(row.id) ||
@@ -161,7 +180,6 @@ function comments(rows: RecordData[], source: Source): Comment[] {
         body: row.body,
         created,
         updated,
-        hasUpdatedTimestamp: Number.isFinite(timestamp(row.updated_at)),
         original:
           source === "review" ? row.state !== "DISMISSED" : row.created_at === row.updated_at,
       },
@@ -354,8 +372,6 @@ async function decision(
     .sort(chronological);
   // Always use the earliest bot request, including when old duplicate comments exist.
   const request = requests[0];
-  if (mode === "RA" && requests.some((c) => !c.hasUpdatedTimestamp || c.updated < c.created))
-    throw new Error("Cannot verify approval request update time");
   const rebind =
     mode === "RA" &&
     request &&
@@ -364,28 +380,34 @@ async function decision(
       requests.slice(1).some((c) => c.updated >= request.updated));
   let reply: Comment | undefined;
   let yes = false;
+  let ambiguous = false;
   if (request && !rebind) {
     // Request IDs can recur after a revision reverts. GitHub timestamps have
     // second precision, so only replies strictly later than the latest edit
     // can prove they belong to this incarnation of the request.
     const pattern = new RegExp(`Review bot:\\s*(yes|no)\\s+${key}(?![A-Za-z0-9_-])`, "gi");
-    for (const c of issue
-      .filter(
-        (c) =>
-          c.user &&
-          c.login !== bot &&
-          Number.isFinite(c.created) &&
-          (mode === "RA" ? c.created > request.updated : chronological(c, request) > 0),
-      )
-      .sort(chronological)) {
+    for (const c of issue.filter((c) => c.user && c.login !== bot).sort(chronological)) {
       const matches = new Set([...c.body.matchAll(pattern)].map((match) => match[1].toLowerCase()));
-      if (matches.size === 1 && (await member(work.repo, c.login))) {
+      if (!matches.size) continue;
+      const boundary = mode === "RA" ? request.updated : request.created;
+      // An edited decision can supersede an earlier answer regardless of its
+      // creation order. Without edit history, it cannot safely be ordered.
+      if (!c.original && c.updated >= boundary && (await member(work.repo, c.login))) return false;
+      if (
+        c.original &&
+        (mode === "RA" ? c.created > boundary : chronological(c, request) > 0) &&
+        (await member(work.repo, c.login))
+      ) {
+        const simultaneous = reply?.created === c.created;
         reply = c;
-        yes = matches.has("yes");
+        // Same-second creation and edits cannot be ordered reliably.
+        ambiguous = simultaneous || matches.size !== 1;
+        yes = !ambiguous && matches.has("yes");
       }
     }
   }
-  const waiting = !reply;
+  // A yes cannot authorize dispatch until revision continuity is provable.
+  const waiting = !reply || ambiguous || (mode === "RA" && yes);
   if (!verifyOnly && (mode === "RA" || !request)) {
     await guard();
     if (mode === "RA") await github.waitingLabel(work.repo, work.number, waiting);
@@ -805,21 +827,30 @@ async function select(
         }
         if (work.kind === "review") {
           await guard();
-          if (
-            work.review_authorization === "organization_member_approved" &&
-            !(await decision(
-              candidate,
-              "RA",
-              github,
-              comments(await github.issueComments(work.repo, work.number), "issue"),
-              bot,
-              member,
-              guard,
-              true,
-            ))
-          ) {
-            waiting += 1;
-            continue;
+          const approval = work.review_authorization === "organization_member_approved";
+          if (approval || work.ledger_recovery_approved) {
+            const current = comments(await github.issueComments(work.repo, work.number), "issue");
+            const freshMember = memberCheck(github);
+            let valid = true;
+            for (const mode of [
+              ...(work.ledger_recovery_approved ? (["LR"] as const) : []),
+              ...(approval ? (["RA"] as const) : []),
+            ]) {
+              if (
+                !(await decision(candidate, mode, github, current, bot, freshMember, guard, true))
+              ) {
+                valid = false;
+                break;
+              }
+            }
+            if (!valid) {
+              waiting += 1;
+              continue;
+            }
+            // Neither PR snapshots nor the currently available REST events prove
+            // that head and base never changed and returned between polls.
+            if (approval)
+              return { status: "error", content: `${ID}: cannot verify revision continuity` };
           }
           await guard();
         }

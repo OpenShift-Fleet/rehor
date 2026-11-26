@@ -24,10 +24,13 @@ function run({
   members = [],
   failPatch = false,
   memberError = false,
+  memberStatuses = [],
   reviewBody = marker,
+  headSha = head,
 } = {}) {
   const writes = [];
   let issueReads = 0;
+  let memberReads = 0;
   const allTasks = tasks ?? (task ? [task] : []);
   const ctx = createPreflightRunContext({
     instanceId,
@@ -60,7 +63,7 @@ function run({
             state: "open",
             draft: false,
             user: { login: "author" },
-            head: { sha: head },
+            head: { sha: headSha },
             base: { sha: base },
             updated_at: time,
             merged_at: null,
@@ -83,7 +86,9 @@ function run({
           });
         if (path.startsWith("/orgs/org/members/"))
           return new Response(null, {
-            status: memberError ? 503 : members.includes(path.split("/").pop()) ? 204 : 404,
+            status:
+              memberStatuses[memberReads++] ??
+              (memberError ? 503 : members.includes(path.split("/").pop()) ? 204 : 404),
           });
         if (path.endsWith("/labels/dev-bot-review-waiting-for-approval")) return Response.json({});
         if (path === `/repos/${repo}/issues/1/comments`)
@@ -97,7 +102,7 @@ function run({
   });
   return fabricReviewQueue
     .run(ctx, { review_label: label, bot_login: bot })
-    .then((result) => ({ ...result, writes }));
+    .then((result) => ({ ...result, writes, memberReads }));
 }
 
 const tracked = {
@@ -247,12 +252,9 @@ test("approval after latest update must come from an organization member", async
   }
   const fresh = comment(15, "member", `Review bot: yes ${key}`, after);
   const result = await run({ ...baseInput, issueComments: [request, oldAnswer, fresh] });
-  assert.equal(result.status, "start");
-  const { work } = JSON.parse(result.content);
-  assert.equal(work.review_approval_id, key);
-  assert.equal(work.review_approval_response_comment_id, 15);
-  assert.equal(work.review_authorization, "organization_member_approved");
-  assert.equal(work.ledger_restore, "runner");
+  assert.equal(result.status, "error");
+  assert.match(result.content, /revision continuity/);
+  assert.equal(result.memberReads, 2);
   const declined = comment(16, "member", `Review bot: no ${key}`, after);
   assert.equal(
     (await run({ ...baseInput, issueComments: [request, fresh, declined] })).status,
@@ -331,6 +333,100 @@ test("a request rebound during selection cannot use the cached approval", async 
   }
 });
 
+test("malformed issue comments cannot hide a request or a later decision", async () => {
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt);
+  const denial = comment(12, "member", `Review bot: no ${key}`, after);
+  const laterRequest = comment(13, bot, approvalBody(oldKey), after);
+  for (const bad of [
+    { ...laterRequest, id: null },
+    { ...laterRequest, created_at: null },
+    { ...laterRequest, user: null },
+    { ...denial, id: null },
+    { ...denial, body: null },
+    { ...denial, created_at: null },
+    { ...denial, updated_at: null },
+    { ...denial, user: { login: "member" } },
+    { ...denial, id: yes.id },
+  ]) {
+    const result = await run({
+      task,
+      labelEvent: false,
+      issueComments: [request, yes, bad],
+      members: ["member"],
+    });
+    assert.equal(result.status, "error");
+  }
+  const refreshed = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    refreshedComments: [request, yes, { ...denial, id: null }],
+    members: ["member"],
+  });
+  assert.equal(refreshed.status, "error");
+  assert.doesNotMatch(refreshed.content, /revision continuity/);
+});
+
+test("latest ambiguous decision and edited decisions block earlier approval", async () => {
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt);
+  const ambiguous = comment(12, "member", `Review bot: yes ${key}\nReview bot: no ${key}`, after);
+  const editedDenial = comment(9, "member", `Review bot: no ${key}`, before, after);
+  const simultaneousDenial = comment(9, "member", `Review bot: no ${key}`, oldReplyAt);
+  for (const decision of [ambiguous, editedDenial, simultaneousDenial]) {
+    const result = await run({
+      task,
+      labelEvent: false,
+      issueComments: [request, yes, decision],
+      members: ["member"],
+    });
+    assert.equal(result.status, "skip");
+    if (decision === ambiguous)
+      assert.ok(
+        result.writes.some((write) => write.method === "POST" && write.path.endsWith("/labels")),
+      );
+  }
+});
+
+test("final authorization rechecks membership rather than reusing scan cache", async () => {
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const result = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    memberStatuses: [204, 404],
+  });
+  assert.equal(result.status, "skip");
+  assert.equal(result.memberReads, 2);
+  const unavailable = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    memberStatuses: [204, 503],
+  });
+  assert.equal(unavailable.status, "error");
+  assert.doesNotMatch(unavailable.content, /revision continuity/);
+});
+
+test("reused revision without a durable event epoch cannot authorize dispatch", async () => {
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const input = { task, labelEvent: false, issueComments: [request, yes], members: ["member"] };
+  let revision = head;
+  const first = await run({ ...input, headSha: revision });
+  // No polling or tracking while the branch changes A -> B -> A.
+  revision = "d".repeat(40);
+  assert.notEqual(revision, head);
+  revision = head;
+  const second = await run({ ...input, headSha: revision });
+  for (const result of [first, second]) {
+    assert.equal(result.status, "error");
+    assert.match(result.content, /revision continuity/i);
+  }
+});
+
 test("explicit re-review IDs bind the approval to the request trigger", async () => {
   const rereview = comment(30, "member", "/review-bot re-review", after);
   const result = await run({
@@ -369,4 +465,12 @@ test("ledger recovery retains its existing identity and restoration contract", a
   assert.equal(work.ledger_recovery_response_comment_id, 11);
   assert.equal(work.update_count, 0);
   assert.equal(work.ledger_restore, undefined);
+  const revoked = await run({
+    task: { ...task, metadata: { ...task.metadata, review_label_event_id: 1 } },
+    reviewBody: "legacy review without ledger",
+    issueComments: [recoveryRequest, answer],
+    memberStatuses: [204, 404],
+  });
+  assert.equal(revoked.status, "skip");
+  assert.equal(revoked.memberReads, 2);
 });
