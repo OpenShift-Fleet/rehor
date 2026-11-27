@@ -2,12 +2,16 @@ import { z } from "zod";
 import { definePreflight } from "../../core/registry.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { pyTruthy } from "../jira-common/shapes.js";
+import { mcpDescription, mcpSummaryText } from "./mcp.js";
+import { descriptionText, linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
+  assertSnapshotField,
   COORD_STATES,
   field,
   fingerprint,
   humanComments,
+  isAssigned,
   keyOf,
   labels,
   parentKey,
@@ -16,7 +20,6 @@ import {
   sorted,
   statusName,
   teamId,
-  text,
 } from "./snapshot.js";
 
 const id = "fabric-project-state";
@@ -26,6 +29,7 @@ const input = z.strictObject({
   controlLabel: jqlValue,
   implementationLabel: jqlValue,
   teamFieldId: z.string().regex(/^customfield_\d+$/),
+  // Retained for existing profiles; coordinator handoff no longer requires a sprint.
   includeBacklog: z.boolean().default(false),
 });
 
@@ -36,22 +40,12 @@ const repoLabels = (items: string[]) => items.filter((label) => label.startsWith
 const repoNames = (items: string[]) => new Set(repoLabels(items).map((label) => label.slice(5)));
 const baseFields = ["summary", "description", "status"];
 
-function blockers(issue: RecordData): string[] {
-  const links = field(issue, "issuelinks");
-  if (!Array.isArray(links)) throw new Error(`Missing or invalid Jira links on ${issueKey(issue)}`);
-  const keys = new Set<string>();
-  for (const item of links) {
-    const link = record(item);
-    const type = record(link?.type);
-    if (!link || !type) throw new Error(`Invalid Jira link on ${issueKey(issue)}`);
-    if (
-      link.inwardIssue &&
-      [type.name, type.inward].some((value) => text(value).toLowerCase().includes("block"))
-    ) {
-      keys.add(issueKey(link.inwardIssue));
-    }
+function requireFields(issue: RecordData, names: readonly string[]): void {
+  const fields = record(issue.fields);
+  for (const name of names) {
+    if (!fields || !Object.hasOwn(fields, name))
+      throw new Error(`Missing Jira field ${name} on ${issueKey(issue)}`);
   }
-  return sorted(keys);
 }
 
 function summarizeChild(issue: RecordData, implementationLabel: string) {
@@ -61,22 +55,17 @@ function summarizeChild(issue: RecordData, implementationLabel: string) {
   const assignee = field(issue, "assignee");
   if (!status || assignee === undefined)
     throw new Error(`Missing Jira status or assignee on ${key}`);
-  const description = field(issue, "description");
+  const description = descriptionText(mcpDescription(field(issue, "description")));
   return {
     key,
-    summary: text(field(issue, "summary")),
+    summary: mcpSummaryText(field(issue, "summary")),
     status,
     phase_labels: sorted(items.filter((label) => PHASE.test(label))),
     repo_labels: sorted(repoLabels(items)),
     implementation_labeled: items.includes(implementationLabel),
-    blockers: blockers(issue),
-    assignee: pyTruthy(assignee),
-    sprint: pyTruthy(field(issue, "customfield_10020")),
-    description: [
-      ...(typeof description === "string" ? description : JSON.stringify(description ?? "")),
-    ]
-      .slice(0, 2000)
-      .join(""),
+    blockers: linkedIssues(issue).blockers,
+    assignee: isAssigned(assignee),
+    description: [...description].slice(0, 2000).join(""),
   };
 }
 
@@ -151,6 +140,7 @@ function assess(
   );
 
   const waiting: string[] = [];
+  const blocked_tickets: { key: string; reasons: string[] }[] = [];
   const ready: { key: string; repo_candidates: string[] }[] = [];
   if (current && !gaps.length) {
     for (const ticket of phases.get(current) ?? []) {
@@ -165,13 +155,15 @@ function assess(
         continue;
       }
       const repos = repoNames(ticket.repo_labels);
+      const reasons: string[] = [];
       if ([...repos].some((name) => !allowed.has(name) || !Object.hasOwn(repoMap, name))) {
-        gaps.push(`${ticket.key} has a repo outside the control ticket's allowed repos`);
-      } else if (ticket.assignee || !NOT_STARTED.has(ticket.status.toLowerCase())) {
-        gaps.push(`${ticket.key} is not unassigned in a not-started status`);
-      } else if (!ticket.sprint && !params.includeBacklog) {
-        gaps.push(`${ticket.key} is outside the active sprint and backlog intake is disabled`);
-      } else {
+        reasons.push("repo label is outside the control ticket's allowlist");
+      }
+      if (!NOT_STARTED.has(ticket.status.toLowerCase()))
+        reasons.push(`status ${ticket.status} is not not-started`);
+      if (ticket.assignee) reasons.push("ticket is not unassigned");
+      if (reasons.length) blocked_tickets.push({ key: ticket.key, reasons });
+      else {
         ready.push({ key: ticket.key, repo_candidates: sorted(repos.size ? repos : allowed) });
       }
     }
@@ -187,6 +179,7 @@ function assess(
     gaps,
     ready: gaps.length ? [] : ready,
     waiting,
+    blocked_tickets,
     tickets,
   };
 }
@@ -218,6 +211,8 @@ export const fabricProjectState = definePreflight({
         ]);
         // The search index can lag a removed label. Do not enroll that issue.
         if (!labels(control).includes(controlLabel)) continue;
+        requireFields(control, ["summary", "description", "status", "parent", teamFieldId]);
+        for (const name of ["summary", "description"]) assertSnapshotField(control, name);
         const team = teamId(control, teamFieldId);
         const parent = parentKey(control);
         const comments = humanComments(await reads.comments(controlKey));
@@ -251,15 +246,20 @@ export const fabricProjectState = definePreflight({
           throw new Error("Project repository map is unavailable");
         issueKey(parent);
         const parentIssue = await reads.issue(parent, baseFields);
+        requireFields(parentIssue, baseFields);
+        for (const name of ["summary", "description"]) assertSnapshotField(parentIssue, name);
         const siblings = await reads.search(`parent = "${parent}" ORDER BY key ASC`, [
           ...baseFields,
           "parent",
           "labels",
           "issuelinks",
           "assignee",
-          "customfield_10020",
+          "updated",
+          "priority",
+          "issuetype",
           teamFieldId,
         ]);
+        for (const issue of siblings) requireFields(issue, [teamFieldId]);
         const children = siblings.filter((issue) => {
           if (!team || keyOf(issue) === controlKey || teamId(issue, teamFieldId) !== team)
             return false;
@@ -268,6 +268,25 @@ export const fabricProjectState = definePreflight({
             throw new Error(`Missing parent field on Jira search result ${issueKey(issue)}`);
           return actualParent === parent;
         });
+        for (const child of children) {
+          requireFields(child, [
+            "summary",
+            "status",
+            "updated",
+            "description",
+            "priority",
+            "issuetype",
+          ]);
+          for (const name of [
+            "summary",
+            "description",
+            "updated",
+            "priority",
+            "issuetype",
+            "issuelinks",
+          ])
+            assertSnapshotField(child, name);
+        }
         const assessment = assess(control, children, ctx.repos, params, team);
         operation = `read GitHub PR snapshot for ${controlKey}`;
         const pullRequests = await reads.prSnapshot(children, implementationLabel, ctx.repos);
@@ -275,6 +294,41 @@ export const fabricProjectState = definePreflight({
           tickets: pullRequests,
           errors: {},
         });
+        const plan_snapshot = planSnapshot(children, teamFieldId, implementationLabel);
+        const plan_snapshot_hash = planDigest(plan_snapshot);
+        const ticket_changes = planChanges(
+          metadata?.plan_snapshot,
+          plan_snapshot,
+          implementationLabel,
+        );
+        const plan_approval_pending = pyTruthy(metadata?.pending_plan_approval);
+        const approved = metadata?.approved_plan_snapshot_hash;
+        if (approved != null && typeof approved !== "string")
+          throw new Error(`Invalid approved plan hash on task for ${controlKey}`);
+        let approvedHash = approved ?? null;
+        let legacy_snapshot_migrated = false;
+        const previousPlanSnapshot = record(metadata?.plan_snapshot);
+        const has_ticket_delta = [
+          ticket_changes.added,
+          ticket_changes.removed,
+          ticket_changes.changed,
+        ].some((items) => items.length > 0);
+        // Existing tasks hashed runtime fields too. If that legacy hash
+        // still matches the saved snapshot and its plan inputs are intact,
+        // migrate it without making users reapprove an unchanged plan.
+        if (
+          !plan_approval_pending &&
+          previousPlanSnapshot &&
+          approvedHash === planDigest(previousPlanSnapshot as Record<string, RecordData>) &&
+          !has_ticket_delta
+        ) {
+          approvedHash = plan_snapshot_hash;
+          legacy_snapshot_migrated = true;
+        }
+        const approved_plan_snapshot_changed =
+          typeof approvedHash === "string" && approvedHash !== plan_snapshot_hash;
+        const plan_change_required =
+          plan_approval_pending || approved_plan_snapshot_changed || has_ticket_delta;
         if (previous !== snapshot_hash || !assessment.state) {
           const processed = metadata?.processed_comment_ids;
           if (
@@ -289,6 +343,14 @@ export const fabricProjectState = definePreflight({
             ...identity,
             parent_key: parent,
             snapshot_hash,
+            plan_snapshot,
+            plan_snapshot_hash,
+            approved_plan_snapshot_hash: approvedHash,
+            legacy_plan_snapshot_migrated: legacy_snapshot_migrated,
+            ticket_changes,
+            approved_plan_snapshot_changed,
+            plan_change_required,
+            plan_approval_pending,
             first_run: !previous,
             new_comments: comments.filter(({ id }) => !processedIds.has(id)),
             open_pull_requests: pullRequests,

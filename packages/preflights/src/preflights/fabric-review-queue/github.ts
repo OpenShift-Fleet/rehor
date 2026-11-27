@@ -16,6 +16,14 @@ export const timestamp = (value: unknown): number =>
     ? Date.parse(value)
     : Number.NaN;
 
+/**
+ * The pull-request fields the queue reads — the union of Python's
+ * `gh pr list --json number,title,url,headRefOid,baseRefOid,headRefName,
+ * isDraft,author,updatedAt` listing fields and `gh pr view`'s
+ * `state,mergedAt` lifecycle fields. `title`, `url`, and `headBranch` keep
+ * Python's `.get(key, "")` tolerance; `author` preserves the login's original
+ * case because `work.pr_author` emits it verbatim.
+ */
 export interface Pull {
   number: number;
   head: string;
@@ -26,6 +34,9 @@ export interface Pull {
   state: "open" | "closed";
   merged: string | null;
   labels: readonly string[];
+  title: string;
+  url: string;
+  headBranch: string;
 }
 
 const WAITING_LABEL = "dev-bot-review-waiting-for-approval";
@@ -128,10 +139,13 @@ export function reviewGitHub(proxy: ProxyRouteConfig) {
         base: row.base.sha,
         updated: row.updated_at,
         draft: row.draft,
-        author: row.user.login.toLowerCase(),
+        author: row.user.login,
         state: row.state,
         merged: row.merged_at,
         labels: row.labels.map((label) => label.name.toLowerCase()),
+        title: typeof row.title === "string" ? row.title : "",
+        url: typeof row.html_url === "string" ? row.html_url : "",
+        headBranch: typeof row.head.ref === "string" && row.head.ref !== "" ? row.head.ref : "",
       };
     },
     events: (repo: string, number: number) => list(`${issue(repo, number)}/events`),
@@ -150,6 +164,9 @@ export function reviewGitHub(proxy: ProxyRouteConfig) {
     },
     async postRequest(repo: string, number: number, body: string): Promise<void> {
       requireOk(await send(`${issue(repo, number)}/comments`, "POST", { body }));
+    },
+    async updateRequest(repo: string, commentId: number, body: string): Promise<void> {
+      requireOk(await send(`${repoPath(repo)}/issues/comments/${commentId}`, "PATCH", { body }));
     },
     async waitingLabel(repo: string, number: number, present: boolean): Promise<void> {
       const path = `${issue(repo, number)}/labels`;

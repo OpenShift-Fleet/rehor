@@ -1,4 +1,12 @@
 import { createHash } from "node:crypto";
+import { pyTruthy } from "../jira-common/shapes.js";
+import { mcpCustomField } from "./mcp.js";
+import {
+  assertNumber,
+  assertNumberTree,
+  assertSnapshotField,
+  parsePythonCompatibleJson,
+} from "./numbers.js";
 
 export type RecordData = Record<string, unknown>;
 export const record = (value: unknown): RecordData | undefined =>
@@ -16,7 +24,10 @@ export const parentKey = (issue: RecordData): string =>
   keyOf(field(issue, "parent")) || keyOf(field(issue, "epic_key"));
 export const statusName = (issue: RecordData): string => {
   const status = field(issue, "status");
-  return text(record(status)?.name ?? status);
+  if (status == null) return "";
+  const name = record(status) ? record(status)?.name : status;
+  if (typeof name !== "string") throw new Error("Invalid Jira status");
+  return name;
 };
 export const labels = (issue: RecordData): string[] => {
   const value = field(issue, "labels");
@@ -30,31 +41,45 @@ export const COORD_STATES = new Set(
   ["needs-plan", "active", "blocked", "complete"].map((state) => `dev-bot-coordinator:${state}`),
 );
 
+// Number guards moved to numbers.ts (shared with the mcp-atlassian ports);
+// re-exported because tests and sibling modules import them from here.
+export { assertNumber, assertNumberTree, assertSnapshotField, parsePythonCompatibleJson };
+
 function decodedContainer(value: string): unknown {
   if (!/^[{[]/.test(value.trimStart())) return undefined;
   try {
-    return JSON.parse(value);
-  } catch {
+    return parsePythonCompatibleJson(value);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
     return undefined;
   }
 }
 
 function extractTeam(raw: unknown, allowScalar = true): string {
   if (Array.isArray(raw)) {
-    const ids = new Set(raw.map((item) => extractTeam(item, false)).filter(Boolean));
+    const ids = new Set(
+      raw
+        .map((item, index) => {
+          assertNumber(raw, String(index), item);
+          return extractTeam(item, false);
+        })
+        .filter(Boolean),
+    );
     return ids.size === 1 ? [...ids][0] : "";
   }
   const obj = record(raw);
   if (obj) {
     for (const name of ["id", "teamId", "team_id", "teamID"]) {
       const item = obj[name];
-      if (typeof item === "number" || typeof item === "string") {
-        const id = String(item).trim();
-        if (id) return id;
-      }
+      // Python accepts any non-None, non-dict/list scalar and str()s it.
+      if (item === null || item === undefined || typeof item === "object") continue;
+      assertNumber(obj, name, item);
+      const id = pythonString(item).trim();
+      if (id) return id;
     }
     for (const name of ["team", "option", "value", "data"]) {
       const item = obj[name];
+      if (typeof item === "number") assertNumber(obj, name, item);
       const id =
         record(item) || Array.isArray(item)
           ? extractTeam(item, false)
@@ -72,8 +97,17 @@ function extractTeam(raw: unknown, allowScalar = true): string {
   return allowScalar ? raw.trim() : "";
 }
 
-export const teamId = (issue: RecordData, fieldId: string): string =>
-  extractTeam(field(issue, fieldId));
+export const teamId = (issue: RecordData, fieldId: string): string => {
+  const fields = record(issue.fields);
+  const holder = fields && Object.hasOwn(fields, fieldId) ? fields : issue;
+  assertNumber(holder, fieldId, holder[fieldId]);
+  // The Fabric Python reads team fields from mcp-atlassian 0.23.1 output,
+  // where every customfield_* value arrives wrapped as {"value": processed}
+  // (select-like option ids are discarded). Emulating that wrapper makes a
+  // REST read digest identically; already-simplified MCP shapes pass through
+  // the same wrapper unchanged.
+  return extractTeam(mcpCustomField(holder[fieldId]));
+};
 
 function codePointCompare(a: string, b: string): number {
   const left = [...a],
@@ -89,7 +123,7 @@ export const sorted = (items: Iterable<string>): string[] => [...items].sort(cod
 
 // Python json.dumps(..., sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 // for JSON data. JS numbers have already lost Python's int/float distinction.
-function pythonJson(value: unknown, spaced = false): string {
+export function pythonJson(value: unknown, spaced = false): string {
   const comma = spaced ? ", " : ",";
   const colon = spaced ? ": " : ":";
   if (typeof value === "string") {
@@ -104,10 +138,82 @@ function pythonJson(value: unknown, spaced = false): string {
     return `{${sorted(Object.keys(obj))
       .map((key) => `${pythonJson(key)}${colon}${pythonJson(obj[key], spaced)}`)
       .join(comma)}}`;
+  if (typeof value === "number" && !Number.isSafeInteger(value))
+    throw new Error("Unsupported number in Jira snapshot");
   return JSON.stringify(value ?? null);
 }
 
+// Python str() is used by the legacy plan snapshot, including for ADF objects.
+export function pythonString(value: unknown): string {
+  function repr(item: unknown): string {
+    if (typeof item === "string") {
+      const quote = item.includes("'") && !item.includes('"') ? '"' : "'";
+      const escaped = [...item]
+        .map((char) => {
+          if (char === "\\" || char === quote) return `\\${char}`;
+          if (char === "\n") return "\\n";
+          if (char === "\r") return "\\r";
+          if (char === "\t") return "\\t";
+          if (char !== " " && /[\p{C}\p{Z}]/u.test(char)) {
+            const code = char.codePointAt(0) ?? 0;
+            const width = code <= 0xff ? 2 : code <= 0xffff ? 4 : 8;
+            return `\\${width === 2 ? "x" : width === 4 ? "u" : "U"}${code.toString(16).padStart(width, "0")}`;
+          }
+          return char;
+        })
+        .join("");
+      return quote + escaped + quote;
+    }
+    if (item === null || item === undefined) return "None";
+    if (typeof item === "boolean") return item ? "True" : "False";
+    if (Array.isArray(item)) return `[${item.map(repr).join(", ")}]`;
+    const obj = record(item);
+    if (obj) {
+      // JavaScript reorders array-index keys, whereas Python preserves input order.
+      if (Object.keys(obj).some((key) => /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < 0xffffffff))
+        throw new Error("Unsupported numeric object key in Jira description");
+      return `{${Object.entries(obj)
+        .map(([key, val]) => `${repr(key)}: ${repr(val)}`)
+        .join(", ")}}`;
+    }
+    if (typeof item === "number" && !Number.isSafeInteger(item))
+      throw new Error("Unsupported number in Jira description");
+    return String(item);
+  }
+  return typeof value === "string" ? value : repr(value);
+}
+
+const unassigned = new Set(["", "unassigned", "unassigned user"]);
+export function isAssigned(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return !unassigned.has(value.trim().toLowerCase());
+  if (Array.isArray(value)) return value.some(isAssigned);
+  const obj = record(value);
+  if (obj) {
+    const identifiers = ["accountId", "account_id", "name", "key", "username", "emailAddress", "id"]
+      .map((key) => obj[key])
+      .filter(
+        (item) => (typeof item === "string" || typeof item === "number") && String(item).trim(),
+      );
+    if (identifiers.length)
+      return identifiers.some((item) => !unassigned.has(String(item).trim().toLowerCase()));
+    if (
+      ["displayName", "display_name"].some(
+        (key) =>
+          typeof obj[key] === "string" && unassigned.has((obj[key] as string).trim().toLowerCase()),
+      )
+    )
+      return false;
+    for (const key of ["value", "user", "assignee"])
+      if (obj[key] != null) return isAssigned(obj[key]);
+    return pyTruthy(obj);
+  }
+  return pyTruthy(value);
+}
+
 function commentBody(raw: unknown): string {
+  if (raw != null && typeof raw !== "string" && typeof raw !== "object")
+    throw new Error("Invalid Jira comment body");
   const decoded = typeof raw === "string" ? decodedContainer(raw) : undefined;
   if (typeof raw === "string" && !record(decoded) && !Array.isArray(decoded)) return raw;
   const body = decoded ?? raw ?? "";
@@ -141,7 +247,10 @@ function commentBody(raw: unknown): string {
       parts.push("\n");
   }
   collect(body);
-  return parts.join("").trim() || pythonJson(body, true);
+  const flattened = parts.join("").trim();
+  if (flattened) return flattened;
+  assertNumberTree(body);
+  return pythonJson(body, true);
 }
 
 export function humanComments(comments: readonly RecordData[]) {
@@ -153,10 +262,11 @@ export function humanComments(comments: readonly RecordData[]) {
       .map((line) => line.trim())
       .filter(Boolean);
     if (
-      lines[0]?.replace(/^(?:#+|h[1-6]\.)/, "").trim() === "Coordinator update" ||
+      /^(?:coordinator update)(?:$| -)/i.test(lines[0]?.replace(/^#+/, "").trim() ?? "") ||
       lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
     )
       return [];
+    assertNumber(comment, "id", comment.id);
     return [{ id: String(comment.id || ""), body, created: comment.created ?? null }];
   });
 }
@@ -191,12 +301,16 @@ export function fingerprint(
         key: keyOf(child),
         summary: field(child, "summary"),
         description: field(child, "description"),
+        updated: field(child, "updated"),
         status: statusName(child),
         team: teamId(child, teamFieldId),
+        priority: field(child, "priority"),
+        issue_type: pyTruthy(field(child, "issuetype"))
+          ? field(child, "issuetype")
+          : field(child, "issue_type"),
         labels: sorted(labels(child)),
         links: field(child, "issuelinks") ?? [],
-        assignee: field(child, "assignee"),
-        sprint: field(child, "customfield_10020"),
+        assignee: isAssigned(field(child, "assignee")),
       })),
     open_pull_requests: pullRequests,
   };

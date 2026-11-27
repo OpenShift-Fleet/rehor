@@ -9,7 +9,7 @@ The dispatcher decides whether work warrants an OpenCode session. Preflights use
 
 ## Dispatcher sandbox input
 
-The dispatcher writes a JSON envelope to `/tmp/rehor-input.json` and passes its path using `REHOR_INPUT_FILE` with `REHOR_INPUT_SOURCE=sandbox`. The envelope carries the run ID, prompt, and preflight metadata. Its serialized size is capped at 64 KiB. The prompt is not passed in argv or environment variables. The runner requires `BOT_EXECUTION_ENGINE=coordinator` and `runtime: opencode`; it exits without launching a session if required input is missing, malformed, or oversized. A valid but blank prompt skips the session.
+The dispatcher writes a JSON envelope to `/tmp/rehor-input.json` and passes its path using `REHOR_INPUT_FILE` with `REHOR_INPUT_SOURCE=sandbox`. The envelope carries the run ID, prompt, and preflight metadata. Its serialized size is capped at 1 MiB. The prompt is not passed in argv or environment variables. The runner requires `BOT_EXECUTION_ENGINE=coordinator` and `runtime: opencode`; it exits without launching a session if required input is missing, malformed, or oversized. A valid but blank prompt skips the session.
 
 ## Work across cycles
 

@@ -27,7 +27,7 @@ test("empty starts skip; non-start or malformed results are invalid", () => {
   }
 });
 
-test("64KiB limit applies to entire UTF-8 JSON, not prompt characters", () => {
+test("1MiB limit applies to entire UTF-8 JSON, not prompt characters", () => {
   const fixed = buildInputEnvelope(start("".padEnd(1, "x")), runId).serialized.byteLength - 1;
   const exact = buildInputEnvelope(start("x".repeat(MAX_INPUT_BYTES - fixed)), runId);
   assert.equal(exact.status, "built");

@@ -216,7 +216,7 @@ describe("sandbox input loader", () => {
 
     const oversized = await writeInput(
       directory,
-      serialized(envelope(secretPrompt + "x".repeat(70_000))),
+      serialized(envelope(secretPrompt + "x".repeat(MAX_INPUT_BYTES))),
     );
     const oversizedOutcome = await load(oversized);
     expect(oversizedOutcome).toMatchObject({ status: "error" });

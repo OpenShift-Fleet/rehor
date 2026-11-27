@@ -1,10 +1,24 @@
 import { createHttpClient, isPreflightHttpError } from "../../shared/http.js";
 import type { ProjectReposMap } from "../../shared/repos.js";
 import type { ProxyWiring } from "../../shared/run-context.js";
-import { keyOf, labels, type RecordData, record, sorted, text } from "./snapshot.js";
+import {
+  keyOf,
+  labels,
+  parsePythonCompatibleJson,
+  type RecordData,
+  record,
+  sorted,
+  text,
+} from "./snapshot.js";
 
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
-const API = "/rest/api/2";
+// Search uses the v3 enhanced JQL endpoint because that is what the deployed
+// mcp-atlassian 0.23.1 server uses on Jira Cloud (jira/search.py posts to
+// rest/api/3/search/jql): v3 always returns ADF descriptions, matching the
+// values the Fabric Python digests. Issue and comment reads stay on v2,
+// mirroring the server's atlassian-python-api get_issue/issue_get_comments.
+const SEARCH_API = "/rest/api/3";
+const ISSUE_API = "/rest/api/2";
 const PAGE_SIZE = 50;
 const MAX_JIRA_PAGES = 100;
 
@@ -24,7 +38,12 @@ export function issueKey(value: unknown): string {
 // arrays as empty. This workflow needs raw fields and complete pages to hash.
 export function createProjectReads(proxy: ProxyWiring) {
   const config = typeof proxy === "string" ? { baseUrl: proxy } : proxy;
-  const jira = createHttpClient({ ...config, pathPrefix: "/jira", timeoutMs: 30_000 });
+  const jira = createHttpClient({
+    ...config,
+    parseJson: parsePythonCompatibleJson,
+    pathPrefix: "/jira",
+    timeoutMs: 30_000,
+  });
   const github = createHttpClient({ ...config, pathPrefix: "/github", timeoutMs: 20_000 });
 
   async function search(jql: string, fields: readonly string[]) {
@@ -34,7 +53,7 @@ export function createProjectReads(proxy: ProxyWiring) {
     let nextPageToken: string | undefined;
     for (let page = 0; page < MAX_JIRA_PAGES; page++) {
       const result = requireRecord(
-        await jira.postJson(`${API}/search/jql`, {
+        await jira.postJson(`${SEARCH_API}/search/jql`, {
           jql,
           fields,
           maxResults: PAGE_SIZE,
@@ -62,7 +81,7 @@ export function createProjectReads(proxy: ProxyWiring) {
 
   async function issue(key: string, fields: readonly string[]) {
     const result = requireRecord(
-      await jira.getJson(`${API}/issue/${encodeURIComponent(key)}`, {
+      await jira.getJson(`${ISSUE_API}/issue/${encodeURIComponent(key)}`, {
         query: { fields: fields.join(",") },
       }),
       `Invalid Jira issue response for ${key}`,
@@ -77,7 +96,7 @@ export function createProjectReads(proxy: ProxyWiring) {
     const ids = new Set<string>();
     for (let page = 0; page < MAX_JIRA_PAGES; page++) {
       const result = requireRecord(
-        await jira.getJson(`${API}/issue/${encodeURIComponent(key)}/comment`, {
+        await jira.getJson(`${ISSUE_API}/issue/${encodeURIComponent(key)}/comment`, {
           query: { startAt: items.length, maxResults: PAGE_SIZE, orderBy: "created" },
         }),
         `Invalid Jira comment response for ${key}`,

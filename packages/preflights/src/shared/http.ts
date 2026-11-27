@@ -36,6 +36,8 @@ export interface HttpClientConfig {
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   /** Injectable fetch for fixture-based tests. */
   readonly fetch?: FetchLike;
+  /** Optional JSON decoder for clients that need source-aware parsing. */
+  readonly parseJson?: (source: string) => unknown;
 }
 
 export interface JsonRequestOptions {
@@ -151,7 +153,7 @@ export function createHttpClient(config: HttpClientConfig): HttpClient {
     const text = await response.text();
     if ((method === "PUT" || method === "DELETE") && text === "") return undefined as T;
     try {
-      return JSON.parse(text) as T;
+      return (config.parseJson ? config.parseJson(text) : JSON.parse(text)) as T;
     } catch {
       throw new PreflightHttpError({
         status: response.status,

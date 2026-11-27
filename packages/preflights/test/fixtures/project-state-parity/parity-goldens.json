@@ -1,0 +1,2405 @@
+{
+  "cases": [
+    {
+      "digest": "40f90643d76d0fb69e0b3c4cab6bef7c96bb1113fc877245d7b4bfe0f9eccb89",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "description": "Plain text",
+          "key": "RHCLOUD-7"
+        }
+      ],
+      "name": "plain-converges",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": "Plain text",
+            "issuelinks": [],
+            "issuetype": {
+              "name": "Story"
+            },
+            "labels": [
+              "phase:01",
+              "triaged"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "id": "3",
+              "name": "High"
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "Shared summary",
+            "updated": "2026-11-23T12:00:00.000+0000"
+          },
+          "key": "RHCLOUD-7"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-7": {
+          "blockers": [],
+          "description": "Plain text",
+          "issue_type": "Story",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [
+            "triaged"
+          ],
+          "priority": "High",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Shared summary",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "430b4fbfc4e7b6a2eeb70fc8a37ad1fbbf0b3e3340009337fbee64b2ff823ea5",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "description": "hello \nworld",
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "adf-paragraph-two-texts",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "text": "hello ",
+                      "type": "text"
+                    },
+                    {
+                      "text": "world",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                }
+              ],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "hello \nworld",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "f33e72a58523e8a35e0371a7a175d0d2fd38932f7e161881b1a849f38fb7c0b9",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "description": "intro\n```\nx=1\n```\nHeading\nitem\nbreak\n\n\nafter\n@Martin\n:coffee:\n[LOVE]\n2024-11-27\nhttps://example.com/card",
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "adf-rich-blocks",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "text": "intro",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                {
+                  "attrs": {
+                    "language": "python"
+                  },
+                  "content": [
+                    {
+                      "text": "x=1",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "codeBlock"
+                },
+                {
+                  "attrs": {
+                    "level": 2
+                  },
+                  "content": [
+                    {
+                      "text": "Heading",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "heading"
+                },
+                {
+                  "content": [
+                    {
+                      "content": [
+                        {
+                          "content": [
+                            {
+                              "text": "item",
+                              "type": "text"
+                            }
+                          ],
+                          "type": "paragraph"
+                        }
+                      ],
+                      "type": "listItem"
+                    }
+                  ],
+                  "type": "bulletList"
+                },
+                {
+                  "content": [
+                    {
+                      "text": "break",
+                      "type": "text"
+                    },
+                    {
+                      "type": "hardBreak"
+                    },
+                    {
+                      "text": "after",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                },
+                {
+                  "content": [
+                    {
+                      "attrs": {
+                        "id": "accountid:1",
+                        "text": "@Martin"
+                      },
+                      "type": "mention"
+                    },
+                    {
+                      "attrs": {
+                        "shortName": ":coffee:"
+                      },
+                      "type": "emoji"
+                    },
+                    {
+                      "attrs": {
+                        "text": "LOVE"
+                      },
+                      "type": "status"
+                    },
+                    {
+                      "attrs": {
+                        "timestamp": 1732712400000
+                      },
+                      "type": "date"
+                    },
+                    {
+                      "attrs": {
+                        "url": "https://example.com/card"
+                      },
+                      "type": "inlineCard"
+                    }
+                  ],
+                  "type": "paragraph"
+                }
+              ],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "intro\n```\nx=1\n```\nHeading\nitem\nbreak\n\n\nafter\n@Martin\n:coffee:\n[LOVE]\n2024-11-27\nhttps://example.com/card",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "adf-empty-doc",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "adf-empty-text",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "text": "",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                }
+              ],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "description-null",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "description-empty-string",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": "",
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "46e1cfc77d9e7fcc69d35108e598f22489bbdf635b777aca11fea07b606b1ac2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "42",
+              "name": "Access"
+            }
+          },
+          "key": "RHCLOUD-20"
+        },
+        {
+          "customfield_10001": {
+            "value": "Team X"
+          },
+          "key": "RHCLOUD-21"
+        },
+        {
+          "customfield_10001": {
+            "value": "Plain Field"
+          },
+          "key": "RHCLOUD-22"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "name": "No Self"
+            }
+          },
+          "key": "RHCLOUD-23"
+        },
+        {
+          "customfield_10001": {
+            "value": 42
+          },
+          "key": "RHCLOUD-24"
+        },
+        {
+          "customfield_10001": {
+            "value": "team-abc_123"
+          },
+          "key": "RHCLOUD-25"
+        },
+        {
+          "customfield_10001": {
+            "value": null
+          },
+          "key": "RHCLOUD-26"
+        },
+        {
+          "customfield_10001": {
+            "value": [
+              {
+                "id": "7"
+              }
+            ]
+          },
+          "key": "RHCLOUD-27"
+        },
+        {
+          "customfield_10001": {
+            "value": "{\"data\":[{\"teamId\":\"team-1\"}]}"
+          },
+          "key": "RHCLOUD-28"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "9"
+            }
+          },
+          "key": "RHCLOUD-29"
+        }
+      ],
+      "name": "team-shapes",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "42",
+              "name": "Access"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape gh-team",
+            "updated": null
+          },
+          "key": "RHCLOUD-20"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "7",
+              "value": "Team X"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape select-like",
+            "updated": null
+          },
+          "key": "RHCLOUD-21"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "name": "Plain Field",
+              "self": "https://jira/rest/api/2/user"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape name-with-self",
+            "updated": null
+          },
+          "key": "RHCLOUD-22"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "name": "No Self"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape name-only",
+            "updated": null
+          },
+          "key": "RHCLOUD-23"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": 42,
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape bare-number",
+            "updated": null
+          },
+          "key": "RHCLOUD-24"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": "team-abc_123",
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape bare-string",
+            "updated": null
+          },
+          "key": "RHCLOUD-25"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": null,
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape null",
+            "updated": null
+          },
+          "key": "RHCLOUD-26"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": [
+              {
+                "id": "7"
+              }
+            ],
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape list-of-one",
+            "updated": null
+          },
+          "key": "RHCLOUD-27"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": "{\"data\":[{\"teamId\":\"team-1\"}]}",
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape json-string",
+            "updated": null
+          },
+          "key": "RHCLOUD-28"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "value": {
+                "id": "9"
+              }
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Team shape nested-value",
+            "updated": null
+          },
+          "key": "RHCLOUD-29"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-20": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape gh-team",
+          "team_id": "42"
+        },
+        "RHCLOUD-21": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape select-like",
+          "team_id": ""
+        },
+        "RHCLOUD-22": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape name-with-self",
+          "team_id": ""
+        },
+        "RHCLOUD-23": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape name-only",
+          "team_id": ""
+        },
+        "RHCLOUD-24": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape bare-number",
+          "team_id": "42"
+        },
+        "RHCLOUD-25": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape bare-string",
+          "team_id": "team-abc_123"
+        },
+        "RHCLOUD-26": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape null",
+          "team_id": ""
+        },
+        "RHCLOUD-27": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape list-of-one",
+          "team_id": "7"
+        },
+        "RHCLOUD-28": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape json-string",
+          "team_id": ""
+        },
+        "RHCLOUD-29": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Team shape nested-value",
+          "team_id": "9"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "11",
+              "inward_issue": {
+                "fields": {
+                  "status": {
+                    "name": "Done"
+                  },
+                  "summary": "Other"
+                },
+                "id": "9",
+                "key": "RHCLOUD-9"
+              },
+              "type": {
+                "id": "5",
+                "inward": "is blocked by",
+                "name": "Blocks",
+                "outward": "blocks"
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "links-blocks-inward",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "id": "11",
+                "inwardIssue": {
+                  "fields": {
+                    "status": {
+                      "name": "Done"
+                    },
+                    "summary": "Other"
+                  },
+                  "id": "9",
+                  "key": "RHCLOUD-9"
+                },
+                "type": {
+                  "id": "5",
+                  "inward": "is blocked by",
+                  "name": "Blocks",
+                  "outward": "blocks"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "0",
+              "outward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-8"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "links-relates-outward",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "outwardIssue": {
+                  "key": "RHCLOUD-8"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "1",
+              "inward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-9"
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "links-no-type",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "id": "1",
+                "inwardIssue": {
+                  "key": "RHCLOUD-9"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "0",
+              "inward_issue": {
+                "fields": {
+                  "status": {
+                    "category": "Done",
+                    "color": "green",
+                    "name": "Done"
+                  },
+                  "summary": "Cat"
+                },
+                "id": "9",
+                "key": "RHCLOUD-9"
+              },
+              "type": {
+                "id": "0",
+                "inward": "is blocked by",
+                "name": "Blocks",
+                "outward": ""
+              }
+            },
+            {
+              "id": "0",
+              "outward_issue": {
+                "fields": {
+                  "status": {
+                    "category": "Unknown",
+                    "color": "",
+                    "name": "New"
+                  },
+                  "summary": "Str"
+                },
+                "id": "8",
+                "key": "RHCLOUD-8"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            },
+            {
+              "id": "0",
+              "outward_issue": {
+                "fields": {
+                  "status": {
+                    "name": "New"
+                  },
+                  "summary": "Empty"
+                },
+                "id": "7",
+                "key": "RHCLOUD-7"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "links-status-category",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "inwardIssue": {
+                  "fields": {
+                    "status": {
+                      "name": "Done",
+                      "statusCategory": {
+                        "colorName": "green",
+                        "name": "Done"
+                      }
+                    },
+                    "summary": "Cat"
+                  },
+                  "id": "9",
+                  "key": "RHCLOUD-9"
+                },
+                "type": {
+                  "inward": "is blocked by",
+                  "name": "Blocks"
+                }
+              },
+              {
+                "outwardIssue": {
+                  "fields": {
+                    "status": {
+                      "name": "New",
+                      "statusCategory": "garbage"
+                    },
+                    "summary": "Str"
+                  },
+                  "id": "8",
+                  "key": "RHCLOUD-8"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              },
+              {
+                "outwardIssue": {
+                  "fields": {
+                    "status": {
+                      "name": "New",
+                      "statusCategory": {}
+                    },
+                    "summary": "Empty"
+                  },
+                  "id": "7",
+                  "key": "RHCLOUD-7"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "2381059df4d1c8c954aa341a75d939f7bd1100299d67884d20ecadd89b3bb7d2",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "0",
+              "outward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-7"
+              },
+              "type": {
+                "id": "0",
+                "inward": "blocks",
+                "name": "Blocks",
+                "outward": ""
+              }
+            },
+            {
+              "id": "0",
+              "inward_issue": {
+                "id": "8",
+                "key": "RHCLOUD-8"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            },
+            {
+              "id": "0"
+            },
+            {
+              "id": "0",
+              "inward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-6"
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "links-mixed",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "outwardIssue": {
+                  "key": "RHCLOUD-7"
+                },
+                "type": {
+                  "inward": "blocks",
+                  "name": "Blocks"
+                }
+              },
+              {
+                "inwardIssue": {
+                  "id": "8",
+                  "key": "RHCLOUD-8"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              },
+              null,
+              {
+                "key": "dropped-non-object"
+              },
+              {
+                "inwardIssue": {
+                  "key": "RHCLOUD-6"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "d38792e6dc48bcf9f21a8b54efae487090ce0f5aaffd8849b50a5e9b7d9dca49",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "labels-empty",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "c4c5d3937e7a660f66ac90a894f84fc041b91227a228f46e34887623fbb01f84",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "name": "summary-null-and-missing",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": null,
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "updated": null
+          },
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "None",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "95cc5e941ab1a048aa2903fe8c486fbeb82cdc5759ebfb000d9ca89e09c95d1c",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "description": "1970-01-01\n1970-01-01\nnot-a-number\n253402300800000",
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "adf-date-strings",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [
+                {
+                  "attrs": {
+                    "timestamp": " 42 "
+                  },
+                  "type": "date"
+                },
+                {
+                  "attrs": {
+                    "timestamp": "1_000"
+                  },
+                  "type": "date"
+                },
+                {
+                  "attrs": {
+                    "timestamp": "not-a-number"
+                  },
+                  "type": "date"
+                },
+                {
+                  "attrs": {
+                    "timestamp": 253402300800000
+                  },
+                  "type": "date"
+                }
+              ],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "1970-01-01\n1970-01-01\nnot-a-number\n253402300800000",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "887467b0c84c1e52c0e3140fe4607b0e7f15c5bc3ee4e373c9fcc2556971dbe6",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "name": "priority-issuetype-defaults",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": {},
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "id": "3"
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": {
+              "name": ""
+            },
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "name": ""
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 5",
+            "updated": null
+          },
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "None",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 5",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "029fa055304ee886594dd9357d5565203eff5e9a14dbd66834a7878f215c63e1",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-3"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "issuelinks": [
+            {
+              "id": "0",
+              "inward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-9"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Blocks",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "name": "scenario-default",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "repo:demo",
+              "phase:01",
+              "implementation-bot"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 3",
+            "updated": null
+          },
+          "key": "RHCLOUD-3"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": null
+          },
+          "key": "RHCLOUD-4"
+        },
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": null,
+            "issuelinks": [
+              {
+                "inwardIssue": {
+                  "key": "RHCLOUD-9"
+                },
+                "type": {
+                  "name": "Blocks"
+                }
+              }
+            ],
+            "issuetype": null,
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": null,
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 5",
+            "updated": null
+          },
+          "key": "RHCLOUD-5"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [
+            "repo:demo"
+          ],
+          "summary": "Ticket 3",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 5",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "0c6491302cd9b1d5ad7a80679ade841ad4c2df66b8d6df0e0b2b6a7d8c6e8077",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "42"
+            }
+          },
+          "description": "Clear acceptance criteria",
+          "issuelinks": [
+            {
+              "id": "0",
+              "outward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-2"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-3"
+        }
+      ],
+      "name": "scenario-parity",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "42"
+            },
+            "description": "Clear acceptance criteria",
+            "issuelinks": [
+              {
+                "outwardIssue": {
+                  "key": "RHCLOUD-2"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              }
+            ],
+            "issuetype": {
+              "name": "Story"
+            },
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "id": "3",
+              "name": "Medium"
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "First implementation ticket",
+            "updated": "2026-11-21T10:00:00.000+0000"
+          },
+          "key": "RHCLOUD-3"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "Clear acceptance criteria",
+          "issue_type": "Story",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "Medium",
+          "related": [],
+          "repo_labels": [],
+          "summary": "First implementation ticket",
+          "team_id": "42"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "04be4fc5151d1e997f9e27ad89b078836e962e1e50956ec3aa4c4573aabd59cc",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "team-1"
+            }
+          },
+          "description": "café's 🧶\nworks",
+          "issuelinks": [
+            {
+              "id": "0",
+              "outward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-8"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "name": "scenario-adf",
+      "rest": [
+        {
+          "fields": {
+            "assignee": {
+              "display_name": "Unassigned"
+            },
+            "customfield_10001": {
+              "id": "team-1"
+            },
+            "description": {
+              "content": [
+                {
+                  "content": [
+                    {
+                      "text": "café's 🧶\nworks",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "paragraph"
+                }
+              ],
+              "type": "doc",
+              "version": 1
+            },
+            "issuelinks": [
+              {
+                "outwardIssue": {
+                  "key": "RHCLOUD-8"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              }
+            ],
+            "issuetype": {
+              "name": "Task"
+            },
+            "labels": [
+              "phase:01"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "id": "1",
+              "name": "High"
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "Ticket 4",
+            "updated": "2026-11-23T12:00:00.000+0000"
+          },
+          "key": "RHCLOUD-4"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "café's 🧶\nworks",
+          "issue_type": "Task",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [],
+          "priority": "High",
+          "related": [],
+          "repo_labels": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    },
+    {
+      "digest": "b025868d4d872b89cdf8df061bdba08cf23996a1509f514380dc4f293950b40a",
+      "implementation_label": "implementation-bot",
+      "mcp": [
+        {
+          "customfield_10001": {
+            "value": {
+              "id": "42"
+            }
+          },
+          "description": "Clear acceptance criteria",
+          "issuelinks": [
+            {
+              "id": "0",
+              "outward_issue": {
+                "id": "0",
+                "key": "RHCLOUD-2"
+              },
+              "type": {
+                "id": "0",
+                "inward": "",
+                "name": "Relates",
+                "outward": ""
+              }
+            }
+          ],
+          "key": "RHCLOUD-3"
+        }
+      ],
+      "name": "scenario-handedoff",
+      "rest": [
+        {
+          "fields": {
+            "assignee": null,
+            "customfield_10001": {
+              "id": "42"
+            },
+            "description": "Clear acceptance criteria",
+            "issuelinks": [
+              {
+                "outwardIssue": {
+                  "key": "RHCLOUD-2"
+                },
+                "type": {
+                  "name": "Relates"
+                }
+              }
+            ],
+            "issuetype": {
+              "name": "Story"
+            },
+            "labels": [
+              "phase:01",
+              "triaged",
+              "implementation-bot"
+            ],
+            "parent": {
+              "key": "RHCLOUD-1"
+            },
+            "priority": {
+              "id": "3",
+              "name": "Medium"
+            },
+            "status": {
+              "name": "New"
+            },
+            "summary": "First implementation ticket",
+            "updated": "2026-11-21T10:00:00.000+0000"
+          },
+          "key": "RHCLOUD-3"
+        }
+      ],
+      "snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "Clear acceptance criteria",
+          "issue_type": "Story",
+          "phase_labels": [
+            "phase:01"
+          ],
+          "planning_labels": [
+            "triaged"
+          ],
+          "priority": "Medium",
+          "related": [],
+          "repo_labels": [],
+          "summary": "First implementation ticket",
+          "team_id": "42"
+        }
+      },
+      "team_field_id": "customfield_10001"
+    }
+  ],
+  "generator": {
+    "atlassian_python_api": "4.0.7",
+    "fabric_project_coordinator": "fabric-access-ai-dev@37d5263",
+    "mcp_atlassian": "0.23.1",
+    "note": "generated by test/fixtures/project-state-parity/generate.py; mcp-atlassian must be 0.23.1 (rehor proxy/Dockerfile pin); generate on Linux for exact year<1000 parity (see docstring)",
+    "python": "3.11.10"
+  }
+}
