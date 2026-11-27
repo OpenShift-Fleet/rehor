@@ -31,12 +31,21 @@
 import { isRecord, pyTruthy } from "../jira-common/shapes.js";
 import { assertNumber } from "./numbers.js";
 
-/** Python str() for JSON scalars (str(None) is "None", booleans capitalize). */
+/**
+ * Python str() for JSON scalars (str(None) is "None", booleans capitalize).
+ * Objects and non-safe integral numbers fail closed: Python would repr the
+ * former and print the latter exactly, neither of which String() reproduces.
+ */
 export function pyScalarStr(value: string | number | boolean | null): string {
   if (typeof value === "string") return value;
   if (value === null) return "None";
   if (typeof value === "boolean") return value ? "True" : "False";
-  return String(value);
+  if (typeof value === "number") {
+    if (Number.isInteger(value) && !Number.isSafeInteger(value))
+      throw new Error("Unsupported large number in Python str() coercion");
+    return String(value);
+  }
+  throw new Error("Unsupported object in Python str() coercion");
 }
 
 const MAX_DEPTH = 200;
@@ -56,23 +65,51 @@ function adfAttrs(node: Record<string, unknown>): Record<string, unknown> {
 
 // datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc) is limited to
 // years 1..9999; outside that (or for unparsable values) Python falls back to
-// str(timestamp) (models/jira/adf.py:563-573).
+// str(timestamp) (models/jira/adf.py:563-573). The year is printed without
+// zero padding: the deployed server runs on glibc (ubi9 proxy container),
+// where %Y renders 481 as "481" — verified against python:3.11-slim; macOS
+// Python pads to "0481", so goldens must not carry year<1000 dates.
 const MIN_DATE_MS = -62135596800000;
 const MAX_DATE_MS = 253402300799999;
 
-function adfDateText(timestamp: unknown): string {
-  let seconds: number;
-  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
-    seconds = Math.trunc(timestamp) / 1000;
-  } else if (typeof timestamp === "boolean") {
-    seconds = (timestamp ? 1 : 0) / 1000;
-  } else if (typeof timestamp === "string" && /^[+-]?\d+$/.test(timestamp)) {
-    seconds = Number(timestamp) / 1000;
-  } else {
-    return pyScalarStr(timestamp as string | number | boolean | null);
+// Python int() for strings: surrounding whitespace and single underscores
+// between digits are accepted (int(" 42 ") == 42, int("1_000") == 1000);
+// anything else raises ValueError and the date falls back to str(timestamp).
+const INT_STRING = /^[+-]?(?:\d+(?:_\d+)*)$/;
+
+function pyIntValue(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!INT_STRING.test(trimmed)) {
+    // Python also parses non-ASCII decimal digits (int("٤٢") == 42); that
+    // cannot be reproduced here, so fail closed instead of hashing a
+    // different fallback string.
+    for (const ch of trimmed) {
+      if ((ch.codePointAt(0) ?? 0) > 0x7f && /\p{Nd}/u.test(ch))
+        throw new Error("Unsupported Unicode digits in ADF date");
+    }
+    return undefined;
   }
-  const ms = seconds * 1000;
-  if (!Number.isFinite(ms) || ms < MIN_DATE_MS || ms > MAX_DATE_MS) {
+  return Number(trimmed.replace(/_/g, ""));
+}
+
+function adfDateText(attrs: Record<string, unknown>): string {
+  const timestamp = attrs.timestamp;
+  let ms: number | undefined;
+  if (typeof timestamp === "number" && Number.isFinite(timestamp)) {
+    // Python int() truncates toward zero; the result is exact for the safe
+    // integers that reach the in-range path.
+    ms = Math.trunc(timestamp);
+  } else if (typeof timestamp === "boolean") {
+    ms = timestamp ? 1 : 0;
+  } else if (typeof timestamp === "string") {
+    const parsed = pyIntValue(timestamp);
+    if (parsed !== undefined) ms = parsed;
+  }
+  if (ms === undefined || ms < MIN_DATE_MS || ms > MAX_DATE_MS) {
+    // str(timestamp) fallback. For numbers this must fail closed when the
+    // Python text cannot be reproduced: float lexemes format differently
+    // (str(1e15) is "1000000000000000.0") and non-safe integers lose digits.
+    if (typeof timestamp === "number") assertNumber(attrs, "timestamp", timestamp);
     return pyScalarStr(timestamp as string | number | boolean | null);
   }
   const date = new Date(ms);
@@ -125,7 +162,7 @@ export function mcpAdfToText(node: unknown, depth = 0): unknown {
   }
   if (type === "date") {
     const attrs = adfAttrs(item);
-    return pyTruthy(attrs.timestamp) ? adfDateText(attrs.timestamp) : "";
+    return pyTruthy(attrs.timestamp) ? adfDateText(attrs) : "";
   }
   if (type === "status") {
     const attrs = adfAttrs(item);
@@ -203,6 +240,16 @@ export function mcpDescription(raw: unknown): unknown {
   return pyTruthy(emulated) ? emulated : undefined;
 }
 
+/**
+ * The mcp-atlassian issue summary: the model coerces it with str()
+ * (models/jira/issue.py:280, summary = str(fields.get("summary", ""))), so a
+ * null REST summary arrives as the string "None" and digests that way, while
+ * a missing key stays empty. Object summaries fail closed via pyScalarStr.
+ */
+export function mcpSummaryText(raw: unknown): string {
+  return raw === undefined ? "" : pyScalarStr(raw as string | number | boolean | null);
+}
+
 // --- Issue link simplification (models/jira/link.py) -----------------------
 
 export type SimplifiedLinkType = {
@@ -266,10 +313,13 @@ function simplifyStatus(data: unknown): { name: string; category?: unknown; colo
   const result: { name: string; category?: unknown; color?: unknown } = {
     name: strField(obj, "name", "Unknown"),
   };
-  const category = pyTruthy(obj.statusCategory) ? record(obj.statusCategory) : undefined;
-  if (category) {
-    result.category = strField(category, "name", "Unknown");
-    result.color = strField(category, "colorName", "");
+  const rawCategory = obj.statusCategory;
+  if (pyTruthy(rawCategory)) {
+    // JiraStatusCategory.from_api_response returns the model default
+    // ({"name": "Unknown", "colorName": ""}) for truthy non-object input.
+    const category = record(rawCategory);
+    result.category = category ? strField(category, "name", "Unknown") : "Unknown";
+    result.color = category ? strField(category, "colorName", "") : "";
   }
   return result;
 }

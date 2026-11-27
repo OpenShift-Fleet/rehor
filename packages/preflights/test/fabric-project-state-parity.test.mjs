@@ -5,7 +5,9 @@ import {
   mcpAdfToText,
   mcpCustomField,
   mcpDescription,
+  mcpSummaryText,
   processCustomFieldValue,
+  pyScalarStr,
   simplifyLinks,
 } from "../dist/preflights/fabric-project-state/mcp.js";
 import { planDigest, planSnapshot } from "../dist/preflights/fabric-project-state/plan.js";
@@ -98,4 +100,46 @@ test("malformed ADF, custom field, and link values fail closed", () => {
   // (models/jira/link.py guards with isinstance), not an error.
   assert.deepEqual(simplifyLinks("garbage"), []);
   assert.deepEqual(simplifyLinks(null), []);
+});
+
+test("ADF date nodes follow Python int() and the glibc year format", () => {
+  const date = (timestamp) =>
+    mcpAdfToText({ type: "doc", content: [{ type: "date", attrs: { timestamp } }] });
+  // Python int() accepts surrounding whitespace and underscores between
+  // digits (int(" 42 ") == 42, int("1_000") == 1000).
+  assert.equal(date(" 42 "), "1970-01-01");
+  assert.equal(date("1_000"), "1970-01-01");
+  assert.equal(date("+42"), "1970-01-01");
+  // int() rejects misplaced underscores, signs after whitespace, and
+  // non-numbers; the date then falls back to str(timestamp).
+  assert.equal(date("1__0"), "1__0");
+  assert.equal(date("42_"), "42_");
+  assert.equal(date("- 42"), "- 42");
+  assert.equal(date("not-a-number"), "not-a-number");
+  // Out-of-range values keep the exact Python str() of the timestamp.
+  assert.equal(date(253402300800000), "253402300800000");
+  // The deployed server runs on glibc, where %Y does not zero-pad years
+  // below 1000 ("481-10-30"); macOS Python pads ("0481-10-30"), so this is
+  // pinned here rather than in the platform-sensitive goldens.
+  assert.equal(date(-46962067200000), "481-10-30");
+  // Values whose Python text cannot be reproduced fail closed: non-ASCII
+  // decimal digits (int("٤٢") == 42 in Python) and non-safe integers whose
+  // digits JavaScript has already lost (either guard may fire first).
+  assert.throws(() => date("٤٢"), /Unsupported Unicode digits/);
+  assert.throws(() => date(1e16), /Unsupported (large number|Jira number representation)/);
+});
+
+test("scalar coercions fail closed where Python str() cannot be matched", () => {
+  // Python str() of an object is its repr; silently hashing "[object
+  // Object]" would diverge, so object values throw instead.
+  assert.throws(() => pyScalarStr({}), /Unsupported object/);
+  assert.throws(() => pyScalarStr([]), /Unsupported object/);
+  assert.throws(() => simplifyLinks([{ type: { name: {} } }]), /Unsupported object/);
+  assert.equal(pyScalarStr(null), "None");
+  assert.equal(pyScalarStr(true), "True");
+  assert.equal(pyScalarStr(42), "42");
+  // The model coerces the summary with str(): null becomes "None".
+  assert.equal(mcpSummaryText(null), "None");
+  assert.equal(mcpSummaryText(undefined), "");
+  assert.equal(mcpSummaryText("Plain"), "Plain");
 });

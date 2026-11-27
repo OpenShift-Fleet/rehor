@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { pyTruthy } from "../jira-common/shapes.js";
-import { mcpDescription, pyScalarStr, simplifyLinks } from "./mcp.js";
+import { mcpDescription, mcpSummaryText, pyScalarStr, simplifyLinks } from "./mcp.js";
 import { issueKey } from "./reads.js";
 import {
   field,
@@ -54,9 +54,10 @@ export function linkedIssues(issue: RecordData): { blockers: string[]; related: 
  * project_coordinator.linked_issues() over the mcp-atlassian 0.23.1 link
  * shape: the server model renames inwardIssue/outwardIssue to snake_case, so
  * the Python camelCase reads find no counterpart and both sets stay empty.
- * The REST links are normalized through the same simplification first; the
- * extraction itself is ported verbatim so a later Fabric change to the
- * snake_case keys flips both sides consistently.
+ * The REST links are normalized through the same simplification first, and
+ * the camelCase reads are ported verbatim from the deployed Python. If
+ * Fabric later reads the snake_case keys instead, this port must be updated
+ * (and the goldens regenerated) in lockstep — it does not flip by itself.
  */
 export function mcpLinkedIssues(rawLinks: unknown): { blockers: string[]; related: string[] } {
   const simplified = simplifyLinks(rawLinks);
@@ -127,13 +128,11 @@ export function planSnapshot(
       // The Fabric Python digests mcp-atlassian output, so every field below
       // is normalized through the same server transformation before hashing:
       // descriptions flatten via adf_to_text, the team field arrives wrapped
-      // as {"value": processed} (teamId emulates that), priorities and issue
-      // types collapse to their model name, and issue links are simplified
-      // to the snake_case shape the Python extraction reads.
-      summary: (pyTruthy(field(issue, "summary"))
-        ? pythonString(field(issue, "summary"))
-        : ""
-      ).trim(),
+      // as {"value": processed} (teamId emulates that), the summary is
+      // str()-coerced by the model (null becomes "None"), priorities and
+      // issue types collapse to their model name, and issue links are
+      // simplified to the snake_case shape the Python extraction reads.
+      summary: mcpSummaryText(field(issue, "summary")).trim(),
       description: descriptionText(mcpDescription(field(issue, "description"))),
       priority: mcpPriorityName(field(issue, "priority")),
       issue_type: mcpIssueTypeName(issueType),

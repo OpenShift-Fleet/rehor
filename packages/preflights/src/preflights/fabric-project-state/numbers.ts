@@ -6,6 +6,8 @@
 // records each number's original lexeme so assertNumber can reject values
 // whose Python representation cannot be reproduced faithfully.
 
+import { isRecord } from "../jira-common/shapes.js";
+
 // Node 22.0 lacks reviver source context. Record unknown sources and reject
 // them only if a number actually contributes to a Python-compatible value.
 const numberSources = new WeakMap<object, Map<string, string | undefined>>();
@@ -45,8 +47,6 @@ export function assertNumberTree(value: unknown): void {
     assertNumberTree(item);
   }
 }
-
-import { isRecord } from "../jira-common/shapes.js";
 
 export function assertSnapshotField(issue: Record<string, unknown>, name: string): void {
   const fields = isRecord(issue.fields) ? issue.fields : undefined;

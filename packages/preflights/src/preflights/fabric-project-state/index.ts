@@ -2,7 +2,7 @@ import { z } from "zod";
 import { definePreflight } from "../../core/registry.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { pyTruthy } from "../jira-common/shapes.js";
-import { mcpDescription } from "./mcp.js";
+import { mcpDescription, mcpSummaryText } from "./mcp.js";
 import { descriptionText, linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
@@ -20,7 +20,6 @@ import {
   sorted,
   statusName,
   teamId,
-  text,
 } from "./snapshot.js";
 
 const id = "fabric-project-state";
@@ -59,7 +58,7 @@ function summarizeChild(issue: RecordData, implementationLabel: string) {
   const description = descriptionText(mcpDescription(field(issue, "description")));
   return {
     key,
-    summary: text(field(issue, "summary")),
+    summary: mcpSummaryText(field(issue, "summary")),
     status,
     phase_labels: sorted(items.filter((label) => PHASE.test(label))),
     repo_labels: sorted(repoLabels(items)),
