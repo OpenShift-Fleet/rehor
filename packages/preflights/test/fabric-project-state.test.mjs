@@ -5,6 +5,7 @@ import { fabricProjectState } from "../dist/preflights/fabric-project-state/inde
 import {
   linkedIssues,
   planDigest,
+  plannerTicketSnapshot,
   planSnapshot,
 } from "../dist/preflights/fabric-project-state/plan.js";
 import { createPreflightRunContext } from "../dist/shared/run-context.js";
@@ -50,7 +51,11 @@ const adf = (type, value) => ({
   version: 1,
   content: [{ type, content: [{ type: "text", text: value }] }],
 });
-const approval = { id: "10", body: adf("paragraph", "approved café"), created: "2026-11-20" };
+const approval = {
+  id: "10",
+  body: adf("paragraph", "COORDINATOR: approved café"),
+  created: "2026-11-20",
+};
 const ownComment = { id: "11", body: adf("heading", "Coordinator update") };
 const pr = (number, title, names = []) => ({
   number,
@@ -167,6 +172,104 @@ function project(result) {
   return payload.projects[0];
 }
 
+const plannerCommand = (id, body = "PLANNER: /coord plan focus on rollout") => ({
+  id,
+  body,
+  created: "2026-11-23",
+});
+const plannerReceiptComment = (id, requested, block = "plan text") => ({
+  id,
+  body:
+    `PLANNER: Planner update - Technical plan for RHCLOUD-1\n\n${block}\n\n` +
+    `Planner request comment: ${requested}`,
+  created: "2026-11-24",
+});
+const coordinationBlock = (hash, tickets, omitHash = false) =>
+  "```planner-coordination\n" +
+  JSON.stringify({
+    ...(omitHash ? {} : { input_snapshot_hash: hash }),
+    ticket_assignments: tickets,
+  }) +
+  "\n```";
+
+// Two-control scan where the first control is an actionable coordinator and
+// the second carries the planner route. Every read beyond the control search,
+// the two control issues, and their comments is recorded as unexpected.
+async function plannerRun(options = {}) {
+  const memoryReads = { count: 0 };
+  const unexpected = [];
+  let first = options.first ?? control;
+  if (options.lagFirst) {
+    // The search index still returns this control, but the label is gone.
+    first = structuredClone(first);
+    first.fields.labels = first.fields.labels.filter((label) => label !== controlLabel);
+  }
+  const second =
+    options.second ??
+    (() => {
+      // Planner routing must not need the Team field, task metadata, or the
+      // repository map: the route precedes all coordination reads.
+      const issue = ticket(8, { labels: [controlLabel, "repo:demo"] });
+      delete issue.fields[teamFieldId];
+      return issue;
+    })();
+  const jiraResponse = (value) =>
+    new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+  const commentPage = (comments) => ({
+    comments,
+    total: comments.length,
+    startAt: 0,
+  });
+  const ctx = createPreflightRunContext({
+    instanceId,
+    repos: options.repos ?? {},
+    memory: {
+      baseUrl: "https://memory.example",
+      fetch: async () => {
+        memoryReads.count += 1;
+        return Response.json({ items: [], total: 0 });
+      },
+    },
+    proxy: {
+      baseUrl: "https://proxy.example/service",
+      fetch: async (url, init) => {
+        const { pathname } = new URL(url);
+        if (pathname === "/service/jira/rest/api/3/search/jql") {
+          const query = JSON.parse(init.body);
+          if (query.jql === `project = "RHCLOUD" AND labels = "${controlLabel}" ORDER BY key ASC`)
+            return jiraResponse({
+              issues: [{ key: "RHCLOUD-2" }, { key: "RHCLOUD-8" }],
+              isLast: true,
+            });
+          unexpected.push(`sibling search: ${query.jql}`);
+          return jiraResponse({ issues: [], isLast: true });
+        }
+        assert.equal(init.method, "GET");
+        if (pathname.endsWith("/issue/RHCLOUD-2")) return jiraResponse(first);
+        if (pathname.endsWith("/issue/RHCLOUD-2/comment")) {
+          // A label-lagged control is skipped before its comments are read,
+          // so a failing comments response here must never surface.
+          if (options.lagFirst) return new Response("forbidden", { status: 403 });
+          return jiraResponse(commentPage(options.firstComments ?? [approval]));
+        }
+        if (pathname.endsWith("/issue/RHCLOUD-8")) return jiraResponse(second);
+        if (pathname.endsWith("/issue/RHCLOUD-8/comment"))
+          return jiraResponse(commentPage(options.secondComments ?? [plannerCommand("12")]));
+        unexpected.push(pathname);
+        return jiraResponse({ issues: [], isLast: true });
+      },
+    },
+  });
+  const input = fabricProjectState.input.parse({
+    controlLabel,
+    teamFieldId,
+    implementationLabel,
+    includeBacklog: true,
+  });
+  const result = await fabricProjectState.run(ctx, input);
+  return { result, memoryReads: memoryReads.count, unexpected };
+}
+
 const task = (snapshot_hash, options = {}) => ({
   external_key: control.key,
   source_type: "jira",
@@ -187,7 +290,7 @@ test("selects direct same-Team scope, waits on external blockers, and observes P
   );
   assert.deepEqual(first.ready, [{ key: "RHCLOUD-4", repo_candidates: ["demo"] }]);
   assert.deepEqual(first.waiting, ["RHCLOUD-5"]);
-  assert.deepEqual(first.new_comments, [{ ...approval, body: "approved café" }]);
+  assert.deepEqual(first.new_comments, [{ ...approval, body: "COORDINATOR: approved café" }]);
   // Gating keeps the real REST dependency links (RHCLOUD-5 waits on its
   // blocker) even though the hash-normalized plan snapshot cannot carry
   // them: the Fabric Python reads links from the mcp-atlassian shape, where
@@ -195,11 +298,12 @@ test("selects direct same-Team scope, waits on external blockers, and observes P
   assert.deepEqual(first.plan_snapshot["RHCLOUD-5"].blockers, []);
   assert.deepEqual(first.waiting, ["RHCLOUD-5"]);
   // Golden digests from the real deployed pipeline: mcp-atlassian 0.23.1
-  // models plus the Fabric Python reference (upstream 37d5263), regenerated
-  // through test/fixtures/project-state-parity/generate.py.
+  // models plus the Fabric Python reference (upstream d62cc55), regenerated
+  // through test/fixtures/project-state-parity/generate.py and verified
+  // against project_coordinator.fingerprint at the same reference.
   assert.equal(
     first.snapshot_hash,
-    "780416a2901c9f01ff04f6c089bf7ce2505be7fd742f3d26b6327bddd3a69222",
+    "f634899c42ad23af95af50d6def2f939f9038b65f19e198eb4d7e5a8f36cc6fa",
   );
   assert.equal(
     first.plan_snapshot_hash,
@@ -319,7 +423,7 @@ test("plan changes and pending approvals are reported against stored plan metada
   const pending = project(
     await run({
       children: [ticket(4)],
-      comments: [approval, { id: "16", body: "approve" }],
+      comments: [approval, { id: "16", body: "COORDINATOR: approve" }],
       tasks: [saved],
     }),
   );
@@ -360,22 +464,208 @@ test("no-sprint unassigned placeholders can hand off while owned/status tickets 
   assert.equal("assignee" in result.plan_snapshot["RHCLOUD-4"], false);
 });
 
-test("coordinator comments normalize case and dynamic headings without hiding human comments", async () => {
+test("routed coordinator comments normalize case and dynamic headings without hiding feedback", async () => {
   const comments = [
     approval,
-    { id: "12", body: adf("heading", "coordinator UPDATE - Next steps") },
+    { id: "12", body: adf("heading", "COORDINATOR: coordinator UPDATE - Next steps") },
     { id: "13", body: "## Coordinator update - Plan\nbody" },
-    { id: "14", body: "Report\nCoordinator action: continue" },
-    { id: "15", body: "Coordinator update from user" },
-    { id: "16", body: "h1. Coordinator update - approved" },
+    { id: "14", body: "COORDINATOR: proceed\nReport\nCoordinator action: continue" },
+    { id: "15", body: "COORDINATOR: Coordinator update from user" },
+    { id: "16", body: adf("heading", "COORDINATOR: h1. Coordinator update - approved") },
   ];
   const result = project(await run({ comments }));
+  // Only first-line COORDINATOR-routed comments count as feedback, and the
+  // persona prefix is stripped before the own-report heading match, so bot
+  // reports starting "COORDINATOR: Coordinator update" stay ignored.
   assert.deepEqual(
     result.new_comments.map(({ id }) => id),
     ["10", "15", "16"],
   );
   const noOwn = project(await run({ comments: [approval, comments[4], comments[5]] }));
   assert.equal(result.snapshot_hash, noOwn.snapshot_hash);
+  // Unrouted user chatter never reaches the fingerprint or new_comments.
+  const unrouted = project(
+    await run({ comments: [approval, comments[1], comments[2], comments[3]] }),
+  );
+  const routedOnly = project(await run({ comments: [approval] }));
+  assert.equal(unrouted.snapshot_hash, routedOnly.snapshot_hash);
+  assert.deepEqual(
+    unrouted.new_comments.map(({ id }) => id),
+    ["10"],
+  );
+});
+
+test("planner requests preempt coordination before any task or repository read", async () => {
+  // A planner command on a LATER control preempts an actionable earlier
+  // control: the planner-first pass covers every sorted control before any
+  // coordination, task, or repository read, exactly like the Fabric Python.
+  const { result, memoryReads, unexpected } = await plannerRun({});
+  assert.equal(result.status, "start", result.content);
+  assert.deepEqual(JSON.parse(result.content), {
+    planner: { control_key: "RHCLOUD-8", comment_id: "12", parent_key: "RHCLOUD-1" },
+  });
+  assert.equal(memoryReads, 0);
+  assert.deepEqual(unexpected, []);
+
+  // A label-lagged candidate is skipped before its comments are read, so a
+  // failing comments fetch on it cannot block the remaining controls.
+  const laggedFirst = await plannerRun({ lagFirst: true });
+  assert.equal(laggedFirst.result.status, "start", laggedFirst.result.content);
+  assert.deepEqual(JSON.parse(laggedFirst.result.content), {
+    planner: { control_key: "RHCLOUD-8", comment_id: "12", parent_key: "RHCLOUD-1" },
+  });
+  assert.deepEqual(laggedFirst.unexpected, []);
+
+  // An answered command (receipt marker quotes the command comment id) and a
+  // route that is not the first line both fall through to coordination.
+  const answered = project(
+    await run({ comments: [plannerCommand("12"), plannerReceiptComment("13", "12")] }),
+  );
+  assert.equal(answered.control_key, "RHCLOUD-2");
+  assert.deepEqual(answered.new_comments, []);
+  assert.equal(answered.planner_plan.comment_id, "13");
+  const notFirstLine = project(
+    await run({ comments: [{ id: "12", body: "context\nPLANNER: /coord plan", created: "" }] }),
+  );
+  assert.equal(notFirstLine.control_key, "RHCLOUD-2");
+
+  // A control whose label already fell out of the search index cannot route
+  // a planner request; it is simply not enrolled.
+  const lagged = structuredClone(control);
+  lagged.fields.labels = ["repo:demo"];
+  assert.equal((await run({ control: lagged, comments: [plannerCommand("12")] })).status, "skip");
+});
+
+test("planner plan reports the newest receipt and whether it covers current tickets", async () => {
+  const childIssues = [handedOff, ticket(4), blockedByOtherTeam];
+  const digest = planDigest(plannerTicketSnapshot(childIssues, teamFieldId));
+  const assignments = {
+    "RHCLOUD-3": { phase: "phase:01", repository: "demo" },
+    "RHCLOUD-4": { phase: "phase:02", repository: "demo" },
+    "RHCLOUD-5": { phase: "phase:03", repository: "demo" },
+  };
+
+  const none = project(await run());
+  assert.deepEqual(none.planner_plan, {
+    comment_id: null,
+    assignments: {},
+    current: false,
+    input_snapshot_hash: null,
+    current_snapshot_hash: digest,
+  });
+  assert.equal(none.planner_plan_current, false);
+
+  const current = project(
+    await run({
+      comments: [
+        approval,
+        plannerReceiptComment("20", "12", coordinationBlock(digest, assignments)),
+      ],
+    }),
+  );
+  assert.equal(current.planner_plan_current, true);
+  assert.deepEqual(current.planner_plan, {
+    comment_id: "20",
+    assignments,
+    current: true,
+    input_snapshot_hash: digest,
+    current_snapshot_hash: digest,
+  });
+
+  // A stale input hash keeps the assignments visible but not current.
+  const staleHash = "0".repeat(64);
+  const stale = project(
+    await run({
+      comments: [
+        approval,
+        plannerReceiptComment("20", "12", coordinationBlock(staleHash, assignments)),
+      ],
+    }),
+  );
+  assert.equal(stale.planner_plan_current, false);
+  assert.equal(stale.planner_plan.input_snapshot_hash, staleHash);
+  assert.deepEqual(stale.planner_plan.assignments, assignments);
+
+  // A parseable block that omits input_snapshot_hash still emits the field
+  // as null (Python dict.get), never drops it from the JSON payload.
+  const missingHashResult = await run({
+    comments: [
+      approval,
+      plannerReceiptComment("20", "12", coordinationBlock(null, assignments, true)),
+    ],
+  });
+  assert.equal(missingHashResult.status, "start");
+  const missingHashPayload = JSON.parse(missingHashResult.content);
+  assert.deepEqual(missingHashPayload.projects[0].planner_plan, {
+    comment_id: "20",
+    assignments,
+    current: false,
+    input_snapshot_hash: null,
+    current_snapshot_hash: digest,
+  });
+  assert.match(missingHashResult.content, /"input_snapshot_hash":null/);
+
+  // Invalid phases, unknown repositories, and missing tickets invalidate.
+  for (const invalid of [
+    { ...assignments, "RHCLOUD-4": { phase: "phase:2", repository: "demo" } },
+    { ...assignments, "RHCLOUD-4": { phase: "phase:02", repository: "foreign" } },
+    { "RHCLOUD-3": assignments["RHCLOUD-3"], "RHCLOUD-4": assignments["RHCLOUD-4"] },
+  ]) {
+    const broken = project(
+      await run({
+        comments: [approval, plannerReceiptComment("20", "12", coordinationBlock(digest, invalid))],
+      }),
+    );
+    assert.equal(broken.planner_plan_current, false, JSON.stringify(invalid));
+  }
+
+  // Only the NEWEST receipt counts, however invalid: the coordinator asks
+  // for a fresh plan instead of falling back to an older valid one.
+  const newestWins = project(
+    await run({
+      comments: [
+        approval,
+        plannerReceiptComment("20", "12", coordinationBlock(digest, assignments)),
+        plannerReceiptComment("21", "19"),
+      ],
+    }),
+  );
+  assert.deepEqual(newestWins.planner_plan, {
+    comment_id: "21",
+    assignments: {},
+    current: false,
+    input_snapshot_hash: null,
+    current_snapshot_hash: digest,
+  });
+});
+
+test("planner receipts wake the coordinator while unrouted chatter does not", async () => {
+  const base = project(await run());
+  const plain = { id: "12", body: "plain human note", created: "2026-11-21" };
+  assert.equal(
+    (
+      await run({
+        comments: [approval, ownComment, plain],
+        tasks: [task(base.snapshot_hash)],
+      })
+    ).status,
+    "skip",
+  );
+  const woken = project(
+    await run({
+      comments: [approval, ownComment, plannerReceiptComment("13", "12")],
+      tasks: [task(base.snapshot_hash)],
+    }),
+  );
+  // Golden from project_coordinator.fingerprint at Fabric d62cc55: the
+  // latest_planner_receipt control field is the only wake input here.
+  assert.equal(
+    woken.snapshot_hash,
+    "9fa57cdc849bdcdfcbf1774e79b654ba689fbeb41f9558d64bef7cc60c6a1d04",
+  );
+  assert.equal(woken.first_run, false);
+  assert.deepEqual(woken.new_comments, []);
+  assert.equal(woken.planner_plan.comment_id, "13");
 });
 
 test("Python latest snapshot and fingerprint match ADF, normalized assignee and planning fields", async () => {
@@ -390,7 +680,7 @@ test("Python latest snapshot and fingerprint match ADF, normalized assignee and 
   });
   const result = project(await run({ children: [child] }));
   // Generated by running the real mcp-atlassian 0.23.1 models plus the
-  // Fabric Python reference (upstream 37d5263) over this Jira data; see
+  // Fabric Python reference (upstream d62cc55) over this Jira data; see
   // test/fixtures/project-state-parity/generate.py.
   assert.equal(
     result.plan_snapshot_hash,
@@ -398,7 +688,7 @@ test("Python latest snapshot and fingerprint match ADF, normalized assignee and 
   );
   assert.equal(
     result.snapshot_hash,
-    "c548b23fce722c03f4167b809836cdc7d27e7f957a7435c61b0aaf6e4ae9accf",
+    "5deb6dde83a18fb952dc4938aa1a791fe7d92d075ab4f388d67b138072d72504",
   );
   // ADF descriptions flatten to the mcp-atlassian text form and links
   // disappear from the hash-normalized snapshot, exactly like the Python
@@ -412,7 +702,7 @@ test("Python latest snapshot and fingerprint match ADF, normalized assignee and 
 
 // Fixtures transcribed from the Python reference preflight test scenario
 // (bootstrap, skip while unchanged, wake on completion). The goldens below
-// were generated by running project_coordinator.py at Fabric upstream 37d5263
+// were generated by running project_coordinator.py at Fabric upstream d62cc55
 // against this exact Jira data with the reads stubbed, so the TypeScript
 // start content must match them field for field.
 const parityParent = {
@@ -471,6 +761,14 @@ const goldenBootstrap = JSON.parse(`
   "parent_key": "RHCLOUD-1",
   "plan_approval_pending": false,
   "plan_change_required": false,
+  "planner_plan": {
+    "assignments": {},
+    "comment_id": null,
+    "current": false,
+    "current_snapshot_hash": "a37b321cf26418c8a28ac3eef87e0382621468a41501e802f77cc7fd8573b753",
+    "input_snapshot_hash": null
+  },
+  "planner_plan_current": false,
   "plan_snapshot": {
     "RHCLOUD-3": {
       "blockers": [],
@@ -496,7 +794,7 @@ const goldenBootstrap = JSON.parse(`
       ]
     }
   ],
-  "snapshot_hash": "87eb912626b6368f7b0325d76f44ae2935ae24bd52cb28aac2022a4a31c2070a",
+  "snapshot_hash": "fb1cc20bc6b1f4c8df7b7e0c2a8f7c92293805a3dba235167f686e13d3b9d67e",
   "state": null,
   "team_field_id": "customfield_10001",
   "team_id": "42",
@@ -542,6 +840,14 @@ const goldenWake = JSON.parse(`
   "parent_key": "RHCLOUD-1",
   "plan_approval_pending": false,
   "plan_change_required": false,
+  "planner_plan": {
+    "assignments": {},
+    "comment_id": null,
+    "current": false,
+    "current_snapshot_hash": "a37b321cf26418c8a28ac3eef87e0382621468a41501e802f77cc7fd8573b753",
+    "input_snapshot_hash": null
+  },
+  "planner_plan_current": false,
   "plan_snapshot": {
     "RHCLOUD-3": {
       "blockers": [],
@@ -560,7 +866,7 @@ const goldenWake = JSON.parse(`
   },
   "plan_snapshot_hash": "0c6491302cd9b1d5ad7a80679ade841ad4c2df66b8d6df0e0b2b6a7d8c6e8077",
   "ready": [],
-  "snapshot_hash": "afbbc94c174e830064ace27c846e6ddcbc62baf3fd8a2dd0a25154a3c40af1c6",
+  "snapshot_hash": "26f8fcbee2ffb023eeacaf8cee2a06b7cfea5ee7f75d45f55258df5771302bf2",
   "state": "dev-bot-coordinator:active",
   "team_field_id": "customfield_10001",
   "team_id": "42",
@@ -895,7 +1201,7 @@ test("unrelated decimals do not affect snapshot validation", async () => {
   const child = ticket(4, { [teamFieldId]: { id: "team-1", score: "DECIMAL" } });
   const human = {
     id: "20",
-    body: { ...adf("paragraph", "approve"), version: "DECIMAL" },
+    body: { ...adf("paragraph", "COORDINATOR: approve"), version: "DECIMAL" },
     created: "DECIMAL",
   };
   const result = project(
@@ -908,7 +1214,7 @@ test("unrelated decimals do not affect snapshot validation", async () => {
     }),
   );
   assert.equal(result.team_id, "team-1");
-  assert.equal(result.new_comments[0].body, "approve");
+  assert.equal(result.new_comments[0].body, "COORDINATOR: approve");
 });
 
 test("missing JSON reviver source fails closed only for numbers used in snapshot", () => {

@@ -73,7 +73,7 @@ The registered ids — one registration line each in `createPopulatedRegistry` (
 | ------------ | -------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------- |
 | fabric-konflux-bot-prs | Konflux bot PR consolidation candidates per repo | —           | `bot_author` (`"red-hat-konflux[bot]"`)                                          |
 | fabric-pr-label | labeled GitHub PRs awaiting the Jira claim step | —                  | `pr_label` (`"dev-bot"`), `gh_user_name` (`""`)                                  |
-| fabric-project-state | coordinator project snapshot (Jira scope + PR-only changes) | `controlLabel`, `implementationLabel`, `teamFieldId` | `project` (`"RHCLOUD"`), `includeBacklog` (`false`)              |
+| fabric-project-state | coordinator project snapshot (Jira scope + PR-only changes + planner routing) | `controlLabel`, `implementationLabel`, `teamFieldId` | `project` (`"RHCLOUD"`), `includeBacklog` (`false`)              |
 | fabric-review-queue | one labeled PR needing review, resume, approval, or a feedback check | `review_label`, `bot_login` | —                                                              |
 | gh-pr-status | GitHub PR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`), `task_key_prefix` (—), `review_bot_author` + `review_bot_markers` (pair, —) |
 | gl-mr-status | GitLab MR status of the active tasks               | —                     | `suppress_terminal_if_addressed` (`false`)                                       |
