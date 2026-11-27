@@ -123,8 +123,8 @@ The internal `gitlab.cee.redhat.com` currently uses a self-signed chain. Its app
 
 ### Troubleshooting GitLab clone/fetch/push
 
-- Git transport must be rewritten through `http://devbot-proxy:8447/gitlab.cee.redhat.com/` by `GIT_AUTH_PROXY_HOST=devbot-proxy`.
-- Confirm the generated `.gitconfig` contains the host-specific `insteadOf` rewrite and the sandbox NetworkPolicy allows TCP 8447 to `devbot-proxy`.
+- Use plain `https://gitlab.cee.redhat.com/...` URLs; the runtime rewrites them automatically. Classic in-namespace runs rewrite via `GIT_AUTH_PROXY_HOST=devbot-proxy` to `http://devbot-proxy:8447/gitlab.cee.redhat.com/`; dispatched private sandboxes rewrite via the bootstrap to the services-gateway `/git/gitlab.cee.redhat.com/` route.
+- Confirm the generated `.gitconfig` contains the expected host-specific `insteadOf` rewrite for the active runtime. Do not test or require direct reachability of `http://devbot-proxy:8447` — private sandboxes cannot reach it by design (supervisor egress policy); their GitLab transport flows through the services gateway instead.
 - If Git reports a certificate-chain error and proxy logs show no request for that repository, the bot connected directly; fix proxy routing rather than changing credentials or disabling client-side TLS.
 - `glab` API calls use a separate path; the Git auth listener handles Git smart-HTTP transport, not `glab` CLI API requests.
 
