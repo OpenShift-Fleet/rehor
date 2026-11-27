@@ -3,14 +3,12 @@ import { pyTruthy } from "../jira-common/shapes.js";
 import { issueKey } from "./reads.js";
 import {
   field,
-  isAssigned,
   labels,
   pythonJson,
   pythonString,
   type RecordData,
   record,
   sorted,
-  statusName,
   teamId,
   text,
 } from "./snapshot.js";
@@ -18,8 +16,12 @@ import {
 const PHASE = /^phase:\d{2}$/;
 
 export function linkedIssues(issue: RecordData): { blockers: string[]; related: string[] } {
+  // Python reads `value(issue, "issuelinks") or []`: both the REST enhanced
+  // search and the MCP issue model omit empty collections, so a missing or
+  // null field means no links. Any other non-list value is malformed.
   const links = field(issue, "issuelinks");
-  if (!Array.isArray(links)) throw new Error(`Missing or invalid Jira links on ${issueKey(issue)}`);
+  if (links == null) return { blockers: [], related: [] };
+  if (!Array.isArray(links)) throw new Error(`Invalid Jira links on ${issueKey(issue)}`);
   const blockers = new Set<string>();
   const related = new Set<string>();
   for (const item of links) {
@@ -43,6 +45,7 @@ export function linkedIssues(issue: RecordData): { blockers: string[]; related: 
 export function planSnapshot(
   children: readonly RecordData[],
   teamFieldId: string,
+  implementationLabel: string,
 ): Record<string, RecordData> {
   const snapshot: Record<string, RecordData> = {};
   const byKey = new Map(children.map((issue) => [issueKey(issue), issue]));
@@ -60,13 +63,9 @@ export function planSnapshot(
     snapshot[key] = {
       summary: asString(field(issue, "summary")).trim(),
       description: asString(field(issue, "description")),
-      updated: asString(field(issue, "updated")),
-      status: statusName(issue),
-      assignee: isAssigned(field(issue, "assignee")),
       priority: priorityObj ? asString(priorityObj.name || priorityObj.id) : asString(priority),
       issue_type: typeObj ? asString(typeObj.name) : asString(issueType),
       team_id: teamId(issue, teamFieldId),
-      labels: sorted(issueLabels),
       phase_labels: sorted(issueLabels.filter((label) => PHASE.test(label))),
       repo_labels: sorted(issueLabels.filter((label) => label.startsWith("repo:"))),
       planning_labels: sorted(
@@ -74,7 +73,8 @@ export function planSnapshot(
           (label) =>
             !PHASE.test(label) &&
             !label.startsWith("repo:") &&
-            !label.startsWith("dev-bot-coordinator:"),
+            !label.startsWith("dev-bot-coordinator:") &&
+            label !== implementationLabel,
         ),
       ),
       ...linkedIssues(issue),
@@ -87,7 +87,49 @@ export function planDigest(snapshot: Record<string, RecordData>): string {
   return createHash("sha256").update(pythonJson(snapshot)).digest("hex");
 }
 
-export function planChanges(previous: unknown, current: Record<string, RecordData>) {
+// Python compares only these fields, in this (sorted) order; older snapshots
+// that carried runtime fields (updated, status, assignee, labels) are ignored
+// for change detection because ordinary execution progress must not force a
+// plan reapproval.
+const PLAN_FIELDS = [
+  "blockers",
+  "description",
+  "issue_type",
+  "phase_labels",
+  "planning_labels",
+  "priority",
+  "related",
+  "repo_labels",
+  "summary",
+  "team_id",
+] as const;
+
+// Older task snapshots included the implementation bot label in
+// planning_labels. Ignore that difference during the one-time snapshot
+// format transition.
+function legacyPlanningLabelsOnly(
+  before: RecordData,
+  after: RecordData,
+  implementationLabel: string,
+): boolean {
+  const oldLabels = before.planning_labels;
+  const newLabels = after.planning_labels;
+  if (!Array.isArray(oldLabels) || !Array.isArray(newLabels)) return false;
+  const userLabels = (items: unknown[]): string[] => {
+    if (items.some((item) => typeof item !== "string"))
+      throw new Error("Invalid stored planning labels");
+    return sorted(items.filter((label): label is string => label !== implementationLabel));
+  };
+  const oldUser = userLabels(oldLabels);
+  const newUser = userLabels(newLabels);
+  return oldUser.length === newUser.length && oldUser.every((label, index) => label === newUser[index]);
+}
+
+export function planChanges(
+  previous: unknown,
+  current: Record<string, RecordData>,
+  implementationLabel: string,
+) {
   const old = record(previous);
   if (!old) return { baseline_missing: true, added: [], removed: [], changed: [] };
   const oldKeys = new Set(Object.keys(old));
@@ -105,11 +147,12 @@ export function planChanges(previous: unknown, current: Record<string, RecordDat
     const after = current[key];
     if (!before) return [{ key, fields: { ticket: { before: old[key], after } } }];
     const fields: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of sorted(new Set([...Object.keys(before), ...Object.keys(after)]))) {
+    for (const field of PLAN_FIELDS) {
       const prior = before[field] ?? null;
       const next = after[field] ?? null;
       if (pythonJson(prior) !== pythonJson(next)) fields[field] = { before: prior, after: next };
     }
+    if (legacyPlanningLabelsOnly(before, after, implementationLabel)) delete fields.planning_labels;
     return Object.keys(fields).length ? [{ key, fields }] : [];
   });
   return { baseline_missing: false, added, removed, changed };

@@ -297,21 +297,43 @@ export const fabricProjectState = definePreflight({
           tickets: pullRequests,
           errors: {},
         });
-        const plan_snapshot = planSnapshot(children, teamFieldId);
+        const plan_snapshot = planSnapshot(children, teamFieldId, implementationLabel);
         const plan_snapshot_hash = planDigest(plan_snapshot);
-        const ticket_changes = planChanges(metadata?.plan_snapshot, plan_snapshot);
+        const ticket_changes = planChanges(
+          metadata?.plan_snapshot,
+          plan_snapshot,
+          implementationLabel,
+        );
+        const plan_approval_pending = pyTruthy(metadata?.pending_plan_approval);
         const approved = metadata?.approved_plan_snapshot_hash;
         if (approved != null && typeof approved !== "string")
           throw new Error(`Invalid approved plan hash on task for ${controlKey}`);
+        let approvedHash = approved ?? null;
+        let legacy_snapshot_migrated = false;
+        const previousPlanSnapshot = record(metadata?.plan_snapshot);
+        const has_ticket_delta = [
+          ticket_changes.added,
+          ticket_changes.removed,
+          ticket_changes.changed,
+        ].some((items) => items.length > 0);
+        // Existing tasks hashed runtime fields too. If that legacy hash
+        // still matches the saved snapshot and its plan inputs are intact,
+        // migrate it without making users reapprove an unchanged plan.
+        if (
+          !plan_approval_pending &&
+          previousPlanSnapshot &&
+          approvedHash === planDigest(previousPlanSnapshot as Record<string, RecordData>) &&
+          !has_ticket_delta
+        ) {
+          approvedHash = plan_snapshot_hash;
+          legacy_snapshot_migrated = true;
+        }
         const approved_plan_snapshot_changed =
-          typeof approved === "string" && approved !== plan_snapshot_hash;
-        const plan_approval_pending = pyTruthy(metadata?.pending_plan_approval);
+          typeof approvedHash === "string" && approvedHash !== plan_snapshot_hash;
         const plan_change_required =
           plan_approval_pending ||
           approved_plan_snapshot_changed ||
-          [ticket_changes.added, ticket_changes.removed, ticket_changes.changed].some(
-            (items) => items.length > 0,
-          );
+          has_ticket_delta;
         if (previous !== snapshot_hash || !assessment.state) {
           const processed = metadata?.processed_comment_ids;
           if (
@@ -328,7 +350,8 @@ export const fabricProjectState = definePreflight({
             snapshot_hash,
             plan_snapshot,
             plan_snapshot_hash,
-            approved_plan_snapshot_hash: approved ?? null,
+            approved_plan_snapshot_hash: approvedHash,
+            legacy_plan_snapshot_migrated: legacy_snapshot_migrated,
             ticket_changes,
             approved_plan_snapshot_changed,
             plan_change_required,
