@@ -463,7 +463,7 @@ test("mutating a public endpoint away from raw TLS skip fails the effective poli
 
 test("safe stdin writer then exact runner with per-exec pointers, unique request IDs, no payload leaks", async () => {
   const f = fixture();
-  const environment = { BOT_MEMORY_URL: "http://existing-memory.test/mcp", REHOR_INPUT_SOURCE: "wrong", REHOR_INPUT_FILE: "wrong", WORKFLOW: "onboarding" };
+  const environment = { BOT_MEMORY_URL: "http://existing-memory.test/mcp", BOT_LABEL: "project-coordinator", BOT_TEAM_FIELD_ID: "customfield_10001", BOT_IMPLEMENTATION_LABEL: "implementation-bot", REHOR_INPUT_SOURCE: "wrong", REHOR_INPUT_FILE: "wrong", WORKFLOW: "onboarding" };
   const result = await f.session.run(image, decision, environment);
   assert.equal(result.outcome, "passed");
   assert.equal(result.completion, "gone");

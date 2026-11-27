@@ -161,17 +161,56 @@ describe("production runner boundary", () => {
   });
 
   it("registers both runtime adapters without changing the Claude default", () => {
-    const registry = createRuntimeRegistryForCycle(prepared, {
+    const environment = {
+      PATH: "/usr/bin",
+      ...proxyEnvironment,
+      BOT_LABEL: "project-coordinator",
+      ACME_TEAM_UUID: "declared-value",
+      TEAM_SERVICE_TOKEN: "tier-2-value",
+    };
+    const declaredPrepared = {
+      ...prepared,
+      config: {
+        ...prepared.config,
+        declaredEnvVars: ["BOT_LABEL", "ACME_TEAM_UUID"],
+        declaredSandboxEnvVars: ["TEAM_SERVICE_TOKEN"],
+        declaredEnvLiterals: { BOT_LABEL: "project-coordinator" },
+      },
+    };
+    const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
+    const registry = createRuntimeRegistryForCycle(declaredPrepared, {
       workspaceRoot: "/work",
       openCodeDeployment: deployment,
       openCodeCommand: "/usr/local/bin/opencode",
       openCodeExpectedVersion: "2.1.2",
-      environment: { PATH: "/usr/bin", ...proxyEnvironment },
+      environment,
     });
 
     expect(registry.runtimeIds).toEqual(["claude", "opencode"]);
     expect(registry.has("opencode-v1")).toBe(false);
     expect(registry.has("opencode-v2")).toBe(false);
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base: environment,
+        config: deployment,
+        declared: ["BOT_LABEL", "ACME_TEAM_UUID"],
+        declaredSandbox: ["TEAM_SERVICE_TOKEN"],
+        declaredLiterals: { BOT_LABEL: "project-coordinator" },
+      }),
+    );
+  });
+
+  it("omits declaration options when the prepared config carries none", () => {
+    const factory = vi.spyOn(runtimeFactory, "createOpenCodeRuntimeFactory");
+    createRuntimeRegistryForCycle(prepared, {
+      workspaceRoot: "/work",
+      openCodeDeployment: deployment,
+      environment: { PATH: "/usr/bin", ...proxyEnvironment },
+    });
+    const options = factory.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(options.declared).toBeUndefined();
+    expect(options.declaredSandbox).toBeUndefined();
+    expect(options.declaredLiterals).toBeUndefined();
   });
 
   it("keeps the legacy Claude registry Claude-only", () => {

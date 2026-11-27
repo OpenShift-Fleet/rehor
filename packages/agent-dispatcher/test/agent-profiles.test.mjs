@@ -84,12 +84,14 @@ image: {repository: registry.example/team/name}
 env:
   BOT_INSTANCE_ID: test-agent
   BOT_LABEL: test-label
+  BOT_IMPLEMENTATION_LABEL: implementation-bot
+  BOT_TEAM_FIELD_ID: customfield_10001
   BOT_EXECUTION_ENGINE: coordinator
   BOT_MEMORY_URL: https://untrusted.example/mcp
 `);
   const [profile] = await discoverAgentProfiles(root);
   const host = { BOT_INSTANCE_ID: "host-agent", BOT_MEMORY_URL: "https://memory.example/mcp" };
-  const expected = { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label", BOT_EXECUTION_ENGINE: "coordinator", BOT_MEMORY_URL: host.BOT_MEMORY_URL };
+  const expected = { BOT_INSTANCE_ID: "test-agent", BOT_LABEL: "test-label", BOT_IMPLEMENTATION_LABEL: "implementation-bot", BOT_TEAM_FIELD_ID: "customfield_10001", BOT_EXECUTION_ENGINE: "coordinator", BOT_MEMORY_URL: host.BOT_MEMORY_URL };
   assert.deepEqual(mergeProfileEnvironment(host, profile.preflightEnv), expected);
   assert.deepEqual(sandboxEnvironment(host, profile.preflightEnv), expected);
 });

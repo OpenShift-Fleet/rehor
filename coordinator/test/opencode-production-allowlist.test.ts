@@ -14,6 +14,17 @@ it("renders production grants and repository MCP through real prepare and valida
   );
   expect(result.envs).toEqual([]);
   expect(result.activeEnvs).toEqual([]);
+  // The real bridge carries the workflow manifest's declared names (no active
+  // env presets, no profile env category in this fixture) and never values.
+  expect(result.declaredEnvVars).toEqual([
+    "BOT_CONFIG_REPO",
+    "BOT_INSTANCE_ID",
+    "BOT_JIRA_EMAIL",
+    "BOT_LABEL",
+    "SLACK_NOTIFY_MODE",
+    "SLACK_WEBHOOK_URL",
+  ]);
+  expect(result.declaredSandboxEnvVars).toEqual([]);
   const rootMcp = JSON.parse(readFileSync(new URL("../../.mcp.json", import.meta.url), "utf8"));
   const botMcp = JSON.parse(readFileSync(new URL("../../bot/mcp.json", import.meta.url), "utf8"));
   expect(result.openCodeMcpServers).toEqual({ ...botMcp.mcpServers, ...rootMcp.mcpServers });

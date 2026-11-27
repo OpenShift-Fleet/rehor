@@ -98,6 +98,25 @@ export interface ConfigPreparationResult {
   allowedTools?: readonly string[];
   /** Persona-specific MCP servers that may be absent from a cycle. */
   optionalMcpServers?: readonly string[];
+  /**
+   * Variable names the selected agent's workflow/env-preset manifests and
+   * profile `env` (or legacy `preflight.env`) category declare for the child.
+   * Names only — values are never carried by the bridge result; the
+   * coordinator reads them from its own process environment.
+   */
+  declaredEnvVars?: readonly string[];
+  /**
+   * Variable names the selected profile declares in `sandbox.env` (the
+   * dispatcher's tier-2 render channel). Names only, like declaredEnvVars.
+   */
+  declaredSandboxEnvVars?: readonly string[];
+  /**
+   * Validated nonsecret literal values from the selected profile's `env`
+   * (or legacy `preflight.env`) category, applied as a fallback when a
+   * declared name is absent from the runner environment. Sandbox secret
+   * references never appear here.
+   */
+  declaredEnvLiterals?: Readonly<Record<string, string>>;
 }
 
 /** Stable boundary for the existing Python preflight/config implementation. */

@@ -373,6 +373,15 @@ export function createRuntimeRegistryForCycle(
     createOpenCodeRuntimeFactory({
       base: options.environment,
       config: deployment,
+      ...(prepared.config.declaredEnvVars === undefined
+        ? {}
+        : { declared: prepared.config.declaredEnvVars }),
+      ...(prepared.config.declaredSandboxEnvVars === undefined
+        ? {}
+        : { declaredSandbox: prepared.config.declaredSandboxEnvVars }),
+      ...(prepared.config.declaredEnvLiterals === undefined
+        ? {}
+        : { declaredLiterals: prepared.config.declaredEnvLiterals }),
       server,
       logger: options.logger,
     }),

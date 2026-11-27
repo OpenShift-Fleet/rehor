@@ -244,6 +244,15 @@ Both `SLACK_NOTIFY_MODE=daily_digest` and `SLACK_DIGEST_HOUR` must be set to ena
      env_vars:
        - MY_REQUIRED_VAR
    ```
+
+   `requires.env_vars` and `requires.optional_env_vars` names must be valid
+   environment variable names. On `runtime: opencode` instances, the names
+   declared by the selected workflow and the active presets are forwarded to
+   the OpenCode child when present in the runner environment; names that look
+   like credentials are not copied from ambient values, and an invalid or
+   protected name fails the cycle. See
+   [Instance Configuration](instance-config.md#opencode-environment-forwarding)
+   for the forwarding rules.
 4. Test: build a Docker image, run `my-tool --version` inside it
 5. Add to your `instance.yaml` `envs:` list
 6. Open a PR against dev-bot
