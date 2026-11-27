@@ -4,7 +4,7 @@ Dispatched agents select checks from the reviewed `@rehor/preflights` registry. 
 
 ## Configure an instance
 
-Set `preflights:` in `instance/<name>/agent/instance.yaml`. Entries can be shorthand IDs when all inputs have defaults, or `{ id, with }` entries for parameters. `with` accepts plain literal strings, numbers, booleans, or lists of those values; it does not support nested objects, `null`, or interpolation.
+Set `preflights:` in `instance/<name>/agent/instance.yaml`. Entries can be shorthand IDs when all inputs have defaults, or `{ id, with }` entries for parameters. `with` accepts plain literal strings, numbers, booleans, or lists of those values; it does not support nested objects, `null`, or interpolation. String values may carry a tier-2 secret reference, `"${{ secret('name', 'key') }}"`, rendered immediately before the entry executes — see [Dispatcher Credentials and Secrets](../dispatcher-secrets.md).
 
 Example using registered `jira-sprint` (requires a nonblank `label`) and `gh-pr-status` (no required inputs):
 
