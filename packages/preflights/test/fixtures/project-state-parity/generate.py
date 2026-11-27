@@ -458,9 +458,7 @@ def main() -> None:
         if again != digest:
             raise SystemExit(f"non-deterministic digest for case {case['name']}")
         planner_again = fabric.ticket_plan_digest(
-            fabric.planner_ticket_snapshot(
-                mcp_issues(json.loads(json.dumps(rest_issues))), TEAM_FIELD_ID
-            )
+            fabric.planner_ticket_snapshot(mcp_issues(json.loads(json.dumps(rest_issues))), TEAM_FIELD_ID)
         )
         if planner_again != planner_digest:
             raise SystemExit(f"non-deterministic planner digest for case {case['name']}")
