@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  containsSecretTemplate,
+  createSecretValueLedger,
   MAX_SECRET_VALUE_BYTES,
   renderSandboxEnvironment,
+  renderSecretTemplates,
   scanSecretReferences,
   SecretRenderError,
 } from "../dist/secret-rendering.js";
@@ -195,4 +198,109 @@ test("scanner finds literal references inside placeholder spans only", () => {
     { name: "a", key: "b" },
     { name: "a", key: "b" },
   ]);
+});
+
+// --- generic literal-tree rendering, hooks, and the rotation ledger ---
+
+test("renderSecretTemplates renders strings across the literal tree and reads nothing without placeholders", async () => {
+  const { read, reads } = reader({ settings: secret({ team: "customfield_101", mode: "daily" }) });
+  const plain = { a: "plain", b: 3, c: true, d: ["x", "y"] };
+  assert.deepEqual(await renderSecretTemplates(plain, read), plain);
+  assert.deepEqual(await renderSecretTemplates("plain", read), "plain");
+  assert.deepEqual(await renderSecretTemplates([], read), []);
+  assert.deepEqual(reads, []);
+
+  const tree = {
+    teamFieldId: "${{ secret('settings', 'team') }}",
+    plain: "literal",
+    nested: ["${{ secret('settings', 'mode') }}-", { inner: "${{ secret('settings', 'team') }}" }],
+  };
+  assert.deepEqual(await renderSecretTemplates(tree, read), {
+    teamFieldId: "customfield_101",
+    plain: "literal",
+    nested: ["daily-", { inner: "customfield_101" }],
+  });
+  assert.deepEqual(reads, ["settings"]);
+});
+
+test("containsSecretTemplate finds placeholders at any depth and none in plain trees", () => {
+  assert.equal(containsSecretTemplate("${{ secret('a','b') }}"), true);
+  assert.equal(containsSecretTemplate({ a: { b: ["${{ x }}"] } }), true);
+  assert.equal(containsSecretTemplate({ a: { b: ["plain"] }, c: 1 }), false);
+  assert.equal(containsSecretTemplate("plain ${VAR}"), false);
+  assert.equal(containsSecretTemplate(null), false);
+});
+
+test("renderSecretTemplates failure messages use the preflight parameter subject", async () => {
+  const { read, reads } = reader({});
+  await assertFails(renderSecretTemplates({ a: "${{ secret('../bad', 'k') }}" }, read), "invalid-reference", "configuration");
+  await assertFails(renderSecretTemplates({ a: "${{ nosuchvar }}" }, read), "invalid-reference", "configuration");
+  assert.deepEqual(reads, []);
+});
+
+test("the ledger keeps per-entry observations, binds starts only, and detects divergence without leaking values", async () => {
+  const valueA = "SUPER-SECRET-VALUE-A";
+  const valueB = "SUPER-SECRET-VALUE-B";
+  const ledger = createSecretValueLedger();
+  // Entries 0 and 1 observe the SAME reference with different values; entry
+  // 2 observes a different reference entirely.
+  ledger.observe(0, { name: "settings", key: "team" }, valueA);
+  ledger.observe(1, { name: "settings", key: "team" }, valueB);
+  ledger.observe(2, { name: "settings", key: "other" }, valueB);
+  // Conflicting start observations fail closed with a fixed message.
+  assert.throws(() => ledger.bindStartEntries([0, 1, 2]), (error) => {
+    assert.ok(error instanceof SecretRenderError);
+    assert.equal(error.failure, "rotated");
+    assert.ok(!error.message.includes(valueA), "message leaked a rendered value");
+    assert.ok(!error.message.includes(valueB), "message leaked a rendered value");
+    return true;
+  });
+  // Binding is atomic: the conflicting run bound nothing, so verify stays
+  // vacuous rather than trusting either value.
+  ledger.verify({ name: "settings", key: "team" }, valueA);
+  // Consistent observations bind one value per start-observed reference;
+  // skip-only observations (entry 2) never bind, so their reference
+  // verifies vacuously.
+  const consistent = createSecretValueLedger();
+  consistent.observe(0, { name: "settings", key: "team" }, valueA);
+  consistent.observe(1, { name: "settings", key: "team" }, valueA);
+  consistent.observe(2, { name: "settings", key: "other" }, valueB);
+  consistent.bindStartEntries([0]);
+  consistent.verify({ name: "settings", key: "team" }, valueA);
+  assert.throws(() => consistent.verify({ name: "settings", key: "team" }, valueB), (error) => {
+    assert.ok(error instanceof SecretRenderError);
+    assert.equal(error.failure, "rotated");
+    return true;
+  });
+  consistent.verify({ name: "settings", key: "other" }, valueB);
+  // Unbound references verify vacuously; the ledger never serializes values.
+  consistent.verify({ name: "absent", key: "team" }, valueA);
+  const serialized = JSON.stringify(consistent);
+  assert.ok(!serialized.includes(valueA));
+  assert.ok(!serialized.includes(valueB));
+  // A later divergent start observation on an already-bound reference still
+  // fails closed when both entries count as starts.
+  consistent.observe(9, { name: "settings", key: "team" }, valueB);
+  assert.throws(() => consistent.bindStartEntries([0, 9]), /different values/);
+});
+
+test("renderSandboxEnvironment verifies against the ledger: rotation fails the whole set", async () => {
+  const first = "value-one";
+  const second = "value-two";
+  let served = first;
+  const read = async () => secret({ url: served });
+  const ledger = createSecretValueLedger();
+  const verify = { onResolved: (reference, value) => ledger.verify(reference, value) };
+  const values = { A: "${{ secret('slack-webhook', 'url') }}", B: "plain" };
+  // First render records nothing; verification is vacuous and passes.
+  assert.deepEqual(await renderSandboxEnvironment(values, read, verify), { A: first, B: "plain" });
+  // Bind a start observation, then serve the same value: still passes.
+  await renderSecretTemplates({ A: "${{ secret('slack-webhook', 'url') }}" }, read, {
+    onResolved: (reference, value) => ledger.observe(0, reference, value),
+  });
+  ledger.bindStartEntries([0]);
+  assert.deepEqual(await renderSandboxEnvironment(values, read, verify), { A: first, B: "plain" });
+  // Rotation between the preflight read and the launch read fails closed.
+  served = second;
+  await assertFails(renderSandboxEnvironment(values, read, verify), "rotated", "configuration", [first, second]);
 });

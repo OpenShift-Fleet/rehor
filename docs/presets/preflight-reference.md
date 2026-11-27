@@ -17,7 +17,7 @@ This page documents the checks registered in this repository's `@rehor/preflight
 
 Only checks with no required inputs may appear in a workflow's default set. Currently `jira-sprint` defaults to `gh-pr-status` and `gl-mr-status` when `preflights:` is omitted; an explicit list replaces the defaults entirely.
 
-Parameters accept plain literals only: strings, numbers, booleans, and lists of those. Unknown parameter names, wrong types, and blank required values fail validation before anything executes, with a per-entry message naming the check, parameter, and reason.
+Parameters accept plain literals only: strings, numbers, booleans, and lists of those. Unknown parameter names, wrong types, and blank required values fail validation before anything executes, with a per-entry message naming the check, parameter, and reason. String parameters may instead carry a tier-2 secret reference — `"${{ secret('name', 'key') }}"` — rendered from a Kubernetes Secret immediately before the entry executes and re-validated against the check's schema; see [Dispatcher Credentials and Secrets](../dispatcher-secrets.md) for the tier rules, freshness, and fail-closed behavior.
 
 ## `gh-pr-status`
 

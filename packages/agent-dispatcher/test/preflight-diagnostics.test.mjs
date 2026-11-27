@@ -149,3 +149,124 @@ test("diagnostic contract accepts exactly four non-empty control-free string fie
     assert.equal(isPreflightDiagnostic(value), false, JSON.stringify(value));
   }
 });
+
+test("deferred entries mirror structural issues without invoking schema callbacks", () => {
+  let transforms = 0;
+  let refines = 0;
+  const counted = createPreflightRegistry([
+    definePreflight({
+      id: "counted",
+      input: z.strictObject({
+        teamFieldId: z.string().regex(/^customfield_\d+$/),
+        limit: z.number(),
+        label: z.string().transform((value) => {
+          transforms += 1;
+          return `[${value}]`;
+        }),
+      }).refine(() => {
+        refines += 1;
+        return true;
+      }),
+      run: async () => ({ status: "skip", content: "" }),
+    }),
+  ]);
+  const isPlaceholder = (value) => typeof value === "string" && value.includes("${{");
+  const diagnostics = preflightConfigurationDiagnostics(
+    [
+      // Deferred entry with a missing required parameter (limit) and an
+      // incompatible placeholder in a number field: structural issues only.
+      { id: "counted", with: { teamFieldId: "${{ secret('settings', 'team') }}", label: "x" } },
+      { id: "counted", with: { limit: "${{ secret('settings', 'limit') }}" } },
+    ],
+    counted,
+    isPlaceholder,
+  );
+  assert.deepEqual(diagnostics, [
+    {
+      path: "preflights[0].with.limit",
+      code: "missing_required_parameter",
+      message: 'counted: missing required parameter "limit"',
+      received: "undefined",
+    },
+    {
+      path: "preflights[1].with.teamFieldId",
+      code: "missing_required_parameter",
+      message: 'counted: missing required parameter "teamFieldId"',
+      received: "undefined",
+    },
+    {
+      path: "preflights[1].with.label",
+      code: "missing_required_parameter",
+      message: 'counted: missing required parameter "label"',
+      received: "undefined",
+    },
+    {
+      path: "preflights[1].with.limit",
+      code: "incompatible_placeholder",
+      message: "counted: invalid parameter \"limit\"",
+      received: "\"${{ secret('settings', 'limit') }}\"",
+    },
+  ]);
+  // No schema callback ran on the declaration while building diagnostics.
+  assert.equal(transforms, 0);
+  assert.equal(refines, 0);
+  // A deferred entry without structural issues reports nothing at all.
+  const compatible = createPreflightRegistry([
+    definePreflight({
+      id: "compatible",
+      input: z.strictObject({ teamFieldId: z.string().transform((value) => { transforms += 1; return value; }) }),
+      run: async () => ({ status: "skip", content: "" }),
+    }),
+  ]);
+  assert.deepEqual(
+    preflightConfigurationDiagnostics(
+      [{ id: "compatible", with: { teamFieldId: "${{ secret('settings', 'team') }}" } }],
+      compatible,
+      isPlaceholder,
+    ),
+    [],
+  );
+  assert.equal(transforms, 0);
+});
+
+test("deferred-entry diagnostics report unknown keys and reserved keys never leak the sentinel", () => {
+  const registry = createPreflightRegistry([
+    definePreflight({
+      id: "fielded",
+      input: z.strictObject({ teamFieldId: z.string() }),
+      run: async () => ({ status: "skip", content: "" }),
+    }),
+  ]);
+  const isPlaceholder = (value) => typeof value === "string" && value.includes("${{");
+  // Unknown keys in deferred entries are reported, mirroring the validator.
+  const diagnostics = preflightConfigurationDiagnostics(
+    [{ id: "fielded", with: { teamFieldId: "${{ secret('settings', 'team') }}", unknownParam: "x" } }],
+    registry,
+    isPlaceholder,
+  );
+  assert.deepEqual(diagnostics, [
+    {
+      path: "preflights[0].with.unknownParam",
+      code: "unrecognized_keys",
+      message: 'Unrecognized key: "unknownParam"',
+      received: '"x"',
+    },
+  ]);
+  // A reserved `with:` key fails entry-shape parsing through a symbol
+  // sentinel: the diagnostics may describe the failure by type only, and the
+  // sentinel itself (or any value) must never appear.
+  const reserved = preflightConfigurationDiagnostics(
+    [JSON.parse('{"id":"fielded","with":{"__proto__":5}}')],
+    registry,
+    isPlaceholder,
+  );
+  assert.ok(reserved.length > 0);
+  const text = JSON.stringify(reserved);
+  assert.ok(!text.includes("Symbol"), "diagnostics leaked the sentinel description");
+  assert.ok(!text.includes("reserved with"), "diagnostics leaked the sentinel name");
+  for (const diagnostic of reserved) {
+    // The runtime contract check (four well-formed fields, no control
+    // characters) accepts every emitted diagnostic.
+    assert.ok(isPreflightDiagnostic(diagnostic));
+  }
+});

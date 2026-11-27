@@ -103,6 +103,37 @@ presets and is separate from both `env` and `sandbox.env`.
 
 After deployment, check that the `ExternalSecret` reports a successful sync and that the target Secret exists. Do not print or copy secret values into logs, tickets, prompts, or public repositories. Rotation is handled by ESO's configured refresh interval; do not pin a Vault version unless the owning team has a specific rollback requirement.
 
+## Reference tier-2 secrets in preflight parameters
+
+Registered [preflight checks](presets/preflight-reference.md) can receive tier-2 values through their `with:` parameter maps, using the same reference syntax as `sandbox.env`:
+
+```yaml
+preflights:
+  - id: jira-kanban
+    with:
+      project: "${{ secret('team-settings', 'JIRA_PROJECT') }}"
+      label: rehor-pilot
+```
+
+Use this only for tier-2 settings the selected preflight and agent may legitimately consume — team field ids, workload-scoped endpoints, feature toggles. Never reference platform credentials: tier-1 Secrets are denied before any request is made, and unlabeled Secrets are rejected.
+
+**Audit the check before routing a secret through it.** Any registered preflight may echo its supplied parameter values into its result content, transcripts, or tool output — the dispatcher guarantees only its own errors, logs, and diagnostics, never preflight content. Review the specific check's implementation (and the agent consuming its output) before referencing a secret in its `with:` map, and keep secret-derived settings inside trusted helpers whenever the check does not need them in its output.
+
+Rendering happens per entry, immediately before that entry executes. Values can rotate at any time, so nothing is cached across entries, cycles, or the dispatcher process lifetime: each entry reads its referenced Secrets fresh, and only that entry's prefetch deduplicates repeated references within the entry. Entries whose parameters carry no reference never read anything.
+
+Validation is fail-closed at every step:
+
+- Entry shape, preflight ids, unknown and missing parameters, and reserved keys are validated on the declared literals before any entry executes or any Secret is read. A placeholder supplied as the whole value of a parameter whose schema can provably never accept a string (a plain number, boolean, or list parameter) also fails closed here — the dispatcher never coerces a rendered string itself; a schema that asks Zod for coercion may legitimately accept one, so coercing fields defer to the post-render parse. For plain non-string parameters, use `sandbox.env` or non-secret `env` settings instead.
+- For entries carrying references, the check's input schema runs exactly once — on the fully rendered parameter map, immediately before the entry executes. All value constraints, including string formats, list element schemas, and whole-`with:`-map refinements, apply to the rendered values; schema callbacks (transforms, refinements, preprocessors) never run on declaration literals. Wrappers the dispatcher cannot assess structurally without running schema code (preprocessors, lazy schemas) defer to that same single post-render parse.
+- A missing, invalid, rotated, or transport-failed render prevents the whole dispatch, even when earlier entries already ran.
+- Rendered values never appear in error messages, transcripts, lifecycle logs, or structured diagnostics. Failures carry fixed messages naming at most the reference and key. What a preflight chooses to include in its own content is the preflight implementation's responsibility — see the audit warning above.
+
+**Compatibility change.** A `with:` string value containing `${{` is now a render template, exactly like a `sandbox.env` value. Before this feature, such a literal reached the preflight verbatim; now it renders through the template engine, and a span that is not a valid `secret()` reference either renders to different text or fails the dispatch. Verbatim passthrough cannot be offered safely: a malformed intended secret reference would then be delivered to the preflight as if it were the configured value. Literal values that do not contain `${{` are unaffected.
+
+Rotation within one run is detected, not averaged away. Every entry's rendered values are recorded in a private in-memory ledger — nothing is overwritten, and no values, hashes, or digests are ever logged or serialized. Only start-outcome entries bind: their content is the only preflight output that reaches the sandbox (the input envelope carries start content plus script names and statuses, nothing else), so only their observations constrain the launch. Two starts that observed different values for the same reference produce a mixed prompt, and the dispatch fails closed as a transient error — the next cycle re-runs the preflights against fresh values. At sandbox launch, `sandbox.env` references are rendered once and compared against the bound values in dispatcher memory — no second fetch. A value that changed between the preflight reads and the launch render refuses the launch the same way. Skip and error entries' observations never bind: their content stays in the cycle report and cannot reach the sandbox. Values referenced only by preflight parameters (never by `sandbox.env`) are not re-checked at launch: the sandbox receives exactly the preflight's intentional output, and re-verification would require a second fetch that still could not guarantee post-launch stability.
+
+Vault freshness is bounded by ESO: the dispatcher reads the Kubernetes Secret, so a rotated Vault value reaches preflight parameters only after the `ExternalSecret`'s `refreshInterval` re-syncs it. Configure the interval with that latency in mind.
+
 ## Runtime guarantees and limits
 
 - Secret resolution completes before sandbox creation.
@@ -110,3 +141,5 @@ After deployment, check that the `ExternalSecret` reports a successful sync and 
 - Rendered values are delivered through the native OpenShell sandbox environment: sandbox-wide, persisted by the gateway for the sandbox lifetime, and readable by any process in the sandbox.
 - The value is available to code running inside the sandbox and can be disclosed by that workload. Use only independently revocable, workload-scoped Tier 2 credentials.
 - Tier 1 credentials remain within platform-owned authentication and secret mechanisms; they must never be mapped into `sandbox.env`.
+- Preflight `with:` parameters follow the same tier rules and the same reference syntax; see [Reference tier-2 secrets in preflight parameters](#reference-tier-2-secrets-in-preflight-parameters).
+- Every Kubernetes Secret read is bounded (a five-second hard timeout per request, one parallel request per distinct Secret name) and cannot hang a cycle; an abort signal during a pending read never executes the entry.
