@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
 import { pyTruthy } from "../jira-common/shapes.js";
+import { mcpCustomField } from "./mcp.js";
+import {
+  assertNumber,
+  assertNumberTree,
+  assertSnapshotField,
+  parsePythonCompatibleJson,
+} from "./numbers.js";
 
 export type RecordData = Record<string, unknown>;
 export const record = (value: unknown): RecordData | undefined =>
@@ -34,52 +41,9 @@ export const COORD_STATES = new Set(
   ["needs-plan", "active", "blocked", "complete"].map((state) => `dev-bot-coordinator:${state}`),
 );
 
-// Node 22.0 lacks reviver source context. Record unknown sources and reject
-// them only if a number actually contributes to a Python-compatible value.
-const numberSources = new WeakMap<object, Map<string, string | undefined>>();
-export function parsePythonCompatibleJson(source: string): unknown {
-  return JSON.parse(
-    source,
-    function (this: object, key: string, value: unknown, context?: { source?: string }) {
-      if (typeof value === "number") {
-        let sources = numberSources.get(this);
-        if (!sources) {
-          sources = new Map();
-          numberSources.set(this, sources);
-        }
-        sources.set(key, context?.source);
-      }
-      return value;
-    },
-  );
-}
-
-function assertNumber(holder: object, key: string, value: unknown): void {
-  if (typeof value !== "number") return;
-  const sources = numberSources.get(holder);
-  const source = sources?.get(key);
-  if (
-    !Number.isSafeInteger(value) ||
-    (sources?.has(key) && (!source || !/^-?(?:0|[1-9]\d*)$/.test(source)))
-  )
-    throw new Error("Unsupported Jira number representation in snapshot");
-}
-
-function assertNumberTree(value: unknown): void {
-  if (value === null || typeof value !== "object") return;
-  for (const [key, item] of Object.entries(value)) {
-    assertNumber(value, key, item);
-    assertNumberTree(item);
-  }
-}
-
-export function assertSnapshotField(issue: RecordData, name: string): void {
-  const fields = record(issue.fields);
-  const holder = fields && Object.hasOwn(fields, name) ? fields : issue;
-  const value = holder[name];
-  assertNumber(holder, name, value);
-  assertNumberTree(value);
-}
+// Number guards moved to numbers.ts (shared with the mcp-atlassian ports);
+// re-exported because tests and sibling modules import them from here.
+export { assertNumber, assertNumberTree, assertSnapshotField, parsePythonCompatibleJson };
 
 function decodedContainer(value: string): unknown {
   if (!/^[{[]/.test(value.trimStart())) return undefined;
@@ -107,11 +71,11 @@ function extractTeam(raw: unknown, allowScalar = true): string {
   if (obj) {
     for (const name of ["id", "teamId", "team_id", "teamID"]) {
       const item = obj[name];
-      if (typeof item === "number" || typeof item === "string") {
-        assertNumber(obj, name, item);
-        const id = String(item).trim();
-        if (id) return id;
-      }
+      // Python accepts any non-None, non-dict/list scalar and str()s it.
+      if (item === null || item === undefined || typeof item === "object") continue;
+      assertNumber(obj, name, item);
+      const id = pythonString(item).trim();
+      if (id) return id;
     }
     for (const name of ["team", "option", "value", "data"]) {
       const item = obj[name];
@@ -137,7 +101,12 @@ export const teamId = (issue: RecordData, fieldId: string): string => {
   const fields = record(issue.fields);
   const holder = fields && Object.hasOwn(fields, fieldId) ? fields : issue;
   assertNumber(holder, fieldId, holder[fieldId]);
-  return extractTeam(holder[fieldId]);
+  // The Fabric Python reads team fields from mcp-atlassian 0.23.1 output,
+  // where every customfield_* value arrives wrapped as {"value": processed}
+  // (select-like option ids are discarded). Emulating that wrapper makes a
+  // REST read digest identically; already-simplified MCP shapes pass through
+  // the same wrapper unchanged.
+  return extractTeam(mcpCustomField(holder[fieldId]));
 };
 
 function codePointCompare(a: string, b: string): number {

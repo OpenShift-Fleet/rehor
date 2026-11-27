@@ -2,7 +2,8 @@ import { z } from "zod";
 import { definePreflight } from "../../core/registry.js";
 import type { PreflightRunContext } from "../../shared/run-context.js";
 import { pyTruthy } from "../jira-common/shapes.js";
-import { linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
+import { mcpDescription } from "./mcp.js";
+import { descriptionText, linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
   assertSnapshotField,
@@ -14,7 +15,6 @@ import {
   keyOf,
   labels,
   parentKey,
-  pythonString,
   type RecordData,
   record,
   sorted,
@@ -56,7 +56,7 @@ function summarizeChild(issue: RecordData, implementationLabel: string) {
   const assignee = field(issue, "assignee");
   if (!status || assignee === undefined)
     throw new Error(`Missing Jira status or assignee on ${key}`);
-  const description = field(issue, "description");
+  const description = descriptionText(mcpDescription(field(issue, "description")));
   return {
     key,
     summary: text(field(issue, "summary")),
@@ -66,9 +66,7 @@ function summarizeChild(issue: RecordData, implementationLabel: string) {
     implementation_labeled: items.includes(implementationLabel),
     blockers: linkedIssues(issue).blockers,
     assignee: isAssigned(assignee),
-    description: [...(pyTruthy(description) ? pythonString(description) : "")]
-      .slice(0, 2000)
-      .join(""),
+    description: [...description].slice(0, 2000).join(""),
   };
 }
 
@@ -331,9 +329,7 @@ export const fabricProjectState = definePreflight({
         const approved_plan_snapshot_changed =
           typeof approvedHash === "string" && approvedHash !== plan_snapshot_hash;
         const plan_change_required =
-          plan_approval_pending ||
-          approved_plan_snapshot_changed ||
-          has_ticket_delta;
+          plan_approval_pending || approved_plan_snapshot_changed || has_ticket_delta;
         if (previous !== snapshot_hash || !assessment.state) {
           const processed = metadata?.processed_comment_ids;
           if (
