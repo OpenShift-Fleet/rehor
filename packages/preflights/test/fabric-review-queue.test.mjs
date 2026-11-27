@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
-import test from "node:test";
 import { fabricReviewQueue } from "../dist/preflights/fabric-review-queue/index.js";
 import { createPreflightRunContext } from "../dist/shared/run-context.js";
 
@@ -575,13 +575,23 @@ test("new approval request uses revision-scoped ID and posts once with the Pytho
   const body = requests[0].body.body;
   assert.ok(body.includes(requestMarker(key)));
   // Python _approval_request_body copy, verbatim.
-  assert.ok(body.includes("No review will run until an organization member approves this exact revision."));
+  assert.ok(
+    body.includes("No review will run until an organization member approves this exact revision."),
+  );
   assert.ok(body.includes(`\`Review bot: yes ${key}\` — approve and start the review.`));
   assert.ok(body.includes(`\`Review bot: no ${key}\` — decline the review.`));
   // Python with_footer copy: the approval step plus the standing steps.
-  assert.ok(body.includes(`- Approve with \`Review bot: yes ${key}\` or decline with \`Review bot: no ${key}\`.`));
+  assert.ok(
+    body.includes(
+      `- Approve with \`Review bot: yes ${key}\` or decline with \`Review bot: no ${key}\`.`,
+    ),
+  );
   assert.ok(body.includes("**Status Comment:** Pending the first review."));
-  assert.ok(body.includes("- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR."));
+  assert.ok(
+    body.includes(
+      "- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.",
+    ),
+  );
   assert.ok(!body.includes("continuity"));
   assert.ok(!body.includes("review-approval-context"));
 });
@@ -611,7 +621,9 @@ test("a member-approved re-review starts with the Python authorization fields", 
   // The approving reply is in-window human feedback, exactly like Python.
   assert.deepEqual(work.feedback_comment_ids, ["issue:11"]);
   // Python removes the waiting label once a member decision exists.
-  assert.ok(result.writes.some((write) => write.method === "DELETE" && write.path.includes("/labels/")));
+  assert.ok(
+    result.writes.some((write) => write.method === "DELETE" && write.path.includes("/labels/")),
+  );
   assert.equal(result.memberReads, 1);
 });
 
@@ -803,7 +815,10 @@ test("approval decisions require a strictly later organization-member reply", as
   const fresh = comment(15, "member", `Review bot: yes ${key}`, after);
   const result = await run({ ...baseInput, issueComments: [request, fresh] });
   assert.equal(result.status, "start");
-  assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
+  assert.equal(
+    JSON.parse(result.content).work.review_authorization,
+    "organization_member_approved",
+  );
   assert.equal(result.memberReads, 1);
   const declined = comment(16, "member", `Review bot: no ${key}`, after);
   assert.equal(
@@ -912,7 +927,10 @@ test("the latest single-decision member reply wins, edits are invisible", async 
   ]) {
     const result = await run({ ...input, issueComments: [request, yes, decision] });
     assert.equal(result.status, "start");
-    assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
+    assert.equal(
+      JSON.parse(result.content).work.review_authorization,
+      "organization_member_approved",
+    );
   }
   // A reply edited after the fact still counts (Python never reads updated_at).
   const edited = await run({ ...input, issueComments: [request, editedYes] });
@@ -1035,9 +1053,7 @@ test("the latest recovery reply wins and edits are invisible, like Python", asyn
   const tie = comment(12, "member", `Review bot: yes ${recoveryId}`, oldReplyAt);
   const tied = await run({ ...input, issueComments: [recoveryRequest, edited, tie] });
   assert.equal(tied.status, "start");
-  for (const answer of [
-    comment(12, "member", `Review bot: no ${recoveryId}`, after),
-  ]) {
+  for (const answer of [comment(12, "member", `Review bot: no ${recoveryId}`, after)]) {
     assert.equal(
       (await run({ ...input, issueComments: [recoveryRequest, edited, answer] })).status,
       "skip",
@@ -1112,10 +1128,7 @@ test("GitHub contract: comment rebinding PATCHes the issue-comment endpoint and 
   const result = await run({ task, labelEvent: false, issueComments: [old], members: [] });
   assert.equal(result.status, "skip");
   const patch = result.writes.find((write) => write.method === "PATCH");
-  assert.deepEqual(
-    [patch.method, patch.path],
-    ["PATCH", `/repos/${repo}/issues/comments/10`],
-  );
+  assert.deepEqual([patch.method, patch.path], ["PATCH", `/repos/${repo}/issues/comments/10`]);
   // The REST contract for editing a PR conversation comment: JSON body with
   // the single `body` field, on the issue-comments collection (never the
   // pulls review-comments endpoint).
@@ -1166,7 +1179,10 @@ test("GitHub contract: REST-only evidence still starts approved work, no GraphQL
     members: ["member"],
   });
   assert.equal(result.status, "start");
-  assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
+  assert.equal(
+    JSON.parse(result.content).work.review_authorization,
+    "organization_member_approved",
+  );
   assert.ok(!result.paths.some((path) => path.includes("/graphql")));
 });
 
@@ -1184,7 +1200,10 @@ test("a malformed status-review ledger fails closed instead of starting fresh", 
     reviewBody: ledgerBody({ pr: 2 }),
   });
   assert.equal(foreignPayload.status, "error");
-  assert.match(foreignPayload.content, /#1: Ledger payload belongs to another schema, repository, or PR/);
+  assert.match(
+    foreignPayload.content,
+    /#1: Ledger payload belongs to another schema, repository, or PR/,
+  );
 
   const trailingJunk = await run({
     task: labelTracked,
@@ -1193,7 +1212,20 @@ test("a malformed status-review ledger fails closed instead of starting fresh", 
     }).replace(
       /(?<=dev-review-bot:review-ledger:v1:)[A-Za-z0-9_-]+(?= -->)/,
       Buffer.concat([
-        deflateSync(Buffer.from(JSON.stringify({ version: 1, repo, pr: 1, head_sha: head, base_sha: base, update_count: 1, findings: [] }), "utf8")),
+        deflateSync(
+          Buffer.from(
+            JSON.stringify({
+              version: 1,
+              repo,
+              pr: 1,
+              head_sha: head,
+              base_sha: base,
+              update_count: 1,
+              findings: [],
+            }),
+            "utf8",
+          ),
+        ),
         Buffer.from([0x00]),
       ]).toString("base64url"),
     ),
@@ -1364,7 +1396,10 @@ test("a pending publication without a tracked review ID waits for recovery", asy
   task.metadata.review_label_event_id = 1;
   const result = await run({ task, reviewBody: body });
   assert.equal(result.status, "skip");
-  assert.match(result.content, /Waiting for organization-member ledger-recovery decisions on org\/repo#1/);
+  assert.match(
+    result.content,
+    /Waiting for organization-member ledger-recovery decisions on org\/repo#1/,
+  );
 });
 
 // Python parity goldens: static expected outcomes generated once from the
@@ -1478,7 +1513,13 @@ test("restored starts satisfy the runner-restoration CLI's input contract", asyn
   assert.equal(work.ledger_restore_pending, undefined);
 
   const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
-  const pending = await run({ task: pendingVerifyTask(pendingBody), reviewBody: pendingBody, labelEvent: false, issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")], members: ["member"] });
+  const pending = await run({
+    task: pendingVerifyTask(pendingBody),
+    reviewBody: pendingBody,
+    labelEvent: false,
+    issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")],
+    members: ["member"],
+  });
   assert.equal(pending.status, "start");
   const pendingWork = JSON.parse(pending.content).work;
   assert.equal(pendingWork.ledger_restore_pending, true);

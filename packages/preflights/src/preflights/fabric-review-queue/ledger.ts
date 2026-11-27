@@ -122,9 +122,7 @@ export function jsonEqual(a: unknown, b: unknown): boolean {
     const leftKeys = Object.keys(left);
     const rightKeys = Object.keys(right);
     if (leftKeys.length !== rightKeys.length) return false;
-    return leftKeys.every(
-      (key) => Object.hasOwn(right, key) && jsonEqual(left[key], right[key]),
-    );
+    return leftKeys.every((key) => Object.hasOwn(right, key) && jsonEqual(left[key], right[key]));
   }
   return false;
 }
@@ -229,9 +227,7 @@ export function publicLedger(ledger: unknown, label = "Ledger"): unknown[] {
     const refs = Array.isArray(record.refs) ? record.refs : [];
     const evidenceRecord = evidence as Record<string, unknown>;
     const evidenceRefs = Array.isArray(evidenceRecord.refs) ? evidenceRecord.refs : [];
-    const publicRefs = refs.map((ref, refIndex) =>
-      reference(ref, `${field}.refs[${refIndex}]`),
-    );
+    const publicRefs = refs.map((ref, refIndex) => reference(ref, `${field}.refs[${refIndex}]`));
     const normalizedEvidenceRefs = evidenceRefs.map((ref, refIndex) =>
       reference(ref, `${field}.evidence.refs[${refIndex}]`),
     );
@@ -334,11 +330,7 @@ export function decodeBody(body: unknown, repo: string, pr: number): LedgerPaylo
   const head = shaValue(payload.head_sha, "head_sha");
   const base = shaValue(payload.base_sha, "base_sha");
   const updateCount = payload.update_count;
-  if (
-    typeof updateCount !== "number" ||
-    !Number.isSafeInteger(updateCount) ||
-    updateCount < 0
-  ) {
+  if (typeof updateCount !== "number" || !Number.isSafeInteger(updateCount) || updateCount < 0) {
     throw new LedgerError("Ledger payload update_count is invalid");
   }
   const revisions = [...body.matchAll(REVISION_RE)].map((match) => [match[1], match[2]]);
@@ -448,10 +440,7 @@ const SAFETY_PATTERNS: readonly [string, RegExp][] = [
   ["Slack token", /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/],
   ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
   ["Stripe secret key", /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/],
-  [
-    "bearer credential",
-    /\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/-]{20,}={0,2}/i,
-  ],
+  ["bearer credential", /\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._~+/-]{20,}={0,2}/i],
   ["credential-bearing URL", /https?:\/\/[^\s/:@]+:[^\s/@]+@[^\s/]+/i],
   [
     "credential assignment",
@@ -492,7 +481,9 @@ export function ensurePublicContent(value: unknown, label: string): void {
   if (typeof value !== "string") throw new LedgerError(`${label} must be text`);
   for (const [name, pattern] of SAFETY_PATTERNS) {
     if (pattern.test(value)) {
-      throw new LedgerError(`${label} contains recognizable ${name}; remove the value before publication`);
+      throw new LedgerError(
+        `${label} contains recognizable ${name}; remove the value before publication`,
+      );
     }
   }
   for (const match of value.matchAll(EMAIL_RE)) {

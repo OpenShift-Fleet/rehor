@@ -78,9 +78,7 @@ def mcp_issues(rest_issues: list[dict]) -> list[dict]:
     # The Cloud branch of SearchMixin.search_issues builds this exact response
     # dict (total is always -1; nextPageToken only when more pages remain).
     response = {"issues": rest_issues, "total": -1, "startAt": 0, "maxResults": 50}
-    result = JiraSearchResult.from_api_response(
-        response, base_url=BASE_URL, requested_fields="*all"
-    )
+    result = JiraSearchResult.from_api_response(response, base_url=BASE_URL, requested_fields="*all")
     # The tool layer returns json.dumps(..., indent=2, ensure_ascii=False) and
     # the Fabric wrapper json.loads()s it verbatim.
     payload = json.dumps(result.to_simplified_dict(), indent=2, ensure_ascii=False)
@@ -242,7 +240,14 @@ def cases() -> list[dict]:
         {
             "name": "adf-empty-text",
             "issues": [
-                ticket(4, description={"version": 1, "type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}]})
+                ticket(
+                    4,
+                    description={
+                        "version": 1,
+                        "type": "doc",
+                        "content": [{"type": "paragraph", "content": [{"type": "text", "text": ""}]}],
+                    },
+                )
             ],
         },
         {"name": "description-null", "issues": [ticket(4, description=None)]},
@@ -275,9 +280,7 @@ def cases() -> list[dict]:
         },
         {
             "name": "links-relates-outward",
-            "issues": [
-                ticket(4, issuelinks=[{"type": {"name": "Relates"}, "outwardIssue": {"key": "RHCLOUD-8"}}])
-            ],
+            "issues": [ticket(4, issuelinks=[{"type": {"name": "Relates"}, "outwardIssue": {"key": "RHCLOUD-8"}}])],
         },
         {"name": "links-no-type", "issues": [ticket(4, issuelinks=[{"id": "1", "inwardIssue": {"key": "RHCLOUD-9"}}])]},
         {
@@ -394,9 +397,7 @@ def cases() -> list[dict]:
         },
         {
             "name": "scenario-handedoff",
-            "issues": [
-                ticket(3, **{**parity_child, "labels": ["phase:01", "triaged", IMPLEMENTATION_LABEL]})
-            ],
+            "issues": [ticket(3, **{**parity_child, "labels": ["phase:01", "triaged", IMPLEMENTATION_LABEL]})],
         },
     ]
 
@@ -443,7 +444,9 @@ def main() -> None:
         digest = fabric.ticket_plan_digest(snapshot)
         # Determinism guard: the same inputs must digest identically twice.
         again = fabric.ticket_plan_digest(
-            fabric.ticket_plan_snapshot(mcp_issues(json.loads(json.dumps(rest_issues))), TEAM_FIELD_ID, IMPLEMENTATION_LABEL)
+            fabric.ticket_plan_snapshot(
+                mcp_issues(json.loads(json.dumps(rest_issues))), TEAM_FIELD_ID, IMPLEMENTATION_LABEL
+            )
         )
         if again != digest:
             raise SystemExit(f"non-deterministic digest for case {case['name']}")

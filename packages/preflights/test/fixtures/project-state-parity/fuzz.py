@@ -25,7 +25,7 @@ import argparse
 import json
 import random
 
-from generate import TEAM_FIELD_ID, IMPLEMENTATION_LABEL, load_project_coordinator, mcp_issues
+from generate import IMPLEMENTATION_LABEL, TEAM_FIELD_ID, load_project_coordinator, mcp_issues
 
 WORDS = ["café", "🧶 works", "plain", "line\nbreak", "quote's", "a b c", "", "x" * 30, "tab\there"]
 TIMESTAMPS = [1732712400000, 0, 253402300799999, 253402300800000, -1, "1732712400000", "abc", 1]
@@ -63,9 +63,7 @@ def rand_adf(randomizer: random.Random, depth: int = 0) -> dict:
     if kind == "mention":
         return {
             "type": "mention",
-            "attrs": randomizer.choice(
-                [{"id": "acc:1"}, {"id": "acc:1", "text": "@Martin"}, {"text": "@NoId"}, {}]
-            ),
+            "attrs": randomizer.choice([{"id": "acc:1"}, {"id": "acc:1", "text": "@Martin"}, {"text": "@NoId"}, {}]),
         }
     if kind == "emoji":
         return {
@@ -98,11 +96,11 @@ def rand_team(randomizer: random.Random):
         lambda: {"name": "N", "self": "https://jira/x"},
         lambda: {"name": "OnlyName"},
         lambda: randomizer.randint(1, 999),
-        lambda: "team-%d" % randomizer.randint(1, 99),
+        lambda: f"team-{randomizer.randint(1, 99)}",
         lambda: None,
         lambda: [{"id": str(randomizer.randint(1, 99))}],
         lambda: {"value": {"id": str(randomizer.randint(1, 99))}},
-        lambda: '{"data":[{"teamId":"t%d"}]}' % randomizer.randint(1, 9),
+        lambda: f'{{"data":[{{"teamId":"t{randomizer.randint(1, 9)}"}}]}}',
         lambda: [{"id": "a"}, {"id": "a"}],
         lambda: {},
     ]
@@ -126,7 +124,7 @@ def rand_link(randomizer: random.Random) -> dict:
         link["type"] = link_type
     for key in ("inwardIssue", "outwardIssue"):
         if randomizer.random() < 0.5:
-            other: dict = {"key": "RHCLOUD-%d" % randomizer.randint(1, 99)}
+            other: dict = {"key": f"RHCLOUD-{randomizer.randint(1, 99)}"}
             if randomizer.random() < 0.7:
                 other["id"] = str(randomizer.randint(1, 999))
             if randomizer.random() < 0.5:
@@ -142,23 +140,21 @@ def rand_link(randomizer: random.Random) -> dict:
 
 def rand_issue(randomizer: random.Random, index: int) -> dict:
     return {
-        "key": "RHCLOUD-%d" % (index + 1),
+        "key": f"RHCLOUD-{index + 1}",
         "fields": {
             "parent": {"key": "RHCLOUD-1"},
             TEAM_FIELD_ID: rand_team(randomizer),
-            "summary": "S%d %s" % (index, rand_text(randomizer)),
+            "summary": f"S{index} {rand_text(randomizer)}",
             "description": randomizer.choice(
                 [None, "", rand_text(randomizer), rand_adf(randomizer), {"version": 1, "type": "doc", "content": []}]
             ),
-            "updated": randomizer.choice([None, "2026-11-2%dT10:00:00.000+0000" % (index % 10)]),
+            "updated": randomizer.choice([None, f"2026-11-2{index % 10}T10:00:00.000+0000"]),
             "priority": randomizer.choice([None, {}, {"name": "High"}, {"id": "3"}, {"name": "P", "id": "3"}]),
             "issuetype": randomizer.choice([None, {}, {"name": "Story"}, {"id": "3"}]),
             "status": {"name": randomizer.choice(["New", "In Progress", "Done"])},
             "labels": randomizer.choice([[], ["phase:01"], ["phase:01", "triaged"], ["repo:demo", "phase:02"]]),
             "issuelinks": [rand_link(randomizer) for _ in range(randomizer.randint(0, 3))],
-            "assignee": randomizer.choice(
-                [None, {"displayName": "X", "name": "x"}, {"display_name": "Unassigned"}]
-            ),
+            "assignee": randomizer.choice([None, {"displayName": "X", "name": "x"}, {"display_name": "Unassigned"}]),
         },
     }
 
@@ -180,7 +176,7 @@ def main() -> None:
         snapshot = fabric.ticket_plan_snapshot(issues, TEAM_FIELD_ID, IMPLEMENTATION_LABEL)
         cases.append(
             {
-                "name": "fuzz-%03d" % run,
+                "name": f"fuzz-{run:03d}",
                 "team_field_id": TEAM_FIELD_ID,
                 "implementation_label": IMPLEMENTATION_LABEL,
                 "rest": rest_issues,
@@ -194,7 +190,7 @@ def main() -> None:
         )
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump({"cases": cases}, handle, ensure_ascii=False)
-    print("wrote %d fuzz cases to %s" % (len(cases), args.out))
+    print(f"wrote {len(cases)} fuzz cases to {args.out}")
 
 
 if __name__ == "__main__":

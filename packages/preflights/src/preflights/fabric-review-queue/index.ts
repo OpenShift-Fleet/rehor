@@ -16,8 +16,8 @@ import {
 } from "./github.js";
 import {
   decodeBody,
-  LedgerPayloadMissing,
   type LedgerPayload,
+  LedgerPayloadMissing,
   type RiskAssessment,
   riskAssessmentFromBody,
   statusSummary,
@@ -290,14 +290,16 @@ function memberCheck(github: ReviewGitHub): Member {
 
 const chronological = (a: Comment, b: Comment) => a.created - b.created || a.id - b.id;
 const byCommandOrder = (a: Comment, b: Comment) =>
-  a.created - b.created ||
-  (a.source < b.source ? -1 : a.source > b.source ? 1 : 0) ||
-  a.id - b.id;
+  a.created - b.created || (a.source < b.source ? -1 : a.source > b.source ? 1 : 0) || a.id - b.id;
 const within = (value: number, since: number, through: number) =>
   since <= value && value <= through;
 
 /** Python `parse_request` with `allow_special` derived from the source. */
-function parseCommandRequest(comment: Comment, repo: string, number: number): CommandRequest | null {
+function parseCommandRequest(
+  comment: Comment,
+  repo: string,
+  number: number,
+): CommandRequest | null {
   const match = /^\/review-bot(?=$|\s)([\s\S]*)$/i.exec(comment.body.trimStart());
   if (!match) return null;
   let request = match[1].trim();
@@ -484,8 +486,12 @@ function withFooter(body: string, reviewUrl: string | null): string {
     steps.push(
       `- Approve a fresh review with \`Review bot: yes ${recovery[1]}\` or decline with \`Review bot: no ${recovery[1]}\`.`,
     );
-  steps.push("- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.");
-  steps.push("- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.");
+  steps.push(
+    "- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.",
+  );
+  steps.push(
+    "- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.",
+  );
   if (reviewUrl) {
     steps.push("- After changes, comment `/review-bot verify` to recheck existing findings.");
     steps.push("- Comment `/review-bot re-review` to request a full review (approval required).");
@@ -493,9 +499,16 @@ function withFooter(body: string, reviewUrl: string | null): string {
   const status = reviewUrl
     ? `**Status Comment:** [View review status](${reviewUrl})`
     : "**Status Comment:** Pending the first review.";
-  const footer = [FOOTER_START, "---", "", status, "", "**Next steps:**", ...steps, FOOTER_END].join(
-    "\n",
-  );
+  const footer = [
+    FOOTER_START,
+    "---",
+    "",
+    status,
+    "",
+    "**Next steps:**",
+    ...steps,
+    FOOTER_END,
+  ].join("\n");
   return `${body}\n\n${footer}`;
 }
 
@@ -775,7 +788,10 @@ function classify(
     }
     return withWork("review", 1);
   }
-  if (timestamp(pr.updated) > timestamp(meta.last_seen_updated_at ?? EPOCH) || options.pendingRereview) {
+  if (
+    timestamp(pr.updated) > timestamp(meta.last_seen_updated_at ?? EPOCH) ||
+    options.pendingRereview
+  ) {
     return withWork("feedback_check", 2);
   }
   if (status === "done" && !meta.merged_at) return withWork("reconcile_open", 3);
@@ -941,7 +957,9 @@ async function select(
       } catch (error) {
         // Lack of event proof cannot authorize a review. Existing SHA-change
         // work can still seek explicit approval.
-        errors.push(`${work.repo}#${work.number}: cannot verify review-label event: ${errorMessage(error)}`);
+        errors.push(
+          `${work.repo}#${work.number}: cannot verify review-label event: ${errorMessage(error)}`,
+        );
       }
       if (added) {
         work.kind = "review";
@@ -1034,7 +1052,11 @@ async function select(
         if (!item) {
           // Python's timestamp-boundary probe: a same-second command can share
           // the last-seen updatedAt and otherwise never enter feedback_check.
-          if (task && (task.status === "done" || task.status === "pr_open") && meta.last_seen_updated_at) {
+          if (
+            task &&
+            (task.status === "done" || task.status === "pr_open") &&
+            meta.last_seen_updated_at
+          ) {
             const probe = classify(repo, repoKey, pr, task, {
               inListing: true,
               pendingRereview: true,
@@ -1070,7 +1092,10 @@ async function select(
     for (const candidate of items.sort(order)) {
       const { work } = candidate;
       if (work.kind === "review" && !work.task_active && activeCount >= CAPACITY_MAX) {
-        return { status: "skip", content: `Review instance at task capacity (${activeCount}/${CAPACITY_MAX})` };
+        return {
+          status: "skip",
+          content: `Review instance at task capacity (${activeCount}/${CAPACITY_MAX})`,
+        };
       }
       try {
         if (work.kind === "review" && work.review_authorization !== "label_added") {
@@ -1109,8 +1134,7 @@ async function select(
             // Python's uniform wait message; the outcome stays Python's
             // skip, and no ledger is fabricated and no review restarted).
             const legacy =
-              typeof candidate.meta.ledger_path === "string" &&
-              candidate.meta.ledger_path !== "";
+              typeof candidate.meta.ledger_path === "string" && candidate.meta.ledger_path !== "";
             const cause = legacy
               ? "tracked review has no durable ledger payload and its legacy ledger file is not reachable from this dispatcher"
               : "tracked review has no durable ledger payload";

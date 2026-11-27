@@ -145,8 +145,7 @@ export function reviewGitHub(proxy: ProxyRouteConfig) {
         labels: row.labels.map((label) => label.name.toLowerCase()),
         title: typeof row.title === "string" ? row.title : "",
         url: typeof row.html_url === "string" ? row.html_url : "",
-        headBranch:
-          typeof row.head.ref === "string" && row.head.ref !== "" ? row.head.ref : "",
+        headBranch: typeof row.head.ref === "string" && row.head.ref !== "" ? row.head.ref : "",
       };
     },
     events: (repo: string, number: number) => list(`${issue(repo, number)}/events`),
