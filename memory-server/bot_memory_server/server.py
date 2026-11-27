@@ -18,6 +18,7 @@ from starlette.websockets import WebSocket
 from .db import close_pool, init_pool
 from .embeddings import load_model
 from .events import bus
+from .mcp_validation_sanitizer import McpEnvelopeGuard, install_sanitized_validation
 from .metrics import PrometheusMiddleware, db_gauge_refresh_loop
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,9 @@ async def lifespan(app):
 def build_app() -> tuple[Starlette, Starlette]:
     """Construct FastMCP, register tools and routes, and return (app, metrics_app)."""
     mcp = FastMCP(name="Bot Memory")
+    # Malformed tool calls must not echo argument payloads into MCP error
+    # responses or FastMCP warning logs (task_document data is arbitrary JSONB).
+    install_sanitized_validation(mcp)
 
     # Register MCP tools
     from .tools.cycles import register_cycle_tools
@@ -50,9 +54,11 @@ def build_app() -> tuple[Starlette, Starlette]:
     from .tools.org_members import register_org_member_tools
     from .tools.rag import register_rag_tools
     from .tools.slack import register_slack_tools
+    from .tools.task_documents import register_task_document_tools
     from .tools.tasks import register_task_tools
 
     register_task_tools(mcp)
+    register_task_document_tools(mcp)
     register_rag_tools(mcp)
     register_slack_tools(mcp)
     register_org_member_tools(mcp)
@@ -179,7 +185,10 @@ def build_app() -> tuple[Starlette, Starlette]:
         middleware=[Middleware(PrometheusMiddleware)],
         routes=[
             WebSocketRoute("/ws", ws_events),
-            Mount("/", app=mcp_app),
+            # The envelope guard inspects POST /mcp bodies before the MCP SDK
+            # parses them (malformed-envelope payload leaks, silent number
+            # corruption in document data); everything else passes through.
+            Mount("/", app=McpEnvelopeGuard(mcp_app)),
         ],
     )
     return app, metrics_app

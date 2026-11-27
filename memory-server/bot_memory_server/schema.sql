@@ -251,6 +251,23 @@ CREATE INDEX IF NOT EXISTS idx_tasks_outcome_report_id ON tasks (outcome_report_
 COMMENT ON COLUMN tasks.outcome_report_id IS
     'Outcome report staged for or selected by current archive; history remains in task_outcome_reports.';
 
+-- Durable task-owned documents (arbitrary JSONB), independent of the legacy
+-- tasks.artifacts PR/MR display links. Distinct from outcome evidence: these are
+-- agent working state (e.g. exact retry bundles) that must survive archival.
+-- No automatic expiry; deletion is explicit via the task_document_delete tool.
+CREATE TABLE IF NOT EXISTS task_documents (
+    id          BIGSERIAL PRIMARY KEY,
+    task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+    name        TEXT NOT NULL,
+    data        JSONB NOT NULL,
+    revision    INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(task_id, name)
+);
+-- No separate task_id index: the UNIQUE(task_id, name) btree serves every
+-- current query (task_id lookups, name ordering within a task).
+
 CREATE TABLE IF NOT EXISTS memories (
     id              SERIAL PRIMARY KEY,
     category        TEXT NOT NULL,

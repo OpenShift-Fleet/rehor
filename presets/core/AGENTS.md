@@ -99,6 +99,11 @@ MCP server `bot-memory` provides task tracking (cap 10 active) + RAG memory (vec
 | `task_update` | Update: `external_key, source_type?, status?, last_addressed?, paused_reason?, title?, summary?, metadata?` (metadata merged) |
 | `task_outcome_report` | Record required `artifacts`, `evidence`, `notes` (string or null) before archival; every evidence item shares required `source`, `reference`, `resolution` (`accepted`, `rejected`, `unknown`), `disposition`, `reason`, optional `kind` (`state`, `comment`; default `state`) and `authorType`; optional `verified_at`, `run_id`, `reporting_cycle_id`, `attempt`, `workflow`, `reported_by`; set `correction=true` for append-only correction |
 | `task_remove` | Archive only after an outcome report is staged; fails closed if no report exists |
+| `task_document_create` | Store durable JSON doc on task (`name` unique per task; duplicate fails → use update). Params: `external_key, name, data (any JSON), source_type?` |
+| `task_document_get` | Read one document incl. `data`. Params: `external_key, name, source_type?` |
+| `task_document_list` | Document names + metadata only, no content. Params: `external_key, source_type?` |
+| `task_document_update` | Replace document `data`; `revision` increments. Params: `external_key, name, data, source_type?, expected_revision?, expected_id?` — pass id+revision from last read to fail on concurrent change or delete/recreate instead of silently overwriting |
+| `task_document_delete` | Explicit delete by name. Params: `external_key, name, source_type?, expected_revision?, expected_id?` |
 | `task_check_capacity` | `{active, max: 10, has_capacity}`. Params: `instance_id?` |
 | `bot_status_update` | Dashboard banner: `state` (working/idle/error), `message`, `external_key?`, `repo?`. Instance identity comes from the MCP connection, not a parameter |
 
@@ -123,6 +128,8 @@ If recovery needs a new report for an already archived task, use `task_outcome_r
 **NEVER archive investigation tasks.** `last_step = "investigation_posted"` → MUST stay `in_progress`. Only archive when human confirms on Jira or explicitly says done. Premature archival breaks feedback loop.
 
 **Multi-repo**: One task per Jira ticket. Primary repo in `repo`, all in `metadata.repos`. PRs in `metadata.prs` as `[{"repo", "number", "url", "host"}]`.
+
+**Task documents (durable data)**: `task_document_*` tools store arbitrary JSON documents attached to a task — exact retry bundles, working state that must survive sandbox loss. NOT `task_outcome_report.artifacts` (those are PR/MR evidence links for outcome reporting). Archiving a task (`task_remove`) does NOT delete saved documents — they persist long-term, stay readable and writable after archival; only explicit `task_document_delete` removes one. Content returned only by explicit create/get/update calls — never in `task_list`, `task_get`, or `task_document_list`. Same `external_key` + `source_type` identity rules as other task tools; same shared Bot Memory trust boundary (no per-instance privacy). NEVER store credentials, tokens, secrets, or keys in documents. Numbers: integers exact up to the parser digit limit (~4300 digits); floats must round-trip through IEEE 754 doubles as decimal values (others rejected); JSONB normalizes spelling and signed zero (`-0` → `0`) — send precision-sensitive values (exact spelling, zero sign, beyond-double precision) as strings. Concurrent writers: pass `expected_id` + `expected_revision` from your last read to fail cleanly on mismatch, including delete+recreate of the same name (revision alone restarts at 1 after recreate); omit both for plain last-writer-wins update.
 
 ### Cycle Progress Tools
 

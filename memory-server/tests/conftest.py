@@ -1,7 +1,10 @@
 import os
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 import asyncpg
+import pytest
 import pytest_asyncio
 
 DB_CONFIG = {
@@ -13,6 +16,73 @@ DB_CONFIG = {
 }
 
 SCHEMA_PATH = Path(__file__).parent.parent / "bot_memory_server" / "schema.sql"
+
+# Real-database tests are strictly opt-in: the db fixture below is destructive
+# (drops all public tables). They run only with REHOR_REAL_DATABASE_TESTS=1 and
+# PGSQL_* pointing at a disposable database (CI sets both).
+requires_real_database = pytest.mark.skipif(
+    os.environ.get("REHOR_REAL_DATABASE_TESTS") != "1",
+    reason="opt-in: set REHOR_REAL_DATABASE_TESTS=1 and point PGSQL_* at a disposable database "
+    "(the db fixture drops all public tables)",
+)
+
+
+class SingleConnectionPool:
+    """Pool-shaped adapter over one asyncpg connection, mirroring test_task_outcomes."""
+
+    def __init__(self, conn):
+        self.conn = conn
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
+
+    async def fetchrow(self, query, *args):
+        return await self.conn.fetchrow(query, *args)
+
+    async def fetch(self, query, *args):
+        return await self.conn.fetch(query, *args)
+
+
+# Shared task-document test fixtures (mocked pool fakes build on these).
+NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
+TASK_ROW = {"id": 42}
+
+
+def document_row(name="bundle", revision=1, data='{"k": "v"}', id=7):
+    return {"id": id, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
+
+
+class FakePool:
+    """Scripted asyncpg pool fake: fetchrow results are consumed in call order.
+
+    A scripted entry that is an Exception instance is raised instead of returned.
+    ``acquire`` yields the pool itself, so connection-level calls are recorded too.
+    """
+
+    def __init__(self, *fetchrow_results, fetch_results=None):
+        self.results = list(fetchrow_results)
+        self.fetch_results = list(fetch_results or [])
+        self.calls = []
+
+    async def fetchrow(self, query, *args):
+        self.calls.append(("fetchrow", query, args))
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def fetch(self, query, *args):
+        self.calls.append(("fetch", query, args))
+        return self.fetch_results.pop(0)
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
 
 
 @pytest_asyncio.fixture
