@@ -121,9 +121,6 @@ export function planSnapshot(
     const issue = byKey.get(key);
     if (!issue) throw new Error(`Missing Jira issue ${key}`);
     const issueLabels = labels(issue);
-    const issueType = pyTruthy(field(issue, "issuetype"))
-      ? field(issue, "issuetype")
-      : field(issue, "issue_type");
     snapshot[key] = {
       // The Fabric Python digests mcp-atlassian output, so every field below
       // is normalized through the same server transformation before hashing:
@@ -132,11 +129,7 @@ export function planSnapshot(
       // str()-coerced by the model (null becomes "None"), priorities and
       // issue types collapse to their model name, and issue links are
       // simplified to the snake_case shape the Python extraction reads.
-      summary: mcpSummaryText(field(issue, "summary")).trim(),
-      description: descriptionText(mcpDescription(field(issue, "description"))),
-      priority: mcpPriorityName(field(issue, "priority")),
-      issue_type: mcpIssueTypeName(issueType),
-      team_id: teamId(issue, teamFieldId),
+      ...ticketInputs(issue, teamFieldId),
       phase_labels: sorted(issueLabels.filter((label) => PHASE.test(label))),
       repo_labels: sorted(issueLabels.filter((label) => label.startsWith("repo:"))),
       planning_labels: sorted(
@@ -148,10 +141,44 @@ export function planSnapshot(
             label !== implementationLabel,
         ),
       ),
-      ...mcpLinkedIssues(field(issue, "issuelinks")),
     };
   }
   return snapshot;
+}
+
+/**
+ * The scope-only inputs of project_coordinator.planner_ticket_snapshot:
+ * planner-assigned phase/repo labels are outputs, not inputs, so the planner
+ * input hash stays stable while the planner applies its own assignments.
+ * Same MCP normalization as the plan snapshot; digest via planDigest.
+ */
+export function plannerTicketSnapshot(
+  children: readonly RecordData[],
+  teamFieldId: string,
+): Record<string, RecordData> {
+  const snapshot: Record<string, RecordData> = {};
+  const byKey = new Map(children.map((issue) => [issueKey(issue), issue]));
+  for (const key of sorted(byKey.keys())) {
+    const issue = byKey.get(key);
+    if (!issue) throw new Error(`Missing Jira issue ${key}`);
+    snapshot[key] = ticketInputs(issue, teamFieldId);
+  }
+  return snapshot;
+}
+
+// The per-ticket fields both snapshots hash, already MCP-normalized.
+function ticketInputs(issue: RecordData, teamFieldId: string) {
+  const issueType = pyTruthy(field(issue, "issuetype"))
+    ? field(issue, "issuetype")
+    : field(issue, "issue_type");
+  return {
+    summary: mcpSummaryText(field(issue, "summary")).trim(),
+    description: descriptionText(mcpDescription(field(issue, "description"))),
+    priority: mcpPriorityName(field(issue, "priority")),
+    issue_type: mcpIssueTypeName(issueType),
+    team_id: teamId(issue, teamFieldId),
+    ...mcpLinkedIssues(field(issue, "issuelinks")),
+  };
 }
 
 export function planDigest(snapshot: Record<string, RecordData>): string {

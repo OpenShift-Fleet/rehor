@@ -253,22 +253,110 @@ function commentBody(raw: unknown): string {
   return pythonJson(body, true);
 }
 
-export function humanComments(comments: readonly RecordData[]) {
-  return comments.flatMap((comment) => {
-    const body = commentBody(comment.body);
-    const lines = body
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: Python str.splitlines() boundaries, kept for fingerprint parity.
-      .split(/[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (
-      /^(?:coordinator update)(?:$| -)/i.test(lines[0]?.replace(/^#+/, "").trim() ?? "") ||
-      lines.slice(-2).some((line) => line.startsWith("Coordinator action:"))
-    )
-      return [];
+/** Python str.splitlines() boundaries, with \r\n counted as one break. */
+function pySplitlines(body: string): string[] {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: Python str.splitlines() boundaries, kept for fingerprint parity.
+  return body.split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/);
+}
+
+/** A control-ticket comment normalized the way the Fabric Python reads it. */
+export type CommentRecord = { id: string; body: string; created: unknown };
+
+export function issueComments(comments: readonly RecordData[]): CommentRecord[] {
+  return comments.map((comment) => {
     assertNumber(comment, "id", comment.id);
-    return [{ id: String(comment.id || ""), body, created: comment.created ?? null }];
+    return {
+      id: String(comment.id || ""),
+      body: commentBody(comment.body),
+      created: comment.created ?? null,
+    };
   });
+}
+
+const OWN_COMMENT_PREFIX = "coordinator update";
+const COORDINATOR_ROLE_PREFIX = "coordinator:";
+
+/** project_coordinator.is_own_comment, including the COORDINATOR: persona prefix. */
+export function isOwnComment(comment: CommentRecord): boolean {
+  const lines = pySplitlines(comment.body)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return false;
+  let heading = lines[0].replace(/^#+/, "").trim().toLowerCase();
+  if (heading.startsWith(COORDINATOR_ROLE_PREFIX))
+    heading = heading.slice(COORDINATOR_ROLE_PREFIX.length).trim();
+  if (heading === OWN_COMMENT_PREFIX || heading.startsWith(`${OWN_COMMENT_PREFIX} -`)) return true;
+  return lines.slice(-2).some((line) => line.startsWith("Coordinator action:"));
+}
+
+// PLANNER_COMMAND mirrors Python's re.IGNORECASE; the character classes stay
+// literal space/tab so other whitespace cannot smuggle in a route.
+const PLANNER_COMMAND = /^planner:[ \t]*\/coord[ \t]+plan(?:[ \t]+(.+))?$/i;
+const PLANNER_RECEIPT_HEADING = "planner: planner update -";
+// Python's receipt marker is case-sensitive (no re.IGNORECASE on this one).
+const PLANNER_RECEIPT_LINE = /^Planner request comment: ([1-9][0-9]*)$/;
+
+/** project_coordinator.planner_focus: only a first-line PLANNER route requests a plan. */
+export function plannerFocus(comment: CommentRecord): string | null {
+  const lines = pySplitlines(comment.body.trim());
+  if (!lines.length) return null;
+  const match = PLANNER_COMMAND.exec(lines[0].trim());
+  return match ? [match[1] ?? "", ...lines.slice(1)].join("\n").trim() : null;
+}
+
+/** project_coordinator.planner_receipt: the answered-request marker id, if any. */
+export function plannerReceipt(comment: CommentRecord): string | null {
+  const lines = pySplitlines(comment.body.trim());
+  if (
+    !lines.length ||
+    !lines[0].replace(/^#+/, "").trim().toLowerCase().startsWith(PLANNER_RECEIPT_HEADING)
+  )
+    return null;
+  const marker = PLANNER_RECEIPT_LINE.exec(lines[lines.length - 1].trim());
+  return marker ? marker[1] : null;
+}
+
+const PLANNER_HEADING = "planner: planner update - technical plan";
+const COORDINATION_BLOCK = /```planner-coordination\s*([\s\S]*?)\s*```/i;
+
+/** project_coordinator.planner_coordination: the planner's machine-readable assignments. */
+export function plannerCoordination(comment: CommentRecord): RecordData | null {
+  if (!plannerReceipt(comment)) return null;
+  // Python reads the first line of the UNtrimmed body here, so a leading
+  // blank line hides the heading even though planner_receipt trims first.
+  const first = pySplitlines(comment.body)[0] ?? "";
+  if (!first.trim().toLowerCase().startsWith(PLANNER_HEADING)) return null;
+  const match = COORDINATION_BLOCK.exec(comment.body);
+  if (!match) return null;
+  try {
+    const parsed: unknown = JSON.parse(match[1]);
+    return record(parsed) ?? null;
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return null;
+  }
+}
+
+/** project_coordinator.is_coordination_feedback: user comments routed to this bot. */
+export function isCoordinationFeedback(comment: CommentRecord): boolean {
+  const lines = pySplitlines(comment.body.trim());
+  const routed =
+    lines.length > 0 && lines[0].trim().toLowerCase().startsWith(COORDINATOR_ROLE_PREFIX);
+  return (
+    routed &&
+    !isOwnComment(comment) &&
+    plannerFocus(comment) === null &&
+    plannerReceipt(comment) === null
+  );
+}
+
+/** The newest planner receipt marker id on the control ticket, for wake detection. */
+export function latestPlannerReceipt(comments: readonly CommentRecord[]): string | null {
+  for (const comment of [...comments].reverse()) {
+    const receipt = plannerReceipt(comment);
+    if (receipt) return receipt;
+  }
+  return null;
 }
 
 export function fingerprint(
@@ -276,7 +364,7 @@ export function fingerprint(
   control: RecordData,
   children: readonly RecordData[],
   teamFieldId: string,
-  comments: ReturnType<typeof humanComments>,
+  comments: readonly CommentRecord[],
   pullRequests: unknown = {},
 ) {
   const payload = {
@@ -293,7 +381,10 @@ export function fingerprint(
       parent: parentKey(control),
       team: teamId(control, teamFieldId),
       labels: sorted(labels(control).filter((label) => !COORD_STATES.has(label))),
-      comments: comments.map(({ id, body }) => ({ id, body })),
+      // Ignore planner traffic, coordinator reports, and unprefixed user
+      // comments: only coordination feedback and a new planner receipt wake.
+      comments: comments.filter(isCoordinationFeedback).map(({ id, body }) => ({ id, body })),
+      latest_planner_receipt: latestPlannerReceipt(comments),
     },
     children: [...children]
       .sort((a, b) => codePointCompare(keyOf(a), keyOf(b)))

@@ -13,6 +13,11 @@ actions.py uses to recompute approval hashes). The emitted golden file pins:
                (description, the wrapped team custom field, simplified links)
   - snapshot:  the Fabric Python plan snapshot over the MCP issues
   - digest:    sha256 of the snapshot (the approval plan hash)
+  - planner_snapshot: the Fabric Python planner_ticket_snapshot over the MCP
+               issues (scope-only inputs; planner-assigned phase/repo labels
+               are outputs and excluded)
+  - planner_digest: sha256 of the planner snapshot (input_snapshot_hash the
+               planner publishes and current_planner_plan validates)
 
 The TypeScript preflight must produce the same snapshot and digest from the
 `rest` issues, proving a REST read digests identically to the deployed
@@ -30,7 +35,7 @@ Requirements to regenerate:
     6b57391928887f5334fe854073b09e3a49bb7dae0d55a1b1276f4d910607a0f1 —
     the version pinned by rehor proxy/Dockerfile and running in devbot-proxy)
   - the Fabric project_coordinator.py checkout, e.g.
-    fabric-access-ai-dev at 37d5263:
+    fabric-access-ai-dev at d62cc55 (planner-owned coordinator plans):
     instance/rbac-project-coordinator/agent/workflows/project-coordinator/project_coordinator.py
 
 Usage:
@@ -423,7 +428,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--fabric-ref",
-        default="fabric-access-ai-dev@37d5263",
+        default="fabric-access-ai-dev@d62cc55",
         help="provenance recorded in the golden file instead of the local path",
     )
     parser.add_argument("--out", required=True, help="output golden JSON path")
@@ -442,6 +447,8 @@ def main() -> None:
         issues = mcp_issues(rest_issues)
         snapshot = fabric.ticket_plan_snapshot(issues, TEAM_FIELD_ID, IMPLEMENTATION_LABEL)
         digest = fabric.ticket_plan_digest(snapshot)
+        planner_snapshot = fabric.planner_ticket_snapshot(issues, TEAM_FIELD_ID)
+        planner_digest = fabric.ticket_plan_digest(planner_snapshot)
         # Determinism guard: the same inputs must digest identically twice.
         again = fabric.ticket_plan_digest(
             fabric.ticket_plan_snapshot(
@@ -450,6 +457,13 @@ def main() -> None:
         )
         if again != digest:
             raise SystemExit(f"non-deterministic digest for case {case['name']}")
+        planner_again = fabric.ticket_plan_digest(
+            fabric.planner_ticket_snapshot(
+                mcp_issues(json.loads(json.dumps(rest_issues))), TEAM_FIELD_ID
+            )
+        )
+        if planner_again != planner_digest:
+            raise SystemExit(f"non-deterministic planner digest for case {case['name']}")
         generated.append(
             {
                 "name": case["name"],
@@ -459,6 +473,8 @@ def main() -> None:
                 "mcp": [projection(issue) for issue in issues],
                 "snapshot": snapshot,
                 "digest": digest,
+                "planner_snapshot": planner_snapshot,
+                "planner_digest": planner_digest,
             }
         )
 

@@ -15,6 +15,18 @@
         }
       ],
       "name": "plain-converges",
+      "planner_digest": "ccf40b8f4a62442dc94af339d337617ffbeaa544b75da467a1810f6792225fe5",
+      "planner_snapshot": {
+        "RHCLOUD-7": {
+          "blockers": [],
+          "description": "Plain text",
+          "issue_type": "Story",
+          "priority": "High",
+          "related": [],
+          "summary": "Shared summary",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -82,6 +94,18 @@
         }
       ],
       "name": "adf-paragraph-two-texts",
+      "planner_digest": "1d92bd6ad30c1511c9ef9facc57d2c6d7fe1446d17ca714f41375a1be80a094c",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "hello \nworld",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -159,6 +183,18 @@
         }
       ],
       "name": "adf-rich-blocks",
+      "planner_digest": "f843c5e983c3c4e5c78a9de99ed61d0af86c3f9fc5419980e3ce4d3ea7d54f75",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "intro\n```\nx=1\n```\nHeading\nitem\nbreak\n\n\nafter\n@Martin\n:coffee:\n[LOVE]\n2024-11-27\nhttps://example.com/card",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -326,6 +362,18 @@
         }
       ],
       "name": "adf-empty-doc",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -388,6 +436,18 @@
         }
       ],
       "name": "adf-empty-text",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -460,6 +520,18 @@
         }
       ],
       "name": "description-null",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -518,6 +590,18 @@
         }
       ],
       "name": "description-empty-string",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -639,6 +723,99 @@
         }
       ],
       "name": "team-shapes",
+      "planner_digest": "eaf5fde826804bbaac4dc7c6119204f63c3e2eda3aad78b1405570956a4f02cf",
+      "planner_snapshot": {
+        "RHCLOUD-20": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape gh-team",
+          "team_id": "42"
+        },
+        "RHCLOUD-21": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape select-like",
+          "team_id": ""
+        },
+        "RHCLOUD-22": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape name-with-self",
+          "team_id": ""
+        },
+        "RHCLOUD-23": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape name-only",
+          "team_id": ""
+        },
+        "RHCLOUD-24": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape bare-number",
+          "team_id": "42"
+        },
+        "RHCLOUD-25": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape bare-string",
+          "team_id": "team-abc_123"
+        },
+        "RHCLOUD-26": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape null",
+          "team_id": ""
+        },
+        "RHCLOUD-27": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape list-of-one",
+          "team_id": "7"
+        },
+        "RHCLOUD-28": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape json-string",
+          "team_id": ""
+        },
+        "RHCLOUD-29": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Team shape nested-value",
+          "team_id": "9"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1059,6 +1236,18 @@
         }
       ],
       "name": "links-blocks-inward",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1152,6 +1341,18 @@
         }
       ],
       "name": "links-relates-outward",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1228,6 +1429,18 @@
         }
       ],
       "name": "links-no-type",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1356,6 +1569,18 @@
         }
       ],
       "name": "links-status-category",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1505,6 +1730,18 @@
         }
       ],
       "name": "links-mixed",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1591,6 +1828,18 @@
         }
       ],
       "name": "labels-empty",
+      "planner_digest": "dbf94e208d331283b8457aa33484188f0670bc9d1c5563a87190ec8310f90f42",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1653,6 +1902,27 @@
         }
       ],
       "name": "summary-null-and-missing",
+      "planner_digest": "62014ed478a4f60cd05b7b22bbdc5fe55d593d8f9166bae1a5eec324889ea4b2",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "None",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1749,6 +2019,18 @@
         }
       ],
       "name": "adf-date-strings",
+      "planner_digest": "064885e1b98c43bb8a8cb61a37761bad55e99217221556f94b4d1c8ea60cdc0c",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "1970-01-01\n1970-01-01\nnot-a-number\n253402300800000",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1844,6 +2126,27 @@
         }
       ],
       "name": "priority-issuetype-defaults",
+      "planner_digest": "9053b1922eadab8ba410c9e9e6f2fa8fa6ce81c8b39f5e0fea5ca6b15fbd0ee9",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "None",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 5",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -1977,6 +2280,36 @@
         }
       ],
       "name": "scenario-default",
+      "planner_digest": "e66e59666ca2f7e1167a1fef062fd67fc4f545850e2f087bb4fc84e4163ec9a3",
+      "planner_snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 3",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        },
+        "RHCLOUD-5": {
+          "blockers": [],
+          "description": "",
+          "issue_type": "",
+          "priority": "",
+          "related": [],
+          "summary": "Ticket 5",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -2140,6 +2473,18 @@
         }
       ],
       "name": "scenario-parity",
+      "planner_digest": "a37b321cf26418c8a28ac3eef87e0382621468a41501e802f77cc7fd8573b753",
+      "planner_snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "Clear acceptance criteria",
+          "issue_type": "Story",
+          "priority": "Medium",
+          "related": [],
+          "summary": "First implementation ticket",
+          "team_id": "42"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -2228,6 +2573,18 @@
         }
       ],
       "name": "scenario-adf",
+      "planner_digest": "42405af83e07dbb9511f66c9ffe2a1c577a5925adf691eff7f1a96ac8c47b77a",
+      "planner_snapshot": {
+        "RHCLOUD-4": {
+          "blockers": [],
+          "description": "café's 🧶\nworks",
+          "issue_type": "Task",
+          "priority": "High",
+          "related": [],
+          "summary": "Ticket 4",
+          "team_id": "team-1"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -2332,6 +2689,18 @@
         }
       ],
       "name": "scenario-handedoff",
+      "planner_digest": "a37b321cf26418c8a28ac3eef87e0382621468a41501e802f77cc7fd8573b753",
+      "planner_snapshot": {
+        "RHCLOUD-3": {
+          "blockers": [],
+          "description": "Clear acceptance criteria",
+          "issue_type": "Story",
+          "priority": "Medium",
+          "related": [],
+          "summary": "First implementation ticket",
+          "team_id": "42"
+        }
+      },
       "rest": [
         {
           "fields": {
@@ -2397,9 +2766,9 @@
   ],
   "generator": {
     "atlassian_python_api": "4.0.7",
-    "fabric_project_coordinator": "fabric-access-ai-dev@37d5263",
+    "fabric_project_coordinator": "fabric-access-ai-dev@d62cc55",
     "mcp_atlassian": "0.23.1",
     "note": "generated by test/fixtures/project-state-parity/generate.py; mcp-atlassian must be 0.23.1 (rehor proxy/Dockerfile pin); generate on Linux for exact year<1000 parity (see docstring)",
-    "python": "3.11.10"
+    "python": "3.12.2"
   }
 }

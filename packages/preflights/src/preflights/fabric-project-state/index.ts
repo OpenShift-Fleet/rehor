@@ -4,14 +4,17 @@ import type { PreflightRunContext } from "../../shared/run-context.js";
 import { pyTruthy } from "../jira-common/shapes.js";
 import { mcpDescription, mcpSummaryText } from "./mcp.js";
 import { descriptionText, linkedIssues, planChanges, planDigest, planSnapshot } from "./plan.js";
+import { currentPlannerPlan, pendingPlannerRequest } from "./planner.js";
 import { createProjectReads, issueKey, readError } from "./reads.js";
 import {
   assertSnapshotField,
   COORD_STATES,
+  type CommentRecord,
   field,
   fingerprint,
-  humanComments,
   isAssigned,
+  isCoordinationFeedback,
+  issueComments,
   keyOf,
   labels,
   parentKey,
@@ -199,7 +202,9 @@ export const fabricProjectState = definePreflight({
         `project = "${project}" AND labels = "${controlLabel}" ORDER BY key ASC`,
         ["key"],
       );
-      const projects: RecordData[] = [];
+      // Planner routing comes first: one unanswered PLANNER request ends the
+      // scan before any memory read or project assessment, like the Python.
+      const controls: { control: RecordData; comments: CommentRecord[] }[] = [];
       for (const candidate of candidates) {
         const controlKey = issueKey(candidate);
         operation = `read Jira control ${controlKey}`;
@@ -209,13 +214,24 @@ export const fabricProjectState = definePreflight({
           "labels",
           teamFieldId,
         ]);
-        // The search index can lag a removed label. Do not enroll that issue.
+        // The search index can lag a removed label. Do not enroll that issue
+        // and do not fetch its comments: a failing comments read on a stale
+        // candidate must not block the remaining controls.
         if (!labels(control).includes(controlLabel)) continue;
+        const comments = issueComments(await reads.comments(controlKey));
+        operation = `route planner request for ${controlKey}`;
+        const planner = pendingPlannerRequest(control, comments, controlLabel);
+        if (planner) return { status: "start", content: JSON.stringify({ planner }) };
+        controls.push({ control, comments });
+      }
+      const projects: RecordData[] = [];
+      for (const { control, comments } of controls) {
+        const controlKey = issueKey(control);
+        operation = `assess Jira control ${controlKey}`;
         requireFields(control, ["summary", "description", "status", "parent", teamFieldId]);
         for (const name of ["summary", "description"]) assertSnapshotField(control, name);
         const team = teamId(control, teamFieldId);
         const parent = parentKey(control);
-        const comments = humanComments(await reads.comments(controlKey));
         operation = `read coordinator task for ${controlKey}`;
         const task = await ctx.memory.getTaskByKey(controlKey, {
           scopeByInstance: true,
@@ -294,6 +310,12 @@ export const fabricProjectState = definePreflight({
           tickets: pullRequests,
           errors: {},
         });
+        const planner_plan = currentPlannerPlan(
+          comments,
+          children,
+          teamFieldId,
+          new Set(Object.keys(ctx.repos)),
+        );
         const plan_snapshot = planSnapshot(children, teamFieldId, implementationLabel);
         const plan_snapshot_hash = planDigest(plan_snapshot);
         const ticket_changes = planChanges(
@@ -342,6 +364,8 @@ export const fabricProjectState = definePreflight({
           projects.push({
             ...identity,
             parent_key: parent,
+            planner_plan,
+            planner_plan_current: planner_plan.current,
             snapshot_hash,
             plan_snapshot,
             plan_snapshot_hash,
@@ -352,7 +376,9 @@ export const fabricProjectState = definePreflight({
             plan_change_required,
             plan_approval_pending,
             first_run: !previous,
-            new_comments: comments.filter(({ id }) => !processedIds.has(id)),
+            new_comments: comments
+              .filter(isCoordinationFeedback)
+              .filter(({ id }) => !processedIds.has(id)),
             open_pull_requests: pullRequests,
             github_pr_errors: {},
             ...assessment,
