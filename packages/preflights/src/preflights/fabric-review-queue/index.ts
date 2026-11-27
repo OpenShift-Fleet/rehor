@@ -30,9 +30,9 @@ import {
  * and values the Python preflight emitted, because the migrated agent runner
  * parses it unchanged; the approval, resume, recovery, and
  * pending-publication paths are pinned field-for-field (and their consent
- * comments byte-for-byte) against the vendored Python golden driver in
- * `test/fixtures/fabric-review-queue-python/`. Deliberate deviations (the
- * runner ledger hand-off, input hardening, and the documented
+ * comments byte-for-byte) against the static Python goldens in
+ * `test/fixtures/fabric-review-queue-golden.json`. Deliberate deviations
+ * (the runner ledger hand-off, input hardening, and the documented
  * reused-approval ABA parity) are listed in the package README.
  */
 

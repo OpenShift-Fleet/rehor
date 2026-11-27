@@ -1,0 +1,637 @@
+{
+  "provenance": {
+    "source": "Fabric review_queue.py at commit 37d5263"
+  },
+  "a member-approved re-review": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 10,
+          "user": {
+            "login": "review-bot",
+            "type": "User"
+          },
+          "body": "<!-- dev-review-bot:review-approval:RA-6becc4c6f8de -->",
+          "created_at": "2026-11-23T09:00:00Z",
+          "updated_at": "2026-11-23T09:00:00Z"
+        },
+        {
+          "id": 11,
+          "user": {
+            "login": "member",
+            "type": "User"
+          },
+          "body": "Review bot: yes RA-6becc4c6f8de",
+          "created_at": "2026-11-23T11:00:00Z",
+          "updated_at": "2026-11-23T11:00:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "member": true
+      },
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "start",
+      "content": "{\"work\": {\"kind\": \"review\", \"task_key\": \"review-only:github:org/repo#1\", \"task_exists\": true, \"task_active\": true, \"repo_key\": \"repo\", \"repo\": \"org/repo\", \"number\": 1, \"title\": \"Fix a permission (1)\", \"url\": \"https://github.com/org/repo/pull/1\", \"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"head_branch\": \"fix/permission\", \"pr_author\": \"author\", \"updated_at\": \"2026-11-23T12:00:00Z\", \"review_authorization\": \"organization_member_approved\", \"feedback_comment_ids\": [\"issue:11\"], \"review_approval_id\": \"RA-6becc4c6f8de\", \"review_approval_response_comment_id\": 11, \"review_approval_responder\": \"member\", \"pr_summary\": \"This PR fixes a permission.\", \"ledger_path\": \"data/review-context/restored-ledgers/stub.json\", \"update_count\": 1}, \"discovery_errors\": []}",
+      "writes": [
+        {
+          "method": "DELETE",
+          "path": "repos/org/repo/issues/1/labels/dev-bot-review-waiting-for-approval",
+          "fields": {}
+        }
+      ]
+    }
+  },
+  "a fresh approval request post": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [],
+      "events": [],
+      "members": {},
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "skip",
+      "content": "Waiting for organization-member review approvals on org/repo#1 (waiting); No labeled PR needs review or feedback handling",
+      "writes": [
+        {
+          "method": "POST",
+          "path": "repos/org/repo/issues/1/labels",
+          "fields": {
+            "labels[]": "dev-bot-review-waiting-for-approval"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "repos/org/repo/issues/1/comments",
+          "fields": {
+            "body": "### Review approval required\n\n**Request:** `RA-6becc4c6f8de`\n\n**Reason:** The PR head or base changed since the last review.\n\n**Target revision**\n- **Head:** `aaaaaaaaaaaa`\n- **Base:** `bbbbbbbbbbbb`\n\nNo review will run until an organization member approves this exact revision.\n\n**Reply with one option:**\n- `Review bot: yes RA-6becc4c6f8de` — approve and start the review.\n- `Review bot: no RA-6becc4c6f8de` — decline the review.\n\n<!-- dev-review-bot:review-approval:RA-6becc4c6f8de -->\n\n<!-- dev-review-bot:comment-footer:start -->\n---\n\n**Status Comment:** Pending the first review.\n\n**Next steps:**\n- Approve with `Review bot: yes RA-6becc4c6f8de` or decline with `Review bot: no RA-6becc4c6f8de`.\n- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.\n- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.\n<!-- dev-review-bot:comment-footer:end -->"
+          }
+        }
+      ]
+    }
+  },
+  "a same-SHA resume": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "in_progress",
+          "metadata": {
+            "review_id": 42,
+            "active_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "active_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [],
+      "events": [],
+      "members": {},
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "start",
+      "content": "{\"work\": {\"kind\": \"resume\", \"task_key\": \"review-only:github:org/repo#1\", \"task_exists\": true, \"task_active\": true, \"repo_key\": \"repo\", \"repo\": \"org/repo\", \"number\": 1, \"title\": \"Fix a permission (1)\", \"url\": \"https://github.com/org/repo/pull/1\", \"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"head_branch\": \"fix/permission\", \"pr_author\": \"author\", \"updated_at\": \"2026-11-23T12:00:00Z\", \"feedback_comment_ids\": [], \"pr_summary\": \"This PR fixes a permission.\", \"ledger_path\": \"data/review-context/restored-ledgers/stub.json\", \"update_count\": 1}, \"discovery_errors\": []}",
+      "writes": []
+    }
+  },
+  "a ledger-recovery consent": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "last_seen_updated_at": "2026-11-23T10:00:00Z"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 10,
+          "user": {
+            "login": "review-bot",
+            "type": "User"
+          },
+          "body": "<!-- dev-review-bot:ledger-recovery:LR-894dbeebaacc -->",
+          "created_at": "2026-11-23T09:00:00Z",
+          "updated_at": "2026-11-23T09:00:00Z"
+        },
+        {
+          "id": 11,
+          "user": {
+            "login": "member",
+            "type": "User"
+          },
+          "body": "Review bot: yes LR-894dbeebaacc",
+          "created_at": "2026-11-23T11:00:00Z",
+          "updated_at": "2026-11-23T11:00:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "member": true
+      },
+      "restore": {
+        "mode": "missing"
+      }
+    },
+    "python": {
+      "status": "start",
+      "content": "{\"work\": {\"kind\": \"review\", \"task_key\": \"review-only:github:org/repo#1\", \"task_exists\": true, \"task_active\": true, \"repo_key\": \"repo\", \"repo\": \"org/repo\", \"number\": 1, \"title\": \"Fix a permission (1)\", \"url\": \"https://github.com/org/repo/pull/1\", \"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"head_branch\": \"fix/permission\", \"pr_author\": \"author\", \"updated_at\": \"2026-11-23T12:00:00Z\", \"feedback_comment_ids\": [], \"ledger_recovery_responder\": \"member\", \"ledger_recovery_response_comment_id\": 11, \"ledger_recovery_state\": \"approved\", \"update_count\": 0, \"ledger_recovery_approved\": true}, \"discovery_errors\": []}",
+      "writes": []
+    }
+  },
+  "a fresh ledger-recovery request post": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "last_seen_updated_at": "2026-11-23T10:00:00Z"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 11,
+          "user": {
+            "login": "member",
+            "type": "User"
+          },
+          "body": "The history should restart.",
+          "created_at": "2026-11-23T10:30:00Z",
+          "updated_at": "2026-11-23T10:30:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "member": true
+      },
+      "restore": {
+        "mode": "missing"
+      }
+    },
+    "python": {
+      "status": "skip",
+      "content": "Waiting for organization-member ledger-recovery decisions on org/repo#1; No labeled PR needs review or feedback handling",
+      "writes": [
+        {
+          "method": "POST",
+          "path": "repos/org/repo/issues/1/comments",
+          "fields": {
+            "body": "**Review history needs recovery (LR-894dbeebaacc).**\n\nI could not find a usable ledger in the status review, saved publication, or local ledger. A fresh review will restart the finding history and may assign new finding IDs. Should a fresh re-review run? Any member of the repository's GitHub organization can include `Review bot: yes LR-894dbeebaacc` to approve, or `Review bot: no LR-894dbeebaacc` to decline, anywhere in their comment.\n\n<!-- dev-review-bot:ledger-recovery:LR-894dbeebaacc -->\n\n<!-- dev-review-bot:comment-footer:start -->\n---\n\n**Status Comment:** Pending the first review.\n\n**Next steps:**\n- Approve a fresh review with `Review bot: yes LR-894dbeebaacc` or decline with `Review bot: no LR-894dbeebaacc`.\n- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.\n- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.\n<!-- dev-review-bot:comment-footer:end -->"
+          }
+        }
+      ]
+    }
+  },
+  "a pending-publication resume": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "in_progress",
+          "metadata": {
+            "review_id": 42,
+            "active_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "active_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "pending_publication": {
+              "repo": "org/repo",
+              "pr": 1,
+              "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "operation": "review",
+              "publication_body": "## Review 3\n\nThis PR fixes a permission.\n\n<!-- dev-review-bot:fabric-access-review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\n<!-- dev-review-bot:review-ledger:v1:eJyNizsKgDAQBe_y6gXRcq8iIqtZkzSbkI-NeHdBPIBTDQxz4dRSYzLwSCiaExip-OFVQi5vCCpurUHAkJ-AsEnV79p-AkLPTpque-rWwBPhiOai-Qqel_sBBc09jg -->",
+              "publication_json": {
+                "body": "## Review 3\n\nThis PR fixes a permission.\n\n<!-- dev-review-bot:fabric-access-review:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\n<!-- dev-review-bot:review-ledger:v1:eJyNizsKgDAQBe_y6gXRcq8iIqtZkzSbkI-NeHdBPIBTDQxz4dRSYzLwSCiaExip-OFVQi5vCCpurUHAkJ-AsEnV79p-AkLPTpque-rWwBPhiOai-Qqel_sBBc09jg -->"
+              },
+              "update_count": 2
+            }
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [],
+      "events": [],
+      "members": {},
+      "restore": {
+        "mode": "empty_pending",
+        "reusable": true
+      }
+    },
+    "python": {
+      "status": "start",
+      "content": "{\"work\": {\"kind\": \"resume\", \"task_key\": \"review-only:github:org/repo#1\", \"task_exists\": true, \"task_active\": true, \"repo_key\": \"repo\", \"repo\": \"org/repo\", \"number\": 1, \"title\": \"Fix a permission (1)\", \"url\": \"https://github.com/org/repo/pull/1\", \"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"head_branch\": \"fix/permission\", \"pr_author\": \"author\", \"updated_at\": \"2026-11-23T12:00:00Z\", \"feedback_comment_ids\": [], \"pr_summary\": \"This PR fixes a permission.\", \"ledger_path\": \"data/review-context/restored-ledgers/stub.json\", \"update_count\": 2}, \"discovery_errors\": []}",
+      "writes": []
+    }
+  },
+  "an outsider approval reply": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 10,
+          "user": {
+            "login": "review-bot",
+            "type": "User"
+          },
+          "body": "<!-- dev-review-bot:review-approval:RA-6becc4c6f8de -->",
+          "created_at": "2026-11-23T09:00:00Z",
+          "updated_at": "2026-11-23T09:00:00Z"
+        },
+        {
+          "id": 11,
+          "user": {
+            "login": "outsider",
+            "type": "User"
+          },
+          "body": "Review bot: yes RA-6becc4c6f8de",
+          "created_at": "2026-11-23T11:00:00Z",
+          "updated_at": "2026-11-23T11:00:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "outsider": false
+      },
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "skip",
+      "content": "Waiting for organization-member review approvals on org/repo#1 (waiting); No labeled PR needs review or feedback handling",
+      "writes": [
+        {
+          "method": "POST",
+          "path": "repos/org/repo/issues/1/labels",
+          "fields": {
+            "labels[]": "dev-bot-review-waiting-for-approval"
+          }
+        }
+      ]
+    }
+  },
+  "a declined approval": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 10,
+          "user": {
+            "login": "review-bot",
+            "type": "User"
+          },
+          "body": "<!-- dev-review-bot:review-approval:RA-6becc4c6f8de -->",
+          "created_at": "2026-11-23T09:00:00Z",
+          "updated_at": "2026-11-23T09:00:00Z"
+        },
+        {
+          "id": 11,
+          "user": {
+            "login": "member",
+            "type": "User"
+          },
+          "body": "Review bot: no RA-6becc4c6f8de",
+          "created_at": "2026-11-23T11:00:00Z",
+          "updated_at": "2026-11-23T11:00:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "member": true
+      },
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "skip",
+      "content": "Waiting for organization-member review approvals on org/repo#1 (declined); No labeled PR needs review or feedback handling",
+      "writes": [
+        {
+          "method": "DELETE",
+          "path": "repos/org/repo/issues/1/labels/dev-bot-review-waiting-for-approval",
+          "fields": {}
+        }
+      ]
+    }
+  },
+  "a stale pending publication beside a decodable review": {
+    "scenario": {
+      "tasks": [
+        {
+          "external_key": "review-only:github:org/repo#1",
+          "source_type": "github",
+          "instance_id": "reviewer",
+          "status": "pr_open",
+          "metadata": {
+            "review_id": 42,
+            "last_reviewed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "last_reviewed_base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "last_seen_updated_at": "2026-11-23T10:00:00Z",
+            "pending_publication": {
+              "repo": "org/repo",
+              "pr": 1,
+              "head_sha": "dddddddddddddddddddddddddddddddddddddddd",
+              "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "operation": "review",
+              "publication_body": "## Review 4\n\nThis PR fixes a permission.\n\n<!-- dev-review-bot:fabric-access-review:dddddddddddddddddddddddddddddddddddddddd:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb -->\n<!-- dev-review-bot:review-ledger:v1:eJyNi00KgCAUBu_yrR9EtHtXiRDNl7pR8adNdPdAOoCzGhjmwS2lhhTBK6FITmCk4pahhFxG8KKtql6DYScBwegq_2UmAaFnq5uoM_XYwBvhCtGG6Cp4P94POEE-Bw -->"
+            }
+          }
+        }
+      ],
+      "prs": [
+        {
+          "number": 1,
+          "title": "Fix a permission (1)",
+          "url": "https://github.com/org/repo/pull/1",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "baseRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "headRefName": "fix/permission",
+          "isDraft": false,
+          "author": {
+            "login": "author"
+          },
+          "updatedAt": "2026-11-23T12:00:00Z"
+        }
+      ],
+      "comments": [
+        {
+          "id": 11,
+          "user": {
+            "login": "member",
+            "type": "User"
+          },
+          "body": "The history should restart.",
+          "created_at": "2026-11-23T10:30:00Z",
+          "updated_at": "2026-11-23T10:30:00Z"
+        }
+      ],
+      "events": [],
+      "members": {
+        "member": true
+      },
+      "restore": {
+        "mode": "payload",
+        "payload": {
+          "version": 1,
+          "repo": "org/repo",
+          "pr": 1,
+          "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "update_count": 1,
+          "findings": [],
+          "status_summary": "This PR fixes a permission."
+        }
+      }
+    },
+    "python": {
+      "status": "start",
+      "content": "{\"work\": {\"kind\": \"feedback_check\", \"task_key\": \"review-only:github:org/repo#1\", \"task_exists\": true, \"task_active\": true, \"repo_key\": \"repo\", \"repo\": \"org/repo\", \"number\": 1, \"title\": \"Fix a permission (1)\", \"url\": \"https://github.com/org/repo/pull/1\", \"head_sha\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"base_sha\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\", \"head_branch\": \"fix/permission\", \"pr_author\": \"author\", \"updated_at\": \"2026-11-23T12:00:00Z\", \"feedback_comment_ids\": [\"issue:11\"], \"pr_summary\": \"This PR fixes a permission.\", \"ledger_path\": \"data/review-context/restored-ledgers/stub.json\", \"update_count\": 1}, \"discovery_errors\": []}",
+      "writes": []
+    }
+  }
+}

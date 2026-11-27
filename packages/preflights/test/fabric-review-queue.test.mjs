@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import test from "node:test";
 import { fabricReviewQueue } from "../dist/preflights/fabric-review-queue/index.js";
@@ -1257,7 +1260,8 @@ test("a matching pending publication marks the restored start for the CLI retry 
   assertRestoreReference(work, { reviewId: 42, pending: true });
   assert.equal(work.update_count, 2);
 });
-// A pr_open verify task with a full matching pending publication retry.
+
+/** A pr_open verify task with a full matching pending publication retry. */
 const pendingVerifyTask = (pendingBody) => ({
   external_key: taskKey,
   source_type: "github",
@@ -1306,224 +1310,20 @@ test("a pending publication without a tracked review ID fails safely", async () 
   assert.deepEqual(result.writes, []);
 });
 
-/** Stub HOME/app/bot/memory_mcp plus a gh executable, like the Fabric test. */
-async function restoreCliEnv(task, review) {
-  const reviewRow =
-    typeof review === "string"
-      ? { id: 42, state: "COMMENTED", user: { login: bot }, body: review }
-      : review;
-  const home = await mkdtemp(join(tmpdir(), "fabric-restore-"));
-  const app = join(home, "app");
-  await mkdir(join(app, "bot"), { recursive: true });
-  await writeFile(join(app, "bot", "__init__.py"), "");
-  await writeFile(
-    join(app, "bot", "memory_mcp.py"),
-    `import json\nTASK = json.loads(${JSON.stringify(JSON.stringify(task))})\n` +
-      "def memory_call(tool, args):\n    return TASK\n\n\ndef memory_cleanup():\n    pass\n",
-  );
-  const responses = {
-    [`repos/${repo}/pulls/1`]: { state: "open", head: { sha: head }, base: { sha: base } },
-    [`repos/${repo}/pulls/1/reviews/42`]: reviewRow,
-    [`repos/${repo}/pulls/1/reviews/42/comments`]: [],
-  };
-  const bin = join(home, "bin");
-  await mkdir(bin, { recursive: true });
-  await writeFile(
-    join(bin, "gh"),
-    "#!/usr/bin/env python3\nimport json, sys\n" +
-      `RESPONSES = json.loads(${JSON.stringify(JSON.stringify(responses))})\n` +
-      "print(json.dumps(RESPONSES[sys.argv[2]]))\n",
-  );
-  await chmod(join(bin, "gh"), 0o755);
-  return {
-    cwd: app,
-    env: {
-      HOME: home,
-      PATH: `${bin}:/usr/bin:/bin`,
-      BOT_INSTANCE_ID: instanceId,
-      GH_USER_NAME: bot,
-    },
-    // The CLI resolves its output path, which follows the macOS /var symlink.
-    app: await realpath(app),
-  };
-}
+// Python parity goldens: static expected outcomes generated once from the
+// real Fabric review_queue.py (commit 37d5263) under stubbed memory/gh/
+// membership boundaries — see test/fixtures/fabric-review-queue-golden.json
+// and its README. Each stored scenario replays through this port; outcomes,
+// work fields, and consent-comment bodies must match, with only the
+// documented ledger_restore hand-off replacing Python's ledger_path. No
+// Python runs in CI and no Fabric source is vendored.
 
-/** The exact SKILL.md command, constructed only from the emitted work. */
-function skillCommand(work, cliEnv) {
-  const args = [
-    join(restoreFixtures, "restore_review_ledger.py"),
-    "--repo",
-    work.repo,
-    "--pr",
-    String(work.number),
-    "--head-sha",
-    work.head_sha,
-    "--base-sha",
-    work.base_sha,
-    "--review-id",
-    String(work.status_review_id),
-    "--task-key",
-    work.task_key,
-  ];
-  if (work.ledger_restore_pending === true) args.push("--pending");
-  return args;
-}
-
-test(
-  "restored work drives the Fabric runner-restoration CLI end to end",
-  { skip: python3Available ? false : "python3 is not available" },
-  async () => {
-    const body = ledgerBody({ pr: 1, updateCount: 1 });
-    const result = await run({ task: labelTracked, reviewBody: body });
-    assert.equal(result.status, "start");
-    const { work } = JSON.parse(result.content);
-    assert.equal(work.ledger_restore, "runner");
-    assert.equal(work.status_review_id, 42);
-    const cliEnv = await restoreCliEnv(labelTracked, body);
-    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
-    const restored = JSON.parse(stdout);
-    assert.deepEqual(Object.keys(restored).sort(), ["ledger_path", "source", "update_count"]);
-    assert.equal(restored.source, "review");
-    assert.equal(restored.update_count, 1);
-    assert.ok(isAbsolute(restored.ledger_path));
-    assert.ok(restored.ledger_path.startsWith(cliEnv.app));
-    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
-  },
+const goldenFile = JSON.parse(
+  await readFile(
+    join(dirname(fileURLToPath(import.meta.url)), "fixtures", "fabric-review-queue-golden.json"),
+    "utf8",
+  ),
 );
-
-test(
-  "pending-retry work drives the CLI with --pending and the pending body",
-  { skip: python3Available ? false : "python3 is not available" },
-  async () => {
-    const body = ledgerBody({ pr: 1, updateCount: 2 });
-    const result = await run({
-      task: pendingVerifyTask(body),
-      reviewBody: body,
-      labelEvent: false,
-      issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")],
-      members: ["member"],
-    });
-    assert.equal(result.status, "start");
-    const { work } = JSON.parse(result.content);
-    assert.equal(work.ledger_restore_pending, true);
-    const cliEnv = await restoreCliEnv(pendingVerifyTask(body), body);
-    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
-    const restored = JSON.parse(stdout);
-    assert.equal(restored.source, "pending");
-    assert.equal(restored.update_count, 2);
-    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
-  },
-);
-
-test(
-  "a review-operation pending retry drives the CLI with --pending",
-  { skip: python3Available ? false : "python3 is not available" },
-  async () => {
-    // The interrupted-publication shape: the tracked review is an empty
-    // pending draft at the current head, and the prepared body survives in
-    // the task's pending_publication. The preflight hands the retry off
-    // with ledger_restore_pending; the runner CLI restores the ledger from
-    // the saved body without rebuilding any publication artifact.
-    const body = ledgerBody({ pr: 1, updateCount: 2 });
-    const pendingReviewTask = {
-      ...tracked,
-      metadata: {
-        ...tracked.metadata,
-        pending_publication: {
-          repo,
-          pr: 1,
-          head_sha: head,
-          base_sha: base,
-          operation: "review",
-          publication_body: body,
-          publication_json: { body },
-          update_count: 2,
-        },
-      },
-    };
-    const draft = { id: 42, state: "PENDING", user: { login: bot }, body: "", commit_id: head };
-    const result = await run({ task: pendingReviewTask, review: draft, labelEvent: false });
-    assert.equal(result.status, "start");
-    const { work } = JSON.parse(result.content);
-    assert.equal(work.kind, "resume");
-    assert.equal(work.ledger_restore, "runner");
-    assert.equal(work.ledger_restore_pending, true);
-    assert.equal(work.status_review_id, 42);
-    assert.equal(work.update_count, 2);
-    const cliEnv = await restoreCliEnv(pendingReviewTask, draft);
-    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
-    const restored = JSON.parse(stdout);
-    assert.equal(restored.source, "pending");
-    assert.equal(restored.update_count, 2);
-    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
-  },
-);
-
-test(
-  "the CLI rejects a stale status_review_id, proving the emitted reference must match the task",
-  { skip: python3Available ? false : "python3 is not available" },
-  async () => {
-    const body = ledgerBody({ pr: 1, updateCount: 1 });
-    const result = await run({ task: labelTracked, reviewBody: body });
-    assert.equal(result.status, "start");
-    const { work } = JSON.parse(result.content);
-    const cliEnv = await restoreCliEnv(labelTracked, body);
-    const command = skillCommand(work).map((value) =>
-      value === String(work.status_review_id) ? String(work.status_review_id + 1) : value,
-    );
-    const failure = await execFileAsync("python3", command, cliEnv).then(
-      () => undefined,
-      (error) => error,
-    );
-    assert.ok(failure, "the CLI must fail closed on a mismatched review id");
-    assert.equal(failure.code, 1);
-    assert.match(failure.stderr, /Ledger restoration blocked/);
-    await assert.rejects(stat(join(cliEnv.app, "data")));
-  },
-);
-
-// Python parity goldens: run the vendored Fabric review_queue.py (37d5263,
-// test/fixtures/fabric-review-queue-python/) as an oracle for the approval,
-// resume, recovery, and pending-publication paths. The same scenario drives
-// both implementations; outcomes, work fields, and consent-comment bodies
-// must match, with only the documented ledger_restore hand-off replacing
-// Python's ledger_path.
-
-const goldenDir = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "fixtures",
-  "fabric-review-queue-python",
-);
-
-const prRow = {
-  number: 1,
-  title: "Fix a permission (1)",
-  url: `https://github.com/${repo}/pull/1`,
-  headRefOid: head,
-  baseRefOid: base,
-  headRefName: "fix/permission",
-  isDraft: false,
-  author: { login: "author" },
-  updatedAt: time,
-};
-const restorePayload = (updateCount = 1) => ({
-  version: 1,
-  repo,
-  pr: 1,
-  head_sha: head,
-  base_sha: base,
-  update_count: updateCount,
-  findings: [],
-  status_summary: "This PR fixes a permission.",
-});
-
-async function runPythonQueue(scenario) {
-  const dir = await mkdtemp(join(tmpdir(), "review-queue-golden-"));
-  const path = join(dir, "scenario.json");
-  await writeFile(path, JSON.stringify(scenario));
-  const { stdout } = await execFileAsync("python3", [join(goldenDir, "run_queue.py"), path]);
-  return JSON.parse(stdout);
-}
 
 /** The TS run() inputs mirroring one golden scenario. */
 function goldenRun(scenario) {
@@ -1590,196 +1390,40 @@ function assertPythonParity(python, tsResult) {
   }
 }
 
-const goldenScenarios = {
-  "a member-approved re-review": {
-    scenario: {
-      tasks: [task],
-      prs: [prRow],
-      comments: [
-        comment(10, bot, requestMarker(key), before),
-        comment(11, "member", `Review bot: yes ${key}`, after),
-      ],
-      events: [],
-      members: { member: true },
-      restore: { mode: "payload", payload: restorePayload(1) },
-    },
-  },
-  "a fresh approval request post": {
-    scenario: {
-      tasks: [task],
-      prs: [prRow],
-      comments: [],
-      events: [],
-      members: {},
-      restore: { mode: "payload", payload: restorePayload(1) },
-    },
-  },
-  "a same-SHA resume": {
-    scenario: {
-      tasks: [tracked],
-      prs: [prRow],
-      comments: [],
-      events: [],
-      members: {},
-      restore: { mode: "payload", payload: restorePayload(1) },
-    },
-  },
-  "a ledger-recovery consent": {
-    scenario: (() => {
-      const recoveryKey = `LR-${createHash("sha256")
-        .update([repo, 1, 42, head, base, head, base].join("|"))
-        .digest("hex")
-        .slice(0, 12)}`;
-      return {
-        tasks: [
-          {
-            ...tracked,
-            status: "pr_open",
-            metadata: {
-              review_id: 42,
-              last_reviewed_sha: head,
-              last_reviewed_base_sha: base,
-              last_seen_updated_at: "2026-11-23T10:00:00Z",
-            },
-          },
-        ],
-        prs: [prRow],
-        comments: [
-          comment(10, bot, `<!-- dev-review-bot:ledger-recovery:${recoveryKey} -->`, before),
-          comment(11, "member", `Review bot: yes ${recoveryKey}`, after),
-        ],
-        events: [],
-        members: { member: true },
-        restore: { mode: "missing" },
-      };
-    })(),
-  },
-  "a fresh ledger-recovery request post": {
-    scenario: (() => {
-      const recoveryKey = `LR-${createHash("sha256")
-        .update([repo, 1, 42, head, base, head, base].join("|"))
-        .digest("hex")
-        .slice(0, 12)}`;
-      return {
-        tasks: [
-          {
-            ...tracked,
-            status: "pr_open",
-            metadata: {
-              review_id: 42,
-              last_reviewed_sha: head,
-              last_reviewed_base_sha: base,
-              last_seen_updated_at: "2026-11-23T10:00:00Z",
-            },
-          },
-        ],
-        prs: [prRow],
-        comments: [comment(11, "member", "The history should restart.", "2026-11-23T10:30:00Z")],
-        events: [],
-        members: { member: true },
-        restore: { mode: "missing" },
-      };
-    })(),
-  },
-  "a pending-publication resume": {
-    scenario: (() => {
-      const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
-      return {
-        tasks: [
-          {
-            ...tracked,
-            metadata: {
-              ...tracked.metadata,
-              pending_publication: {
-                repo,
-                pr: 1,
-                head_sha: head,
-                base_sha: base,
-                operation: "review",
-                publication_body: pendingBody,
-                publication_json: { body: pendingBody },
-                update_count: 2,
-              },
-            },
-          },
-        ],
-        prs: [prRow],
-        comments: [],
-        events: [],
-        members: {},
-        restore: { mode: "empty_pending", reusable: true },
-      };
-    })(),
-  },
-  "an outsider approval reply": {
-    scenario: {
-      tasks: [task],
-      prs: [prRow],
-      comments: [
-        comment(10, bot, requestMarker(key), before),
-        comment(11, "outsider", `Review bot: yes ${key}`, after),
-      ],
-      events: [],
-      members: { outsider: false },
-      restore: { mode: "payload", payload: restorePayload(1) },
-    },
-  },
-  "a declined approval": {
-    scenario: {
-      tasks: [task],
-      prs: [prRow],
-      comments: [
-        comment(10, bot, requestMarker(key), before),
-        comment(11, "member", `Review bot: no ${key}`, after),
-      ],
-      events: [],
-      members: { member: true },
-      restore: { mode: "payload", payload: restorePayload(1) },
-    },
-  },
-  "a stale pending publication beside a decodable review": {
-    scenario: (() => {
-      const pendingBody = ledgerBody({ pr: 1, headSha: "d".repeat(40), updateCount: 3 });
-      return {
-        tasks: [
-          {
-            ...tracked,
-            status: "pr_open",
-            metadata: {
-              review_id: 42,
-              last_reviewed_sha: head,
-              last_reviewed_base_sha: base,
-              last_seen_updated_at: "2026-11-23T10:00:00Z",
-              pending_publication: {
-                repo,
-                pr: 1,
-                head_sha: "d".repeat(40),
-                base_sha: base,
-                operation: "review",
-                publication_body: pendingBody,
-              },
-            },
-          },
-        ],
-        prs: [prRow],
-        comments: [comment(11, "member", "The history should restart.", "2026-11-23T10:30:00Z")],
-        events: [],
-        members: { member: true },
-        restore: { mode: "payload", payload: restorePayload(1) },
-      };
-    })(),
-  },
-};
-
-for (const [name, { scenario }] of Object.entries(goldenScenarios)) {
-  test(
-    `Python golden parity: ${name}`,
-    { skip: python3Available ? false : "python3 is not available" },
-    async () => {
-      const python = await runPythonQueue(scenario);
-      const tsResult = await goldenRun(scenario);
-      assertPythonParity(python, tsResult);
-      assert.deepEqual(pythonCommentWrites(python.writes), tsCommentWrites(tsResult.writes));
-    },
-  );
+for (const [name, entry] of Object.entries(goldenFile)) {
+  if (name === "provenance") continue;
+  test(`Python golden parity: ${name}`, async () => {
+    const tsResult = await goldenRun(entry.scenario);
+    assertPythonParity(entry.python, tsResult);
+    assert.deepEqual(pythonCommentWrites(entry.python.writes), tsCommentWrites(tsResult.writes));
+  });
 }
+
+test("restored starts satisfy the runner-restoration CLI's input contract", async () => {
+  // Fabric restore_review_ledger.py (SKILL.md contract, verified once
+  // against this port's output): it is invoked with --repo, --pr,
+  // --head-sha, --base-sha, --review-id work.status_review_id, --task-key,
+  // and --pending only when ledger_restore_pending is set. It fails closed
+  // unless the task key is review-only:github:{repo}#{number}, the tracked
+  // task's metadata.review_id equals the passed review id, the live PR sits
+  // at the pinned head/base, and (for --pending) the saved publication
+  // matches the revision. Pin the emitted fields that feed those checks.
+  const body = ledgerBody({ pr: 1, updateCount: 1 });
+  const restored = await run({ task: labelTracked, reviewBody: body });
+  assert.equal(restored.status, "start");
+  const work = JSON.parse(restored.content).work;
+  assert.equal(work.ledger_restore, "runner");
+  assert.match(work.task_key, /^review-only:github:[\w.-]+\/[\w.-]+#\d+$/);
+  assert.equal(work.task_key, `review-only:github:${work.repo}#${work.number}`);
+  assert.equal(work.status_review_id, labelTracked.metadata.review_id);
+  assert.match(work.head_sha, /^[0-9a-f]{40}$/);
+  assert.match(work.base_sha, /^[0-9a-f]{40}$/);
+  assert.equal(work.ledger_restore_pending, undefined);
+
+  const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
+  const pending = await run({ task: pendingVerifyTask(pendingBody), reviewBody: pendingBody, labelEvent: false, issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")], members: ["member"] });
+  assert.equal(pending.status, "start");
+  const pendingWork = JSON.parse(pending.content).work;
+  assert.equal(pendingWork.ledger_restore_pending, true);
+  assert.equal(pendingWork.status_review_id, 42);
+});
