@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import test from "node:test";
 import { fabricReviewQueue } from "../dist/preflights/fabric-review-queue/index.js";
 import { createPreflightRunContext } from "../dist/shared/run-context.js";
@@ -14,6 +15,41 @@ const bot = "review-bot";
 const time = "2026-11-23T12:00:00Z";
 const marker = "<!-- dev-review-bot:review-ledger:v1:fixture -->";
 
+/** Encode one review-ledger:v1 payload exactly like the Python publisher. */
+const encodeLedger = (payload) =>
+  deflateSync(Buffer.from(JSON.stringify(payload), "utf8")).toString("base64url");
+
+/** A status-review body that decodes through the ported Python validator. */
+const ledgerBody = ({
+  updateCount = 1,
+  findings = [],
+  summary = "This PR fixes a permission.",
+  pr = 1,
+  headSha = head,
+  baseSha = base,
+  risk = null,
+} = {}) => {
+  const riskMarker = risk
+    ? `\n<!-- dev-review-bot:risk-assessment:v1:${Buffer.from(
+        JSON.stringify({ version: 1, ...risk }),
+        "utf8",
+      ).toString("base64url")} -->`
+    : "";
+  return (
+    `## Review ${updateCount + 1}\n\n${summary}\n\n` +
+    `<!-- dev-review-bot:fabric-access-review:${headSha}:${baseSha} -->\n` +
+    `<!-- dev-review-bot:review-ledger:v1:${encodeLedger({
+      version: 1,
+      repo,
+      pr,
+      head_sha: headSha,
+      base_sha: baseSha,
+      update_count: updateCount,
+      findings,
+    })} -->${riskMarker}`
+  );
+};
+
 function run({
   task,
   tasks,
@@ -23,15 +59,18 @@ function run({
   refreshedComments,
   members = [],
   failPatch = false,
+  failPost = false,
   memberError = false,
   memberStatuses = [],
-  reviewBody = marker,
+  reviewBody = (number) => ledgerBody({ pr: number }),
   headSha = head,
   numbers = [1],
   labelEvents = {},
   commentsByNumber = {},
+  pull = {},
 } = {}) {
   const writes = [];
+  const paths = [];
   let issueReads = 0;
   let memberReads = 0;
   const allTasks = tasks ?? (task ? [task] : []);
@@ -52,9 +91,12 @@ function run({
       baseUrl: "https://gateway.invalid",
       fetch: async (url, init) => {
         const path = new URL(url).pathname.replace(/^\/github/, "");
+        paths.push(path);
         if (init?.method !== "GET") {
           writes.push({ path, method: init.method, body: init.body && JSON.parse(init.body) });
           if (failPatch && init.method === "PATCH") return new Response(null, { status: 403 });
+          if (failPost && init.method === "POST" && path.endsWith("/comments"))
+            return new Response(null, { status: 403 });
           return Response.json({});
         }
         if (path === "/user") return Response.json({ login: bot });
@@ -62,16 +104,20 @@ function run({
           return Response.json(numbers.map((number) => ({ number, pull_request: {} })));
         const pullMatch = new RegExp(`^/repos/${repo}/pulls/(\\d+)$`).exec(path);
         if (pullMatch) {
+          const number = Number(pullMatch[1]);
           return Response.json({
-            number: Number(pullMatch[1]),
+            number,
             state: "open",
             draft: false,
             user: { login: "author" },
-            head: { sha: headSha },
+            head: { sha: headSha, ref: "fix/permission" },
             base: { sha: base },
             updated_at: time,
             merged_at: null,
             labels: [{ name: label }],
+            title: `Fix a permission (${number})`,
+            html_url: `https://github.com/${repo}/pull/${number}`,
+            ...pull,
           });
         }
         if (path.endsWith("/events")) {
@@ -87,7 +133,7 @@ function run({
             id: 42,
             user: { login: bot },
             state: "COMMENTED",
-            body: reviewBody,
+            body: typeof reviewBody === "function" ? reviewBody(Number(path.split("/")[5])) : reviewBody,
           });
         if (path.startsWith("/orgs/org/members/"))
           return new Response(null, {
@@ -111,8 +157,16 @@ function run({
   });
   return fabricReviewQueue
     .run(ctx, { review_label: label, bot_login: bot })
-    .then((result) => ({ ...result, writes, memberReads }));
+    .then((result) => ({ ...result, writes, memberReads, paths }));
 }
+
+const comment = (id, login, body, created, updated = created) => ({
+  id,
+  user: { login, type: "User" },
+  body,
+  created_at: created,
+  updated_at: updated,
+});
 
 const tracked = {
   external_key: taskKey,
@@ -138,11 +192,286 @@ test("a label-authorized tracked review sends only the sandbox restore reference
   const { work } = JSON.parse(result.content);
   assert.equal(work.kind, "review");
   assert.equal(work.task_key, taskKey);
-  assert.equal(work.status_review_id, 42);
+  // Python emits status_review_id only on command_reply work.
+  assert.equal(work.status_review_id, undefined);
   assert.equal(work.ledger_restore, "runner");
   assert.equal(work.ledger_path, undefined);
+  // The decoded ledger surfaces exactly what Python's restore emitted.
+  assert.equal(work.update_count, 1);
+  assert.equal(work.pr_summary, "This PR fixes a permission.");
+  assert.equal(work.risk_assessment, undefined);
+  assert.deepEqual(work.feedback_comment_ids, []);
   assert.ok(!result.content.includes(marker));
   assert.deepEqual(result.writes, []);
+});
+
+test("start content matches the Python reference field-for-field (fresh label review)", async () => {
+  // Transcribed from the Python test_main_selects_one_github_pr_and_ignores_gitlab
+  // scenario: one labeled GitHub PR, no task yet, a fresh label-add event. The
+  // Python preflight would print json.dumps({"work": chosen, ...}) with exactly
+  // these fields (priority popped, feedback_comment_ids defaulted to []).
+  const result = await run();
+  assert.equal(result.status, "start");
+  const payload = JSON.parse(result.content);
+  assert.deepEqual(payload, {
+    work: {
+      kind: "review",
+      task_key: taskKey,
+      task_exists: false,
+      task_active: false,
+      repo_key: "repo",
+      repo,
+      number: 1,
+      title: "Fix a permission (1)",
+      url: `https://github.com/${repo}/pull/1`,
+      head_sha: head,
+      base_sha: base,
+      head_branch: "fix/permission",
+      pr_author: "author",
+      updated_at: time,
+      review_label_event_id: 2,
+      review_authorization: "label_added",
+      feedback_comment_ids: [],
+      update_count: 0,
+    },
+    discovery_errors: [],
+  });
+  // Key order follows the Python dict insertion order, so the serialized
+  // object is byte-compatible modulo json.dumps' separator spaces.
+  assert.deepEqual(Object.keys(payload.work), [
+    "kind",
+    "task_key",
+    "task_exists",
+    "task_active",
+    "repo_key",
+    "repo",
+    "number",
+    "title",
+    "url",
+    "head_sha",
+    "base_sha",
+    "head_branch",
+    "pr_author",
+    "updated_at",
+    "review_label_event_id",
+    "review_authorization",
+    "feedback_comment_ids",
+    "update_count",
+  ]);
+});
+
+test("start content matches the Python reference (feedback check with restored ledger)", async () => {
+  // Transcribed from the Python test_feedback_scan_fetches_each_comment_surface_once_...:
+  // a pr_open task whose PR received one unseen human comment in the window.
+  const result = await run({
+    task: {
+      ...tracked,
+      status: "pr_open",
+      metadata: {
+        review_id: 42,
+        last_reviewed_sha: head,
+        last_reviewed_base_sha: base,
+        last_seen_updated_at: "2026-11-23T10:00:00Z",
+      },
+    },
+    labelEvent: false,
+    issueComments: [
+      comment(104, "alice", "The endpoint also needs pagination.", "2026-11-23T10:30:00Z"),
+    ],
+    members: ["alice"],
+  });
+  assert.equal(result.status, "start");
+  const payload = JSON.parse(result.content);
+  assert.deepEqual(payload, {
+    work: {
+      kind: "feedback_check",
+      task_key: taskKey,
+      task_exists: true,
+      task_active: true,
+      repo_key: "repo",
+      repo,
+      number: 1,
+      title: "Fix a permission (1)",
+      url: `https://github.com/${repo}/pull/1`,
+      head_sha: head,
+      base_sha: base,
+      head_branch: "fix/permission",
+      pr_author: "author",
+      updated_at: time,
+      feedback_comment_ids: ["issue:104"],
+      ledger_restore: "runner",
+      update_count: 1,
+      pr_summary: "This PR fixes a permission.",
+    },
+    discovery_errors: [],
+  });
+});
+
+test("start content matches the Python reference (restored risk assessment)", async () => {
+  const risk = {
+    risk: "low",
+    explanation: "The change is contained to one permission check.",
+    evidence_files: ["policy.py"],
+    head_sha: head,
+    base_sha: base,
+  };
+  const result = await run({
+    task: labelTracked,
+    reviewBody: ledgerBody({ risk }),
+  });
+  assert.equal(result.status, "start");
+  const { work } = JSON.parse(result.content);
+  assert.deepEqual(work.risk_assessment, risk);
+  assert.equal(work.update_count, 1);
+});
+
+test("start content matches the Python reference (contextual command reply)", async () => {
+  // Python bot_command_requests entry shape: id, source, feedback_id, login,
+  // created_at, url, request, too_long (action only for learning requests).
+  const request = comment(
+    105,
+    "member",
+    "/review-bot what does the timeout do?",
+    "2026-11-23T10:30:00Z",
+  );
+  const result = await run({
+    task: {
+      ...tracked,
+      status: "pr_open",
+      metadata: {
+        review_id: 42,
+        last_reviewed_sha: head,
+        last_reviewed_base_sha: base,
+        last_seen_updated_at: "2026-11-23T10:00:00Z",
+      },
+    },
+    issueComments: [request],
+    members: ["member"],
+  });
+  assert.equal(result.status, "start");
+  const payload = JSON.parse(result.content);
+  assert.deepEqual(payload, {
+    work: {
+      kind: "command_reply",
+      task_key: taskKey,
+      task_exists: true,
+      task_active: true,
+      repo_key: "repo",
+      repo,
+      number: 1,
+      title: "Fix a permission (1)",
+      url: `https://github.com/${repo}/pull/1`,
+      head_sha: head,
+      base_sha: base,
+      head_branch: "fix/permission",
+      pr_author: "author",
+      updated_at: time,
+      command_requests: [
+        {
+          id: 105,
+          source: "issue",
+          feedback_id: "issue:105",
+          login: "member",
+          created_at: "2026-11-23T10:30:00Z",
+          url: `https://github.com/${repo}/pull/1#issuecomment-105`,
+          request: "what does the timeout do?",
+          too_long: false,
+        },
+      ],
+      feedback_comment_ids: ["issue:105"],
+      task_status: "pr_open",
+      status_review_id: 42,
+    },
+    discovery_errors: [],
+  });
+});
+
+test("oversized and learning commands carry the Python request flags", async () => {
+  const long = "x".repeat(4001);
+  const requests = [
+    comment(106, "member", "/review-bot learning-extraction", "2026-11-23T10:30:00Z"),
+    comment(107, "member", `/review-bot ${long}`, "2026-11-23T10:31:00Z"),
+  ];
+  const result = await run({
+    task: {
+      ...tracked,
+      status: "pr_open",
+      metadata: {
+        review_id: 42,
+        last_reviewed_sha: head,
+        last_reviewed_base_sha: base,
+        last_seen_updated_at: "2026-11-23T10:00:00Z",
+      },
+    },
+    issueComments: requests,
+    members: ["member"],
+  });
+  assert.equal(result.status, "start");
+  const { work } = JSON.parse(result.content);
+  assert.equal(work.command_requests[0].action, "learning-extraction");
+  assert.deepEqual(work.command_requests[1], {
+    id: 107,
+    source: "issue",
+    feedback_id: "issue:107",
+    login: "member",
+    created_at: "2026-11-23T10:31:00Z",
+    url: `https://github.com/${repo}/pull/1#issuecomment-107`,
+    request: "",
+    too_long: true,
+  });
+});
+
+test("lifecycle work keeps the Python lifecycle_work field set", async () => {
+  const done = {
+    external_key: taskKey,
+    source_type: "github",
+    instance_id: instanceId,
+    status: "done",
+    metadata: {},
+  };
+  const merged = await run({ task: done, numbers: [], pull: { state: "closed", merged_at: time } });
+  assert.equal(merged.status, "start");
+  assert.deepEqual(JSON.parse(merged.content).work, {
+    kind: "merge_complete",
+    task_key: taskKey,
+    task_exists: true,
+    task_active: false,
+    repo_key: "repo",
+    repo,
+    number: 1,
+    title: "Fix a permission (1)",
+    url: `https://github.com/${repo}/pull/1`,
+    head_sha: head,
+    base_sha: base,
+    updated_at: time,
+    merged_at: time,
+  });
+  const closed = await run({
+    task: done,
+    numbers: [],
+    pull: { state: "closed", merged_at: null },
+  });
+  assert.equal(closed.status, "start");
+  const closedWork = JSON.parse(closed.content).work;
+  assert.equal(closedWork.kind, "closed_unmerged");
+  assert.equal(closedWork.merged_at, undefined);
+  assert.equal(closedWork.head_branch, undefined);
+  const reconcile = await run({ task: done, numbers: [] });
+  assert.equal(reconcile.status, "start");
+  assert.deepEqual(JSON.parse(reconcile.content).work, {
+    kind: "reconcile_open",
+    task_key: taskKey,
+    task_exists: true,
+    task_active: false,
+    repo_key: "repo",
+    repo,
+    number: 1,
+    title: "Fix a permission (1)",
+    url: `https://github.com/${repo}/pull/1`,
+    head_sha: head,
+    base_sha: base,
+    updated_at: time,
+  });
 });
 
 test("the instance scan finds tracked work behind a full first page", async () => {
@@ -180,13 +509,6 @@ test("paused or archived work is not restarted and incomplete memory reads fail 
 const approvalId = (trigger = "revision") =>
   `RA-${createHash("sha256").update([repo, 1, head, base, trigger].join("|")).digest("hex").slice(0, 12)}`;
 const requestMarker = (key) => `<!-- dev-review-bot:review-approval:${key} -->`;
-const comment = (id, login, body, created, updated = created) => ({
-  id,
-  user: { login, type: "User" },
-  body,
-  created_at: created,
-  updated_at: updated,
-});
 const before = "2026-11-23T09:00:00Z";
 const oldReplyAt = "2026-11-23T09:30:00Z";
 const rebindAt = "2026-11-23T10:00:00Z";
@@ -611,4 +933,179 @@ test("later clean recovery consent supersedes earlier edited answers only when s
       "skip",
     );
   }
+});
+
+test("Python skip and wait message formats are preserved", async () => {
+  // A labeled draft PR with no task yields no candidate at all: the plain
+  // Python no-work skip message.
+  const quiet = await run({ labelEvent: false, pull: { draft: true } });
+  assert.equal(quiet.status, "skip");
+  assert.equal(quiet.content, "No labeled PR needs review or feedback handling");
+  const waiting = await run({ task, labelEvent: false });
+  assert.equal(waiting.status, "skip");
+  assert.equal(
+    waiting.content,
+    `Waiting for organization-member review approvals on ${repo}#1 (waiting); ` +
+      "No labeled PR needs review or feedback handling",
+  );
+  const request = comment(10, bot, approvalBody(key), before);
+  const denied = comment(11, "member", `Review bot: no ${key}`, after);
+  const declined = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, denied],
+    members: ["member"],
+  });
+  assert.equal(declined.status, "skip");
+  assert.equal(
+    declined.content,
+    `Waiting for organization-member review approvals on ${repo}#1 (declined); ` +
+      "No labeled PR needs review or feedback handling",
+  );
+});
+
+test("capacity skip uses the Python message and counts only unexcluded active tasks", async () => {
+  const activeTasks = Array.from({ length: 10 }, (_, i) => ({
+    external_key: `review-only:github:${repo}#${i + 2}`,
+    source_type: "github",
+    instance_id: instanceId,
+    status: "in_progress",
+    metadata: { active_head_sha: head, active_base_sha: base },
+  }));
+  const atCapacity = await run({ tasks: activeTasks, numbers: [1], labelEvent: true });
+  assert.equal(atCapacity.status, "skip");
+  assert.equal(atCapacity.content, "Review instance at task capacity (10/10)");
+  // A candidate excluded for an approval wait frees one capacity slot, like
+  // Python's excluded_task_keys re-scan: #1 waits for approval, so the fresh
+  // label-authorized review on #2 dispatches at the same raw active count.
+  const withWait = await run({
+    tasks: [
+      ...Array.from({ length: 9 }, (_, i) => ({
+        external_key: `review-only:github:${repo}#${i + 3}`,
+        source_type: "github",
+        instance_id: instanceId,
+        status: "in_progress",
+        metadata: { active_head_sha: head, active_base_sha: base },
+      })),
+      { ...task, external_key: `review-only:github:${repo}#1` },
+    ],
+    numbers: [1, 2],
+    labelEvents: { 1: false, 2: true },
+    commentsByNumber: { 1: [] },
+  });
+  assert.equal(withWait.status, "start");
+  assert.equal(JSON.parse(withWait.content).work.number, 2);
+});
+
+test("GitHub contract: comment rebinding PATCHes the issue-comment endpoint and fails closed", async () => {
+  const old = comment(10, bot, requestMarker(oldKey), before);
+  const result = await run({ task, labelEvent: false, issueComments: [old], members: [] });
+  assert.equal(result.status, "skip");
+  const patch = result.writes.find((write) => write.method === "PATCH");
+  assert.deepEqual(
+    [patch.method, patch.path],
+    ["PATCH", `/repos/${repo}/issues/comments/10`],
+  );
+  // The REST contract for editing a PR conversation comment: JSON body with
+  // the single `body` field, on the issue-comments collection (never the
+  // pulls review-comments endpoint).
+  assert.deepEqual(Object.keys(patch.body), ["body"]);
+  assert.equal(typeof patch.body.body, "string");
+  assert.ok(!patch.path.includes("/pulls/"));
+
+  const forbidden = await run({
+    task,
+    labelEvent: false,
+    issueComments: [old],
+    failPatch: true,
+  });
+  assert.equal(forbidden.status, "error");
+  assert.match(forbidden.content, new RegExp(`${repo}#1: .*HTTP 403`));
+
+  const unpostable = await run({ task, labelEvent: false, failPost: true });
+  assert.equal(unpostable.status, "error");
+  assert.match(unpostable.content, new RegExp(`${repo}#1: .*HTTP 403`));
+});
+
+test("GitHub contract: membership uses the org-member endpoint with 204/404 semantics", async () => {
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const result = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    members: ["member"],
+  });
+  assert.ok(result.paths.includes("/orgs/org/members/member"));
+  // The bot identity and PR reads ride the same proxied REST route.
+  assert.ok(result.paths.includes("/user"));
+  assert.ok(result.paths.includes(`/repos/${repo}/pulls/1`));
+});
+
+test("GitHub contract: no GraphQL timeline capability exists and consent cannot bypass it", async () => {
+  // The revision-event (timeline) capability is deliberately absent: only
+  // REST snapshots are available, and neither they nor label events prove
+  // that head and base never changed and returned between polls. An approved
+  // re-review on an unchanged head must therefore fail closed with an error,
+  // never start, and the preflight must not attempt any /graphql call.
+  const request = comment(10, bot, approvalBody(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const result = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    members: ["member"],
+  });
+  assert.equal(result.status, "error");
+  assert.match(result.content, /#1.*cannot verify revision continuity/);
+  assert.ok(!result.paths.some((path) => path.includes("/graphql")));
+});
+
+test("a malformed status-review ledger fails closed instead of starting fresh", async () => {
+  const brokenMarker = ledgerBody().replace(
+    /(?<=dev-review-bot:review-ledger:v1:)[A-Za-z0-9_-]+(?= -->)/,
+    "!!!",
+  );
+  const malformed = await run({ task: labelTracked, reviewBody: brokenMarker });
+  assert.equal(malformed.status, "error");
+  assert.match(malformed.content, /#1: Tracked review contains a malformed ledger payload marker/);
+
+  const foreignPayload = await run({
+    task: labelTracked,
+    reviewBody: ledgerBody({ pr: 2 }),
+  });
+  assert.equal(foreignPayload.status, "error");
+  assert.match(foreignPayload.content, /#1: Ledger payload belongs to another schema, repository, or PR/);
+
+  const trailingJunk = await run({
+    task: labelTracked,
+    reviewBody: ledgerBody({
+      updateCount: 1,
+    }).replace(
+      /(?<=dev-review-bot:review-ledger:v1:)[A-Za-z0-9_-]+(?= -->)/,
+      Buffer.concat([
+        deflateSync(Buffer.from(JSON.stringify({ version: 1, repo, pr: 1, head_sha: head, base_sha: base, update_count: 1, findings: [] }), "utf8")),
+        Buffer.from([0x00]),
+      ]).toString("base64url"),
+    ),
+  });
+  assert.equal(trailingJunk.status, "error");
+  assert.match(trailingJunk.content, /#1: Ledger payload compression is invalid/);
+
+  const oversize = await run({
+    task: labelTracked,
+    reviewBody: ledgerBody().replace(
+      /(?<=dev-review-bot:review-ledger:v1:)[A-Za-z0-9_-]+(?= -->)/,
+      deflateSync(Buffer.alloc(1_100_000, 0x61)).toString("base64url"),
+    ),
+  });
+  assert.equal(oversize.status, "error");
+  assert.match(oversize.content, /#1: Decompressed ledger exceeds the safe size limit/);
+
+  const brokenRisk = await run({
+    task: labelTracked,
+    reviewBody: `${ledgerBody()}\n<!-- dev-review-bot:risk-assessment:v1:!!! -->`,
+  });
+  assert.equal(brokenRisk.status, "error");
+  assert.match(brokenRisk.content, /#1: Status review has a malformed risk-assessment marker/);
 });
