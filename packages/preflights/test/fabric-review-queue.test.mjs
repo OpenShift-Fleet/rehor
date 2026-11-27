@@ -63,6 +63,7 @@ function run({
   memberError = false,
   memberStatuses = [],
   reviewBody = (number) => ledgerBody({ pr: number }),
+  review = null,
   headSha = head,
   numbers = [1],
   labelEvents = {},
@@ -129,12 +130,17 @@ function run({
           );
         }
         if (path.endsWith("/reviews/42"))
-          return Response.json({
-            id: 42,
-            user: { login: bot },
-            state: "COMMENTED",
-            body: typeof reviewBody === "function" ? reviewBody(Number(path.split("/")[5])) : reviewBody,
-          });
+          return Response.json(
+            review ?? {
+              id: 42,
+              user: { login: bot },
+              state: "COMMENTED",
+              body:
+                typeof reviewBody === "function"
+                  ? reviewBody(Number(path.split("/")[5]))
+                  : reviewBody,
+            },
+          );
         if (path.startsWith("/orgs/org/members/"))
           return new Response(null, {
             status:
@@ -555,101 +561,197 @@ const recoveryRequest = comment(
   `<!-- dev-review-bot:ledger-recovery:${recoveryId} -->`,
   before,
 );
-const approvalBody = (approval, reviewTask = task) => {
-  const meta = reviewTask.metadata;
-  const context = [
-    true,
-    reviewTask.status,
-    ...[
-      "last_reviewed_sha",
-      "last_reviewed_base_sha",
-      "last_reviewed_at",
-      "active_head_sha",
-      "active_base_sha",
-      "review_id",
-      "update_count",
-    ].map((field) => meta[field] ?? null),
-  ];
-  const digest = createHash("sha256").update(JSON.stringify(context)).digest("hex").slice(0, 16);
-  return `Approval is necessary but cannot start a review until revision continuity can be verified.\n${requestMarker(approval)}\n<!-- dev-review-bot:review-approval-context:v1:${digest} -->`;
-};
 
-test("new approval request uses revision-scoped ID and posts once", async () => {
+test("new approval request uses revision-scoped ID and posts once with the Python copy", async () => {
   assert.equal(key, "RA-6becc4c6f8de"); // Same digest as Python's repo|number|head|base|trigger.
   const result = await run({ task, labelEvent: false });
   assert.equal(result.status, "skip");
   const requests = result.writes.filter((write) => write.path.endsWith("/comments"));
   assert.equal(requests.length, 1);
   assert.equal(requests[0].method, "POST");
-  assert.ok(requests[0].body.body.includes(requestMarker(key)));
-  assert.doesNotMatch(requests[0].body.body, /approve and start/i);
-  assert.match(requests[0].body.body, /continuity/i);
+  const body = requests[0].body.body;
+  assert.ok(body.includes(requestMarker(key)));
+  // Python _approval_request_body copy, verbatim.
+  assert.ok(body.includes("No review will run until an organization member approves this exact revision."));
+  assert.ok(body.includes(`\`Review bot: yes ${key}\` — approve and start the review.`));
+  assert.ok(body.includes(`\`Review bot: no ${key}\` — decline the review.`));
+  // Python with_footer copy: the approval step plus the standing steps.
+  assert.ok(body.includes(`- Approve with \`Review bot: yes ${key}\` or decline with \`Review bot: no ${key}\`.`));
+  assert.ok(body.includes("**Status Comment:** Pending the first review."));
+  assert.ok(body.includes("- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR."));
+  assert.ok(!body.includes("continuity"));
+  assert.ok(!body.includes("review-approval-context"));
 });
 
-test("approval-authorized or unproven same-SHA resumes fail closed", async () => {
-  for (const metadata of [
-    tracked.metadata,
-    { ...tracked.metadata, review_authorization: "organization_member_approved" },
-    { ...tracked.metadata, review_authorization: "label_added", ledger_recovery_approved: true },
-  ]) {
-    const result = await run({ task: { ...tracked, metadata } });
-    assert.equal(result.status, "error");
-    assert.match(result.content, /revision continuity/);
-  }
+test("a member-approved re-review starts with the Python authorization fields", async () => {
+  const request = comment(10, bot, requestMarker(key), before);
+  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const result = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, yes],
+    members: ["member"],
+  });
+  assert.equal(result.status, "start");
+  const payload = JSON.parse(result.content);
+  assert.deepEqual(payload.discovery_errors, []);
+  const { work } = payload;
+  assert.equal(work.kind, "review");
+  assert.equal(work.review_authorization, "organization_member_approved");
+  assert.equal(work.review_approval_id, key);
+  assert.equal(work.review_approval_response_comment_id, 11);
+  assert.equal(work.review_approval_responder, "member");
+  assert.equal(work.ledger_restore, "runner");
+  assert.equal(work.status_review_id, 42);
+  assert.equal(work.update_count, 1);
+  assert.equal(work.pr_summary, "This PR fixes a permission.");
+  // The approving reply is in-window human feedback, exactly like Python.
+  assert.deepEqual(work.feedback_comment_ids, ["issue:11"]);
+  // Python removes the waiting label once a member decision exists.
+  assert.ok(result.writes.some((write) => write.method === "DELETE" && write.path.includes("/labels/")));
+  assert.equal(result.memberReads, 1);
 });
 
-test("a pending review with unknown recovery provenance cannot bypass continuity", async () => {
+test("a same-SHA resume restores the tracked ledger and starts", async () => {
+  const result = await run({ task: tracked });
+  assert.equal(result.status, "start");
+  const { work } = JSON.parse(result.content);
+  assert.equal(work.kind, "resume");
+  assert.equal(work.review_authorization, undefined);
+  assert.equal(work.review_approval_id, undefined);
+  assert.equal(work.ledger_restore, "runner");
+  assert.equal(work.status_review_id, 42);
+  assert.equal(work.update_count, 1);
+  assert.equal(work.pr_summary, "This PR fixes a permission.");
+  assert.deepEqual(work.feedback_comment_ids, []);
+  assert.deepEqual(result.writes, []);
+});
+
+test("a matching pending review publication reaches the start hand-off", async () => {
+  const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
   const pending = {
     repo,
     pr: 1,
     head_sha: head,
     base_sha: base,
     operation: "review",
-    publication_body: marker,
+    publication_body: pendingBody,
+    publication_json: { body: pendingBody },
+    update_count: 2,
   };
-  const result = await run({
+  const submitted = await run({
     task: { ...labelTracked, metadata: { ...labelTracked.metadata, pending_publication: pending } },
   });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /revision continuity.*pending review/);
-  assert.ok(!result.content.includes(marker));
+  assert.equal(submitted.status, "start");
+  const { work } = JSON.parse(submitted.content);
+  assert.equal(work.kind, "review");
+  assert.equal(work.ledger_restore, "runner");
+  assert.equal(work.ledger_restore_pending, true);
+  assert.equal(work.status_review_id, 42);
+  assert.equal(work.update_count, 1);
+
+  // An interrupted publication: the tracked review is an empty pending draft
+  // for this head, and the saved body restores the ledger (Python's
+  // EmptyPendingReview upgrade path with a matching pending publication).
+  const interrupted = await run({
+    task: { ...tracked, metadata: { ...tracked.metadata, pending_publication: pending } },
+    review: {
+      id: 42,
+      user: { login: bot },
+      state: "PENDING",
+      body: "",
+      commit_id: head,
+    },
+    labelEvent: false,
+  });
+  assert.equal(interrupted.status, "start");
+  const resumed = JSON.parse(interrupted.content).work;
+  assert.equal(resumed.kind, "resume");
+  assert.equal(resumed.ledger_restore, "runner");
+  assert.equal(resumed.ledger_restore_pending, true);
+  assert.equal(resumed.status_review_id, 42);
+  assert.equal(resumed.update_count, 2);
+  assert.equal(resumed.ignore_review_id, undefined);
 });
 
-test("a continuity-blocked candidate does not starve an independent fresh-label review", async () => {
+test("a stale pending publication is skipped, never an error", async () => {
+  const stale = {
+    repo,
+    pr: 1,
+    head_sha: "d".repeat(40),
+    base_sha: base,
+    operation: "review",
+    publication_body: ledgerBody({ pr: 1, headSha: "d".repeat(40), updateCount: 3 }),
+  };
+  // With a decodable tracked review the stale pending is simply unused.
+  const restored = await run({
+    task: { ...labelTracked, metadata: { ...labelTracked.metadata, pending_publication: stale } },
+  });
+  assert.equal(restored.status, "start");
+  const { work } = JSON.parse(restored.content);
+  assert.equal(work.ledger_restore_pending, undefined);
+  assert.equal(work.update_count, 1);
+  // Without one, Python falls through to ledger-recovery consent. A
+  // feedback-check task skips the review-approval step and reaches recovery
+  // directly, like Python's main() ordering.
+  const feedbackTask = {
+    ...tracked,
+    status: "pr_open",
+    metadata: {
+      review_id: 42,
+      last_reviewed_sha: head,
+      last_reviewed_base_sha: base,
+      last_seen_updated_at: "2026-11-23T10:00:00Z",
+    },
+  };
+  const waiting = await run({
+    task: { ...feedbackTask, metadata: { ...feedbackTask.metadata, pending_publication: stale } },
+    reviewBody: "legacy review without ledger",
+    labelEvent: false,
+    issueComments: [comment(12, "member", "The history should restart.", "2026-11-23T10:30:00Z")],
+    members: ["member"],
+  });
+  assert.equal(waiting.status, "skip");
+  assert.match(
+    waiting.content,
+    /Waiting for organization-member ledger-recovery decisions on org\/repo#1/,
+  );
+});
+
+test("a waiting approval does not starve an independent fresh-label review", async () => {
   const second = {
     ...task,
     external_key: `review-only:github:${repo}#2`,
     metadata: { ...task.metadata, review_label_event_id: 1 },
   };
-  const request = comment(10, bot, approvalBody(key), before);
-  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
+  const request = comment(10, bot, requestMarker(key), before);
   const result = await run({
     tasks: [task, second],
     numbers: [1, 2],
     labelEvents: { 1: false, 2: true },
-    commentsByNumber: { 1: [request, yes], 2: [] },
-    members: ["member"],
+    commentsByNumber: { 1: [request], 2: [] },
+    members: [],
   });
   assert.equal(result.status, "start");
   const payload = JSON.parse(result.content);
   assert.equal(payload.work.number, 2);
   assert.equal(payload.work.review_authorization, "label_added");
-  assert.ok(
-    payload.discovery_errors.some(
-      (error) => error.includes("#1") && error.includes("revision continuity"),
-    ),
-  );
+  assert.deepEqual(payload.discovery_errors, []);
   const blocked = await run({
     task,
     labelEvent: false,
-    issueComments: [request, yes],
-    members: ["member"],
+    issueComments: [request],
+    members: [],
   });
-  assert.equal(blocked.status, "error");
-  assert.match(blocked.content, /#1.*revision continuity/);
+  assert.equal(blocked.status, "skip");
+  assert.equal(
+    blocked.content,
+    `Waiting for organization-member review approvals on ${repo}#1 (waiting); ` +
+      "No labeled PR needs review or feedback handling",
+  );
 });
 
-test("existing bot request is rebound with PATCH, never duplicated or immediately authorized", async () => {
+test("existing bot request is rebound with PATCH, never duplicated", async () => {
   const old = comment(10, bot, requestMarker(oldKey), before);
   const stale = comment(11, "member", `Review bot: yes ${key}`, after);
   const result = await run({
@@ -665,129 +767,110 @@ test("existing bot request is rebound with PATCH, never duplicated or immediatel
     [[`/repos/${repo}/issues/comments/10`, "PATCH"]],
   );
   assert.ok(requests[0].body.body.includes(requestMarker(key)));
-  assert.doesNotMatch(requests[0].body.body, /approve and start/i);
-  assert.match(requests[0].body.body, /continuity/i);
+  assert.ok(requests[0].body.body.includes("approve and start the review"));
+  assert.ok(!requests[0].body.body.includes("continuity"));
   assert.equal(
     (await run({ task, labelEvent: false, issueComments: [old], failPatch: true })).status,
     "error",
   );
 });
 
-test("approval after latest update must come from an organization member", async () => {
-  const request = comment(10, bot, approvalBody(key), before, rebindAt);
-  const oldAnswer = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt);
-  const sameSecond = comment(12, "member", `Review bot: yes ${key}`, rebindAt);
-  const outsider = comment(13, "outsider", `Review bot: yes ${key}`, after);
+test("approval decisions require a strictly later organization-member reply", async () => {
+  const request = comment(10, bot, requestMarker(key), before);
   const baseInput = { task, labelEvent: false, members: ["member"] };
+  // Python ignores replies that are not strictly later than the request's
+  // (created, id) tuple, carry more than one decision, quote another id, or
+  // come from a non-member: each leaves the approval waiting.
   for (const answer of [
-    oldAnswer,
-    { ...oldAnswer, updated_at: after },
-    sameSecond,
-    outsider,
-    comment(14, "member", `Review bot: yes ${oldKey}`, after),
+    comment(11, "member", `Review bot: yes ${key}`, "2026-11-23T08:00:00Z"), // before request
+    comment(9, "member", `Review bot: yes ${key}`, before), // same second, lower id
+    comment(11, "outsider", `Review bot: yes ${key}`, after), // non-member
+    comment(11, "member", `Review bot: yes ${oldKey}`, after), // other id
+    comment(11, "member", `Review bot: yes ${key}\nReview bot: no ${key}`, after), // two decisions
+    comment(11, bot, `Review bot: yes ${key}`, after), // the bot itself
   ]) {
     const result = await run({ ...baseInput, issueComments: [request, answer] });
     assert.equal(result.status, "skip");
+    assert.match(result.content, /\(waiting\)/);
     assert.equal(
       result.writes.some((write) => write.path.includes("/comments")),
       false,
     );
   }
   const fresh = comment(15, "member", `Review bot: yes ${key}`, after);
-  const result = await run({ ...baseInput, issueComments: [request, oldAnswer, fresh] });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /revision continuity/);
-  assert.equal(result.memberReads, 2);
+  const result = await run({ ...baseInput, issueComments: [request, fresh] });
+  assert.equal(result.status, "start");
+  assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
+  assert.equal(result.memberReads, 1);
   const declined = comment(16, "member", `Review bot: no ${key}`, after);
   assert.equal(
     (await run({ ...baseInput, issueComments: [request, fresh, declined] })).status,
     "skip",
   );
-  assert.equal(
-    (await run({ ...baseInput, issueComments: [request, fresh], memberError: true })).status,
-    "error",
-  );
+  // A membership-verification failure is a per-PR wait, not a run error
+  // (Python returns verification_unavailable and keeps scanning).
+  const unavailable = await run({
+    task,
+    labelEvent: false,
+    issueComments: [request, fresh],
+    members: ["member"],
+    memberError: true,
+  });
+  assert.equal(unavailable.status, "skip");
+  assert.match(unavailable.content, /\(verification_unavailable\)/);
+  // The wait is not a decision: a later healthy cycle reaches the member
+  // decision and starts.
+  const retry = await run({ ...baseInput, issueComments: [request, fresh] });
+  assert.equal(retry.status, "start");
 });
 
-test("repeated revision IDs and duplicate legacy requests cannot revive older answers", async () => {
-  const rebound = comment(10, bot, approvalBody(key), before, rebindAt);
-  const duplicate = comment(20, bot, approvalBody(key), before);
-  const stale = comment(21, "member", `Review bot: yes ${key}`, oldReplyAt);
+test("duplicate legacy requests keep the earliest matching request authoritative", async () => {
+  const request = comment(10, bot, requestMarker(key), before);
+  const duplicate = comment(20, bot, requestMarker(key), rebindAt);
+  const answer = comment(21, "member", `Review bot: yes ${key}`, after);
   const input = { task, labelEvent: false, members: ["member"] };
+  // Python uses the earliest matching request and tolerates later duplicates.
+  const result = await run({ ...input, issueComments: [request, duplicate, answer] });
+  assert.equal(result.status, "start");
+  assert.equal(result.writes.filter((write) => write.method === "PATCH").length, 0);
+  // No matching request at all: the earliest legacy request is rebound once.
+  const old = comment(10, bot, requestMarker(oldKey), before);
+  const later = comment(20, bot, requestMarker(oldKey), rebindAt);
+  const rebound = await run({ ...input, issueComments: [old, later, answer] });
+  assert.equal(rebound.status, "skip");
+  assert.equal(rebound.writes.filter((write) => write.method === "PATCH").length, 1);
   assert.equal(
-    (await run({ ...input, issueComments: [rebound, duplicate, stale] })).status,
-    "skip",
-  );
-  const changed = { ...rebound, body: requestMarker(oldKey) };
-  const result = await run({ ...input, issueComments: [changed, duplicate, stale] });
-  assert.equal(result.status, "skip");
-  assert.equal(result.writes.filter((write) => write.method === "PATCH").length, 1);
-  assert.equal(
-    result.writes.some((write) => write.method === "POST" && write.path.endsWith("/comments")),
+    rebound.writes.some((write) => write.method === "POST" && write.path.endsWith("/comments")),
     false,
   );
-  // A later legacy duplicate may have represented the intervening revision.
-  const original = comment(10, bot, approvalBody(key), before);
-  const later = comment(20, bot, requestMarker(oldKey), rebindAt);
-  const oldApproval = comment(21, "member", `Review bot: yes ${key}`, after);
-  const ambiguous = await run({ ...input, issueComments: [original, later, oldApproval] });
-  assert.equal(ambiguous.status, "skip");
-  assert.equal(ambiguous.writes.filter((write) => write.method === "PATCH").length, 1);
-  const missingTime = { ...rebound, updated_at: null };
-  assert.equal((await run({ ...input, issueComments: [missingTime, stale] })).status, "error");
 });
 
-test("changed review history or legacy unbound requests invalidate old approvals", async () => {
-  const oldTask = { ...task, metadata: { ...task.metadata, last_reviewed_sha: "d".repeat(40) } };
-  const prior = comment(10, bot, approvalBody(key, oldTask), before);
-  const legacy = { ...prior, body: requestMarker(key) };
-  const outdatedCopy = {
-    ...prior,
-    body: approvalBody(key).replace(
-      "Approval is necessary but cannot start a review until revision continuity can be verified.",
-      "Approve and start the review.",
-    ),
-  };
+test("legacy marker-only requests and changed task state authorize Python-style", async () => {
+  // Python binds an approval only to repo, number, head, base, and the
+  // rereview trigger — not to the task's review history. A marker-only
+  // request for the current id stays authoritative even when the task's
+  // history moved on, and an old yes reply remains valid. This is the
+  // documented reused-approval ABA surface (see the README).
+  const priorTask = { ...task, metadata: { ...task.metadata, last_reviewed_sha: "d".repeat(40) } };
+  const request = comment(10, bot, requestMarker(key), before);
   const answer = comment(11, "member", `Review bot: yes ${key}`, after);
-  for (const request of [prior, legacy, outdatedCopy]) {
-    const result = await run({
-      task,
-      labelEvent: false,
-      issueComments: [request, answer],
-      members: ["member"],
-    });
-    assert.equal(result.status, "skip");
-    assert.equal(result.writes.filter((write) => write.method === "PATCH").length, 1);
-  }
-});
-
-test("a request rebound during selection cannot use the cached approval", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
-  const answer = comment(11, "member", `Review bot: yes ${key}`, after);
-  for (const rebound of [
-    { ...request, body: approvalBody(oldKey), updated_at: rebindAt },
-    { ...request, updated_at: after },
-  ]) {
-    const result = await run({
-      task,
-      labelEvent: false,
-      issueComments: [request, answer],
-      refreshedComments: [rebound, answer],
-      members: ["member"],
-    });
-    assert.equal(result.status, "skip");
-    assert.equal(
-      result.writes.some((write) => write.method === "PATCH"),
-      false,
-    );
-  }
+  const result = await run({
+    task: priorTask,
+    labelEvent: false,
+    issueComments: [request, answer],
+    members: ["member"],
+  });
+  assert.equal(result.status, "start");
+  const { work } = JSON.parse(result.content);
+  assert.equal(work.review_authorization, "organization_member_approved");
+  assert.equal(work.review_approval_response_comment_id, 11);
 });
 
 test("malformed issue comments cannot hide a request or a later decision", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
+  const request = comment(10, bot, requestMarker(key), before);
   const yes = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt);
   const denial = comment(12, "member", `Review bot: no ${key}`, after);
-  const laterRequest = comment(13, bot, approvalBody(oldKey), after);
+  const laterRequest = comment(13, bot, requestMarker(oldKey), after);
   for (const bad of [
     { ...laterRequest, id: null },
     { ...laterRequest, created_at: null },
@@ -807,74 +890,37 @@ test("malformed issue comments cannot hide a request or a later decision", async
     });
     assert.equal(result.status, "error");
   }
-  const refreshed = await run({
-    task,
-    labelEvent: false,
-    issueComments: [request, yes],
-    refreshedComments: [request, yes, { ...denial, id: null }],
-    members: ["member"],
-  });
-  assert.equal(refreshed.status, "error");
-  assert.doesNotMatch(refreshed.content, /revision continuity/);
 });
 
-test("latest ambiguous decision and edited decisions block earlier approval", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
+test("the latest single-decision member reply wins, edits are invisible", async () => {
+  // Python never inspects updated_at on replies: an edited answer still
+  // counts, and a comment with both decisions is skipped, not blocking.
+  const request = comment(10, bot, requestMarker(key), before);
   const yes = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt);
   const ambiguous = comment(12, "member", `Review bot: yes ${key}\nReview bot: no ${key}`, after);
-  const editedDenial = comment(9, "member", `Review bot: no ${key}`, before, after);
+  const editedDenialBefore = comment(9, "member", `Review bot: no ${key}`, before, after);
   const simultaneousDenial = comment(9, "member", `Review bot: no ${key}`, oldReplyAt);
-  for (const decision of [ambiguous, editedDenial, simultaneousDenial]) {
-    const result = await run({
-      task,
-      labelEvent: false,
-      issueComments: [request, yes, decision],
-      members: ["member"],
-    });
-    assert.equal(result.status, "skip");
-    if (decision === ambiguous)
-      assert.ok(
-        result.writes.some((write) => write.method === "POST" && write.path.endsWith("/labels")),
-      );
+  const input = { task, labelEvent: false, members: ["member"] };
+  const editedYes = comment(11, "member", `Review bot: yes ${key}`, oldReplyAt, after);
+  for (const decision of [
+    ambiguous, // skipped, not blocking: the earlier yes still wins
+    editedDenialBefore, // created before the request: ignored, edits or not
+    simultaneousDenial, // same second as yes, lower id: yes wins
+  ]) {
+    const result = await run({ ...input, issueComments: [request, yes, decision] });
+    assert.equal(result.status, "start");
+    assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
   }
-});
-
-test("final authorization rechecks membership rather than reusing scan cache", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
-  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
-  const result = await run({
-    task,
-    labelEvent: false,
-    issueComments: [request, yes],
-    memberStatuses: [204, 404],
+  // A reply edited after the fact still counts (Python never reads updated_at).
+  const edited = await run({ ...input, issueComments: [request, editedYes] });
+  assert.equal(edited.status, "start");
+  // A later clean denial supersedes the earlier approval.
+  const denied = await run({
+    ...input,
+    issueComments: [request, yes, comment(12, "member", `Review bot: no ${key}`, after)],
   });
-  assert.equal(result.status, "skip");
-  assert.equal(result.memberReads, 2);
-  const unavailable = await run({
-    task,
-    labelEvent: false,
-    issueComments: [request, yes],
-    memberStatuses: [204, 503],
-  });
-  assert.equal(unavailable.status, "error");
-  assert.doesNotMatch(unavailable.content, /revision continuity/);
-});
-
-test("reused revision without a durable event epoch cannot authorize dispatch", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
-  const yes = comment(11, "member", `Review bot: yes ${key}`, after);
-  const input = { task, labelEvent: false, issueComments: [request, yes], members: ["member"] };
-  let revision = head;
-  const first = await run({ ...input, headSha: revision });
-  // No polling or tracking while the branch changes A -> B -> A.
-  revision = "d".repeat(40);
-  assert.notEqual(revision, head);
-  revision = head;
-  const second = await run({ ...input, headSha: revision });
-  for (const result of [first, second]) {
-    assert.equal(result.status, "error");
-    assert.match(result.content, /revision continuity/i);
-  }
+  assert.equal(denied.status, "skip");
+  assert.match(denied.content, /\(declined\)/);
 });
 
 test("explicit re-review IDs bind the approval to the request trigger", async () => {
@@ -891,7 +937,7 @@ test("explicit re-review IDs bind the approval to the request trigger", async ()
   assert.ok(request.body.body.includes("A re-review was requested"));
 });
 
-test("ledger recovery consent is rechecked and cannot bypass the continuity gate", async () => {
+test("ledger recovery consent starts a fresh review with reset history", async () => {
   const answer = comment(11, "member", `Review bot: yes ${recoveryId}`, after);
   const result = await run({
     task: recoveryTask,
@@ -899,20 +945,57 @@ test("ledger recovery consent is rechecked and cannot bypass the continuity gate
     issueComments: [recoveryRequest, answer],
     members: ["member"],
   });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /revision continuity/);
-  assert.equal(result.memberReads, 2);
-  const revoked = await run({
+  assert.equal(result.status, "start");
+  const { work } = JSON.parse(result.content);
+  assert.equal(work.kind, "review");
+  // The fresh label event authorized this review; recovery consent only
+  // reset its history (Python keeps review_authorization untouched here).
+  assert.equal(work.review_authorization, "label_added");
+  assert.equal(work.update_count, 0);
+  assert.equal(work.ledger_restore, undefined);
+  assert.equal(work.ledger_recovery_approved, true);
+  assert.equal(work.ledger_recovery_response_comment_id, 11);
+  assert.equal(work.ledger_recovery_responder, "member");
+  // The consenting reply itself is filtered out of the feedback ids.
+  assert.deepEqual(work.feedback_comment_ids, []);
+  assert.equal(result.memberReads, 1);
+  const declined = await run({
     task: recoveryTask,
     reviewBody: "legacy review without ledger",
-    issueComments: [recoveryRequest, answer],
-    memberStatuses: [204, 404],
+    issueComments: [recoveryRequest, comment(12, "member", `Review bot: no ${recoveryId}`, after)],
+    members: ["member"],
   });
-  assert.equal(revoked.status, "skip");
-  assert.equal(revoked.memberReads, 2);
+  assert.equal(declined.status, "skip");
+  assert.match(
+    declined.content,
+    /Waiting for organization-member ledger-recovery decisions on org\/repo#1/,
+  );
 });
 
-test("recovery consent cannot authorize a reused revision without continuity proof", async () => {
+test("recovery consent waits and posts the Python request copy", async () => {
+  const waiting = await run({
+    task: recoveryTask,
+    reviewBody: "legacy review without ledger",
+    issueComments: [],
+  });
+  assert.equal(waiting.status, "skip");
+  const posted = waiting.writes.find((write) => write.path.endsWith("/comments"));
+  const body = posted.body.body;
+  assert.ok(body.includes(`<!-- dev-review-bot:ledger-recovery:${recoveryId} -->`));
+  // Python _request_ledger_recovery copy, verbatim.
+  assert.ok(body.includes(`**Review history needs recovery (${recoveryId}).**`));
+  assert.ok(body.includes("Should a fresh re-review run?"));
+  assert.ok(body.includes("anywhere in their comment."));
+  // Python with_footer recovery step.
+  assert.ok(
+    body.includes(
+      `- Approve a fresh review with \`Review bot: yes ${recoveryId}\` or decline with \`Review bot: no ${recoveryId}\`.`,
+    ),
+  );
+  assert.ok(!body.includes("continuity"));
+});
+
+test("recovery consent follows the Python reply rules on reuse and recency", async () => {
   const answer = comment(11, "member", `Review bot: yes ${recoveryId}`, after);
   const input = {
     task: recoveryTask,
@@ -920,6 +1003,8 @@ test("recovery consent cannot authorize a reused revision without continuity pro
     issueComments: [recoveryRequest, answer],
     members: ["member"],
   };
+  // Python reuses a still-matching recovery request after an A→B→A head
+  // cycle — the documented legacy parity, not a stronger guarantee.
   let revision = head;
   const first = await run({ ...input, headSha: revision });
   revision = "d".repeat(40);
@@ -927,15 +1012,12 @@ test("recovery consent cannot authorize a reused revision without continuity pro
   revision = head;
   const second = await run({ ...input, headSha: revision });
   for (const result of [first, second]) {
-    assert.equal(result.status, "error");
-    assert.match(result.content, /revision continuity/);
+    assert.equal(result.status, "start");
+    assert.equal(JSON.parse(result.content).work.ledger_recovery_approved, true);
   }
-  const waiting = await run({ ...input, issueComments: [] });
-  const posted = waiting.writes.find((write) => write.path.endsWith("/comments"));
-  assert.match(posted.body.body, /continuity/i);
 });
 
-test("later clean recovery consent supersedes earlier edited answers only when strictly later", async () => {
+test("the latest recovery reply wins and edits are invisible, like Python", async () => {
   const edited = comment(11, "member", `Review bot: no ${recoveryId}`, oldReplyAt, rebindAt);
   const input = {
     task: recoveryTask,
@@ -944,12 +1026,13 @@ test("later clean recovery consent supersedes earlier edited answers only when s
   };
   const later = comment(12, "member", `Review bot: yes ${recoveryId}`, after);
   const result = await run({ ...input, issueComments: [recoveryRequest, edited, later] });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /revision continuity/);
-  assert.equal(result.memberReads, 2);
+  assert.equal(result.status, "start");
+  assert.equal(JSON.parse(result.content).work.ledger_recovery_approved, true);
+  // Same second: the higher comment id wins, as Python's max((created, id)).
+  const tie = comment(12, "member", `Review bot: yes ${recoveryId}`, oldReplyAt);
+  const tied = await run({ ...input, issueComments: [recoveryRequest, edited, tie] });
+  assert.equal(tied.status, "start");
   for (const answer of [
-    comment(12, "member", `Review bot: yes ${recoveryId}`, rebindAt),
-    comment(12, "member", `Review bot: yes ${recoveryId}`, oldReplyAt),
     comment(12, "member", `Review bot: no ${recoveryId}`, after),
   ]) {
     assert.equal(
@@ -972,7 +1055,7 @@ test("Python skip and wait message formats are preserved", async () => {
     `Waiting for organization-member review approvals on ${repo}#1 (waiting); ` +
       "No labeled PR needs review or feedback handling",
   );
-  const request = comment(10, bot, approvalBody(key), before);
+  const request = comment(10, bot, requestMarker(key), before);
   const denied = comment(11, "member", `Review bot: no ${key}`, after);
   const declined = await run({
     task,
@@ -1052,7 +1135,7 @@ test("GitHub contract: comment rebinding PATCHes the issue-comment endpoint and 
 });
 
 test("GitHub contract: membership uses the org-member endpoint with 204/404 semantics", async () => {
-  const request = comment(10, bot, approvalBody(key), before);
+  const request = comment(10, bot, requestMarker(key), before);
   const yes = comment(11, "member", `Review bot: yes ${key}`, after);
   const result = await run({
     task,
@@ -1066,13 +1149,12 @@ test("GitHub contract: membership uses the org-member endpoint with 204/404 sema
   assert.ok(result.paths.includes(`/repos/${repo}/pulls/1`));
 });
 
-test("GitHub contract: no GraphQL timeline capability exists and consent cannot bypass it", async () => {
-  // The revision-event (timeline) capability is deliberately absent: only
-  // REST snapshots are available, and neither they nor label events prove
-  // that head and base never changed and returned between polls. An approved
-  // re-review on an unchanged head must therefore fail closed with an error,
-  // never start, and the preflight must not attempt any /graphql call.
-  const request = comment(10, bot, approvalBody(key), before);
+test("GitHub contract: REST-only evidence still starts approved work, no GraphQL exists", async () => {
+  // Mirroring Python means an approved re-review dispatches on REST evidence
+  // alone: snapshots, comments, and label events. That is the documented
+  // reused-approval/reused-head ABA surface (see the README), not a stronger
+  // guarantee — and the preflight never attempts any /graphql call.
+  const request = comment(10, bot, requestMarker(key), before);
   const yes = comment(11, "member", `Review bot: yes ${key}`, after);
   const result = await run({
     task,
@@ -1080,8 +1162,8 @@ test("GitHub contract: no GraphQL timeline capability exists and consent cannot 
     issueComments: [request, yes],
     members: ["member"],
   });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /#1.*cannot verify revision continuity/);
+  assert.equal(result.status, "start");
+  assert.equal(JSON.parse(result.content).work.review_authorization, "organization_member_approved");
   assert.ok(!result.paths.some((path) => path.includes("/graphql")));
 });
 
@@ -1223,3 +1305,481 @@ test("a pending publication without a tracked review ID fails safely", async () 
   assert.match(result.content, /#1: Pending publication needs reconciliation before dispatch/);
   assert.deepEqual(result.writes, []);
 });
+
+/** Stub HOME/app/bot/memory_mcp plus a gh executable, like the Fabric test. */
+async function restoreCliEnv(task, review) {
+  const reviewRow =
+    typeof review === "string"
+      ? { id: 42, state: "COMMENTED", user: { login: bot }, body: review }
+      : review;
+  const home = await mkdtemp(join(tmpdir(), "fabric-restore-"));
+  const app = join(home, "app");
+  await mkdir(join(app, "bot"), { recursive: true });
+  await writeFile(join(app, "bot", "__init__.py"), "");
+  await writeFile(
+    join(app, "bot", "memory_mcp.py"),
+    `import json\nTASK = json.loads(${JSON.stringify(JSON.stringify(task))})\n` +
+      "def memory_call(tool, args):\n    return TASK\n\n\ndef memory_cleanup():\n    pass\n",
+  );
+  const responses = {
+    [`repos/${repo}/pulls/1`]: { state: "open", head: { sha: head }, base: { sha: base } },
+    [`repos/${repo}/pulls/1/reviews/42`]: reviewRow,
+    [`repos/${repo}/pulls/1/reviews/42/comments`]: [],
+  };
+  const bin = join(home, "bin");
+  await mkdir(bin, { recursive: true });
+  await writeFile(
+    join(bin, "gh"),
+    "#!/usr/bin/env python3\nimport json, sys\n" +
+      `RESPONSES = json.loads(${JSON.stringify(JSON.stringify(responses))})\n` +
+      "print(json.dumps(RESPONSES[sys.argv[2]]))\n",
+  );
+  await chmod(join(bin, "gh"), 0o755);
+  return {
+    cwd: app,
+    env: {
+      HOME: home,
+      PATH: `${bin}:/usr/bin:/bin`,
+      BOT_INSTANCE_ID: instanceId,
+      GH_USER_NAME: bot,
+    },
+    // The CLI resolves its output path, which follows the macOS /var symlink.
+    app: await realpath(app),
+  };
+}
+
+/** The exact SKILL.md command, constructed only from the emitted work. */
+function skillCommand(work, cliEnv) {
+  const args = [
+    join(restoreFixtures, "restore_review_ledger.py"),
+    "--repo",
+    work.repo,
+    "--pr",
+    String(work.number),
+    "--head-sha",
+    work.head_sha,
+    "--base-sha",
+    work.base_sha,
+    "--review-id",
+    String(work.status_review_id),
+    "--task-key",
+    work.task_key,
+  ];
+  if (work.ledger_restore_pending === true) args.push("--pending");
+  return args;
+}
+
+test(
+  "restored work drives the Fabric runner-restoration CLI end to end",
+  { skip: python3Available ? false : "python3 is not available" },
+  async () => {
+    const body = ledgerBody({ pr: 1, updateCount: 1 });
+    const result = await run({ task: labelTracked, reviewBody: body });
+    assert.equal(result.status, "start");
+    const { work } = JSON.parse(result.content);
+    assert.equal(work.ledger_restore, "runner");
+    assert.equal(work.status_review_id, 42);
+    const cliEnv = await restoreCliEnv(labelTracked, body);
+    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
+    const restored = JSON.parse(stdout);
+    assert.deepEqual(Object.keys(restored).sort(), ["ledger_path", "source", "update_count"]);
+    assert.equal(restored.source, "review");
+    assert.equal(restored.update_count, 1);
+    assert.ok(isAbsolute(restored.ledger_path));
+    assert.ok(restored.ledger_path.startsWith(cliEnv.app));
+    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
+  },
+);
+
+test(
+  "pending-retry work drives the CLI with --pending and the pending body",
+  { skip: python3Available ? false : "python3 is not available" },
+  async () => {
+    const body = ledgerBody({ pr: 1, updateCount: 2 });
+    const result = await run({
+      task: pendingVerifyTask(body),
+      reviewBody: body,
+      labelEvent: false,
+      issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")],
+      members: ["member"],
+    });
+    assert.equal(result.status, "start");
+    const { work } = JSON.parse(result.content);
+    assert.equal(work.ledger_restore_pending, true);
+    const cliEnv = await restoreCliEnv(pendingVerifyTask(body), body);
+    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
+    const restored = JSON.parse(stdout);
+    assert.equal(restored.source, "pending");
+    assert.equal(restored.update_count, 2);
+    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
+  },
+);
+
+test(
+  "a review-operation pending retry drives the CLI with --pending",
+  { skip: python3Available ? false : "python3 is not available" },
+  async () => {
+    // The interrupted-publication shape: the tracked review is an empty
+    // pending draft at the current head, and the prepared body survives in
+    // the task's pending_publication. The preflight hands the retry off
+    // with ledger_restore_pending; the runner CLI restores the ledger from
+    // the saved body without rebuilding any publication artifact.
+    const body = ledgerBody({ pr: 1, updateCount: 2 });
+    const pendingReviewTask = {
+      ...tracked,
+      metadata: {
+        ...tracked.metadata,
+        pending_publication: {
+          repo,
+          pr: 1,
+          head_sha: head,
+          base_sha: base,
+          operation: "review",
+          publication_body: body,
+          publication_json: { body },
+          update_count: 2,
+        },
+      },
+    };
+    const draft = { id: 42, state: "PENDING", user: { login: bot }, body: "", commit_id: head };
+    const result = await run({ task: pendingReviewTask, review: draft, labelEvent: false });
+    assert.equal(result.status, "start");
+    const { work } = JSON.parse(result.content);
+    assert.equal(work.kind, "resume");
+    assert.equal(work.ledger_restore, "runner");
+    assert.equal(work.ledger_restore_pending, true);
+    assert.equal(work.status_review_id, 42);
+    assert.equal(work.update_count, 2);
+    const cliEnv = await restoreCliEnv(pendingReviewTask, draft);
+    const { stdout } = await execFileAsync("python3", skillCommand(work), cliEnv);
+    const restored = JSON.parse(stdout);
+    assert.equal(restored.source, "pending");
+    assert.equal(restored.update_count, 2);
+    assert.deepEqual(JSON.parse(await readFile(restored.ledger_path, "utf8")), []);
+  },
+);
+
+test(
+  "the CLI rejects a stale status_review_id, proving the emitted reference must match the task",
+  { skip: python3Available ? false : "python3 is not available" },
+  async () => {
+    const body = ledgerBody({ pr: 1, updateCount: 1 });
+    const result = await run({ task: labelTracked, reviewBody: body });
+    assert.equal(result.status, "start");
+    const { work } = JSON.parse(result.content);
+    const cliEnv = await restoreCliEnv(labelTracked, body);
+    const command = skillCommand(work).map((value) =>
+      value === String(work.status_review_id) ? String(work.status_review_id + 1) : value,
+    );
+    const failure = await execFileAsync("python3", command, cliEnv).then(
+      () => undefined,
+      (error) => error,
+    );
+    assert.ok(failure, "the CLI must fail closed on a mismatched review id");
+    assert.equal(failure.code, 1);
+    assert.match(failure.stderr, /Ledger restoration blocked/);
+    await assert.rejects(stat(join(cliEnv.app, "data")));
+  },
+);
+
+// Python parity goldens: run the vendored Fabric review_queue.py (37d5263,
+// test/fixtures/fabric-review-queue-python/) as an oracle for the approval,
+// resume, recovery, and pending-publication paths. The same scenario drives
+// both implementations; outcomes, work fields, and consent-comment bodies
+// must match, with only the documented ledger_restore hand-off replacing
+// Python's ledger_path.
+
+const goldenDir = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "fabric-review-queue-python",
+);
+
+const prRow = {
+  number: 1,
+  title: "Fix a permission (1)",
+  url: `https://github.com/${repo}/pull/1`,
+  headRefOid: head,
+  baseRefOid: base,
+  headRefName: "fix/permission",
+  isDraft: false,
+  author: { login: "author" },
+  updatedAt: time,
+};
+const restorePayload = (updateCount = 1) => ({
+  version: 1,
+  repo,
+  pr: 1,
+  head_sha: head,
+  base_sha: base,
+  update_count: updateCount,
+  findings: [],
+  status_summary: "This PR fixes a permission.",
+});
+
+async function runPythonQueue(scenario) {
+  const dir = await mkdtemp(join(tmpdir(), "review-queue-golden-"));
+  const path = join(dir, "scenario.json");
+  await writeFile(path, JSON.stringify(scenario));
+  const { stdout } = await execFileAsync("python3", [join(goldenDir, "run_queue.py"), path]);
+  return JSON.parse(stdout);
+}
+
+/** The TS run() inputs mirroring one golden scenario. */
+function goldenRun(scenario) {
+  const restore = scenario.restore;
+  const review =
+    restore.mode === "payload"
+      ? {
+          id: 42,
+          user: { login: bot },
+          state: "COMMENTED",
+          body: ledgerBody({ pr: 1, updateCount: restore.payload.update_count }),
+        }
+      : restore.mode === "missing"
+        ? { id: 42, user: { login: bot }, state: "COMMENTED", body: "legacy review without ledger" }
+        : { id: 42, user: { login: bot }, state: "PENDING", body: "", commit_id: head };
+  return run({
+    tasks: scenario.tasks,
+    labelEvent: false,
+    issueComments: scenario.comments,
+    members: Object.entries(scenario.members)
+      .filter(([, isMember]) => isMember)
+      .map(([login]) => login),
+    review,
+  });
+}
+
+/** Python gh api mutations normalized to the TS proxy write log. */
+const pythonCommentWrites = (writes) =>
+  writes
+    .filter((write) => write.path.endsWith("/comments"))
+    .map((write) => ({
+      method: write.method,
+      path: `/${write.path}`,
+      body: write.fields.body,
+    }));
+const tsCommentWrites = (writes) =>
+  writes
+    .filter((write) => write.path.endsWith("/comments"))
+    .map((write) => ({ method: write.method, path: write.path, body: write.body.body }));
+
+function assertPythonParity(python, tsResult) {
+  assert.equal(tsResult.status, python.status);
+  if (python.status !== "start") {
+    assert.equal(tsResult.content, python.content);
+    return;
+  }
+  const pythonWork = JSON.parse(python.content).work;
+  const tsWork = JSON.parse(tsResult.content).work;
+  const { ledger_path: ledgerPath, ...expected } = pythonWork;
+  const actual = {};
+  for (const [field, value] of Object.entries(tsWork)) {
+    if (
+      field !== "ledger_restore" &&
+      field !== "ledger_restore_pending" &&
+      field !== "status_review_id"
+    )
+      actual[field] = value;
+  }
+  assert.deepEqual(actual, expected);
+  if (ledgerPath !== undefined) {
+    // The documented runner hand-off replaces Python's local ledger file.
+    assert.equal(tsWork.ledger_restore, "runner");
+    assert.equal(tsWork.status_review_id, 42);
+  }
+}
+
+const goldenScenarios = {
+  "a member-approved re-review": {
+    scenario: {
+      tasks: [task],
+      prs: [prRow],
+      comments: [
+        comment(10, bot, requestMarker(key), before),
+        comment(11, "member", `Review bot: yes ${key}`, after),
+      ],
+      events: [],
+      members: { member: true },
+      restore: { mode: "payload", payload: restorePayload(1) },
+    },
+  },
+  "a fresh approval request post": {
+    scenario: {
+      tasks: [task],
+      prs: [prRow],
+      comments: [],
+      events: [],
+      members: {},
+      restore: { mode: "payload", payload: restorePayload(1) },
+    },
+  },
+  "a same-SHA resume": {
+    scenario: {
+      tasks: [tracked],
+      prs: [prRow],
+      comments: [],
+      events: [],
+      members: {},
+      restore: { mode: "payload", payload: restorePayload(1) },
+    },
+  },
+  "a ledger-recovery consent": {
+    scenario: (() => {
+      const recoveryKey = `LR-${createHash("sha256")
+        .update([repo, 1, 42, head, base, head, base].join("|"))
+        .digest("hex")
+        .slice(0, 12)}`;
+      return {
+        tasks: [
+          {
+            ...tracked,
+            status: "pr_open",
+            metadata: {
+              review_id: 42,
+              last_reviewed_sha: head,
+              last_reviewed_base_sha: base,
+              last_seen_updated_at: "2026-11-23T10:00:00Z",
+            },
+          },
+        ],
+        prs: [prRow],
+        comments: [
+          comment(10, bot, `<!-- dev-review-bot:ledger-recovery:${recoveryKey} -->`, before),
+          comment(11, "member", `Review bot: yes ${recoveryKey}`, after),
+        ],
+        events: [],
+        members: { member: true },
+        restore: { mode: "missing" },
+      };
+    })(),
+  },
+  "a fresh ledger-recovery request post": {
+    scenario: (() => {
+      const recoveryKey = `LR-${createHash("sha256")
+        .update([repo, 1, 42, head, base, head, base].join("|"))
+        .digest("hex")
+        .slice(0, 12)}`;
+      return {
+        tasks: [
+          {
+            ...tracked,
+            status: "pr_open",
+            metadata: {
+              review_id: 42,
+              last_reviewed_sha: head,
+              last_reviewed_base_sha: base,
+              last_seen_updated_at: "2026-11-23T10:00:00Z",
+            },
+          },
+        ],
+        prs: [prRow],
+        comments: [comment(11, "member", "The history should restart.", "2026-11-23T10:30:00Z")],
+        events: [],
+        members: { member: true },
+        restore: { mode: "missing" },
+      };
+    })(),
+  },
+  "a pending-publication resume": {
+    scenario: (() => {
+      const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
+      return {
+        tasks: [
+          {
+            ...tracked,
+            metadata: {
+              ...tracked.metadata,
+              pending_publication: {
+                repo,
+                pr: 1,
+                head_sha: head,
+                base_sha: base,
+                operation: "review",
+                publication_body: pendingBody,
+                publication_json: { body: pendingBody },
+                update_count: 2,
+              },
+            },
+          },
+        ],
+        prs: [prRow],
+        comments: [],
+        events: [],
+        members: {},
+        restore: { mode: "empty_pending", reusable: true },
+      };
+    })(),
+  },
+  "an outsider approval reply": {
+    scenario: {
+      tasks: [task],
+      prs: [prRow],
+      comments: [
+        comment(10, bot, requestMarker(key), before),
+        comment(11, "outsider", `Review bot: yes ${key}`, after),
+      ],
+      events: [],
+      members: { outsider: false },
+      restore: { mode: "payload", payload: restorePayload(1) },
+    },
+  },
+  "a declined approval": {
+    scenario: {
+      tasks: [task],
+      prs: [prRow],
+      comments: [
+        comment(10, bot, requestMarker(key), before),
+        comment(11, "member", `Review bot: no ${key}`, after),
+      ],
+      events: [],
+      members: { member: true },
+      restore: { mode: "payload", payload: restorePayload(1) },
+    },
+  },
+  "a stale pending publication beside a decodable review": {
+    scenario: (() => {
+      const pendingBody = ledgerBody({ pr: 1, headSha: "d".repeat(40), updateCount: 3 });
+      return {
+        tasks: [
+          {
+            ...tracked,
+            status: "pr_open",
+            metadata: {
+              review_id: 42,
+              last_reviewed_sha: head,
+              last_reviewed_base_sha: base,
+              last_seen_updated_at: "2026-11-23T10:00:00Z",
+              pending_publication: {
+                repo,
+                pr: 1,
+                head_sha: "d".repeat(40),
+                base_sha: base,
+                operation: "review",
+                publication_body: pendingBody,
+              },
+            },
+          },
+        ],
+        prs: [prRow],
+        comments: [comment(11, "member", "The history should restart.", "2026-11-23T10:30:00Z")],
+        events: [],
+        members: { member: true },
+        restore: { mode: "payload", payload: restorePayload(1) },
+      };
+    })(),
+  },
+};
+
+for (const [name, { scenario }] of Object.entries(goldenScenarios)) {
+  test(
+    `Python golden parity: ${name}`,
+    { skip: python3Available ? false : "python3 is not available" },
+    async () => {
+      const python = await runPythonQueue(scenario);
+      const tsResult = await goldenRun(scenario);
+      assertPythonParity(python, tsResult);
+      assert.deepEqual(pythonCommentWrites(python.writes), tsCommentWrites(tsResult.writes));
+    },
+  );
+}

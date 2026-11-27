@@ -12,7 +12,6 @@ import {
   type RecordData,
   type ReviewGitHub,
   reviewGitHub,
-  sha,
   timestamp,
 } from "./github.js";
 import {
@@ -29,8 +28,12 @@ import {
  * reference: Fabric commit 37d5263). When this preflight `start`s, the start
  * content — `{"work": …, "discovery_errors": […]}` — carries the same fields
  * and values the Python preflight emitted, because the migrated agent runner
- * parses it unchanged. Deliberate deviations (all fail-closed gates or
- * documented transport replacements) are listed in the package README.
+ * parses it unchanged; the approval, resume, recovery, and
+ * pending-publication paths are pinned field-for-field (and their consent
+ * comments byte-for-byte) against the vendored Python golden driver in
+ * `test/fixtures/fabric-review-queue-python/`. Deliberate deviations (the
+ * runner ledger hand-off, input hardening, and the documented
+ * reused-approval ABA parity) are listed in the package README.
  */
 
 const ID = "fabric-review-queue";
@@ -41,9 +44,8 @@ const ALLOWED_SELF_AUTHOR = "platex-rehor-bot";
 const ACTIVE = new Set(ACTIVE_TASK_STATUSES);
 const COMMANDABLE = new Set([...ACTIVE, "done"]);
 const RESUMABLE = new Set(["in_progress", "pr_changes"]);
-const LEDGER_PREFIX = "<!-- dev-review-bot:review-ledger:v1:";
-const APPROVAL_NOTICE =
-  "Approval is necessary but cannot start a review until revision continuity can be verified.";
+const FOOTER_START = "<!-- dev-review-bot:comment-footer:start -->";
+const FOOTER_END = "<!-- dev-review-bot:comment-footer:end -->";
 const MAX_COMMANDS_PER_CYCLE = 5;
 const MAX_REQUEST_LENGTH = 4000;
 const LEARNING_REQUEST = "learning-extraction";
@@ -127,6 +129,9 @@ interface Work {
   risk_assessment?: RiskAssessment;
   ignore_review_id?: true;
   ledger_recovery_approved?: true;
+  /** Python sets this on the chosen work before every recovery outcome; only
+   * "approved" survives into a start (`chosen` is the emitted work dict). */
+  ledger_recovery_state?: "approved";
   ledger_recovery_response_comment_id?: number;
   ledger_recovery_responder?: string;
 }
@@ -264,13 +269,22 @@ function comments(rows: RecordData[], source: Source): Comment[] {
 
 type Member = (repo: string, user: string) => Promise<boolean>;
 function memberCheck(github: ReviewGitHub): Member {
+  // Python's _ORG_MEMBER_CACHE: successes (member or not) are cached for the
+  // run; a verification failure is not, so a later check retries it.
   const cache = new Map<string, Promise<boolean>>();
-  return (repo, user) => {
+  return async (repo, user) => {
     const org = repo.split("/", 1)[0];
     const key = `${org.toLowerCase()}/${user}`;
-    const pending = cache.get(key) ?? github.member(org, user);
-    cache.set(key, pending);
-    return pending;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const check = github.member(org, user);
+    cache.set(key, check);
+    try {
+      return await check;
+    } catch (error) {
+      cache.delete(key);
+      throw error;
+    }
   };
 }
 
@@ -348,15 +362,11 @@ async function scanFeedback(
 
   const requests: CommandRequest[] = [];
   for (const c of [...humans].sort(byCommandOrder)) {
-    if (
-      !c.original ||
-      !within(c.created, since, Date.now()) ||
-      seenFeedback.has(c.key) ||
-      !(await member(work.repo, c.login))
-    )
-      continue;
+    if (!c.original || !within(c.created, since, Date.now()) || seenFeedback.has(c.key)) continue;
     const request = parseCommandRequest(c, work.repo, work.number);
-    if (!request) continue;
+    // Python membership-checks only parsed command authors, never every
+    // commenter in the window.
+    if (!request || !(await member(work.repo, c.login))) continue;
     requests.push(request);
     if (requests.length === MAX_COMMANDS_PER_CYCLE) break;
   }
@@ -449,14 +459,75 @@ function decisionId(candidate: Candidate, mode: "RA" | "LR"): string {
     .slice(0, 12)}`;
 }
 
+/** Python `_status_review_url`: the footer link only when metadata confirms it. */
+function statusReviewUrl(meta: RecordData, repo: string, number: number): string | null {
+  const ident = meta.review_id;
+  const url = meta.review_url;
+  const expected = id(ident)
+    ? `https://github.com/${repo}/pull/${number}#pullrequestreview-${ident}`
+    : null;
+  return typeof url === "string" && url === expected ? url : null;
+}
+
+/** Python `with_footer` for freshly built bot request comments. */
+function withFooter(body: string, reviewUrl: string | null): string {
+  const steps: string[] = [];
+  const question = /<!-- dev-review-bot:missing-context:(Q-[0-9a-f]{12}) -->/.exec(body);
+  const approval = /<!-- dev-review-bot:review-approval:(RA-[0-9a-f]{12}) -->/.exec(body);
+  const recovery = /<!-- dev-review-bot:ledger-recovery:(LR-[0-9a-f]{12}) -->/.exec(body);
+  if (question) steps.push(`- Answer this question with \`Answer ${question[1]}: ...\`.`);
+  if (approval)
+    steps.push(
+      `- Approve with \`Review bot: yes ${approval[1]}\` or decline with \`Review bot: no ${approval[1]}\`.`,
+    );
+  if (recovery)
+    steps.push(
+      `- Approve a fresh review with \`Review bot: yes ${recovery[1]}\` or decline with \`Review bot: no ${recovery[1]}\`.`,
+    );
+  steps.push("- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.");
+  steps.push("- Comment `/review-bot learning-extraction` to ask for reusable lessons from this PR.");
+  if (reviewUrl) {
+    steps.push("- After changes, comment `/review-bot verify` to recheck existing findings.");
+    steps.push("- Comment `/review-bot re-review` to request a full review (approval required).");
+  }
+  const status = reviewUrl
+    ? `**Status Comment:** [View review status](${reviewUrl})`
+    : "**Status Comment:** Pending the first review.";
+  const footer = [FOOTER_START, "---", "", status, "", "**Next steps:**", ...steps, FOOTER_END].join(
+    "\n",
+  );
+  return `${body}\n\n${footer}`;
+}
+
+/** Python `_approval_request_body` / `_request_ledger_recovery`'s request body. */
+function botRequest(candidate: Candidate, mode: "RA" | "LR", key: string): string {
+  const { work, meta } = candidate;
+  const marker = `<!-- dev-review-bot:${mode === "RA" ? "review-approval" : "ledger-recovery"}:${key} -->`;
+  const body =
+    mode === "RA"
+      ? `### Review approval required\n\n**Request:** \`${key}\`\n\n**Reason:** ${
+          work.rereview_comment_ids?.length
+            ? "A re-review was requested without a new review-label event."
+            : meta.last_reviewed_sha
+              ? "The PR head or base changed since the last review."
+              : "The configured review label has no new label-add event."
+        }\n\n**Target revision**\n- **Head:** \`${work.head_sha.slice(0, 12)}\`\n- **Base:** \`${work.base_sha.slice(0, 12)}\`\n\nNo review will run until an organization member approves this exact revision.\n\n**Reply with one option:**\n- \`Review bot: yes ${key}\` — approve and start the review.\n- \`Review bot: no ${key}\` — decline the review.\n\n${marker}`
+      : `**Review history needs recovery (${key}).**\n\nI could not find a usable ledger in the status review, saved publication, or local ledger. A fresh review will restart the finding history and may assign new finding IDs. Should a fresh re-review run? Any member of the repository's GitHub organization can include \`Review bot: yes ${key}\` to approve, or \`Review bot: no ${key}\` to decline, anywhere in their comment.\n\n${marker}`;
+  return withFooter(body, statusReviewUrl(meta, work.repo, work.number));
+}
+
 /**
  * Request and evaluate one organization-member decision (review approval or
  * ledger recovery), Python `_request_review_approval` /
- * `_request_ledger_recovery`. TS hardenings kept from earlier commits: the
- * request comment is rebound in place with PATCH (never duplicated), replies
- * must be strictly later than the request's last edit, edited or simultaneous
- * answers are ambiguous, and a `yes` cannot authorize dispatch until revision
- * continuity is provable (see the continuity gate in `choose`).
+ * `_request_ledger_recovery`. Semantics mirror Python exactly: the request
+ * comment is rebound in place with PATCH only when no existing request
+ * carries the current decision id; a reply counts when it is strictly later
+ * than the request's creation, carries exactly one decision, and comes from
+ * a verified organization member; the latest reply by (created, id) wins;
+ * and a membership-verification failure is a per-PR
+ * `verification_unavailable` wait, never a run-wide error. Comment edits are
+ * invisible to Python and to this port (see the README's reused-approval
+ * note).
  */
 async function decision(
   candidate: Candidate,
@@ -465,109 +536,54 @@ async function decision(
   issue: Comment[],
   bot: string,
   member: Member,
-  guard: () => Promise<void>,
-  verifyOnly = false,
 ): Promise<ApprovalState> {
   const { work } = candidate;
   const key = decisionId(candidate, mode);
   const marker = `<!-- dev-review-bot:${mode === "RA" ? "review-approval" : "ledger-recovery"}:${key} -->`;
-  // Approval IDs intentionally omit prior review state. Bind the comment itself
-  // to that state so a label-authorized intervening review invalidates old replies.
-  const contextMarker = `<!-- dev-review-bot:review-approval-context:v1:${createHash("sha256")
-    .update(
-      JSON.stringify([
-        work.task_exists,
-        candidate.status ?? null,
-        ...[
-          "last_reviewed_sha",
-          "last_reviewed_base_sha",
-          "last_reviewed_at",
-          "active_head_sha",
-          "active_base_sha",
-          "review_id",
-          "update_count",
-        ].map((field) => candidate.meta[field] ?? null),
-      ]),
-    )
-    .digest("hex")
-    .slice(0, 16)} -->`;
-  const requests = issue
+  const marked = issue
     .filter(
       (c) =>
         c.login === bot &&
-        Number.isFinite(c.created) &&
-        (mode === "RA"
-          ? /<!-- dev-review-bot:review-approval:RA-[0-9a-f]{12} -->/.test(c.body)
-          : c.body.includes(marker)),
+        (mode === "LR"
+          ? c.body.includes(marker)
+          : /<!-- dev-review-bot:review-approval:RA-[0-9a-f]{12} -->/.test(c.body)),
     )
     .sort(chronological);
-  // Always use the earliest bot request, including when old duplicate comments exist.
-  const request = requests[0];
-  const rebind =
-    mode === "RA" &&
-    request &&
-    (!request.body.includes(marker) ||
-      !request.body.includes(contextMarker) ||
-      !request.body.includes(APPROVAL_NOTICE) ||
-      requests.slice(1).some((c) => c.updated >= request.updated));
-  let reply: Comment | undefined;
-  let yes = false;
-  let ambiguous = false;
-  let latestAt = Number.NEGATIVE_INFINITY;
-  if (request && !rebind) {
-    // Request IDs can recur after a revision reverts. GitHub timestamps have
-    // second precision, so only replies strictly later than the latest edit
-    // can prove they belong to this incarnation of the request.
-    const pattern = new RegExp(`Review bot:\\s*(yes|no)\\s+${key}(?![A-Za-z0-9_-])`, "gi");
-    for (const c of issue.filter((c) => c.user && c.login !== bot).sort(chronological)) {
-      const matches = new Set([...c.body.matchAll(pattern)].map((match) => match[1].toLowerCase()));
-      if (!matches.size) continue;
-      const boundary = mode === "RA" ? request.updated : request.created;
-      const at = c.original ? c.created : c.updated;
-      if ((c.original ? at > boundary : at >= boundary) && (await member(work.repo, c.login))) {
-        if (at < latestAt) continue;
-        const simultaneous = at === latestAt;
-        latestAt = at;
-        reply = c;
-        // An edited answer blocks consent until a strictly later clean answer.
-        ambiguous = simultaneous || !c.original || matches.size !== 1;
-        yes = !ambiguous && matches.has("yes");
-      }
-    }
-  }
-  // A yes cannot authorize dispatch until revision continuity is provable.
-  const waiting = !reply || ambiguous || (mode === "RA" && yes);
-  if (!verifyOnly && (mode === "RA" || !request)) {
-    await guard();
-    if (mode === "RA") await github.waitingLabel(work.repo, work.number, waiting);
-  }
+  const matching = mode === "RA" ? marked.filter((c) => c.body.includes(marker)) : marked;
+  const request = matching[0] ?? marked[0];
+  const rebind = mode === "RA" && matching.length === 0 && marked.length > 0;
   if (!request || rebind) {
-    if (verifyOnly) return "waiting";
-    const reviewId = id(candidate.meta.review_id) ? candidate.meta.review_id : undefined;
-    const link = reviewId
-      ? `[View review status](https://github.com/${work.repo}/pull/${work.number}#pullrequestreview-${reviewId})`
-      : "Pending the first review.";
-    const requestBody =
-      mode === "RA"
-        ? `### Review approval required\n\n**Request:** \`${key}\`\n\n` +
-          `**Reason:** ${work.rereview_comment_ids?.length ? "A re-review was requested without a new review-label event." : candidate.meta.last_reviewed_sha ? "The PR head or base changed since the last review." : "The configured review label has no new label-add event."}\n\n` +
-          `**Target revision**\n- **Head:** \`${work.head_sha.slice(0, 12)}\`\n- **Base:** \`${work.base_sha.slice(0, 12)}\`\n\n` +
-          `${APPROVAL_NOTICE}\n\n` +
-          `**Reply with one option:**\n- \`Review bot: yes ${key}\` — approve this revision.\n- \`Review bot: no ${key}\` — decline the review.`
-        : `### Review history needs recovery (${key})\n\n` +
-          "The previous review ledger is unavailable. Starting over will reset the finding history and may assign new finding IDs.\n\n" +
-          "Recovery cannot start until revision continuity can be verified.\n\n" +
-          `An organization member can reply with \`Review bot: yes ${key}\` to approve or \`Review bot: no ${key}\` to decline.`;
-    const body =
-      `${requestBody}\n\n${marker}${mode === "RA" ? `\n${contextMarker}` : ""}\n\n` +
-      `<!-- dev-review-bot:comment-footer:start -->\n---\n\n**Status Comment:** ${link}\n\n**Next steps:**\n` +
-      "- Comment `/review-bot <question or request>` for an answer based on the pinned PR and review context.\n" +
-      "<!-- dev-review-bot:comment-footer:end -->";
+    if (mode === "RA") await github.waitingLabel(work.repo, work.number, true);
+    const body = botRequest(candidate, mode, key);
     if (rebind) await github.updateRequest(work.repo, request.id, body);
     else await github.postRequest(work.repo, work.number, body);
     return "waiting";
   }
-  if (!reply || ambiguous) return "waiting";
+  const pattern = new RegExp(`Review bot:\\s*(yes|no)\\s+${key}(?![A-Za-z0-9_-])`, "gi");
+  let reply: Comment | undefined;
+  let yes = false;
+  for (const c of issue.filter((c) => c.user && c.login !== bot).sort(chronological)) {
+    if (c.created < request.created || (c.created === request.created && c.id <= request.id))
+      continue;
+    const decisions = new Set([...c.body.matchAll(pattern)].map((match) => match[1].toLowerCase()));
+    if (decisions.size !== 1) continue;
+    let isMember: boolean;
+    try {
+      isMember = await member(work.repo, c.login);
+    } catch {
+      return "verification_unavailable";
+    }
+    if (!isMember) continue;
+    if (!reply || c.created > reply.created || (c.created === reply.created && c.id > reply.id)) {
+      reply = c;
+      yes = decisions.has("yes");
+    }
+  }
+  if (!reply) {
+    if (mode === "RA") await github.waitingLabel(work.repo, work.number, true);
+    return "waiting";
+  }
+  if (mode === "RA") await github.waitingLabel(work.repo, work.number, false);
   if (!yes) {
     if (mode === "LR") {
       work.ledger_recovery_response_comment_id = reply.id;
@@ -582,6 +598,7 @@ async function decision(
     work.review_approval_responder = reply.login;
   } else {
     work.ledger_recovery_approved = true;
+    work.ledger_recovery_state = "approved";
     work.ledger_recovery_response_comment_id = reply.id;
     work.ledger_recovery_responder = reply.login;
   }
@@ -593,7 +610,10 @@ type RestoreResult = "ready" | "missing" | "older-draft";
 /**
  * Restore the prior review state for a start, Python `restore_prior_ledger`.
  * Decodes the same payloads with the same validation so `update_count`,
- * `pr_summary`, and `risk_assessment` carry Python's values. The Python
+ * `pr_summary`, and `risk_assessment` carry Python's values — including
+ * Python's pending-publication semantics: the saved body is used only when
+ * it decodes and its embedded revision matches the chosen head/base, and an
+ * unusable pending publication is skipped, never an error. The Python
  * `work.ledger_path` file hand-off is replaced by the runner-restoration
  * contract (Fabric `restore_review_ledger.py` + its SKILL.md): restored
  * starts carry `ledger_restore: "runner"`, `status_review_id` (the tracked
@@ -601,7 +621,8 @@ type RestoreResult = "ready" | "missing" | "older-draft";
  * emits that field only on command_reply work), and `ledger_restore_pending`
  * for a matching pending publication (the CLI's `--pending` retry path). A
  * legacy `metadata.ledger_path` from the pre-migration runtime is not
- * readable and falls through to ledger recovery.
+ * readable and falls through to ledger recovery, as does a pending-only
+ * payload without a tracked review id (the CLI requires one).
  */
 async function restoration(
   candidate: Candidate,
@@ -623,26 +644,14 @@ async function restoration(
     return "ready";
   }
   let pending: RecordData | undefined;
-  if (meta.pending_publication !== undefined && meta.pending_publication !== null) {
-    if (!object(meta.pending_publication)) throw new Error("Invalid pending review publication");
+  let pendingMatches = false;
+  if (object(meta.pending_publication)) {
+    // Python reads only the saved body and its embedded revision: an
+    // unusable or stale pending publication is skipped, never an error, and
+    // the runner CLI re-validates the full publication on its `--pending`
+    // path.
     pending = meta.pending_publication;
-    if (
-      pending.repo !== work.repo ||
-      pending.pr !== work.number ||
-      !sha(pending.head_sha) ||
-      !sha(pending.base_sha) ||
-      typeof pending.publication_body !== "string" ||
-      !pending.publication_body.includes(LEDGER_PREFIX) ||
-      !["review", "verify"].includes(String(pending.operation))
-    ) {
-      throw new Error("Cannot verify pending review publication reference");
-    }
-    if (
-      (pending.head_sha !== work.head_sha || pending.base_sha !== work.base_sha) ||
-      !id(meta.review_id)
-    ) {
-      throw new Error("Pending publication needs reconciliation before dispatch");
-    }
+    pendingMatches = pending.head_sha === work.head_sha && pending.base_sha === work.base_sha;
   }
   if (meta.review_id !== undefined && meta.review_id !== null && !id(meta.review_id))
     throw new Error("Tracked review ID is invalid");
@@ -699,15 +708,17 @@ async function restoration(
       if (!(error instanceof LedgerPayloadMissing)) throw error;
     }
   }
+  if (payload && trackedReviewId === undefined) {
+    // A payload restored only from a pending publication has no tracked
+    // review for the restoration CLI to re-read. Python could start with the
+    // decoded body; this port cannot hand that ledger to the runner, so the
+    // work falls through to ledger-recovery consent instead (see README).
+    payload = undefined;
+  }
   if (payload) {
-    if (trackedReviewId === undefined) {
-      // Unreachable by construction: a payload only comes from the tracked
-      // review or a pending publication, both of which require a valid id.
-      throw new Error("Restored ledger has no tracked review ID");
-    }
     work.ledger_restore = "runner";
     work.status_review_id = trackedReviewId;
-    if (pending?.head_sha === work.head_sha && pending?.base_sha === work.base_sha) {
+    if (pendingMatches) {
       work.ledger_restore_pending = true;
     }
     work.update_count = payload.update_count;
@@ -1051,34 +1062,19 @@ async function select(
    * candidate per pass and excluded consent waits; iterating the sorted list
    * with the same exclusion bookkeeping is equivalent. Hard failures of the
    * current candidate error the whole run, exactly like Python's
-   * `output_result("error", …); return` paths.
+   * `output_result("error", …); return` paths. Consent waits (approval,
+   * recovery, verification) only exclude that PR and keep scanning — Python
+   * `main()`'s `excluded_task_keys` re-scan.
    */
   async function choose(items: Candidate[]): Promise<PreflightExecutionResult | undefined> {
     for (const candidate of items.sort(order)) {
-      const { work, pull } = candidate;
+      const { work } = candidate;
       if (work.kind === "review" && !work.task_active && activeCount >= CAPACITY_MAX) {
         return { status: "skip", content: `Review instance at task capacity (${activeCount}/${CAPACITY_MAX})` };
       }
-      if (work.kind === "resume") {
-        // Legacy task metadata cannot prove whether the active pass was
-        // authorized by a label, approval, or recovery for this incarnation.
-        errors.push(`${work.repo}#${work.number}: cannot verify revision continuity for resume`);
-        continue;
-      }
       try {
-        const guard = async () => {
-          const live = await github.pr(work.repo, work.number);
-          if (
-            live.state !== "open" ||
-            live.draft ||
-            live.head !== pull.head ||
-            live.base !== pull.base ||
-            !live.labels.includes(label)
-          )
-            throw new Error("Review snapshot changed");
-        };
         if (work.kind === "review" && work.review_authorization !== "label_added") {
-          const state = await decision(candidate, "RA", github, await issue(work), bot, member, guard);
+          const state = await decision(candidate, "RA", github, await issue(work), bot, member);
           if (state !== "approved") {
             if (work.task_active) activeCount -= 1;
             approvalWaits.push(`${work.repo}#${work.number} (${state})`);
@@ -1086,79 +1082,28 @@ async function select(
           }
         }
         const restore = await restoration(candidate, github, bot);
-        if (
-          work.ledger_restore_pending &&
-          object(candidate.meta.pending_publication) &&
-          candidate.meta.pending_publication.operation === "review"
-        ) {
-          // A pending review may have been prepared after recovery consent;
-          // legacy publication metadata does not identify its authorization.
-          errors.push(
-            `${work.repo}#${work.number}: cannot verify revision continuity for pending review`,
-          );
-          continue;
-        }
         if (restore !== "ready") {
-          // Recovery consent resets history, but a current full-review grant
-          // is still required before converting feedback/resume into a review.
+          // Recovery consent resets history and converts the work into a
+          // fresh review — Python's restore_prior_ledger approval branch.
           if (work.kind !== "verify") {
             const top = await issue(work);
-            const recovered = await decision(candidate, "LR", github, top, bot, member, guard);
+            const recovered = await decision(candidate, "LR", github, top, bot, member);
             if (recovered !== "approved") {
               if (work.task_active) activeCount -= 1;
               recoveryWaits.push(`${work.repo}#${work.number}`);
               continue;
             }
-            if (work.review_authorization === undefined || work.review_authorization === null) {
-              const state = await decision(candidate, "RA", github, top, bot, member, guard);
-              if (state !== "approved") {
-                if (work.task_active) activeCount -= 1;
-                approvalWaits.push(`${work.repo}#${work.number} (${state})`);
-                continue;
-              }
-            }
             work.kind = "review";
             work.update_count = 0;
             if (restore === "older-draft") work.ignore_review_id = true;
+            work.feedback_comment_ids = (work.feedback_comment_ids ?? []).filter(
+              (ident) => ident !== `issue:${work.ledger_recovery_response_comment_id}`,
+            );
           } else {
             if (work.task_active) activeCount -= 1;
             verificationWaits.push(`${work.repo}#${work.number}`);
             continue;
           }
-        }
-        if (work.kind === "review") {
-          await guard();
-          const approval = work.review_authorization === "organization_member_approved";
-          if (approval || work.ledger_recovery_approved) {
-            const current = comments(await github.issueComments(work.repo, work.number), "issue");
-            const freshMember = memberCheck(github);
-            let valid = true;
-            const failed: string[] = [];
-            for (const mode of [
-              ...(work.ledger_recovery_approved ? (["LR"] as const) : []),
-              ...(approval ? (["RA"] as const) : []),
-            ]) {
-              if (
-                (await decision(candidate, mode, github, current, bot, freshMember, guard, true)) !==
-                "approved"
-              ) {
-                valid = false;
-                failed.push(mode);
-                break;
-              }
-            }
-            if (!valid) {
-              if (work.task_active) activeCount -= 1;
-              for (const mode of failed)
-                (mode === "RA" ? approvalWaits : recoveryWaits).push(`${work.repo}#${work.number}`);
-              continue;
-            }
-            // Neither PR snapshots nor the currently available REST events prove
-            // that head and base never changed and returned between polls.
-            errors.push(`${work.repo}#${work.number}: cannot verify revision continuity`);
-            continue;
-          }
-          await guard();
         }
         return { status: "start", content: JSON.stringify({ work, discovery_errors: errors }) };
       } catch (error) {
