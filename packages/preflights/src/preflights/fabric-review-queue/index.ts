@@ -1101,7 +1101,22 @@ async function select(
             );
           } else {
             if (work.task_active) activeCount -= 1;
-            verificationWaits.push(`${work.repo}#${work.number}`);
+            // Python never offers ledger recovery to a verify command: with
+            // no durable payload the wait is permanent. Say so with the
+            // concrete cause and the recovery path instead of a bare PR
+            // name — a pre-migration legacy ledger file is never reachable
+            // from this dispatcher (a deliberate reporting enrichment over
+            // Python's uniform wait message; the outcome stays Python's
+            // skip, and no ledger is fabricated and no review restarted).
+            const legacy =
+              typeof candidate.meta.ledger_path === "string" &&
+              candidate.meta.ledger_path !== "";
+            const cause = legacy
+              ? "tracked review has no durable ledger payload and its legacy ledger file is not reachable from this dispatcher"
+              : "tracked review has no durable ledger payload";
+            verificationWaits.push(
+              `${work.repo}#${work.number} (${cause}; a member-approved re-review rebuilds the durable ledger)`,
+            );
             continue;
           }
         }

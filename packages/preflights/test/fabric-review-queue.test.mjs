@@ -1245,6 +1245,64 @@ test("a verify start hands the tracked review to the runner for ledger restorati
   assert.equal(work.pr_summary, "This PR fixes a permission.");
 });
 
+test("a verify command without a durable ledger waits with an actionable reason", async () => {
+  // Python never offers ledger recovery to verification: with no durable
+  // payload the wait is permanent. The skip must name the cause and the
+  // recovery path, post no recovery request, and never start.
+  const verifyTask = (metadata) => ({
+    ...tracked,
+    status: "pr_open",
+    metadata: {
+      review_id: 42,
+      last_reviewed_sha: head,
+      last_reviewed_base_sha: base,
+      last_seen_updated_at: "2026-11-23T10:00:00Z",
+      ...metadata,
+    },
+  });
+  const input = {
+    labelEvent: false,
+    reviewBody: "legacy review without ledger",
+    issueComments: [comment(30, "member", "/review-bot verify", "2026-11-23T10:30:00Z")],
+    members: ["member"],
+  };
+  const noPath = await run({ ...input, task: verifyTask({}) });
+  assert.equal(noPath.status, "skip");
+  assert.equal(
+    noPath.content,
+    `Verification commands need a recoverable prior ledger on ${repo}#1 ` +
+      "(tracked review has no durable ledger payload; " +
+      "a member-approved re-review rebuilds the durable ledger); " +
+      "No labeled PR needs review or feedback handling",
+  );
+  assert.deepEqual(noPath.writes, []);
+
+  // A pre-migration task whose only ledger is a legacy local file: the
+  // dispatcher can never reach that host path, so the reason says so.
+  const legacyOnly = await run({
+    ...input,
+    task: verifyTask({ ledger_path: "data/review-context/restored-ledgers/old.json" }),
+  });
+  assert.equal(legacyOnly.status, "skip");
+  assert.equal(
+    legacyOnly.content,
+    `Verification commands need a recoverable prior ledger on ${repo}#1 ` +
+      "(tracked review has no durable ledger payload and its legacy ledger file is not reachable from this dispatcher; " +
+      "a member-approved re-review rebuilds the durable ledger); " +
+      "No labeled PR needs review or feedback handling",
+  );
+  assert.deepEqual(legacyOnly.writes, []);
+  // No ledger is fabricated and no review is restarted: the verify work
+  // never converts, unlike the recovery path for review/feedback work.
+  const started = await run({
+    ...input,
+    task: verifyTask({}),
+    reviewBody: ledgerBody({ pr: 1, updateCount: 1 }),
+  });
+  assert.equal(started.status, "start");
+  assert.equal(JSON.parse(started.content).work.kind, "verify");
+});
+
 test("a matching pending publication marks the restored start for the CLI retry path", async () => {
   const pendingBody = ledgerBody({ pr: 1, updateCount: 2 });
   const result = await run({
