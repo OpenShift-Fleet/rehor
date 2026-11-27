@@ -112,6 +112,8 @@ interface Work {
   command_requests?: CommandRequest[];
   feedback_comment_ids?: string[];
   task_status?: string;
+  /** Tracked review ID — on command_reply work like Python, and on every
+   * ledger_restore start because the runner-restoration CLI requires it. */
   status_review_id?: number;
   verify_comment_ids?: number[];
   rereview_comment_ids?: number[];
@@ -592,10 +594,14 @@ type RestoreResult = "ready" | "missing" | "older-draft";
  * Restore the prior review state for a start, Python `restore_prior_ledger`.
  * Decodes the same payloads with the same validation so `update_count`,
  * `pr_summary`, and `risk_assessment` carry Python's values. The Python
- * `work.ledger_path` file hand-off is replaced by `ledger_restore: "runner"`
- * (the dispatcher cannot write into the runner's sandbox); a legacy
- * `metadata.ledger_path` from the pre-migration runtime is not readable and
- * falls through to ledger recovery.
+ * `work.ledger_path` file hand-off is replaced by the runner-restoration
+ * contract (Fabric `restore_review_ledger.py` + its SKILL.md): restored
+ * starts carry `ledger_restore: "runner"`, `status_review_id` (the tracked
+ * review the CLI must re-read — a deliberate deviation from Python, which
+ * emits that field only on command_reply work), and `ledger_restore_pending`
+ * for a matching pending publication (the CLI's `--pending` retry path). A
+ * legacy `metadata.ledger_path` from the pre-migration runtime is not
+ * readable and falls through to ledger recovery.
  */
 async function restoration(
   candidate: Candidate,
@@ -640,11 +646,15 @@ async function restoration(
   }
   if (meta.review_id !== undefined && meta.review_id !== null && !id(meta.review_id))
     throw new Error("Tracked review ID is invalid");
+  // The runner-restoration CLI (Fabric restore_review_ledger.py) is invoked
+  // with work.status_review_id and requires it to equal the task's tracked
+  // metadata.review_id, so every ledger_restore start must carry it.
+  const trackedReviewId = id(meta.review_id) ? meta.review_id : undefined;
 
   let emptyPending: { reusable: boolean } | undefined;
   let payload: LedgerPayload | undefined;
-  if (id(meta.review_id)) {
-    const review = await github.review(work.repo, work.number, meta.review_id);
+  if (trackedReviewId !== undefined) {
+    const review = await github.review(work.repo, work.number, trackedReviewId);
     if (
       !object(review.user) ||
       !login(review.user.login) ||
@@ -656,7 +666,7 @@ async function restoration(
       if (typeof review.body !== "string" || review.body.trim() !== "") {
         throw new Error("Tracked pending review has content and cannot safely restore the ledger");
       }
-      if ((await github.draftComments(work.repo, work.number, meta.review_id)).length) {
+      if ((await github.draftComments(work.repo, work.number, trackedReviewId)).length) {
         throw new Error("Tracked pending review has comments and cannot safely be reused");
       }
       emptyPending = { reusable: review.commit_id === work.head_sha };
@@ -690,7 +700,13 @@ async function restoration(
     }
   }
   if (payload) {
+    if (trackedReviewId === undefined) {
+      // Unreachable by construction: a payload only comes from the tracked
+      // review or a pending publication, both of which require a valid id.
+      throw new Error("Restored ledger has no tracked review ID");
+    }
     work.ledger_restore = "runner";
+    work.status_review_id = trackedReviewId;
     if (pending?.head_sha === work.head_sha && pending?.base_sha === work.base_sha) {
       work.ledger_restore_pending = true;
     }
