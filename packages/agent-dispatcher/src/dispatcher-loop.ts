@@ -19,6 +19,8 @@ export type DispatcherLoopOptions = {
   preflightStateDir?: DispatcherCycleOptions["preflightStateDir"];
   slackWebhooks?: DispatcherCycleOptions["slackWebhooks"];
   jenkins?: DispatcherCycleOptions["jenkins"];
+  /** Tier-2 Kubernetes Secret reader for preflight `with:` references. */
+  secretReader?: DispatcherCycleOptions["secretReader"];
   /** Observes each completed cycle result; lifecycle records are emitted inside the cycle. */
   onCycle?: (result: DispatcherCycleResult) => void;
   /** Cycle spacing. Defaults to five minutes. */
@@ -53,6 +55,7 @@ export async function runDispatcherLoop(options: DispatcherLoopOptions): Promise
         repositoriesJson: options.repositoriesJson, cacheRoot, env, dispatcher: sessions,
         signal, launch, memoryCredential: options.memoryCredential, serviceGatewayUrl: options.serviceGatewayUrl,
         preflightStateDir: options.preflightStateDir, slackWebhooks: options.slackWebhooks, jenkins: options.jenkins,
+        ...(options.secretReader ? { secretReader: options.secretReader } : {}),
       });
       if (!signal?.aborted) emit?.(result);
       await sleep(intervalMs, undefined, { signal });
