@@ -4,8 +4,10 @@ import type { WorkPreflightResult } from "./preflight-engine-ts.js";
 /** Fixed delivery path inside the sandbox (mode 0600, see REHOR-226 contract). */
 export const INPUT_FILE_PATH = "/tmp/rehor-input.json";
 export const INPUT_ENVIRONMENT = Object.freeze({ REHOR_INPUT_SOURCE: "sandbox", REHOR_INPUT_FILE: INPUT_FILE_PATH });
-/** Contract size cap: oversized preflight output is a dispatch error, no launch. */
-export const MAX_INPUT_BYTES = 64 * 1024;
+/** Contract size cap (1 MiB): oversized preflight output is a dispatch error, no
+ * launch. Sized for plan-snapshot-bearing preflight start content such as full
+ * Jira plan snapshots, which embed whole ticket descriptions. */
+export const MAX_INPUT_BYTES = 1024 * 1024;
 export const INPUT_SCHEMA_VERSION = 1;
 
 /** UTF-8 JSON envelope delivered to the agent runner. Prompt content is

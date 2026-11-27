@@ -134,7 +134,7 @@ When the agent dispatcher delivers prepared work to a per-run sandbox, the runne
 | `REHOR_INPUT_SOURCE` | For the coordinator, `sandbox` consumes the delivered envelope; unset, empty, or `legacy` keeps the polling loop. Other values fail closed. |
 | `REHOR_INPUT_FILE` | Path to the delivered envelope. The dispatcher always uses `/tmp/rehor-input.json`. |
 
-Sandbox dispatch requires explicit `BOT_EXECUTION_ENGINE=coordinator`; the entrypoint rejects the default Python engine and other values before setup. Configure sandbox onboarding for the OpenCode runtime. The envelope carries `{schemaVersion: 1, runId, prompt, metadata: {action: "start", scripts: [...]}}`; the complete serialized envelope is capped at 64 KiB. Coordinator behavior in `sandbox` mode:
+Sandbox dispatch requires explicit `BOT_EXECUTION_ENGINE=coordinator`; the entrypoint rejects the default Python engine and other values before setup. Configure sandbox onboarding for the OpenCode runtime. The envelope carries `{schemaVersion: 1, runId, prompt, metadata: {action: "start", scripts: [...]}}`; the complete serialized envelope is capped at 1 MiB. Coordinator behavior in `sandbox` mode:
 
 - **One dispatch, then exit.** The runner performs the usual config sync, instruction assembly, and model selection, then runs exactly one agent cycle with the delivered prompt as its pre-flight data and exits. There is no polling loop and no sleep-signal handling.
 - **Fail closed.** A missing, unreadable, malformed, unsupported, or oversized envelope — or an unrecognized `REHOR_INPUT_SOURCE` value — logs an error (never the prompt content) and exits nonzero. The runner never falls back to local preflights or agent launch.

@@ -14,8 +14,9 @@ export const INPUT_SOURCE_ENVIRONMENT = "REHOR_INPUT_SOURCE";
 export const INPUT_FILE_ENVIRONMENT = "REHOR_INPUT_FILE";
 /** Fixed delivery path inside the sandbox (mode 0600, see REHOR-226 contract). */
 export const DEFAULT_INPUT_FILE_PATH = "/tmp/rehor-input.json";
-/** Contract size cap: the complete serialized envelope, in bytes. */
-export const MAX_INPUT_BYTES = 64 * 1024;
+/** Contract size cap: the complete serialized envelope, in bytes. 1 MiB leaves
+ * headroom for plan-snapshot-bearing preflight start content. */
+export const MAX_INPUT_BYTES = 1024 * 1024;
 export const SUPPORTED_INPUT_SCHEMA_VERSION = 1;
 
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
