@@ -63,6 +63,7 @@ jobs:
           PGSQL_USER: devbot_test
           PGSQL_PASSWORD: devbot_test
           PGSQL_DATABASE: devbot_migration_test
+          REHOR_REAL_DATABASE_TESTS: "1"
         run: |
           cd memory-server
           uv run pytest -q
