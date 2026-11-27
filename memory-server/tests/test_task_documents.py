@@ -24,7 +24,6 @@ Concurrency contract under test:
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import asyncpg
@@ -36,43 +35,12 @@ from conftest import (
     NOW,
     SCHEMA_PATH,
     TASK_ROW,
+    FakePool,
     SingleConnectionPool,
     document_row,
     requires_real_database,
 )
 from fastmcp import Client, FastMCP
-
-
-class FakePool:
-    """Scripted asyncpg pool fake: fetchrow results are consumed in call order.
-
-    A scripted entry that is an Exception instance is raised instead of returned.
-    ``acquire`` yields the pool itself, so connection-level calls are recorded too.
-    """
-
-    def __init__(self, *fetchrow_results, fetch_results=None):
-        self.results = list(fetchrow_results)
-        self.fetch_results = list(fetch_results or [])
-        self.calls = []
-
-    async def fetchrow(self, query, *args):
-        self.calls.append(("fetchrow", query, args))
-        result = self.results.pop(0)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-    async def fetch(self, query, *args):
-        self.calls.append(("fetch", query, args))
-        return self.fetch_results.pop(0)
-
-    @asynccontextmanager
-    async def acquire(self):
-        yield self
-
-    @asynccontextmanager
-    async def transaction(self):
-        yield
 
 
 async def call_tool(pool, tool, args):

@@ -53,6 +53,38 @@ def document_row(name="bundle", revision=1, data='{"k": "v"}', id=7):
     return {"id": id, "name": name, "data": data, "revision": revision, "created_at": NOW, "updated_at": NOW}
 
 
+class FakePool:
+    """Scripted asyncpg pool fake: fetchrow results are consumed in call order.
+
+    A scripted entry that is an Exception instance is raised instead of returned.
+    ``acquire`` yields the pool itself, so connection-level calls are recorded too.
+    """
+
+    def __init__(self, *fetchrow_results, fetch_results=None):
+        self.results = list(fetchrow_results)
+        self.fetch_results = list(fetch_results or [])
+        self.calls = []
+
+    async def fetchrow(self, query, *args):
+        self.calls.append(("fetchrow", query, args))
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def fetch(self, query, *args):
+        self.calls.append(("fetch", query, args))
+        return self.fetch_results.pop(0)
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield
+
+
 @pytest_asyncio.fixture
 async def db():
     conn = await asyncpg.connect(**DB_CONFIG)

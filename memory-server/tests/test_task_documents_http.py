@@ -33,6 +33,7 @@ The real-database test is opt-in like test_task_documents.py: suffixed
 the ``db`` fixture drops all public tables.
 """
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager, contextmanager
@@ -223,7 +224,9 @@ class McpHttpClient:
         envelope problems mirror the SDK's 400 responses (sanitized)."""
         self._id += 1
         response = await self._client.post("/mcp", content=body, headers=self._headers())
-        assert response.status_code in (200, 400), response.text
+        assert response.status_code in (200, 202, 400), response.text
+        if not response.text.strip():  # 202 notifications carry no body
+            return {"http_status": response.status_code}
         return _parse_response(response.text)
 
 
@@ -893,9 +896,10 @@ async def test_streamed_oversize_is_413_mid_upload():
 
 
 @pytest.mark.asyncio
-async def test_interrupted_upload_returns_without_replay_or_response():
-    """A disconnect mid-upload (more_body never completes) returns silently:
-    no replay, no response, no downstream dispatch."""
+async def test_interrupted_upload_never_replays_or_writes():
+    """A disconnect mid-upload (more_body never completes) never replays or
+    dispatches; a minimal 400 is sent best-effort so production
+    BaseHTTPMiddleware chains do not fail with 'No response returned'."""
 
     sent = []
     called = []
@@ -926,7 +930,212 @@ async def test_interrupted_upload_returns_without_replay_or_response():
     }
     await guard(scope, receive, send)
     assert called == []
-    assert sent == []
+    assert sent[0]["status"] == 400
+    assert sent[1]["body"] == b"Request body interrupted"
+
+
+@pytest.mark.asyncio
+async def test_interrupted_upload_is_graceful_through_production_app():
+    """The full build_app stack (PrometheusMiddleware is a BaseHTTPMiddleware)
+    must not turn a mid-upload disconnect into 'No response returned'."""
+    from bot_memory_server.server import build_app
+
+    app, _metrics_app = build_app()
+    writes = []
+
+    class Pool:
+        @asynccontextmanager
+        async def acquire(self):
+            yield self
+
+        @asynccontextmanager
+        async def transaction(self):
+            yield
+
+        async def fetchrow(self, query, *args):
+            if query.startswith(("INSERT", "UPDATE", "DELETE")):
+                writes.append(query)
+            return TASK_ROW
+
+        async def fetch(self, query, *args):
+            return []
+
+    messages = [
+        {"type": "http.request", "body": b'{"jsonrpc": "2.0", "id": 1, "method": "tools/call", ', "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive():
+        return messages.pop(0)
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [
+            (b"accept", b"application/json, text/event-stream"),
+            (b"content-type", b"application/json"),
+        ],
+        "query_string": b"",
+    }
+    with patch("bot_memory_server.tools.task_documents.get_pool", return_value=Pool()):
+        await app(scope, receive, send)  # must not raise
+    assert writes == []
+    assert sent[0]["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_cas_float_tokens_are_rejected_not_silently_unguarded():
+    """P2: 1e400 in a delete's expected_revision previously became null after
+    SDK coercion and the deletion executed unguarded; the guard rejects float
+    CAS tokens for deletes too."""
+    app, lifespan_app = _http_app(sanitized=True)
+    pool = HttpPool()
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        for cas_key in ("expected_revision", "expected_id"):
+            body = (
+                '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                '{"name": "task_document_delete", "arguments": '
+                '{"external_key": "ART-1", "name": "n", "' + cas_key + '": 1e400}}}'
+            )
+            response = await client.post(
+                "/mcp",
+                content=body,
+                headers={"accept": "application/json, text/event-stream", "content-type": "application/json"},
+            )
+            message = _parse_response(response.text)
+            assert message["error"]["code"] == -32602, (cas_key, message)
+            assert f"{cas_key} must be an integer" in message["error"]["message"]
+    assert pool.insert_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_response_with_wrong_jsonrpc_version_is_rejected_sanitized():
+    """P2: a method-less response with jsonrpc 1.0 previously passed the
+    guard's response checks and leaked its payload through the SDK's
+    JSONRPCMessage validation."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        message = await client.request_raw('{"jsonrpc": "1.0", "id": "r1", "result": {"secret": "VER-SENTINEL"}}')
+    assert message["error"]["code"] == -32602
+    assert 'jsonrpc must be "2.0"' in message["error"]["message"]
+    assert "VER-SENTINEL" not in json.dumps(message)
+
+
+@pytest.mark.asyncio
+async def test_unmatched_response_id_does_not_leak_in_lowlevel_logs():
+    """P2: an unmatched client response id made mcp.server.lowlevel.server
+    log the full SessionMessage (payload included) at ERROR; the sanitizer
+    filter redacts that specific diagnostic while keeping the record."""
+    from bot_memory_server.mcp_validation_sanitizer import SDK_LOWLEVEL_LOGGER
+
+    app, lifespan_app = _http_app(sanitized=True)
+    with capture_logs(SDK_LOWLEVEL_LOGGER) as logs:
+        async with McpHttpClient(app, lifespan_app) as client:
+            await client.request_raw('{"jsonrpc": "2.0", "id": "unknown-id", "result": {"secret": "UNMATCH-SENTINEL"}}')
+            await asyncio.sleep(0.5)  # the stream exception is logged asynchronously
+    assert logs.records, "expected the lowlevel stream-exception record"
+    text = "\n".join(record.getMessage() for record in logs.records)
+    assert "Received exception from stream" in text
+    assert "UNMATCH-SENTINEL" not in text
+
+
+@pytest.mark.asyncio
+async def test_empty_session_header_defers_to_sdk_404():
+    """P3: the SDK routes an empty-valued session header to its 404 (present
+    but matching no session); the guard defers instead of answering."""
+    app, lifespan_app = _http_app(sanitized=True)
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": "",
+    }
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post(
+            "/mcp",
+            content=(
+                '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                '{"name": "task_document_create", "arguments": ["ARR-SENTINEL"]}}'
+            ),
+            headers=headers,
+        )
+    assert response.status_code == 404
+    assert "Session not found" in response.text
+    assert "SENTINEL" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_invalid_utf8_with_unknown_session_defers_to_sdk_404():
+    """P3: the SDK 404s unknown sessions before parsing, so invalid UTF-8 on
+    an unknown session must not be answered by the guard's 400."""
+    app, lifespan_app = _http_app(sanitized=True)
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "mcp-session-id": "totally-unknown-session",
+    }
+    async with (
+        lifespan_app.router.lifespan_context(lifespan_app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client,
+    ):
+        response = await client.post("/mcp", content=b'{"x": \xff\xfe}', headers=headers)
+    assert response.status_code == 404
+    assert "Session not found" in response.text
+
+
+@pytest.mark.asyncio
+async def test_unsupported_protocol_version_defers_session_layer_rejections():
+    """P3: the SDK validates mcp-protocol-version before session-layer tool
+    handling, answering 400 for unsupported versions; malformed arguments on
+    such a request must keep the SDK's 400, not the guard's 200."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        response = await client._client.post(
+            "/mcp",
+            content=(
+                '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                '{"name": "task_document_create", "arguments": ["ARR-SENTINEL"]}}'
+            ),
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": client._session,
+                "mcp-protocol-version": "1999-01-01",
+            },
+        )
+    assert response.status_code == 400
+    assert "Unsupported protocol version" in response.text
+    assert "SENTINEL" not in response.text
+    # A supported protocol version keeps the guard's session-layer rejection.
+    async with McpHttpClient(app, lifespan_app) as client:
+        guarded = await client._client.post(
+            "/mcp",
+            content=(
+                '{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": '
+                '{"name": "task_document_create", "arguments": ["ARR-SENTINEL"]}}'
+            ),
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": client._session,
+                "mcp-protocol-version": "2025-03-26",
+            },
+        )
+        message = _parse_response(guarded.text)
+        assert guarded.status_code == 200
+        assert message["error"]["code"] == -32602
+        assert "arguments must be an object" in message["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -1138,3 +1347,28 @@ async def test_invalid_utf8_is_a_sanitized_400_not_a_500():
     ):
         sdk_response = await unwrapped.post("/mcp", content=raw, headers=headers)
         assert sdk_response.status_code == 500  # the SDK 500s; the guard improves it to a clean 400
+
+
+@pytest.mark.asyncio
+async def test_present_empty_protocol_version_header_defers_to_sdk_400():
+    """P3: a present-but-empty mcp-protocol-version header is unsupported
+    (the SDK 400s it); the guard must defer its session-layer rejection
+    instead of answering 200."""
+    app, lifespan_app = _http_app(sanitized=True)
+    async with McpHttpClient(app, lifespan_app) as client:
+        response = await client._client.post(
+            "/mcp",
+            content=(
+                '{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": '
+                '{"name": "task_document_create", "arguments": ["ARR-SENTINEL"]}}'
+            ),
+            headers={
+                "accept": "application/json, text/event-stream",
+                "content-type": "application/json",
+                "mcp-session-id": client._session,
+                "mcp-protocol-version": "",
+            },
+        )
+    assert response.status_code == 400
+    assert "Unsupported protocol version" in response.text
+    assert "SENTINEL" not in response.text

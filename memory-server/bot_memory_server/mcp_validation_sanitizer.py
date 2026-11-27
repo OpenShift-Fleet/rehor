@@ -68,6 +68,7 @@ preserved for schema-known fields:
 Both are idempotent.
 """
 
+import contextlib
 import json
 import logging
 import math
@@ -76,9 +77,11 @@ from decimal import Decimal, InvalidOperation
 from fastmcp.exceptions import ToolError, ValidationError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
+from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from pydantic import ValidationError as PydanticValidationError
 
 FASTMCP_SERVER_LOGGER = "fastmcp.server.server"
+SDK_LOWLEVEL_LOGGER = "mcp.server.lowlevel.server"
 SSE_LOGGER = "sse_starlette.sse"
 _INVALID_ARGUMENTS_PREFIX = "Invalid arguments for tool "
 _REDACTED_DETAIL_KEYS = frozenset({"input", "ctx", "url"})
@@ -89,6 +92,12 @@ _REDACTED_LOC = "<extra-key>"
 # tools/call targets whose `data` accepts arbitrary JSON numbers: non-
 # roundtrippable float tokens are rejected here instead of silently rounded.
 DOCUMENT_DATA_TOOLS = frozenset({"task_document_create", "task_document_update"})
+
+# tools/call targets taking CAS tokens: a float token like 1e400 arrives as
+# null (guard silently disabled) or rounded (wrong token) after SDK coercion,
+# so non-integer tokens are rejected here — for deletes as well, or an
+# overflowed expected_id/expected_revision would let the deletion proceed.
+CAS_TOOLS = frozenset({"task_document_create", "task_document_update", "task_document_delete"})
 
 # mcp SDK (mcp.shared.session) logs these to the ROOT logger with full
 # message reprs / pydantic details on validation failure.
@@ -183,6 +192,24 @@ class SdkRootLogSanitizer(logging.Filter):
                 record.msg = prefix.rstrip(": ") + ": <redacted payload>"
                 record.args = None
                 return True
+        return True
+
+
+class SdkLowlevelLogSanitizer(logging.Filter):
+    """Redact unmatched-response bodies from the low-level server's ERROR log.
+
+    ``mcp.server.lowlevel.server`` logs ``Received exception from stream:
+    Received response with an unknown request ID: SessionMessage(...)`` at
+    ERROR when a client response carries an id the server never requested —
+    the SessionMessage repr embeds the full response payload. Only that
+    specific diagnostic is rewritten; unrelated stream exceptions pass.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = str(record.getMessage())
+        if message.startswith("Received exception from stream: ") and "unknown request ID" in message:
+            record.msg = "Received exception from stream: <redacted unmatched response body>"
+            record.args = None
         return True
 
 
@@ -311,10 +338,13 @@ def _check_envelope(message) -> tuple[int, int, str, object] | None:
     """
     if not isinstance(message, dict):
         return 400, -32602, "Invalid request: the JSON-RPC message must be an object", "server-error"
-    if "method" not in message:
-        return _check_response_envelope(message)
+    # Version first for every message shape: a method-less response with a
+    # wrong jsonrpc version would otherwise pass the response checks below
+    # and leak through the SDK's JSONRPCMessage validation.
     if message.get("jsonrpc") != "2.0":
         return 400, -32602, 'Invalid request: jsonrpc must be "2.0"', _request_id(message)
+    if "method" not in message:
+        return _check_response_envelope(message)
     method = message.get("method")
     if not isinstance(method, str) or not method:
         return 400, -32602, "Invalid request: method must be a non-empty string", _request_id(message)
@@ -335,17 +365,19 @@ def _check_envelope(message) -> tuple[int, int, str, object] | None:
     arguments = params.get("arguments")
     if arguments is not None and not isinstance(arguments, dict):
         return 200, -32602, f"{_INVALID_REQUEST_PARAMS}: arguments must be an object", _request_id(message)
-    if name in DOCUMENT_DATA_TOOLS and isinstance(arguments, dict):
+    if name in CAS_TOOLS and isinstance(arguments, dict):
         for key in ("expected_id", "expected_revision"):
             if isinstance(arguments.get(key), _FloatToken):
                 # A float token over/underflows to null/rounded before the
-                # handler runs, silently disabling the CAS guard.
+                # handler runs, silently disabling the CAS guard — including
+                # for deletes.
                 return (
                     200,
                     -32602,
                     f"{_INVALID_REQUEST_PARAMS} for {name}: {key} must be an integer",
                     _request_id(message),
                 )
+    if name in DOCUMENT_DATA_TOOLS and isinstance(arguments, dict):
         try:
             has_bad_float = _has_bad_float(arguments)
         except RecursionError:
@@ -375,6 +407,10 @@ def _header(scope: dict, name: bytes) -> bytes:
         if key.lower() == name:
             return value
     return b""
+
+
+def _has_header(scope: dict, name: bytes) -> bool:
+    return any(key.lower() == name for key, _ in scope.get("headers") or [])
 
 
 def _passes_sdk_media_checks(scope: dict) -> bool:
@@ -447,15 +483,34 @@ class McpEnvelopeGuard:
 
         The SDK routes unknown session ids to a 404 without parsing the
         body; requests without a session id open a new session and are
-        parsed, so they stay guardable.
+        parsed, so they stay guardable. An empty-valued session header is
+        routed to the same 404 by the SDK (it is present but matches no
+        session), so the guard defers for it too.
         """
         manager = self._session_manager_getter()
         if manager is None:
             return False  # Manager unavailable (not running): defer to the SDK.
-        session_id = _header(scope, b"mcp-session-id").decode("latin-1", "replace") or None
-        if session_id is None:
-            return True
+        if not _has_header(scope, b"mcp-session-id"):
+            return True  # Absent: the SDK opens a new session and parses.
+        session_id = _header(scope, b"mcp-session-id").decode("latin-1", "replace")
+        if not session_id:
+            return False  # Present but empty: the SDK 404s it.
         return session_id in getattr(manager, "_server_instances", {})
+
+    @staticmethod
+    def _protocol_version_defers(scope: dict) -> bool:
+        """True when the SDK would reject the protocol-version header first.
+
+        The SDK validates ``mcp-protocol-version`` before session-layer tool
+        handling (after envelope parsing), answering 400 for unsupported
+        versions; the guard defers its session-layer rejections for those.
+        A present-but-empty header is also unsupported (the SDK 400s it),
+        so only a truly absent header lets the guard proceed.
+        """
+        if not _has_header(scope, b"mcp-protocol-version"):
+            return False
+        version = _header(scope, b"mcp-protocol-version").decode("latin-1", "replace")
+        return version not in SUPPORTED_PROTOCOL_VERSIONS
 
     async def __call__(self, scope, receive, send):
         if (
@@ -479,7 +534,12 @@ class McpEnvelopeGuard:
         while True:
             message = await receive()
             if message.get("type") != "http.request":
-                # Interrupted upload (client disconnect): no replay, no response.
+                # Interrupted upload (client disconnect): nothing is replayed
+                # or written. A minimal response is still sent best-effort so
+                # production BaseHTTPMiddleware chains do not fail with
+                # "No response returned"; the transport discards it.
+                with contextlib.suppress(Exception):
+                    await _send_plain(send, 400, b"Request body interrupted")
                 return
             body += message.get("body", b"")
             if len(body) > _MAX_BODY_BYTES:
@@ -489,6 +549,13 @@ class McpEnvelopeGuard:
                 break
         raw = bytes(body)
         body = None  # Release the mutable buffer; only the replay copy remains.
+        # Session routing precedes parsing in the SDK (unknown sessions get a
+        # 404 before the body is parsed), so the guard defers entirely there —
+        # including for invalid UTF-8 or malformed envelopes.
+        session_is_known = self._session_is_known(scope)
+        if not session_is_known:
+            await self.app(scope, _replay_body(raw, receive), send)
+            return
         try:
             message = json.loads(raw, parse_float=_float_token, parse_constant=_float_token)
         except UnicodeDecodeError:
@@ -522,10 +589,12 @@ class McpEnvelopeGuard:
         else:
             rejection = _check_envelope(message)
         message = None  # Release the parsed tree before downstream dispatch.
-        session_is_known = self._session_is_known(scope)
-        if rejection is None or not session_is_known:
-            # Clean pass-through, or an unknown session where the SDK's own
-            # 404 (issued before body parsing) stays authoritative.
+        if rejection is None:
+            await self.app(scope, _replay_body(raw, receive), send)
+            return
+        if rejection[0] == 200 and self._protocol_version_defers(scope):
+            # Session-layer rejections: the SDK validates the protocol-version
+            # header first and answers 400 for unsupported versions.
             await self.app(scope, _replay_body(raw, receive), send)
             return
         await _send_rejection(send, scope, *rejection, echo_session=session_is_known)
@@ -590,4 +659,7 @@ def install_sanitized_validation(mcp) -> None:
     root = logging.getLogger()
     if not any(isinstance(f, SdkRootLogSanitizer) for f in root.filters):
         root.addFilter(SdkRootLogSanitizer())
+    lowlevel = logging.getLogger(SDK_LOWLEVEL_LOGGER)
+    if not any(isinstance(f, SdkLowlevelLogSanitizer) for f in lowlevel.filters):
+        lowlevel.addFilter(SdkLowlevelLogSanitizer())
     _clamp_sse_body_logging()
