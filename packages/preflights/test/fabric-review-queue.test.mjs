@@ -1294,20 +1294,19 @@ test("an invalid tracked review ID fails safely instead of emitting a restore re
   assert.deepEqual(result.writes, []);
 });
 
-test("a pending publication without a tracked review ID fails safely", async () => {
+test("a pending publication without a tracked review ID waits for recovery", async () => {
   // A matching pending publication must never produce a restore reference
   // the runner CLI cannot invoke: without metadata.review_id the pending
-  // validation fails closed (the verify scan itself also requires the id,
-  // exactly like Python's _eligible_verify_ids).
+  // without a tracked id the runner cannot restore it, so recovery requires
+  // consent instead of emitting an unusable reference.
   const body = ledgerBody({ pr: 1, updateCount: 2 });
   const task = pendingVerifyTask(body);
   delete task.metadata.review_id;
   task.metadata.last_reviewed_sha = "c".repeat(40);
   task.metadata.review_label_event_id = 1;
   const result = await run({ task, reviewBody: body });
-  assert.equal(result.status, "error");
-  assert.match(result.content, /#1: Pending publication needs reconciliation before dispatch/);
-  assert.deepEqual(result.writes, []);
+  assert.equal(result.status, "skip");
+  assert.match(result.content, /Waiting for organization-member ledger-recovery decisions on org\/repo#1/);
 });
 
 // Python parity goldens: static expected outcomes generated once from the
