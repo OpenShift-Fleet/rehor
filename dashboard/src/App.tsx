@@ -1,9 +1,9 @@
 import {
   Label,
   Masthead,
-  MastheadMain,
+  MastheadContent,
   MenuToggle,
-  MenuToggleElement,
+  type MenuToggleElement,
   Nav,
   NavItem,
   NavList,
@@ -30,6 +30,7 @@ import {
 import { fetchInstances, fetchStats } from "./api";
 import BotBanner from "./components/BotBanner";
 import ErrorBoundary from "./components/ErrorBoundary";
+import GlobalSearch from "./components/GlobalSearch";
 import ThemeSelector from "./components/ThemeSelector";
 import Toasts from "./components/Toasts";
 import { useDebouncedCallback } from "./hooks/useDebouncedCallback";
@@ -231,9 +232,9 @@ function AppInner() {
   return (
     <>
       <Masthead>
-        <MastheadMain style={{ flex: 1 }}>
-          <Toolbar style={{ width: "100%" }}>
-            <ToolbarContent>
+        <MastheadContent style={{ gridColumn: "1 / -1", minWidth: 0 }}>
+          <Toolbar style={{ width: "100%", minWidth: 0 }}>
+            <ToolbarContent rowWrap={{ default: "wrap" }}>
               <ToolbarItem>
                 <Link
                   to="/instances"
@@ -251,6 +252,9 @@ function AppInner() {
               </ToolbarItem>
               <ToolbarItem>
                 <InstanceSelector instances={instances} currentId={currentInstanceId} />
+              </ToolbarItem>
+              <ToolbarItem>
+                <GlobalSearch />
               </ToolbarItem>
               <ToolbarGroup align={{ default: "alignEnd" }}>
                 <ToolbarItem>
@@ -271,7 +275,7 @@ function AppInner() {
               </ToolbarGroup>
             </ToolbarContent>
           </Toolbar>
-        </MastheadMain>
+        </MastheadContent>
       </Masthead>
       <div className="app">
         {currentInstance && (

@@ -29,9 +29,25 @@ async def init_pool() -> asyncpg.Pool:
 
     # First, run schema (creates the vector extension) using a direct connection
     conn = await asyncpg.connect(url)
+    from .pull_requests import seed_pull_requests
+
     schema = (Path(__file__).parent / "schema.sql").read_text()
-    await conn.execute(schema)
-    await conn.close()
+    try:
+        await conn.execute(schema)
+        async with conn.transaction():
+            first_run = await conn.fetchval(
+                "INSERT INTO search_backfills (name) VALUES ('pull-request-identities-v1') "
+                "ON CONFLICT DO NOTHING RETURNING name"
+            )
+            if first_run:
+                await seed_pull_requests(conn)
+                await conn.execute(
+                    "DELETE FROM pull_requests pr USING tasks t WHERE t.id = pr.task_id "
+                    "AND NOT task_references_pr(t.metadata, t.artifacts, pr.host, pr.repository, "
+                    "pr.number, pr.url, t.source_url)"
+                )
+    finally:
+        await conn.close()
 
     # Now create the pool — _init_conn can register the vector type safely
     _pool = await asyncpg.create_pool(url, min_size=2, max_size=10, init=_init_conn)

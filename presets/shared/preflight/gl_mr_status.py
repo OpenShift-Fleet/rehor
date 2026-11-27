@@ -18,6 +18,7 @@ from common import (
     is_newer,
     load_state,
     output_result,
+    persist_pr_snapshot,
     save_state,
     upstream_repo,
 )
@@ -111,6 +112,7 @@ def enrich_gl(task):
         data = gl_mr(up, mr_num)
         if not data:
             continue
+        persist_pr_snapshot(task, "gitlab", up, mr_num, data)
         state, issues = classify_gl(data)
         mr_results.append(
             {

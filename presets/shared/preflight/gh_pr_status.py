@@ -18,6 +18,7 @@ from common import (
     is_bot_author,
     is_newer,
     output_result,
+    persist_pr_snapshot,
     save_state,
     upstream_repo,
 )
@@ -35,7 +36,7 @@ def gh_pr(owner_repo, num):
                 "--repo",
                 owner_repo,
                 "--json",
-                "state,mergeable,statusCheckRollup,reviewDecision,reviews,url,title,isDraft",
+                "state,mergeable,statusCheckRollup,reviewDecision,reviews,url,title,isDraft,labels",
             ],
             capture_output=True,
             text=True,
@@ -127,6 +128,7 @@ def enrich_gh(task):
         data = gh_pr(up, pr_num)
         if not data:
             continue
+        persist_pr_snapshot(task, "github", up, pr_num, data)
         state, issues = classify_gh(data, last_addressed=task.get("last_addressed", ""))
         pr_results.append(
             {

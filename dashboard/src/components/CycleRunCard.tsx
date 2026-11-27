@@ -11,6 +11,7 @@ import {
   LabelGroup,
 } from "@patternfly/react-core";
 import { DownloadIcon } from "@patternfly/react-icons";
+import { Link } from "react-router-dom";
 import { fetchCycleRunTranscript } from "../api";
 import type { CycleRun } from "../types";
 import { formatDuration, formatTokens, sourceUrl, timeAgo } from "../utils";
@@ -19,6 +20,7 @@ interface Props {
   run: CycleRun;
   selected?: boolean;
   onClick?: () => void;
+  taskHref?: string;
 }
 
 const typeColors: Record<string, "blue" | "green" | "orange" | "grey" | "red"> = {
@@ -35,7 +37,8 @@ const typeLabels: Record<string, string> = {
   error: "Error",
 };
 
-export default function CycleRunCard({ run, selected, onClick }: Props) {
+export default function CycleRunCard({ run, selected, onClick, taskHref }: Props) {
+  const taskTarget = taskHref || (run.task_id != null ? `/tasks?task_id=${run.task_id}` : null);
   const progress = run.progress || {};
   const duration =
     run.started_at && run.finished_at
@@ -103,6 +106,13 @@ export default function CycleRunCard({ run, selected, onClick }: Props) {
               )}
             </LabelGroup>
           </FlexItem>
+          {taskTarget && (
+            <FlexItem>
+              <Link to={taskTarget} onClick={(event) => event.stopPropagation()}>
+                Open task
+              </Link>
+            </FlexItem>
+          )}
           {extKey && (
             <FlexItem>
               <span onClick={(e) => e.stopPropagation()}>

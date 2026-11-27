@@ -33,6 +33,34 @@ test.describe("CycleRuns page", () => {
     });
   });
 
+  test("task-only cycle links show scoped history and an internal archived-task backlink", async ({
+    mount,
+    page,
+  }) => {
+    await page.route("**/api/cycle-runs/by-task*", (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            { ...defaultGroup, task_status: "archived" },
+            { ...defaultGroup, task_id: 99, external_key: "OTHER-99", title: "Other task" },
+          ],
+          total: 2,
+        },
+      }),
+    );
+    await page.route("**/api/cycle-runs?*", (route) =>
+      route.fulfill({ json: { items: [defaultRun], total: 1 } }),
+    );
+    await mount("CycleRuns/ScopedTask");
+    await expect(page.getByText("#10", { exact: true })).toBeVisible();
+    await expect(page.getByText("Other task", { exact: true })).toBeHidden();
+    await expect(page.getByRole("link", { name: "RHCLOUD-100", exact: true })).toHaveAttribute(
+      "href",
+      "/archived?task_id=42",
+    );
+    await expect(page.getByRole("button", { name: "Show all cycles", exact: true })).toBeVisible();
+  });
+
   test("shows empty state when no groups", async ({ mount, page }) => {
     await mount("CycleRuns/Default");
     await expect(page.getByText("No cycle runs found")).toBeVisible();
