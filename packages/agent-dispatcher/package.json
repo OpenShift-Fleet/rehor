@@ -16,7 +16,7 @@
     "@connectrpc/connect": "2.3.0",
     "@nvidia/openshell-sdk": "0.1.5",
     "@rehor/preflights": "0.0.0",
-    "cron-parser": "5.10.6",
+    "cron-parser": "5.10.7",
     "nunjucks": "3.2.4",
     "pino": "10.4.0",
     "undici": "7.30.1",
